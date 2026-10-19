@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { AGENT_METADATA, isLaunchable } from "../../shared/constants.js";
 import { launchEnvErrors } from "../../shared/launch-env-policy.js";
@@ -109,8 +108,10 @@ export function validateTemplateInput(input: SessionTemplateInput) {
 	if (input.cwd.split(/[\\/]/).includes("..")) {
 		errors.push("Working directory may not contain '..' segments.");
 	}
-	if (input.cwd && !existsSync(input.cwd))
-		warnings.push("Working directory does not exist on this machine.");
+	// Whether the directory exists is the target machine's to say: the supervisor
+	// checks it on its own disk when the launch starts. This process's disk is the
+	// wrong machine for a remote supervisor, and answering "exists or not" for any
+	// path a caller names would be a probe of the server's filesystem.
 	if (!baseInstructions) warnings.push("Base instructions are empty.");
 	if (!taskPrompt) warnings.push("Task prompt is empty.");
 	if (baseInstructions.length > 8000) warnings.push("Base instructions are unusually large.");

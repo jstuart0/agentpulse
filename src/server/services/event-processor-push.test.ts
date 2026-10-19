@@ -317,7 +317,13 @@ describe("ingest-made pushes count against their origin", () => {
 		await flush();
 		expect(seen).toHaveLength(MAX_INFLIGHT_PER_ORIGIN);
 
-		void dispatchEvent({ type: "hitl_opened", sessionId: "n-0", hitlId: "h1", proposalId: "p" });
+		void dispatchEvent({
+			type: "hitl_opened",
+			decision: "ask",
+			sessionId: "n-0",
+			hitlId: "h1",
+			proposalId: "p",
+		});
 		await flush();
 		expect(seen).toHaveLength(MAX_INFLIGHT_PER_ORIGIN + 1);
 		open();

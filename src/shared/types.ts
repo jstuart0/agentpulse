@@ -468,6 +468,12 @@ export interface Session {
 	 */
 	reportedHost?: string | null;
 	/**
+	 * When the turn now in progress began: a prompt, or the first tool use of a turn
+	 * nothing prompted. Null between turns and on rows that predate the field.
+	 * Optional: an older server won't send it.
+	 */
+	currentTurnStartedAt?: string | null;
+	/**
 	 * The machine the session is on, as the dashboard filters and groups it: the
 	 * supervisor's host name for a supervisor-launched session, else
 	 * `reportedHost`, else null (blank counts as none). Display and filtering
@@ -657,6 +663,26 @@ export interface DashboardStats {
 	 * unlike activeSessions, which counts only lifecycle status 'active'.
 	 */
 	tabCounts: SessionTabCounts;
+	/**
+	 * Sessions that ended today (the server's local calendar day), by how: finished
+	 * without failing, and failed. A session that ended yesterday and was
+	 * reanimated today counts only when it ends again. Optional: an older server
+	 * won't send them.
+	 */
+	completedToday?: number;
+	failedToday?: number;
+	/**
+	 * Launches requested today that belong to the applied scope: the owner scope
+	 * by who requested them, the machine filter by the supervisor they went to.
+	 * Scratch exclusion doesn't apply (a launch isn't a session yet).
+	 */
+	launchesToday?: number;
+	/**
+	 * When "today" began for the three counts above and `totalSessionsToday`: the
+	 * server's local midnight, as an ISO instant. Lets a client label the day
+	 * honestly whatever its own time zone. Optional: an older server won't send it.
+	 */
+	todayStartsAt?: string;
 }
 
 /**

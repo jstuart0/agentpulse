@@ -522,7 +522,7 @@ for _ in $(seq 1 30); do
       fi
     else
       echo "  Next step:"
-      echo "    curl -sSL ${PUBLIC_URL}/setup.sh | bash"
+      echo "    curl -fsSL ${PUBLIC_URL}/setup.sh | bash"
       echo ""
     fi
     echo "  Local control plane:"

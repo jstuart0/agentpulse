@@ -44,7 +44,13 @@ import type {
 import type { Actor } from "../auth/actor.js";
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
-import { managedSessions, projects, sessions, supervisors } from "../db/schema/index.js";
+import {
+	launchRequests,
+	managedSessions,
+	projects,
+	sessions,
+	supervisors,
+} from "../db/schema/index.js";
 import {
 	executeRows,
 	isAppIsoTimestamp,
@@ -68,6 +74,7 @@ import { insertNormalizedEvents } from "./event-processor.js";
 import { getManagedSession, mapManagedSession } from "./managed-session-state.js";
 import { sanitizeNativeName } from "./name-sanitizer.js";
 import { notifySessionUpdated } from "./notifier.js";
+import { loadFailureReasons, permissionWaitCount, toSessionCard } from "./session-card.js";
 import { mapSessionDto } from "./session-dto.js";
 import { listLiveOwnedManagedSessionIds } from "./session-ownership.js";
 
@@ -508,10 +515,10 @@ function sharedFilterConditions(
 	scratchProjectIds: readonly string[],
 ): SQL[] {
 	const conditions: SQL[] = [];
-	if (filters?.status) {
-		// TODO: translate status=archived into the isArchived filter. The status
-		// column no longer carries 'archived' for new rows, so
-		// GET /sessions?status=archived returns nothing until this is wired up.
+	if (filters?.status === "archived") {
+		// Archived is the archive flag; new rows never carry the status, old ones still may.
+		conditions.push(or(eq(sessions.isArchived, true), eq(sessions.status, "archived")) as SQL);
+	} else if (filters?.status) {
 		conditions.push(eq(sessions.status, filters.status));
 	}
 	if (filters?.tab) conditions.push(tabConditions()[filters.tab]);
@@ -1201,11 +1208,39 @@ export async function getSessionSummaries(
  * same statement (one lookup per row of the page, never per row of the table).
  * The columns stay flat: the DTO mappers and every consumer read the same shape.
  */
-const SESSION_ROW_WITH_MACHINE = { ...getTableColumns(sessions), machine: EFFECTIVE_MACHINE };
+export const SESSION_ROW_WITH_MACHINE = {
+	...getTableColumns(sessions),
+	machine: EFFECTIVE_MACHINE,
+};
 type SessionRowWithMachine = typeof sessions.$inferSelect & { machine: string | null };
 
-// Get all sessions with optional filters
-export async function getSessions(filters?: SessionListFilters) {
+/**
+ * The same row with the columns a card never shows read as NULL instead of
+ * fetched: the stored CLAUDE.md and notes are most of a session row's weight, and
+ * a list of cards would otherwise pull them from the database just to drop them.
+ * The rows come back with the same keys and value types as SESSION_ROW_WITH_MACHINE
+ * (a NULL where a column was skipped), so the shared paging code needs no second row
+ * type; the cast says the selection object is typed by its rows, not by its columns.
+ */
+export const SESSION_CARD_ROW = {
+	...SESSION_ROW_WITH_MACHINE,
+	claudeMdContent: sql<string | null>`NULL`,
+	claudeMdPath: sql<string | null>`NULL`,
+	claudeMdChecksum: sql<string | null>`NULL`,
+	claudeMdUpdatedAt: sql<string | null>`NULL`,
+	notes: sql<string | null>`NULL`,
+	planSummary: sql<string[] | null>`NULL`,
+	transcriptPath: sql<string | null>`NULL`,
+} as unknown as typeof SESSION_ROW_WITH_MACHINE;
+
+/**
+ * One page of the session list: the rows (as the selection reads them), the total
+ * the filters match, and which of the page's sessions have a managed row.
+ */
+async function readSessionPage(
+	filters: SessionListFilters | undefined,
+	selection: typeof SESSION_ROW_WITH_MACHINE,
+) {
 	const limit = filters?.limit ?? 50;
 	const offset = filters?.offset ?? 0;
 
@@ -1228,7 +1263,7 @@ export async function getSessions(filters?: SessionListFilters) {
 			rows = [];
 		} else {
 			const pageRows = await getDb()
-				.select(SESSION_ROW_WITH_MACHINE)
+				.select(selection)
 				.from(sessions)
 				.where(inArray(sessions.sessionId, ids));
 			const byId = new Map(pageRows.map((row) => [row.sessionId, row]));
@@ -1236,7 +1271,7 @@ export async function getSessions(filters?: SessionListFilters) {
 		}
 	} else {
 		let query = getDb()
-			.select(SESSION_ROW_WITH_MACHINE)
+			.select(selection)
 			.from(sessions)
 			.orderBy(desc(sessions.lastActivityAt), desc(sessions.id));
 
@@ -1270,11 +1305,35 @@ export async function getSessions(filters?: SessionListFilters) {
 					.where(inArray(managedSessions.sessionId, pageSessionIds))
 			: [];
 	const managedIds = new Set(managedRows.map((row) => row.sessionId));
+	return { rows, total, managedIds };
+}
+
+// Get all sessions with optional filters
+export async function getSessions(filters?: SessionListFilters) {
+	const { rows, total, managedIds } = await readSessionPage(filters, SESSION_ROW_WITH_MACHINE);
 	const rowsWithManaged = rows.map((row) =>
 		mapSessionDto(row, { managed: managedIds.has(row.sessionId) }),
 	);
-
 	return { sessions: rowsWithManaged, total };
+}
+
+/**
+ * The same page as card rows (see session-card.ts): the columns a card doesn't show
+ * are never read, the permission wait is a count, and a failed session carries why
+ * it failed.
+ */
+export async function getSessionCards(filters?: SessionListFilters) {
+	const { rows, total, managedIds } = await readSessionPage(filters, SESSION_CARD_ROW);
+	const failureReasons = await loadFailureReasons(
+		rows.filter((row) => row.status === "failed").map((row) => row.sessionId),
+	);
+	const cards = rows.map((row) =>
+		toSessionCard(mapSessionDto(row, { managed: managedIds.has(row.sessionId) }), {
+			permissionWait: permissionWaitCount(row.metadata),
+			failureReason: failureReasons.get(row.sessionId) ?? null,
+		}),
+	);
+	return { sessions: cards, total };
 }
 
 // Get a single session by session_id
@@ -1345,7 +1404,46 @@ async function computeStats(options?: {
 		byAgentType: totals.activeByAgentType,
 		truncated,
 		operational,
+		completedToday: totals.completedToday,
+		failedToday: totals.failedToday,
+		launchesToday: totals.launchesToday,
+		todayStartsAt: totals.todayStart,
 	};
+}
+
+/** The server's local calendar day, as the instant it began: what every "today" count compares against. */
+function startOfTodayIso(): string {
+	const now = new Date();
+	return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+}
+
+/**
+ * Launches requested today that belong to the stats scope, as a scalar subquery so
+ * the poll stays one statement for its counts. A launch is scoped by who requested
+ * it (the owner scope; a launch with no requesting user is the ownerless kinds')
+ * and by the supervisor it went to (the machine scope, judged by that supervisor's
+ * host name). Drafts and rejected requests never ran, so they aren't launches. The
+ * scratch exclusion doesn't apply: a launch isn't a session yet.
+ */
+export function launchesTodaySubquery(filters: SessionListFilters, todayStart: string): SQL {
+	const conditions: SQL[] = [
+		sql`${launchRequests.createdAt} >= ${todayStart}`,
+		notInArray(launchRequests.status, ["draft", "rejected"]),
+	];
+	const owner = filters.owner;
+	if (owner?.kind === "user") conditions.push(eq(launchRequests.requestedByUserId, owner.userId));
+	else if (owner) conditions.push(isNull(launchRequests.requestedByUserId));
+	const host = filters.host;
+	if (host) {
+		const target = sql`COALESCE(${launchRequests.claimedBySupervisorId}, ${launchRequests.resolvedSupervisorId}, ${launchRequests.requestedSupervisorId})`;
+		const named = sql`SELECT ${supervisors.id} FROM ${supervisors} WHERE NULLIF(TRIM(${supervisors.hostName}), '') IS NOT NULL`;
+		conditions.push(
+			host.kind === "unknown"
+				? sql`(${target} IS NULL OR ${target} NOT IN (${named}))`
+				: sql`${target} IN (SELECT ${supervisors.id} FROM ${supervisors} WHERE NULLIF(TRIM(${supervisors.hostName}), '') = ${host.host})`,
+		);
+	}
+	return sql`(SELECT count(*) FROM ${launchRequests} WHERE ${and(...conditions)})`;
 }
 
 interface StatsTotals {
@@ -1356,6 +1454,14 @@ interface StatsTotals {
 	active: number;
 	today: number;
 	toolUsesToday: number;
+	/** Ended today, not failed. */
+	completedToday: number;
+	/** Failed, and ended today. */
+	failedToday: number;
+	/** Launches requested today in the scope (see launchesTodaySubquery). */
+	launchesToday: number;
+	/** The instant "today" began (server local midnight), the one every "today" count above was judged against. */
+	todayStart: string;
 	completed: number;
 	archived: number;
 	/** The three tab counts: they partition `total`. */
@@ -1387,8 +1493,7 @@ async function queryAggregateTotals(
 	filters: SessionListFilters,
 	scratchProjectIds: readonly string[],
 ): Promise<StatsTotals> {
-	const now = new Date();
-	const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+	const todayStart = startOfTodayIso();
 	// The owner scope and the machine narrow every query, so the cards, the tab
 	// counts and the four operational counts all describe the same set of sessions.
 	const scope = allOf(...sharedFilterConditions({ owner: filters.owner, host: filters.host }, []));
@@ -1402,6 +1507,7 @@ async function queryAggregateTotals(
 		);
 	};
 	const startedToday = sql`${sessions.startedAt} >= ${todayStart}`;
+	const endedToday = sql`${sessions.endedAt} >= ${todayStart}`;
 	// The card and the by-type breakdown keep their own narrower meaning
 	// (lifecycle status 'active'); the tab counts below use the tab predicates.
 	const isActive = eq(sessions.status, "active");
@@ -1424,6 +1530,9 @@ async function queryAggregateTotals(
 				sql<number>`COALESCE(SUM(${sessions.totalToolUses}) FILTER (WHERE ${counted(startedToday)}), 0)`.mapWith(
 					Number,
 				),
+			completedToday: countWhere(and(endedToday, ne(sessions.status, "failed")) as SQL),
+			failedToday: countWhere(and(endedToday, eq(sessions.status, "failed")) as SQL),
+			launchesToday: sql<number>`${launchesTodaySubquery(filters, todayStart)}`.mapWith(Number),
 			tabActive: countWhere(tabs.active),
 			completed: countWhere(tabs.completed),
 			archived: countWhere(tabs.archived),
@@ -1459,6 +1568,10 @@ async function queryAggregateTotals(
 		active: totals.active ?? 0,
 		today: totals.today ?? 0,
 		toolUsesToday: totals.toolUsesToday ?? 0,
+		completedToday: totals.completedToday ?? 0,
+		failedToday: totals.failedToday ?? 0,
+		launchesToday: totals.launchesToday ?? 0,
+		todayStart,
 		completed: totals.completed ?? 0,
 		archived: totals.archived ?? 0,
 		tabCounts: {
@@ -1486,6 +1599,10 @@ export function emptyStats(): StatsResult {
 		byAgentType: Object.fromEntries(AGENT_TYPES.map((type) => [type, 0])),
 		truncated: false,
 		operational: { waiting: 0, working: 0, idle: 0, error: 0 },
+		completedToday: 0,
+		failedToday: 0,
+		launchesToday: 0,
+		todayStartsAt: startOfTodayIso(),
 	};
 }
 
@@ -1885,7 +2002,7 @@ export async function updateStaleSessions(): Promise<number> {
 	// can pick them up on the same tick.
 	const cleared = await getDb()
 		.update(sessions)
-		.set({ isWorking: false })
+		.set({ isWorking: false, currentTurnStartedAt: null })
 		.where(
 			and(
 				eq(sessions.isWorking, true),

@@ -33,6 +33,9 @@ import {
 /** Longest agent text the phone is sent, in characters. */
 export const MAX_TEXT_CHARS = 180;
 
+/** Longest Ask thread title the phone is sent, in characters: the length a thread's title is kept to. */
+export const MAX_TITLE_CHARS = 80;
+
 interface CategoryRule {
 	category: PushCategory;
 	level: InterruptionLevel;
@@ -194,6 +197,7 @@ export const PushPayloadSchema = z
 		status: z.enum(["waiting", "working", "error", "idle", "completed"]).optional(),
 		pending: z.number().int().min(0).max(100_000).optional(),
 		hitlId: optionalId.optional(),
+		decision: z.enum(["continue", "ask"]).optional(),
 		proposalId: optionalId.optional(),
 		promptHash: z
 			.string()
@@ -204,6 +208,12 @@ export const PushPayloadSchema = z
 		launchId: optionalId.optional(),
 		threadId: optionalId.optional(),
 		assistantMessageId: optionalId.optional(),
+		// Counted in characters (code points), as the JSON schema's maxLength counts them.
+		title: z
+			.string()
+			.refine((title) => Array.from(title).length <= MAX_TITLE_CHARS)
+			.optional(),
+		proposalCount: z.number().int().min(0).max(1_000).optional(),
 		durationSec: z.number().int().min(0).max(31_536_000).optional(),
 		toolCount: z.number().int().min(0).max(1_000_000).optional(),
 		text: z.string().max(MAX_TEXT_CHARS).optional(),
@@ -280,6 +290,7 @@ export function buildPushPayload(
 		status: session && "status" in session ? session.status : undefined,
 		pending: session && "pending" in session ? clampInt(session.pending, 0, 100_000) : undefined,
 		hitlId: event.type === "hitl_opened" ? event.hitlId : undefined,
+		decision: event.type === "hitl_opened" ? event.decision : undefined,
 		proposalId: event.type === "hitl_opened" ? event.proposalId : undefined,
 		promptHash: event.type === "hitl_opened" ? event.promptHash : undefined,
 		actionRequestId: event.type === "action_request_opened" ? event.actionRequestId : undefined,
@@ -287,6 +298,10 @@ export function buildPushPayload(
 		launchId: event.type === "launch_status" ? event.launchId : undefined,
 		threadId: event.type === "ask_reply" ? event.threadId : undefined,
 		assistantMessageId: event.type === "ask_reply" ? event.assistantMessageId : undefined,
+		// The title is the person's own words, so it goes through the redactor and only to a device that shows content.
+		title:
+			showContent && event.type === "ask_reply" ? label(event.title, MAX_TITLE_CHARS) : undefined,
+		proposalCount: event.type === "ask_reply" ? clampInt(event.proposalCount, 0, 1_000) : undefined,
 		durationSec:
 			event.type === "session_failed" || event.type === "session_completed"
 				? clampInt(event.durationSec, 0, 31_536_000)

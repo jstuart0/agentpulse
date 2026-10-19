@@ -79,6 +79,11 @@ export type PushEvent =
 			hitlId: string;
 			proposalId: string;
 			promptHash?: string;
+			/**
+			 * What approving would do: `continue` sends the proposed prompt to the agent, `ask` is a
+			 * question for the person that has no prompt to send.
+			 */
+			decision: "continue" | "ask";
 			text?: string | null;
 	  } & SessionScoped)
 	| {
@@ -107,6 +112,10 @@ export type PushEvent =
 			type: "ask_reply";
 			threadId: string;
 			assistantMessageId: string;
+			/** The thread's title (the first words of the first question), shown only to a device that shows content. */
+			title?: string | null;
+			/** How many of the thread's proposals wait on a person after this reply. */
+			proposalCount?: number;
 			requesterUserId: string | null;
 			requesterKeyId: string | null;
 	  }

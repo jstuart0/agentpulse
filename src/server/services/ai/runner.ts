@@ -88,6 +88,8 @@ export function hitlOpenedEvent(
 		sessionId,
 		hitlId,
 		proposalId,
+		// Approving a request with a prompt sends it; one without is a question only a person answers.
+		decision: promptHash ? ("continue" as const) : ("ask" as const),
 		...(promptHash ? { promptHash } : {}),
 	};
 }

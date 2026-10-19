@@ -124,6 +124,9 @@ describeSqliteOnly("Ask replies that outlive their stream", () => {
 				type: "ask_reply",
 				threadId: saved[0]?.thread_id as string,
 				assistantMessageId: saved[0]?.id as string,
+				// the thread's title is the question's first words; no proposal was made
+				title: "hello there caching",
+				proposalCount: 0,
 				requesterUserId: null,
 				requesterKeyId: keyId,
 			},

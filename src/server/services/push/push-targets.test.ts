@@ -141,7 +141,7 @@ describe("PolicyPushTargets", () => {
 		{ type: "turn_completed", sessionId },
 		{ type: "session_failed", sessionId },
 		{ type: "session_completed", sessionId },
-		{ type: "hitl_opened", sessionId, hitlId: "h", proposalId: "p" },
+		{ type: "hitl_opened", decision: "ask", sessionId, hitlId: "h", proposalId: "p" },
 		{ type: "alert_rule_fired", sessionId, trigger: "stuck" },
 		{ type: "stuck", sessionId },
 		{ type: "risky", sessionId },

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+	ASK_THREAD_GONE_MESSAGE,
 	apiErrorCode,
+	askThreadLoadMessage,
 	describeApiError,
 	isAiDisabledError,
 	isPasswordChangeRequired,
@@ -321,5 +323,23 @@ describe("answering a HITL request", () => {
 		for (const reason of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
 			expect(describeDelivery({ state: "blocked", reason })).toContain("couldn't be sent");
 		}
+	});
+});
+
+describe("askThreadLoadMessage", () => {
+	test("a thread that isn't there (or isn't yours) reads as plainly not found, not as the server's raw text", () => {
+		const err = new ApiError(404, "Thread not found", { error: "Thread not found" });
+		expect(askThreadLoadMessage(err)).toBe(ASK_THREAD_GONE_MESSAGE);
+		expect(askThreadLoadMessage(err)).not.toContain("Thread not found");
+	});
+
+	test("the AI being off keeps its own 404 wording, and other failures keep theirs", () => {
+		const off = new ApiError(404, "AI feature is not compiled into this build.", {
+			error: "ai_disabled",
+		});
+		expect(askThreadLoadMessage(off)).toBe(plainErrorMessage(off));
+		expect(askThreadLoadMessage(off)).not.toBe(ASK_THREAD_GONE_MESSAGE);
+		const busy = new ApiError(503, "busy", { error: "busy" });
+		expect(askThreadLoadMessage(busy)).toBe(plainErrorMessage(busy));
 	});
 });

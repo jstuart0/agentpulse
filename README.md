@@ -74,7 +74,7 @@ When it finishes, open [http://localhost:3000](http://localhost:3000) and start 
 If you prefer Docker, this starts the container, waits for health, and configures hooks:
 
 ```bash
-docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -sSL http://localhost:3000/setup.sh | bash
+docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -fsSL http://localhost:3000/setup.sh | bash
 ```
 
 > **Security note:** `-p 127.0.0.1:3000:3000` binds the host port to localhost only. The older `-p 3000:3000` form would publish on all host interfaces, exposing the auth-disabled server to your LAN. Use the `127.0.0.1:` prefix whenever `DISABLE_AUTH=true`.
@@ -87,7 +87,7 @@ docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUT
 > **Why localhost?** Claude Code and Codex block HTTP hooks to remote/private IPs as a security measure. Only `localhost` / `127.0.0.1` is allowed. This keeps things simple -- one Docker container on your machine, no networking to configure. If port 3000 is taken, use any free port:
 > ```bash
 > docker run -d -p 127.0.0.1:4000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e PUBLIC_URL=http://localhost:4000 --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
-> curl -sSL http://localhost:4000/setup.sh | bash
+> curl -fsSL http://localhost:4000/setup.sh | bash
 > ```
 
 ## What you'll see
@@ -362,7 +362,7 @@ Best if you already use Docker locally.
 
 ```bash
 docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
-curl -sSL http://localhost:3000/setup.sh | bash
+curl -fsSL http://localhost:3000/setup.sh | bash
 ```
 
 > **Security note:** `-p 127.0.0.1:3000:3000` binds the host port to localhost only when `DISABLE_AUTH=true`. Use this form for local-only Docker; the older `-p 3000:3000` shorthand publishes on all host interfaces.
@@ -374,7 +374,7 @@ Best if you want to monitor sessions from other devices while your agents still 
 Use the relay installer:
 
 ```bash
-curl -sSL https://your-server.example.com/setup-relay.sh | bash
+curl -fsSL --proto '=https' https://your-server.example.com/setup-relay.sh | bash
 ```
 
 That installs a local relay on `localhost:4000`, configures hooks automatically, and forwards events to your remote AgentPulse server. The key needs the **Hook ingest** and **Observe (read-only)** scopes — see [Option B](#advanced-remote-dashboard--local-hooks) below.
@@ -408,13 +408,13 @@ docker run -d -p 0.0.0.0:3000:3000 -v agentpulse-data:/app/data \
   -e AGENTPULSE_LOCAL_ADMIN_USERNAME=admin \
   -e AGENTPULSE_LOCAL_ADMIN_PASSWORD=<strong-password> \
   --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
-( ap_key=$(if [ -t 0 ]; then s=$(stty -g 2>/dev/null) && stty -echo 2>/dev/null || { echo "Can't hide the key while you type it, so it won't be asked for here. Use the scripted form in the docs instead." >&2; exit 1; }; trap 'echo >&2; exit 130' INT TERM HUP; trap 'stty "$s" 2>/dev/null' EXIT; fi; printf 'AgentPulse API key: ' >&2; IFS= read -r k; if [ -t 0 ]; then echo >&2; fi; printf %s "$k") && case "$ap_key" in '') echo "No API key entered; nothing was installed." >&2; false;; *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*) echo "The API key can only contain letters, digits, '.', '_' and '-'; nothing was installed." >&2; false;; *) export AGENTPULSE_KEY="$ap_key"; curl -sSL http://localhost:3000/setup.sh | bash;; esac )
+( ap_key=$(if [ -t 0 ]; then s=$(stty -g 2>/dev/null) && stty -echo 2>/dev/null || { echo "Can't hide the key while you type it, so it won't be asked for here. Use the scripted form in the docs instead." >&2; exit 1; }; trap 'echo >&2; exit 130' INT TERM HUP; trap 'stty "$s" 2>/dev/null' EXIT; fi; printf 'AgentPulse API key: ' >&2; IFS= read -r k; if [ -t 0 ]; then echo >&2; fi; printf %s "$k") && case "$ap_key" in '') echo "No API key entered; nothing was installed." >&2; false;; *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*) echo "The API key can only contain letters, digits, '.', '_' and '-'; nothing was installed." >&2; false;; *) export AGENTPULSE_KEY="$ap_key"; curl -fsSL http://localhost:3000/setup.sh | bash;; esac )
 # Dashboard: http://localhost:3000 (local) or http://your-ip:3000 (LAN)
 ```
 
 The default config requires login via the dashboard. DO NOT add `-e DISABLE_AUTH=true` on any network you do not fully control.
 
-The prompt reads the key with input hidden and hands it to the installer without it ever appearing in the command text — so it never lands in shell history or `ps`. It hides input with `stty -echo` rather than `read -s`, which dash — the `sh` on Debian and Ubuntu — doesn't have; it also works in bash and zsh. The whole snippet runs in a subshell, so the key never stays in your shell or its environment, and Ctrl-C at the prompt cancels it and restores your terminal. It refuses to ask if it can't hide what you type, and a blank answer or a key with characters outside letters, digits, `.`, `_` and `-` installs nothing and says why, rather than running curl unauthenticated. For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_API_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but that form is visible in shell history; `curl ... | bash -s -- --key ap_YOUR_API_KEY` works too, and is visible in both shell history and the process list — prefer the `read` form when you're at an interactive terminal.
+The prompt reads the key with input hidden and hands it to the installer without it ever appearing in the command text — so it never lands in shell history or `ps`. It hides input with `stty -echo` rather than `read -s`, which dash — the `sh` on Debian and Ubuntu — doesn't have; it also works in bash and zsh. The whole snippet runs in a subshell, so the key never stays in your shell or its environment, and Ctrl-C at the prompt cancels it and restores your terminal. It refuses to ask if it can't hide what you type, and a blank answer or a key with characters outside letters, digits, `.`, `_` and `-` installs nothing and says why, rather than running curl unauthenticated. For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_API_KEY curl -fsSL http://localhost:3000/setup.sh | bash` also works, but that form is visible in shell history; `curl ... | bash -s -- --key ap_YOUR_API_KEY` works too, and is visible in both shell history and the process list — prefer the `read` form when you're at an interactive terminal.
 
 **Option B: Remote server with local relay (recommended for k8s/VPS)**
 
@@ -425,7 +425,7 @@ Multiple machines can report to the same dashboard. Run the relay setup on your 
 One command sets up everything, no repo clone needed:
 
 ```bash
-curl -sSL https://your-server.example.com/setup-relay.sh | bash
+curl -fsSL --proto '=https' https://your-server.example.com/setup-relay.sh | bash
 ```
 
 It asks for the API key on the terminal (input hidden), which keeps the key out of your shell history and the process list. For unattended installs, set `AGENTPULSE_KEY` or pass `--key ap_YOUR_KEY` instead; a re-run reuses the saved key. The dashboard's Setup page has this command ready to copy, with a **Mint relay key** button.
@@ -511,10 +511,10 @@ See `deploy/k8s/FORWARDAUTH.md` for provider-specific setup instructions.
 By default, AgentPulse generates an API key on first start (printed in server logs). Pass it to the setup script — prefer the hidden-prompt form, which keeps the key out of both `ps` and shell history:
 
 ```bash
-( ap_key=$(if [ -t 0 ]; then s=$(stty -g 2>/dev/null) && stty -echo 2>/dev/null || { echo "Can't hide the key while you type it, so it won't be asked for here. Use the scripted form in the docs instead." >&2; exit 1; }; trap 'echo >&2; exit 130' INT TERM HUP; trap 'stty "$s" 2>/dev/null' EXIT; fi; printf 'AgentPulse API key: ' >&2; IFS= read -r k; if [ -t 0 ]; then echo >&2; fi; printf %s "$k") && case "$ap_key" in '') echo "No API key entered; nothing was installed." >&2; false;; *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*) echo "The API key can only contain letters, digits, '.', '_' and '-'; nothing was installed." >&2; false;; *) export AGENTPULSE_KEY="$ap_key"; curl -sSL http://localhost:3000/setup.sh | bash;; esac )
+( ap_key=$(if [ -t 0 ]; then s=$(stty -g 2>/dev/null) && stty -echo 2>/dev/null || { echo "Can't hide the key while you type it, so it won't be asked for here. Use the scripted form in the docs instead." >&2; exit 1; }; trap 'echo >&2; exit 130' INT TERM HUP; trap 'stty "$s" 2>/dev/null' EXIT; fi; printf 'AgentPulse API key: ' >&2; IFS= read -r k; if [ -t 0 ]; then echo >&2; fi; printf %s "$k") && case "$ap_key" in '') echo "No API key entered; nothing was installed." >&2; false;; *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*) echo "The API key can only contain letters, digits, '.', '_' and '-'; nothing was installed." >&2; false;; *) export AGENTPULSE_KEY="$ap_key"; curl -fsSL http://localhost:3000/setup.sh | bash;; esac )
 ```
 
-Works in dash, bash and zsh. For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but is visible in shell history.
+Works in dash, bash and zsh. For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_KEY curl -fsSL http://localhost:3000/setup.sh | bash` also works, but is visible in shell history.
 
 For local use where you don't need auth, set `DISABLE_AUTH=true` (as shown in quick start).
 
@@ -523,7 +523,7 @@ For local use where you don't need auth, set `DISABLE_AUTH=true` (as shown in qu
 If AgentPulse runs on a different machine, install the relay (see [Option B](#advanced-remote-dashboard--local-hooks)). It runs on that machine, keeps your key out of agent config, queues events on disk when the server is unreachable, and applies your [exclude rules](#excluding-directories-from-agentpulse) before anything is sent:
 
 ```bash
-curl -sSL https://your-server.example.com/setup-relay.sh | bash
+curl -fsSL --proto '=https' https://your-server.example.com/setup-relay.sh | bash
 ```
 
 Set `PUBLIC_URL` on the server to its public address: the relay installer takes the server URL from it, never from the request.
@@ -712,7 +712,7 @@ An old relay or supervisor doesn't apply rules at all. Update or reinstall it; `
 
 ## What the setup script does
 
-Running `curl -sSL .../setup.sh | bash` configures:
+Running `curl -fsSL --proto '=https' .../setup.sh | bash` configures:
 
 1. **Claude Code** -- adds HTTP hooks to `~/.claude/settings.json` for 16 events (SessionStart, Stop, PreToolUse, PostToolUse, PermissionRequest, PreCompact, etc.), `async: true`, so they never slow down the agent. A supplied key is embedded directly in the header (`Authorization: Bearer ap_...`), and the file is tightened to mode `0600` (a no-follow write; a symlinked `settings.json` is refused, not written through) -- see "User scope vs. project scope" below for why.
 2. **Codex CLI** -- replaces `~/.codex/hooks.json` with 12 `command`-type events (SessionStart, SessionEnd, PreToolUse, PostToolUse, UserPromptSubmit, Stop, Interrupt, SubagentStart, SubagentStop, PermissionRequest, PreCompact, PostCompact). An existing file is backed up first as `hooks.json.agentpulse-bak.<timestamp>`, never overwritten. Codex 0.145+ requires you to run `/hooks` inside Codex once afterward and trust the AgentPulse entries -- untrusted hooks are silently skipped. Minimum tested version: Codex CLI 0.145. The legacy `codex_hooks` line in `config.toml`, if present from an older AgentPulse setup, is no longer needed and can be deleted. **Re-running the installer with an unchanged URL/key prints "Codex hooks unchanged — no re-trust needed" and leaves `hooks.json` alone** -- you only have to run `/hooks` again when the installer actually rewrites the file (a URL or key change, or an upgrade that changes the hook shape).

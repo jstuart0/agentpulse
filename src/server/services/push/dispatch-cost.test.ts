@@ -364,7 +364,13 @@ describe("one origin cannot hold the reserved headroom", () => {
 		expect(resolves).toHaveLength(MAX_INFLIGHT_PER_ORIGIN);
 
 		void dispatchEvent(wait(1_000), "owner:quiet");
-		void dispatchEvent({ type: "hitl_opened", sessionId: "s", hitlId: "h1", proposalId: "p" });
+		void dispatchEvent({
+			type: "hitl_opened",
+			decision: "ask",
+			sessionId: "s",
+			hitlId: "h1",
+			proposalId: "p",
+		});
 		await settle();
 		expect(resolves).toHaveLength(MAX_INFLIGHT_PER_ORIGIN + 2);
 		expect(resolves.map((e) => e.type)).toContain("hitl_opened");

@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, like, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, like, lte, or } from "drizzle-orm";
 import type { ActiveOperationalStatus } from "../../../shared/session-state.js";
 import { getDb } from "../../db/client.js";
 import { sessions } from "../../db/schema/index.js";
@@ -86,10 +86,8 @@ export function buildSearchFilters(
 	} else if (ACTIVE_RE.test(message)) {
 		filters.sessionStatus = "active";
 	} else if (ARCHIVED_RE.test(message)) {
-		// TODO(slice-h): once the FTS index is extended to include isArchived,
-		// route this to a real isArchived=true predicate instead of the dead
-		// status='archived' filter. Until then, this sets a filter that returns
-		// zero rows (no sessions have status='archived' post-Slice G).
+		// Archived is the archive flag; both search backends and the direct query
+		// below read this value as "isArchived, or the legacy status".
 		filters.sessionStatus = "archived";
 	}
 
@@ -199,7 +197,11 @@ async function querySessionsDirect(
 	filters: AskSearchFilters,
 ): Promise<{ hits: SearchHit[]; meta: Map<string, SessionMeta>; scanCapped: boolean }> {
 	const clauses = [];
-	if (filters.sessionStatus) clauses.push(eq(sessions.status, filters.sessionStatus));
+	if (filters.sessionStatus === "archived") {
+		clauses.push(or(eq(sessions.isArchived, true), eq(sessions.status, "archived")));
+	} else if (filters.sessionStatus) {
+		clauses.push(eq(sessions.status, filters.sessionStatus));
+	}
 	if (filters.cwd) clauses.push(like(sessions.cwd, `%${filters.cwd}%`));
 	if (filters.since) clauses.push(gte(sessions.lastActivityAt, filters.since));
 	if (filters.until) clauses.push(lte(sessions.lastActivityAt, filters.until));

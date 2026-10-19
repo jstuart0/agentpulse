@@ -33,6 +33,11 @@
  * (null for a session no relay or observer reported a machine for). The machine
  * filter adds `machine` to list rows (the effective machine, null here); the
  * detail response is unchanged.
+ *
+ * The mobile companion's session shaping adds one more nullable session field,
+ * `currentTurnStartedAt` (null here: no turn has started). It rides on every
+ * session row, REST and socket alike; the shaping parameters themselves
+ * (view=card, eventsLimit, compact, omit, beforeId) change nothing when absent.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import "./db/__test_db.js";
@@ -377,6 +382,7 @@ describe("sessions and api-keys endpoints for a manage caller — baseline shape
 			claudeMdPath: null,
 			claudeMdUpdatedAt: null,
 			currentTask: null,
+			currentTurnStartedAt: null,
 			cwd: "/tmp/baseline",
 			displayName: `baseline-snapshot-session-name-${RUN_SUFFIX}`,
 			endedAt: null,

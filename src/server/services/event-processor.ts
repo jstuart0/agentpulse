@@ -1001,6 +1001,7 @@ export async function processHookEvent(
 		updates.status = "completed";
 		updates.endedAt = now;
 		updates.isWorking = false;
+		updates.currentTurnStartedAt = null;
 	}
 
 	// Track working state: agent is working between prompt/tool start and
@@ -1017,15 +1018,22 @@ export async function processHookEvent(
 	// deliberately not used for this: Notification and other hooks bump it
 	// too. Interrupt clears isWorking but stamps neither — the user cut the
 	// turn short, so there is no finished result awaiting acknowledgement.
+	//
+	// The turn's start time follows the same transitions: a prompt starts a turn,
+	// the first tool use of a turn nothing prompted does too (a tool event inside
+	// a turn already under way keeps its start), and Stop/Interrupt/SessionEnd end it.
 	if (eventType === "UserPromptSubmit" && !d21.latched) {
 		updates.isWorking = true;
 		updates.lastUserAcknowledgedAt = now;
+		updates.currentTurnStartedAt = now;
 	}
 	if (eventType === "PreToolUse" && !d21.closedTurn && !d21.latched) {
 		updates.isWorking = true;
+		if (!priorRow?.isWorking || !priorRow.currentTurnStartedAt) updates.currentTurnStartedAt = now;
 	}
 	if ((eventType === "Stop" || eventType === "Interrupt") && !d21.latched) {
 		updates.isWorking = false;
+		updates.currentTurnStartedAt = null;
 		if (eventType === "Stop") updates.lastAgentTurnCompletedAt = now;
 	}
 
@@ -1144,7 +1152,7 @@ export async function markSessionFailed(sessionId: string): Promise<void> {
 	const now = new Date().toISOString();
 	await getDb()
 		.update(sessions)
-		.set({ status: "failed", endedAt: now, isWorking: false })
+		.set({ status: "failed", endedAt: now, isWorking: false, currentTurnStartedAt: null })
 		.where(eq(sessions.sessionId, sessionId));
 	void dispatchEvent({ type: "session_failed", sessionId });
 	// Evaluate project alert rules for status_failed transition.

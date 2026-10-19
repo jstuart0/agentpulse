@@ -2,16 +2,22 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { getAuthUser, requireAuth } from "../auth/middleware.js";
-import { getRequestActor, requireOperatorScope } from "../auth/route-scope-policy.js";
+import {
+	callerHasManageScope,
+	getRequestActor,
+	requireOperatorScope,
+} from "../auth/route-scope-policy.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import {
 	ASK_MAX_SESSION_IDS,
 	ASK_MESSAGE_MAX_CHARS,
+	type AskAsker,
 	AskInvalidSessionIdsError,
 	AskRequestError,
 	archiveThread,
-	getThread,
-	listMessages,
+	countOpenProposals,
+	getThreadFor,
+	listMessagesUnchecked,
 	listThreads,
 	runAskTurn,
 	runAskTurnStream,
@@ -29,6 +35,7 @@ import {
 } from "../services/ask/running-turns.js";
 import { isLabsFlagEnabled } from "../services/labs-service.js";
 import { dispatchEvent } from "../services/push/dispatch.js";
+import type { PushEvent } from "../services/push/types.js";
 
 /**
  * Ask chat: global conversational assistant over the user's sessions.
@@ -73,6 +80,25 @@ askRouter.use("*", requireAuth());
 // Manage-only: /ai/ask is an NL side-channel excluded from observe (D2).
 askRouter.use("*", requireOperatorScope());
 
+/** The push for a finished reply, saying how many proposals it left waiting; a count that can't be read is left out, not guessed. */
+async function askReplyEvent(
+	reply: Omit<Extract<PushEvent, { type: "ask_reply" }>, "type" | "proposalCount">,
+): Promise<PushEvent> {
+	const proposalCount = await countOpenProposals(reply.threadId).catch(() => undefined);
+	return { type: "ask_reply", ...reply, proposalCount };
+}
+
+/** Who is asking, for the thread rules: the caller and the key it came with. */
+async function askerOf(c: Context): Promise<AskAsker> {
+	const authUser = await getAuthUser(c);
+	return {
+		actor: await getRequestActor(c),
+		keyId: authUser?.keyId ?? null,
+		// A key without manage (a phone's respond key) reaches only what it asked itself.
+		ownOnly: !callerHasManageScope(authUser ?? undefined),
+	};
+}
+
 async function ensureEnabled(c: Context) {
 	if (!isAiBuildEnabled()) {
 		return c.json({ error: "AI feature is not compiled into this build." }, 404);
@@ -92,7 +118,7 @@ async function ensureEnabled(c: Context) {
 askRouter.get("/ai/ask/threads", async (c) => {
 	const gate = await ensureEnabled(c);
 	if (gate) return gate;
-	const threads = await listThreads(50);
+	const threads = await listThreads(await askerOf(c), 50);
 	return c.json({ threads });
 });
 
@@ -100,9 +126,10 @@ askRouter.get("/ai/ask/threads/:id", async (c) => {
 	const gate = await ensureEnabled(c);
 	if (gate) return gate;
 	const id = c.req.param("id") ?? "";
-	const thread = await getThread(id);
+	// Someone else's thread answers exactly as one that doesn't exist.
+	const thread = await getThreadFor(id, await askerOf(c));
 	if (!thread) return c.json({ error: "Thread not found" }, 404);
-	const messages = await listMessages(id);
+	const messages = await listMessagesUnchecked(id);
 	return c.json({ thread, messages });
 });
 
@@ -126,7 +153,7 @@ askRouter.delete("/ai/ask/threads/:id", async (c) => {
 	const gate = await ensureEnabled(c);
 	if (gate) return gate;
 	const id = c.req.param("id") ?? "";
-	const ok = await archiveThread(id);
+	const ok = await archiveThread(id, await askerOf(c));
 	if (!ok) return c.json({ error: "Thread not found or already archived" }, 404);
 	return c.json({ ok: true });
 });
@@ -157,6 +184,7 @@ askRouter.post("/ai/ask", askBodyLimit, async (c) => {
 			message: body.message,
 			sessionIds,
 			actor: await getRequestActor(c),
+			requesterKeyId: (await getAuthUser(c))?.keyId ?? null,
 			// A caller that goes away while waiting for a slot leaves the queue;
 			// once its turn has started it runs to completion regardless.
 			signal: c.req.raw.signal,
@@ -202,11 +230,16 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 		throw err;
 	}
 	// A thread already streaming a turn takes no second one: say so before anything is written.
-	if (typeof body.threadId === "string" && isThreadRunning(body.threadId)) {
+	// Only for a thread the caller may reach: another person's busy thread says nothing to them.
+	const asker = await askerOf(c);
+	const { actor, keyId: requesterKeyId } = asker;
+	if (
+		typeof body.threadId === "string" &&
+		isThreadRunning(body.threadId) &&
+		(await getThreadFor(body.threadId, asker))
+	) {
 		return c.json({ error: "thread_busy", message: ASK_BUSY_MESSAGE }, 409);
 	}
-	const actor = await getRequestActor(c);
-	const requesterKeyId = (await getAuthUser(c))?.keyId ?? null;
 	// Build the SSE stream by hand instead of using hono/streaming. That
 	// helper sets `Transfer-Encoding: chunked` which is a connection-
 	// specific header forbidden by HTTP/2 — Traefik terminates HTTP/2
@@ -246,6 +279,7 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 				}
 			}, 5_000);
 			let detachedReply: { threadId: string; assistantMessageId: string } | null = null;
+			let threadTitle: string | null = null;
 			let running: ReturnType<typeof registerRunningTurn> | null = null;
 			try {
 				for await (const evt of runAskTurnStream({
@@ -254,9 +288,11 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 					sessionIds,
 					origin: "web",
 					actor,
+					requesterKeyId,
 					signal: AbortSignal.any([c.req.raw.signal, clientGone.signal]),
 				})) {
 					if (evt.kind === "start") {
+						threadTitle = evt.thread.title;
 						running = registerRunningTurn(evt.thread.id, {
 							userId: actor.userId,
 							keyId: requesterKeyId,
@@ -283,12 +319,13 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 					write(evt);
 				}
 				if (detachedReply) {
-					void dispatchEvent({
-						type: "ask_reply",
+					const reply = await askReplyEvent({
 						...detachedReply,
+						title: threadTitle,
 						requesterUserId: actor.userId,
 						requesterKeyId,
 					});
+					void dispatchEvent(reply);
 				}
 			} catch (err) {
 				if (!clientGone.signal.aborted) {

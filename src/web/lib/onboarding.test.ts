@@ -50,7 +50,7 @@ describe("buildOnboardingPlan", () => {
 		expect(plan.command).toContain('export AGENTPULSE_KEY="$ap_key"');
 		// An empty answer or odd characters must not run curl, and say why.
 		expect(plan.command).toContain("can only contain");
-		expect(plan.command).toContain(`curl -sSL ${SERVER}/setup.sh | bash`);
+		expect(plan.command).toContain(`curl -fsSL --proto '=https' ${SERVER}/setup.sh | bash`);
 		expect(plan.command).toContain("No API key entered");
 		expect(plan.keyNote).toBe(LOCAL_KEY_NOTE);
 		expect(plan.files).toEqual(["~/.claude/settings.json", "~/.codex/hooks.json"]);
@@ -64,7 +64,7 @@ describe("buildOnboardingPlan", () => {
 		});
 		expect(plan.scopes).toEqual(["ingest", "observe"]);
 		expect(plan.scopes).toEqual(RELAY_KEY_SCOPES);
-		expect(plan.command).toBe(`curl -sSL ${SERVER}/setup-relay.sh | bash`);
+		expect(plan.command).toBe(`curl -fsSL --proto '=https' ${SERVER}/setup-relay.sh | bash`);
 		expect(plan.keyNote).toBe(RELAY_KEY_NOTE);
 		expect(RELAY_KEY_NOTE).toBe(
 			"Relay keys need Hook ingest + Observe. A key without Observe will be refused by the installer.",
@@ -87,9 +87,9 @@ describe("buildOnboardingPlan", () => {
 			serverUrl: SERVER,
 			disableAuth: true,
 		});
-		expect(local.command).toBe(`curl -sSL ${SERVER}/setup.sh | bash`);
+		expect(local.command).toBe(`curl -fsSL --proto '=https' ${SERVER}/setup.sh | bash`);
 		expect(local.keyNote).toBeNull();
-		expect(relay.command).toBe(`curl -sSL ${SERVER}/setup-relay.sh | bash`);
+		expect(relay.command).toBe(`curl -fsSL --proto '=https' ${SERVER}/setup-relay.sh | bash`);
 		expect(relay.keyNote).toBeNull();
 	});
 });
@@ -97,13 +97,13 @@ describe("buildOnboardingPlan", () => {
 describe("buildRelayCommand — the SetupPage Codex-names checkbox (contract round 4 gap 5)", () => {
 	test("unchecked renders no flag, so the installer keeps an existing policy (default codex)", () => {
 		const command = buildRelayCommand({ serverUrl: SERVER, codexNamesAgentpulse: false });
-		expect(command).toBe(`curl -sSL ${SERVER}/setup-relay.sh | bash`);
+		expect(command).toBe(`curl -fsSL --proto '=https' ${SERVER}/setup-relay.sh | bash`);
 		expect(command).not.toContain("--codex-names");
 	});
 
 	test("checked appends --codex-names agentpulse to the exact rendered command", () => {
 		expect(buildRelayCommand({ serverUrl: SERVER, codexNamesAgentpulse: true })).toBe(
-			`curl -sSL ${SERVER}/setup-relay.sh | bash -s -- --codex-names agentpulse`,
+			`curl -fsSL --proto '=https' ${SERVER}/setup-relay.sh | bash -s -- --codex-names agentpulse`,
 		);
 	});
 
@@ -198,6 +198,23 @@ describe("onLocationChange", () => {
 	test("re-selecting the current option keeps the minted key", () => {
 		const state = { location: "relay" as const, revealedKey: "ap_minted", notice: null };
 		expect(onLocationChange(state, "relay")).toBe(state);
+	});
+});
+
+describe("the curl flags follow the server's scheme", () => {
+	test("an https server pins the download and its redirects to https and fails on an HTTP error", () => {
+		const command = buildRelayCommand({ serverUrl: SERVER, codexNamesAgentpulse: false });
+		expect(command.startsWith("curl -fsSL --proto '=https' https://")).toBe(true);
+	});
+
+	test("an http server keeps -f but not --proto, which would refuse it", () => {
+		for (const serverUrl of ["http://localhost:3000", "http://192.0.2.10:3000"]) {
+			const relay = buildRelayCommand({ serverUrl, codexNamesAgentpulse: false });
+			expect(relay).toBe(`curl -fsSL ${serverUrl}/setup-relay.sh | bash`);
+			const local = buildOnboardingPlan({ location: "local", serverUrl, disableAuth: true });
+			expect(local.command).toBe(`curl -fsSL ${serverUrl}/setup.sh | bash`);
+			expect(local.command).not.toContain("--proto");
+		}
 	});
 });
 

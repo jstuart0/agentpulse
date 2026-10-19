@@ -16,7 +16,7 @@ set -euo pipefail
 #  5. Points Claude Code + Codex hooks at the relay
 #
 #  Usage (served by your AgentPulse server, which fills in its own URL):
-#    curl -sSL https://your-server.example.com/setup-relay.sh | bash
+#    curl -fsSL --proto '=https' https://your-server.example.com/setup-relay.sh | bash
 #  Or from a checkout:
 #    bash scripts/setup-relay.sh --url https://your-server.example.com
 #
@@ -1076,7 +1076,7 @@ if [[ ! -s "$SRC_DIR/relay.ts" || ! -s "$SRC_DIR/statusline.sh" ]]; then
     cp "$SELF_DIR/statusline.sh" "$SRC_DIR/statusline.sh"
   else
     # F198: no --key in the example — that puts the key in argv/shell history.
-    fail "relay.ts isn't next to this script. Run scripts/setup-relay.sh from an AgentPulse checkout, or: curl -sSL <server>/setup-relay.sh | bash (set \$AGENTPULSE_KEY first, or you'll be prompted for the key)"
+    fail "relay.ts isn't next to this script. Run scripts/setup-relay.sh from an AgentPulse checkout, or: curl -fsSL --proto '=https' <server>/setup-relay.sh | bash (set \$AGENTPULSE_KEY first, or you'll be prompted for the key)"
   fi
 fi
 

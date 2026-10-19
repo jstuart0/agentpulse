@@ -1,9 +1,14 @@
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { type SQL, and, count, desc, eq, isNull, or, sql } from "drizzle-orm";
 import type { AskMessageRole, AskThreadOrigin } from "../../../shared/types.js";
-import type { Actor } from "../../auth/actor.js";
+import { type Actor, TELEGRAM_ACTOR } from "../../auth/actor.js";
 import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
-import { askMessages, askThreads, sessionTemplates } from "../../db/schema/index.js";
+import {
+	aiActionRequests,
+	askMessages,
+	askThreads,
+	sessionTemplates,
+} from "../../db/schema/index.js";
 import { getAdapter } from "../ai/llm/registry.js";
 import type { LlmAdapter } from "../ai/llm/types.js";
 import {
@@ -13,6 +18,7 @@ import {
 	getProviderApiKey,
 } from "../ai/providers-service.js";
 import { getSemanticEnricher } from "../ai/semantic-enricher.js";
+import { getMode } from "../instance-mode.js";
 import { getCachedProjects } from "../projects/cache.js";
 import {
 	getOpenDraftForThread,
@@ -137,22 +143,78 @@ function toMessage(row: typeof askMessages.$inferSelect): AskMessageRecord {
 	};
 }
 
-export async function listThreads(limit = 50): Promise<AskThreadRecord[]> {
+/** Who is asking, for judging a thread: the caller and the API key it came with (null for a cookie, SSO or auth-off caller). */
+export interface AskAsker {
+	actor: Actor;
+	keyId: string | null;
+	/**
+	 * Only threads this caller asked, whatever its role or the mode: a respond key is a phone's
+	 * window onto its own person's threads, so even an admin's respond key, and a solo one, reads
+	 * no one else's. Manage callers leave it off and follow the usual rule.
+	 */
+	ownOnly?: boolean;
+}
+
+/**
+ * A thread belongs to whoever asked it. In solo everyone is the one person, so
+ * every thread is theirs. In team mode a member reaches only their own threads
+ * (by user id, or by key for a key with no owner), an admin reaches all of them,
+ * and a thread with no owner (one that predates owners, or a Telegram chat's) is
+ * an admin's alone, except that the chat's own actor reaches Telegram threads.
+ * Returns undefined for "every thread", else the predicate a read, a list or an
+ * archive adds to its WHERE, so the rule is one definition and is applied in the
+ * same statement that reads or writes.
+ */
+async function threadAccessCondition(asker: AskAsker): Promise<SQL | undefined> {
+	const { actor } = asker;
+	const mode = actor.mode ?? (await getMode());
+	if (!asker.ownOnly && (mode === "solo" || actor.role === "admin")) return undefined;
+	if (actor.label === "telegram") return eq(askThreads.origin, "telegram");
+	const owned: SQL[] = [];
+	if (actor.userId) owned.push(eq(askThreads.ownerUserId, actor.userId));
+	if (asker.keyId) {
+		owned.push(and(isNull(askThreads.ownerUserId), eq(askThreads.ownerKeyId, asker.keyId)) as SQL);
+	}
+	return owned.length > 0 ? (or(...owned) as SQL) : sql`1 = 0`;
+}
+
+/** The asker's own threads (all of them for an admin or in solo), newest first. */
+export async function listThreads(asker: AskAsker, limit = 50): Promise<AskThreadRecord[]> {
 	const rows = await getDb()
 		.select()
 		.from(askThreads)
-		.where(isNull(askThreads.archivedAt))
+		.where(and(isNull(askThreads.archivedAt), await threadAccessCondition(asker)))
 		.orderBy(desc(askThreads.updatedAt))
 		.limit(limit);
 	return rows.map(toThread);
 }
 
-export async function getThread(id: string): Promise<AskThreadRecord | null> {
-	const [row] = await getDb().select().from(askThreads).where(eq(askThreads.id, id)).limit(1);
+/** A thread the asker may reach, or null: someone else's thread reads exactly like one that doesn't exist. */
+export async function getThreadFor(id: string, asker: AskAsker): Promise<AskThreadRecord | null> {
+	const [row] = await getDb()
+		.select()
+		.from(askThreads)
+		.where(and(eq(askThreads.id, id), await threadAccessCondition(asker)))
+		.limit(1);
 	return row ? toThread(row) : null;
 }
 
-export async function listMessages(threadId: string): Promise<AskMessageRecord[]> {
+/** How many of the thread's proposals still wait on a person: what an `ask_reply` push says the reply brought. */
+export async function countOpenProposals(threadId: string): Promise<number> {
+	const [row] = await getDb()
+		.select({ open: count() })
+		.from(aiActionRequests)
+		.where(
+			and(
+				eq(aiActionRequests.askThreadId, threadId),
+				eq(aiActionRequests.status, "awaiting_reply"),
+			),
+		);
+	return row?.open ?? 0;
+}
+
+/** A thread's messages, for a caller that has already shown it may reach the thread (getThreadFor). */
+export async function listMessagesUnchecked(threadId: string): Promise<AskMessageRecord[]> {
 	const rows = await getDb()
 		.select()
 		.from(askMessages)
@@ -188,12 +250,15 @@ export async function listRecentMessages(
 	return rows.reverse().map(toMessage);
 }
 
-export async function archiveThread(id: string): Promise<boolean> {
+/** Archives a thread the asker may reach. False for no such thread, one already archived and someone else's alike. */
+export async function archiveThread(id: string, asker: AskAsker): Promise<boolean> {
 	const now = new Date().toISOString();
 	const res = await getDb()
 		.update(askThreads)
 		.set({ archivedAt: now, updatedAt: now })
-		.where(and(eq(askThreads.id, id), isNull(askThreads.archivedAt)))
+		.where(
+			and(eq(askThreads.id, id), isNull(askThreads.archivedAt), await threadAccessCondition(asker)),
+		)
 		.returning();
 	return res.length > 0;
 }
@@ -203,18 +268,23 @@ async function ensureThread(input: {
 	firstMessage: string;
 	origin?: AskThreadOrigin;
 	telegramChatId?: string | null;
+	asker: AskAsker;
 }): Promise<AskThreadRecord> {
 	if (input.threadId) {
-		const existing = await getThread(input.threadId);
+		// An id the asker can't reach is treated as no id at all: a new thread, not someone else's.
+		const existing = await getThreadFor(input.threadId, input.asker);
 		if (existing) return existing;
 	}
 	const title = input.firstMessage.trim().replace(/\s+/g, " ").slice(0, 80);
+	const { actor, keyId } = input.asker;
 	const [row] = await getDb()
 		.insert(askThreads)
 		.values({
 			title,
 			origin: input.origin ?? "web",
 			telegramChatId: input.telegramChatId ?? null,
+			ownerUserId: actor.userId,
+			ownerKeyId: actor.userId ? null : keyId,
 		})
 		.returning();
 	return toThread(row);
@@ -241,6 +311,7 @@ export async function findOrCreateTelegramThread(input: {
 		firstMessage: input.seedTitle,
 		origin: "telegram",
 		telegramChatId: input.telegramChatId,
+		asker: { actor: TELEGRAM_ACTOR, keyId: null },
 	});
 }
 
@@ -356,6 +427,8 @@ export interface AskTurnInput {
 	 * for this actor.
 	 */
 	actor: Actor;
+	/** The API key the request came with, if any: the owner of a thread a key with no user asked. */
+	requesterKeyId?: string | null;
 	/**
 	 * A slot the caller already holds from the turn limiter. The turn then takes
 	 * none and does not release this one: that stays with the caller.
@@ -420,8 +493,10 @@ async function openTurn(input: AskTurnInput): Promise<{
 	if (text.length > ASK_MESSAGE_MAX_CHARS) throw new AskMessageTooLongError();
 
 	const callerOrigin: AskThreadOrigin = input.origin ?? "web";
+	const asker: AskAsker = { actor: input.actor, keyId: input.requesterKeyId ?? null };
 	if (input.threadId) {
-		const existing = await getThread(input.threadId);
+		// Only a thread the asker may reach says anything about itself; another's is an unknown id.
+		const existing = await getThreadFor(input.threadId, asker);
 		if (existing && existing.origin !== callerOrigin) {
 			throw new AskRequestError(
 				`This thread is ${existing.origin}-only. Start a new thread to reply from ${callerOrigin}.`,
@@ -434,6 +509,7 @@ async function openTurn(input: AskTurnInput): Promise<{
 		firstMessage: text,
 		origin: callerOrigin,
 		telegramChatId: input.telegramChatId,
+		asker,
 	});
 	const userMessage = await appendMessage({
 		threadId: thread.id,

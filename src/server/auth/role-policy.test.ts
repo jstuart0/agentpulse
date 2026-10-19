@@ -176,8 +176,9 @@ describe("routes judged inside the handler (owner-or-admin, through the authoriz
 		const { app } = await import("../app.js");
 		// 16 from before the mobile companion, the four device writes (assertCanManageDevice) and the two
 		// Live Activity writes, plus the ten HITL decision, inbox and snooze routes judged by their services, the four session-changing
-		// routes the app composer uses (prompt, stop, retry, the control-actions read, watcher PUT and DELETE) and the Ask cancel.
-		expect(OWNER_CHECKED_ROUTES.size).toBe(39);
+		// routes the app composer uses (prompt, stop, retry, the control-actions read, watcher PUT and DELETE) and the Ask cancel,
+		// plus the three Ask thread routes judged against the thread's asker (list, read, archive).
+		expect(OWNER_CHECKED_ROUTES.size).toBe(42);
 		const registered = new Set(app.routes.map((route) => `${route.method} ${route.path}`));
 		for (const entry of OWNER_CHECKED_ROUTES) {
 			const [method, template] = entry.split(" ");

@@ -129,8 +129,8 @@ function scriptResponse(script: string, filename: string) {
 }
 
 // GET /setup.sh - Serve a self-contained install script
-// Usage: curl -sSL https://your-server.com/setup.sh | bash
-// Or:    curl -sSL https://your-server.com/setup.sh | bash -s -- --key ap_xxx
+// Usage: curl -fsSL --proto '=https' https://your-server.com/setup.sh | bash
+// Or:    curl -fsSL --proto '=https' https://your-server.com/setup.sh | bash -s -- --key ap_xxx
 // F234: --key is briefly visible in `ps` during that one-time install;
 // AGENTPULSE_KEY=ap_xxx curl ... | bash keeps it out of the process list.
 setup.get("/setup.sh", (c) => {
@@ -145,7 +145,7 @@ set -euo pipefail
 # ───────────────────────────────────────────────────
 #
 # F234: --key is briefly visible in \`ps\` during this one-time install.
-# Prefer: AGENTPULSE_KEY=ap_xxx curl -sSL .../setup.sh | bash
+# Prefer: AGENTPULSE_KEY=ap_xxx curl -fsSL --proto '=https' .../setup.sh | bash
 
 # Hooks MUST point to localhost -- Claude Code and Codex block
 # HTTP hooks to remote/private IPs as a security measure.
@@ -842,7 +842,7 @@ fi
 });
 
 // GET /install-local.sh - Serve the local Bun+SQLite installer
-// Usage: curl -sSL http://localhost:3000/install-local.sh | bash
+// Usage: curl -fsSL http://localhost:3000/install-local.sh | bash
 setup.get("/install-local.sh", (c) => {
 	const url = resolveLocalHookBaseUrl(c.req.header("Host"));
 	return scriptResponse(
@@ -866,7 +866,7 @@ setup.get("/install-local.ps1", (c) => {
 
 // GET /setup-relay.sh - One-command relay setup for machines whose agents
 // report to a remote AgentPulse server.
-// Usage: curl -sSL https://your-server.com/setup-relay.sh | bash
+// Usage: curl -fsSL --proto '=https' https://your-server.com/setup-relay.sh | bash
 setup.get("/setup-relay.sh", (c) => {
 	const server = resolvePublicServerUrl(c.req.header("Host"));
 	if (!server.ok) return installerError(server.error);

@@ -1321,6 +1321,18 @@ describe("coverage", () => {
 			file: "services/push/live-activity-routes.test.ts",
 			marker: "activities",
 		},
+		"GET /ai/ask/threads": {
+			file: "routes/ask-thread-owner.test.ts",
+			marker: "list (GET /ai/ask/threads)",
+		},
+		"GET /ai/ask/threads/:id": {
+			file: "routes/ask-thread-owner.test.ts",
+			marker: "read (GET /ai/ask/threads/:id)",
+		},
+		"DELETE /ai/ask/threads/:id": {
+			file: "routes/ask-thread-owner.test.ts",
+			marker: "archive (DELETE /ai/ask/threads/:id)",
+		},
 	};
 
 	test("every route in OWNER_CHECKED_ROUTES is either an entry of the matrix or named as covered by another suite", () => {

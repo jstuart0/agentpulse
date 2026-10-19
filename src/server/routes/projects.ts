@@ -18,6 +18,7 @@ import {
 } from "../services/projects/projects-service.js";
 import { normalizeCwd } from "../services/projects/resolver.js";
 import { mapSessionDto } from "../services/session-dto.js";
+import { SESSION_ROW_WITH_MACHINE } from "../services/session-tracker.js";
 import { listSupervisors } from "../services/supervisor-registry.js";
 
 const projectsRouter = new Hono();
@@ -148,8 +149,9 @@ projectsRouter.get("/projects/:id/sessions", async (c) => {
 	const row = await getProject(id);
 	if (!row) return c.json({ error: "Project not found" }, 404);
 
+	// The same row the session list serves, effective machine included.
 	const rows = await getDb()
-		.select()
+		.select(SESSION_ROW_WITH_MACHINE)
 		.from(sessions)
 		.where(eq(sessions.projectId, id))
 		.orderBy(desc(sessions.lastActivityAt));

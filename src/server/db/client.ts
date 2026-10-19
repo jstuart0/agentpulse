@@ -1222,6 +1222,15 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		// unauthenticated). Mirrors the drizzle migrations for installs on the
 		// legacy init path.
 		"ALTER TABLE sessions ADD COLUMN reported_host TEXT",
+		// Migration 0016: when the turn in progress began, and who asked an Ask
+		// thread. Nullable and additive; a thread with no owner is admin-only in
+		// team mode.
+		"ALTER TABLE sessions ADD COLUMN current_turn_started_at TEXT",
+		"ALTER TABLE ask_threads ADD COLUMN owner_user_id TEXT",
+		"ALTER TABLE ask_threads ADD COLUMN owner_key_id TEXT",
+		"CREATE INDEX IF NOT EXISTS idx_ask_threads_owner_user ON ask_threads(owner_user_id, updated_at DESC) WHERE archived_at IS NULL",
+		"CREATE INDEX IF NOT EXISTS idx_ask_threads_owner_key ON ask_threads(owner_key_id, updated_at DESC) WHERE archived_at IS NULL AND owner_user_id IS NULL",
+		"CREATE INDEX IF NOT EXISTS idx_launch_requests_created_at ON launch_requests(created_at)",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

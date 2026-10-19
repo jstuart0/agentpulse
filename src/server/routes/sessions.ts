@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, lte } from "drizzle-orm";
 import type { Context, Next } from "hono";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -55,6 +55,7 @@ import {
 	redactControlAction,
 	retryLaunchForSession,
 } from "../services/control-actions.js";
+import { compactEvent } from "../services/event-compact.js";
 import { toSessionEventDtos } from "../services/event-dto.js";
 import { notifySessionUpdated } from "../services/notifier.js";
 import { readServiceKeyLists } from "../services/service-key-lists.js";
@@ -73,6 +74,7 @@ import {
 	emptyStatsByHost,
 	emptyStatsByOwner,
 	getSession,
+	getSessionCards,
 	getSessionSummaries,
 	getSessions,
 	getStats,
@@ -116,6 +118,43 @@ function parseBoundedInt(
 	if (!/^[0-9]{1,9}$/.test(raw)) return null;
 	const value = Number(raw);
 	return value >= min && value <= max ? value : null;
+}
+
+/** The largest id an events row can have: the id column is a 32-bit integer on Postgres. */
+const MAX_EVENT_ID = 2_147_483_647;
+/** Events the detail embeds when `eventsLimit` isn't given, and the most it will. */
+const DEFAULT_DETAIL_EVENTS = 500;
+/** Events a compact detail embeds when `eventsLimit` isn't given. */
+const DEFAULT_COMPACT_DETAIL_EVENTS = 50;
+
+/** A flag query value: absent, empty or "false" is off, "true" is on, anything else null. */
+function parseFlagParam(raw: string | undefined): boolean | null {
+	if (raw === undefined || raw === "" || raw === "false") return false;
+	return raw === "true" ? true : null;
+}
+
+/** The parts of the session detail a caller may leave out with `omit`. */
+const DETAIL_OMITTABLE = [
+	"events",
+	"controlActions",
+	"reportedByKey",
+	"claudeMd",
+	"notes",
+] as const;
+type DetailOmittable = (typeof DETAIL_OMITTABLE)[number];
+
+/** The `omit` list, or the first entry that names nothing omittable. */
+function parseDetailOmit(
+	values: string[] | undefined,
+): { omit: ReadonlySet<DetailOmittable> } | { invalid: string } {
+	const omit = new Set<DetailOmittable>();
+	for (const entry of (values ?? []).flatMap((value) => value.split(","))) {
+		const name = entry.trim();
+		if (name === "") continue;
+		if (!(DETAIL_OMITTABLE as readonly string[]).includes(name)) return { invalid: name };
+		omit.add(name as DetailOmittable);
+	}
+	return { omit };
 }
 
 const sessionsRouter = new Hono();
@@ -333,6 +372,11 @@ function invalidBody(c: Context): Response {
 	return c.json({ error: "invalid_body" }, 400);
 }
 
+/** The events as the request asked for them: whole, or in their compact form. */
+function shapeEvents<T extends object>(rows: T[], compact: boolean) {
+	return compact ? rows.map((row) => compactEvent(row)) : rows;
+}
+
 // GET /api/v1/sessions - List sessions
 sessionsRouter.get("/sessions", async (c) => {
 	const status = c.req.query("status") as SessionStatus | undefined;
@@ -427,10 +471,24 @@ sessionsRouter.get("/sessions", async (c) => {
 	const host = hostResult.scope;
 	const hostFilter = hostResult.echo;
 
+	// `view=card`: the rows a phone's list draws (see session-card.ts). The default
+	// view is the full row, unchanged.
+	const viewParam = c.req.query("view");
+	if (viewParam !== undefined && viewParam !== "full" && viewParam !== "card") {
+		return c.json(
+			{ error: "invalid_view", value: echoed(viewParam), allowed: ["full", "card"] },
+			400,
+		);
+	}
+	const card = viewParam === "card";
+
 	// F128: opt-in narrow projection (the relay's per-tick Codex paging). An
 	// unknown or empty field list is a 400, so a typo can't silently fall back
 	// to the heavy full rows. Without `fields` the response is unchanged.
 	const fieldsParam = c.req.query("fields");
+	if (fieldsParam !== undefined && card) {
+		return c.json({ error: "unsupported_combination", params: ["fields", "view"] }, 400);
+	}
 	if (fieldsParam !== undefined && operational !== undefined) {
 		// The projection pages by recency and has no classifier; honouring one and
 		// silently dropping the other would answer a question nobody asked.
@@ -456,7 +514,7 @@ sessionsRouter.get("/sessions", async (c) => {
 	}
 
 	return orBusy(c, async () => {
-		const result = await getSessions({
+		const result = await (card ? getSessionCards : getSessions)({
 			status,
 			tab,
 			agentType,
@@ -540,22 +598,70 @@ sessionsRouter.get("/sessions/:sessionId", async (c: Context) => {
 		return c.json({ session: named });
 	}
 
+	// Opt-in shaping for a phone: fewer events, compact events, parts left out. Without
+	// the parameters the response is exactly what it always was. A compact read that
+	// doesn't say how many events it wants gets the newest few: that read exists to be
+	// small, and the timeline pages back from there.
+	const compact = parseFlagParam(c.req.query("compact"));
+	if (compact === null) {
+		return c.json({ error: "invalid_compact", value: echoed(c.req.query("compact")) }, 400);
+	}
+	const eventsLimit = parseBoundedInt(
+		c.req.query("eventsLimit"),
+		compact ? DEFAULT_COMPACT_DETAIL_EVENTS : DEFAULT_DETAIL_EVENTS,
+		0,
+		DEFAULT_DETAIL_EVENTS,
+	);
+	if (eventsLimit === null) {
+		return c.json(
+			{
+				error: "invalid_events_limit",
+				value: echoed(c.req.query("eventsLimit")),
+				max: DEFAULT_DETAIL_EVENTS,
+			},
+			400,
+		);
+	}
+	const omitted = parseDetailOmit(c.req.queries("omit"));
+	if ("invalid" in omitted) {
+		return c.json(
+			{ error: "invalid_omit", value: echoed(omitted.invalid), allowed: DETAIL_OMITTABLE },
+			400,
+		);
+	}
+	const { omit } = omitted;
+
 	const detail = await getSessionDetail(sessionId);
 
 	if (!detail) {
 		return c.json({ error: "Session not found" }, 404);
 	}
-	const { session } = detail;
+	// Omitted text parts stay as keys holding null, so a client that reads them as
+	// nullable needs no second code path.
+	const session = {
+		...detail.session,
+		...(omit.has("claudeMd")
+			? {
+					claudeMdContent: null,
+					claudeMdPath: null,
+					claudeMdChecksum: null,
+					claudeMdUpdatedAt: null,
+				}
+			: {}),
+		...(omit.has("notes") ? { notes: null } : {}),
+	};
 
 	// Get timeline events for the detail page; the UI handles mode filtering.
-	const sessionEvents = toSessionEventDtos(
-		await getDb()
-			.select()
-			.from(events)
-			.where(eq(events.sessionId, sessionId))
-			.orderBy(desc(events.id))
-			.limit(500),
-	);
+	const eventRows =
+		omit.has("events") || eventsLimit === 0
+			? []
+			: await getDb()
+					.select()
+					.from(events)
+					.where(eq(events.sessionId, sessionId))
+					.orderBy(desc(events.id))
+					.limit(eventsLimit);
+	const sessionEvents = shapeEvents(toSessionEventDtos(eventRows), compact);
 
 	// C1: controlActions metadata carries the injected prompt and launch.env
 	// (control-actions.ts:187-194). An observe-scoped caller may read session
@@ -565,10 +671,11 @@ sessionsRouter.get("/sessions/:sessionId", async (c: Context) => {
 	// Past the scope, the embed is the session's owner's (or an admin's; solo is everyone's): another member
 	// gets none. Either way the launch environment is never in it.
 	const controlActions =
-		operator && (await mayChangeSession(c, sessionId))
+		operator && !omit.has("controlActions") && (await mayChangeSession(c, sessionId))
 			? await listControlActionsForSession(sessionId, { includePrompt: true })
 			: undefined;
-	const reportedByKey = operator ? await reportedByKeyFor(c, detail) : undefined;
+	const reportedByKey =
+		operator && !omit.has("reportedByKey") ? await reportedByKeyFor(c, detail) : undefined;
 
 	return c.json({ session, events: sessionEvents, controlActions, reportedByKey });
 });
@@ -591,17 +698,48 @@ sessionsRouter.get("/sessions/:sessionId/timeline", async (c) => {
 		);
 	}
 
+	// `beforeId` pages by keyset: the events older than that id, newest first. A
+	// page ends at its last event's id, so an event written meanwhile can't shift
+	// the next page the way an offset would. The two are different questions, so
+	// combining them is refused rather than half-honoured.
+	const beforeIdParam = c.req.query("beforeId");
+	let beforeId: number | undefined;
+	if (beforeIdParam !== undefined) {
+		if (!/^[0-9]{1,15}$/.test(beforeIdParam) || Number(beforeIdParam) < 1) {
+			return c.json({ error: "invalid_before_id", value: echoed(beforeIdParam) }, 400);
+		}
+		if (c.req.query("offset") !== undefined) {
+			return c.json({ error: "unsupported_combination", params: ["beforeId", "offset"] }, 400);
+		}
+		beforeId = Math.min(Number(beforeIdParam), MAX_EVENT_ID);
+	}
+	const compact = parseFlagParam(c.req.query("compact"));
+	if (compact === null) {
+		return c.json({ error: "invalid_compact", value: echoed(c.req.query("compact")) }, 400);
+	}
+
 	const sessionEvents = toSessionEventDtos(
 		await getDb()
 			.select()
 			.from(events)
-			.where(eq(events.sessionId, sessionId))
+			.where(
+				beforeId === undefined
+					? eq(events.sessionId, sessionId)
+					: and(eq(events.sessionId, sessionId), lt(events.id, beforeId)),
+			)
 			.orderBy(desc(events.id))
 			.limit(limit)
 			.offset(offset),
 	);
 
-	return c.json({ events: sessionEvents });
+	// A phone's read (`beforeId`, or `compact` without an `offset`) is told where the next
+	// older page starts: the oldest id of this page when the page is full, else null (the
+	// log has ended). Plain and offset reads keep their `{ events }` shape.
+	const keysetRead = c.req.query("offset") === undefined && (beforeId !== undefined || compact);
+	if (!keysetRead) return c.json({ events: shapeEvents(sessionEvents, compact) });
+	const nextBeforeId =
+		sessionEvents.length === limit ? (sessionEvents[sessionEvents.length - 1]?.id ?? null) : null;
+	return c.json({ events: shapeEvents(sessionEvents, compact), nextBeforeId });
 });
 
 // PUT /api/v1/sessions/:sessionId/notes - Save notes for a session
@@ -949,6 +1087,10 @@ sessionsRouter.get("/sessions/:sessionId/events/:eventId/context", async (c) => 
 	if (!Number.isInteger(eventId) || eventId <= 0) {
 		return c.json({ error: "Invalid eventId" }, 404);
 	}
+	const compact = parseFlagParam(c.req.query("compact"));
+	if (compact === null) {
+		return c.json({ error: "invalid_compact", value: echoed(c.req.query("compact")) }, 400);
+	}
 
 	// Verify the target event exists and belongs to this session.
 	const [target] = await getDb()
@@ -979,7 +1121,7 @@ sessionsRouter.get("/sessions/:sessionId/events/:eventId/context", async (c) => 
 
 	const combined = toSessionEventDtos([...before.reverse(), ...after]);
 
-	return c.json({ events: combined, target: { id: eventId } });
+	return c.json({ events: shapeEvents(combined, compact), target: { id: eventId } });
 });
 
 // GET /api/v1/sessions/:sessionId/claude-md - Get CLAUDE.md content from DB

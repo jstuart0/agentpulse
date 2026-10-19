@@ -7,7 +7,49 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Added
+
+- **Lighter session reads for a phone** (all opt-in; without the parameters every response is what it was, plus
+  `currentTurnStartedAt` on session rows):
+  - `GET /sessions?view=card` returns card rows: the fields a list draws, the owner, the `managed` flag, the effective
+    `machine`, `currentTurnStartedAt`, a `permissionWait` **count** (never tool ids or inputs) and, for a failed session,
+    a short single-line `failureReason` (the launch error, redacted like push text, home-directory paths reduced to `~`, then cut to 120 characters). The columns a card doesn't show are never read. Works with `operational`, `tab` and `total`.
+  - `GET /sessions/:id?eventsLimit=&compact=&omit=`: fewer events (0 to 500), events in their compact form, and parts left out
+    (`events`, `controlActions`, `reportedByKey`, `claudeMd`, `notes`). Omitted text parts stay as `null`, and `omit=events`
+    answers `events: []` (the caller asked for none). A compact read with no `eventsLimit` embeds the newest 50 events; without
+    `compact` the default is still 500.
+  - `GET /sessions/:id/timeline?beforeId=&compact=`: keyset paging (`id DESC`, exclusive), stable while events are written;
+    not combinable with `offset`. A read with `beforeId` or `compact` (and no `offset`) also returns `nextBeforeId`: the oldest
+    id of the page when the page is full, else `null`. Plain and offset reads keep the `{ events }` shape. `GET /sessions/:id/events/:eventId/context?compact=` takes the same compact form.
+  - A compact event has no `rawPayload`, and no `content`/`toolResponse`/`toolInput` over 2 KB (sibling `…Truncated` flags);
+    it is the same form the mobile WebSocket profile already used.
+  - `GET /sessions/stats` adds `completedToday`, `failedToday` (sessions that ended today, by outcome) and `launchesToday`
+    (drafts and rejected requests excluded), and `todayStartsAt` (the server's local midnight as an ISO instant, so a client can
+    label "today" honestly). Capabilities: `sessionCardView`, `detailEventsLimit`, `timelineKeyset`, `statsToday`.
+  - `sessions.current_turn_started_at` (migration 0016): when the turn in progress began. It rides on every session row and on
+    the WebSocket `Session` frame.
+- `GET /projects/:id/sessions` rows carry the effective `machine`, as the session list's do.
+- Push: `hitl_opened` carries `decision` (`continue` or `ask`); `ask_reply` carries the thread `title` (only for a device that
+  shows content, redacted) and `proposalCount` (the thread's requests still waiting on a person).
+
 ### Changed
+
+- **Ask threads belong to whoever asked them** (migration 0016: `ask_threads.owner_user_id` / `owner_key_id`, set at creation).
+  In team mode, reading, listing, archiving and cancelling a thread is for the asker (by user, or by key for a key with no
+  owner) or an admin; anyone else gets the same 404 as for a thread that doesn't exist. Threads that already exist have no owner,
+  so in team mode they are an admin's alone (**threads from before this change that members used to see become admin-only
+  in team mode**); solo mode is unchanged. A phone's respond key can read a thread it asked
+  itself (`GET /ai/ask/threads/:id`), even an admin's respond key and even in solo mode: a respond key never reads another's thread. A turn that names a thread id its asker can't reach starts a new thread instead.
+- `GET /sessions?status=archived` matches the archive flag or the legacy status (it matched only the legacy status, which new rows
+  never carry, so it listed nothing).
+- Migration 0016 also adds `idx_launch_requests_created_at` and two partial indexes on `ask_threads` (active threads by owner).
+- **Search: `sessionStatus=archived` finds sessions archived by the flag** (and rows with the legacy status), on both search
+  backends and in Ask's "show me archived" queries.
+- The launch preview and template validation no longer warn that the working directory "does not exist on this machine": the
+  check ran on the server's own disk, which is the wrong machine for a remote supervisor (the supervisor checks the directory
+  when the launch starts).
+- The install commands the dashboard hands out are `curl -fsSL`, and `curl -fsSL --proto '=https'` for an https server, so an HTTP
+  error no longer pipes an error page into bash and a redirect can't step down to plain http.
 
 - **Approving a HITL request now sends the prompt to the agent** (every mode,
   including the web): an approved or custom prompt on a managed session with a

@@ -65,6 +65,16 @@ export function plainErrorMessage(err: unknown): string {
 	return describeApiError(err, message);
 }
 
+export const ASK_THREAD_GONE_MESSAGE = "That conversation wasn't found.";
+
+/** Why an Ask thread couldn't be opened. A 404 is a plain "not found" (it may be someone else's, or deleted); the AI-off 404 keeps its own words. */
+export function askThreadLoadMessage(err: unknown): string {
+	if (err instanceof ApiError && err.status === 404 && !isAiDisabledError(err)) {
+		return ASK_THREAD_GONE_MESSAGE;
+	}
+	return plainErrorMessage(err);
+}
+
 /** Why a key couldn't be created: the rate limit gets its own sentence, never "couldn't load keys". */
 export function keyCreationErrorMessage(err: unknown): string {
 	if (err instanceof ApiError && err.status === 429) {

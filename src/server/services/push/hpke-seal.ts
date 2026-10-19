@@ -46,6 +46,7 @@ export interface PushPayload {
 	status?: PushSessionStatus;
 	pending?: number;
 	hitlId?: string;
+	decision?: "continue" | "ask";
 	proposalId?: string;
 	promptHash?: string;
 	actionRequestId?: string;
@@ -53,6 +54,8 @@ export interface PushPayload {
 	launchId?: string;
 	threadId?: string;
 	assistantMessageId?: string;
+	title?: string;
+	proposalCount?: number;
 	durationSec?: number;
 	toolCount?: number;
 	text?: string;
@@ -182,11 +185,11 @@ function longestPrefix(value: string, fits: (candidate: string) => boolean): str
 	return points.slice(0, lo).join("");
 }
 
-export type TrimmedMember = "text" | "sname";
+export type TrimmedMember = "text" | "title" | "sname";
 
 /**
  * Brings the serialized payload within MAX_PLAINTEXT_BYTES by cutting `text`,
- * then `sname`, each as little as possible and never mid-character. Nothing
+ * then `title`, then `sname`, each as little as possible and never mid-character. Nothing
  * else is ever cut: ids, the category and the timestamp are what make the push
  * actionable and verifiable. Throws `payload_too_large` if that is not enough.
  */
@@ -199,7 +202,7 @@ export function fitPayload(payload: PushPayload): {
 	const size = (p: PushPayload) => byteLength(JSON.stringify(p));
 	if (size(current) <= MAX_PLAINTEXT_BYTES) return { payload: current, trimmed };
 
-	for (const member of ["text", "sname"] as const) {
+	for (const member of ["text", "title", "sname"] as const) {
 		const original = current[member];
 		if (original === undefined) continue;
 		const withoutMember = { ...current };
@@ -218,7 +221,7 @@ export function fitPayload(payload: PushPayload): {
 	}
 	throw new SealError(
 		"payload_too_large",
-		`payload exceeds ${MAX_PLAINTEXT_BYTES} bytes after trimming text and sname`,
+		`payload exceeds ${MAX_PLAINTEXT_BYTES} bytes after trimming text, title and sname`,
 	);
 }
 

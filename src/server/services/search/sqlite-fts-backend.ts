@@ -45,6 +45,27 @@ function normalizeBm25(rank: number): number {
 	return 1 / (1 + Math.max(0, -rank));
 }
 
+type SessionStatusFilter = SearchFilters["sessionStatus"];
+
+/**
+ * The status predicate over the joined `sessions` row `s`. Archived is the
+ * archive flag (a legacy status of the same name still counts), not a status the
+ * column holds for new rows; every other value is the column itself, bound as a
+ * parameter (see hasStatusBinding).
+ */
+function statusClause(status: SessionStatusFilter, statusColumn: string): string {
+	if (!status) return "";
+	if (status === "archived") return "AND (s.is_archived = 1 OR s.status = 'archived')";
+	return `AND ${statusColumn} = ?`;
+}
+
+/** Whether statusClause left a parameter to bind. */
+function hasStatusBinding(
+	status: SessionStatusFilter,
+): status is Exclude<SessionStatusFilter, "archived"> {
+	return status !== undefined && status !== "archived";
+}
+
 export class SqliteFtsBackend implements SearchBackend {
 	readonly name = "sqlite-fts5" as const;
 	private readonly db: Database;
@@ -207,7 +228,7 @@ export class SqliteFtsBackend implements SearchBackend {
 				  ${filters.since ? "AND f.created_at >= ?" : ""}
 				  ${filters.until ? "AND f.created_at < ?" : ""}
 				  ${filters.agentType ? "AND s.agent_type = ?" : ""}
-				  ${filters.sessionStatus ? "AND s.status = ?" : ""}
+				  ${statusClause(filters.sessionStatus, "s.status")}
 				  ${filters.cwd ? "AND s.cwd LIKE ?" : ""}
 				ORDER BY rank
 				LIMIT ? OFFSET ?
@@ -218,7 +239,7 @@ export class SqliteFtsBackend implements SearchBackend {
 			if (filters.since) bindings.push(filters.since);
 			if (filters.until) bindings.push(filters.until);
 			if (filters.agentType) bindings.push(filters.agentType);
-			if (filters.sessionStatus) bindings.push(filters.sessionStatus);
+			if (hasStatusBinding(filters.sessionStatus)) bindings.push(filters.sessionStatus);
 			if (filters.cwd) bindings.push(`%${filters.cwd}%`);
 			bindings.push(limit, offset);
 
@@ -265,20 +286,15 @@ export class SqliteFtsBackend implements SearchBackend {
 				WHERE search_sessions_fts MATCH ?
 				  ${filters.sessionId ? "AND f.session_id = ?" : ""}
 				  ${filters.agentType ? "AND f.agent_type = ?" : ""}
-				  ${filters.sessionStatus ? "AND f.status = ?" : ""}
+				  ${statusClause(filters.sessionStatus, "f.status")}
 				  ${filters.cwd ? "AND f.cwd LIKE ?" : ""}
 				ORDER BY rank
 				LIMIT ? OFFSET ?
 			`;
-			// TODO(slice-h): add is_archived to the FTS virtual table schema and
-			// the INSERT trigger, then replace the sessionStatus='archived' path
-			// above with an AND s.is_archived = 1 predicate. Until then,
-			// sessionStatus='archived' filters against status (a dead value post-Slice G)
-			// and returns zero rows — see clarity-slice-h-archive-status-removal.md.
 			const bindings: unknown[] = [ftsQuery];
 			if (filters.sessionId) bindings.push(filters.sessionId);
 			if (filters.agentType) bindings.push(filters.agentType);
-			if (filters.sessionStatus) bindings.push(filters.sessionStatus);
+			if (hasStatusBinding(filters.sessionStatus)) bindings.push(filters.sessionStatus);
 			if (filters.cwd) bindings.push(`%${filters.cwd}%`);
 			bindings.push(limit, offset);
 

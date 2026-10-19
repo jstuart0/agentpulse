@@ -1195,7 +1195,7 @@ describe("respond scope — grants table", () => {
 		expect(SCOPE_GRANTS.ingest.reads.size).toBe(0);
 	});
 
-	test("respond holds only the grants that have landed: observe's reads plus /devices and the S5 inbox reads, and the acknowledge, device, decision and snooze writes", () => {
+	test("respond holds only the grants that have landed: observe's reads plus /devices, the S5 inbox reads and the asker's own Ask thread, and the acknowledge, device, decision and snooze writes", () => {
 		expect([...SCOPE_GRANTS.respond.reads].sort()).toEqual(
 			[
 				...OBSERVE_READ_PATHS,
@@ -1203,6 +1203,7 @@ describe("respond scope — grants table", () => {
 				"/ai/inbox",
 				"/ai/inbox/snoozes",
 				"/ai/proposals/:id/delivery",
+				"/ai/ask/threads/:id",
 			].sort(),
 		);
 		expect([...SCOPE_GRANTS.respond.writes].sort()).toEqual([

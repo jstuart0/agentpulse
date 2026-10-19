@@ -9,6 +9,7 @@ import { resolveEffectiveRole, scopesIncludeManage } from "../auth/route-scope-p
 import { getDb } from "../db/client.js";
 import { sessions } from "../db/schema/index.js";
 import { canReadSession } from "../services/authorization.js";
+import { COMPACT_FIELD_MAX_BYTES, compactEvent } from "../services/event-compact.js";
 import { type InstanceMode, getMode } from "../services/instance-mode.js";
 import { getUserGateStates } from "../services/user-identity.js";
 import { setWsRevalidationListener } from "./revalidation.js";
@@ -74,7 +75,7 @@ interface RestrictedReader {
 }
 
 /** Per-field budget on a mobile socket's event payload. */
-const MOBILE_FIELD_MAX_BYTES = 2048;
+const MOBILE_FIELD_MAX_BYTES = COMPACT_FIELD_MAX_BYTES;
 const SESSION_CHANNEL_PREFIX = "session:";
 
 const clients = new Map<ServerWebSocket<unknown>, WsClient>();
@@ -401,63 +402,10 @@ function mayReceive(
 	}
 }
 
-function utf8Length(text: string): number {
-	return new TextEncoder().encode(text).length;
-}
-
-function truncateUtf8(text: string, maxBytes: number): string {
-	const bytes = new TextEncoder().encode(text);
-	if (bytes.length <= maxBytes) return text;
-	return new TextDecoder().decode(bytes.slice(0, maxBytes)).replace(/\uFFFD+$/, "");
-}
-
-/** A single string value inside a toolInput preview is cut to this many bytes. */
-const TOOL_INPUT_PREVIEW_VALUE_BYTES = 256;
-
-/**
- * The top-level entries of a tool input that fit the budget, still an object:
- * string values are cut to TOOL_INPUT_PREVIEW_VALUE_BYTES, and a value that
- * still doesn't fit (a large nested object) is left out.
- */
-function previewToolInput(input: Record<string, unknown>): Record<string, unknown> {
-	const preview: Record<string, unknown> = {};
-	let used = 2;
-	for (const [key, raw] of Object.entries(input)) {
-		const value = typeof raw === "string" ? truncateUtf8(raw, TOOL_INPUT_PREVIEW_VALUE_BYTES) : raw;
-		const size = utf8Length(JSON.stringify(key)) + utf8Length(JSON.stringify(value) ?? "null") + 2;
-		if (used + size > MOBILE_FIELD_MAX_BYTES) continue;
-		preview[key] = value;
-		used += size;
-	}
-	return preview;
-}
-
-/**
- * What a phone gets of an event: no raw payload, and no field over 2 KB. A field
- * that was cut keeps its type and holds a bounded preview, and the event gains a
- * sibling flag (`contentTruncated`, `toolInputTruncated`, `toolResponseTruncated`)
- * so the client can offer to fetch the full text over REST.
- */
+/** What a phone gets of an event: the compact form (see event-compact.ts). */
 function shapeForMobile(type: WsMessageType, data: unknown): unknown {
 	if (type !== "new_event" || data === null || typeof data !== "object") return data;
-	const { rawPayload: _dropped, ...event } = data as Record<string, unknown>;
-	for (const field of ["content", "toolResponse"] as const) {
-		const value = event[field];
-		if (typeof value === "string" && utf8Length(value) > MOBILE_FIELD_MAX_BYTES) {
-			event[field] = truncateUtf8(value, MOBILE_FIELD_MAX_BYTES);
-			event[`${field}Truncated`] = true;
-		}
-	}
-	const toolInput = event.toolInput;
-	if (
-		toolInput &&
-		typeof toolInput === "object" &&
-		utf8Length(JSON.stringify(toolInput)) > MOBILE_FIELD_MAX_BYTES
-	) {
-		event.toolInput = previewToolInput(toolInput as Record<string, unknown>);
-		event.toolInputTruncated = true;
-	}
-	return event;
+	return compactEvent(data, MOBILE_FIELD_MAX_BYTES);
 }
 
 // Broadcast to a specific session channel

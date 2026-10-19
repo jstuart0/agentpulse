@@ -73,6 +73,12 @@ export const sessionsSqlite = sqliteTable(
 		 * session's real host is managed_sessions.host_name, not this.
 		 */
 		reportedHost: text("reported_host"),
+		/**
+		 * When the turn now in progress began (a prompt, or the first tool use of a turn nothing
+		 * prompted); null once the turn ends and for rows that predate the column. The phone's
+		 * running-time label reads it, so a restart of the app doesn't reset the clock.
+		 */
+		currentTurnStartedAt: text("current_turn_started_at"),
 	},
 	(t) => ({
 		agentTypeLastActivity: index(AGENT_TYPE_LAST_ACTIVITY_INDEX).on(t.agentType, t.lastActivityAt),
@@ -120,6 +126,7 @@ export const sessionsPg = pgTable(
 		lastAgentTurnCompletedAt: pgText("last_agent_turn_completed_at"),
 		lastUserAcknowledgedAt: pgText("last_user_acknowledged_at"),
 		reportedHost: pgText("reported_host"),
+		currentTurnStartedAt: pgText("current_turn_started_at"),
 	},
 	(t) => ({
 		agentTypeLastActivity: pgIndex(AGENT_TYPE_LAST_ACTIVITY_INDEX).on(

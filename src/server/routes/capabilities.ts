@@ -80,6 +80,30 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		value: true,
 	},
 	{
+		// GET /sessions?view=card
+		name: "sessionCardView",
+		proof: { kind: "route", method: "GET", path: "/sessions" },
+		value: true,
+	},
+	{
+		// GET /sessions/:id?eventsLimit=&compact=&omit=
+		name: "detailEventsLimit",
+		proof: { kind: "route", method: "GET", path: "/sessions/:sessionId" },
+		value: true,
+	},
+	{
+		// GET /sessions/:id/timeline?beforeId=&compact=, and the same compact form on the event context
+		name: "timelineKeyset",
+		proof: { kind: "route", method: "GET", path: "/sessions/:sessionId/timeline" },
+		value: true,
+	},
+	{
+		// GET /sessions/stats carries completedToday, failedToday and launchesToday
+		name: "statsToday",
+		proof: { kind: "route", method: "GET", path: "/sessions/stats" },
+		value: true,
+	},
+	{
 		// Needs a configured relay and the instance secrets key; `push.relayOrigin` travels with it.
 		name: "mobilePush",
 		proof: { kind: "route", method: "POST", path: "/devices/:id/test" },

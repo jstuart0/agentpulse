@@ -33,9 +33,19 @@ const HOOK_FILES = ["~/.claude/settings.json", "~/.codex/hooks.json"];
 const STATUSLINE_FILE = "~/.claude/statusline-agentpulse.sh";
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
+/**
+ * `-f` makes an HTTP error fail the download instead of piping the error page into
+ * bash. For an https server, `--proto '=https'` also keeps a redirect from stepping
+ * the download down to plain http. An http server (a LAN address, localhost) can't
+ * be held to https, so it gets `-f` alone.
+ */
+function curlFlags(serverUrl: string): string {
+	return /^https:/i.test(serverUrl) ? "-fsSL --proto '=https'" : "-fsSL";
+}
+
 function installCommand(script: string, serverUrl: string, args: string[]) {
 	const pipe = args.length > 0 ? `bash -s -- ${args.join(" ")}` : "bash";
-	return `curl -sSL ${serverUrl}/${script} | ${pipe}`;
+	return `curl ${curlFlags(serverUrl)} ${serverUrl}/${script} | ${pipe}`;
 }
 
 /**

@@ -223,6 +223,8 @@ export interface Session {
 	 * none was reported. Optional: an older server won't send it.
 	 */
 	reportedHost?: string | null;
+	/** When the turn now in progress began; null between turns. Optional: an older server won't send it. */
+	currentTurnStartedAt?: string | null;
 	/**
 	 * The machine the session is on, as the dashboard filters and groups it: the
 	 * supervisor's host name for a supervisor-launched session, else
@@ -320,6 +322,13 @@ export interface DashboardStats {
 	operational?: Record<"waiting" | "working" | "idle" | "error", number>;
 	/** True when the server's candidate scan hit its cap and the operational counts may under-report. */
 	truncated?: boolean;
+	/** Sessions that ended today without failing, and failed ones. Absent on an older server. */
+	completedToday?: number;
+	failedToday?: number;
+	/** Launches requested today in the applied scope. Absent on an older server. */
+	launchesToday?: number;
+	/** When "today" began: the server's local midnight, as an ISO instant. Absent on an older server. */
+	todayStartsAt?: string;
 }
 
 /**

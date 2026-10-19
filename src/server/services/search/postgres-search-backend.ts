@@ -484,7 +484,9 @@ export class PostgresSearchBackend implements SearchBackend {
 		if (filters.agentType) {
 			filterClauses.push(sql`agent_type = ${filters.agentType}`);
 		}
-		if (filters.sessionStatus) {
+		if (filters.sessionStatus === "archived") {
+			filterClauses.push(sql`(is_archived = true OR status = 'archived')`);
+		} else if (filters.sessionStatus) {
 			filterClauses.push(sql`status = ${filters.sessionStatus}`);
 		}
 		if (filters.cwd) {
@@ -574,7 +576,9 @@ export class PostgresSearchBackend implements SearchBackend {
 		if (filters.agentType) {
 			filterClauses.push(sql`s.agent_type = ${filters.agentType}`);
 		}
-		if (filters.sessionStatus) {
+		if (filters.sessionStatus === "archived") {
+			filterClauses.push(sql`(s.is_archived = true OR s.status = 'archived')`);
+		} else if (filters.sessionStatus) {
 			filterClauses.push(sql`s.status = ${filters.sessionStatus}`);
 		}
 		if (filters.cwd) {

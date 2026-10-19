@@ -151,11 +151,13 @@ export const INTENTIONALLY_MANAGE_ONLY: ReadonlySet<string> = new Set([
 const INGEST_WRITES: ReadonlySet<string> = new Set(["PUT /sessions/:sessionId/native-name"]);
 
 /**
- * `respond` reads: everything `observe` reads. Every entry is also in
- * OBSERVE_READ_PATHS or INTENTIONALLY_MANAGE_ONLY (guarded by the drift test),
- * so a respond key never reads more than a manage key and never reads a DTO the
- * C1/F23 exclusions keep from observe. Later phases add their reads here in the
- * same change that mounts the guarded route (/devices, /ai/inbox ...).
+ * `respond` reads: everything `observe` reads, plus the routes below. Every entry
+ * is also in OBSERVE_READ_PATHS or INTENTIONALLY_MANAGE_ONLY (guarded by the drift
+ * test), so a respond key never reaches a route a manage key can't and never reads
+ * a DTO the C1/F23 exclusions keep from observe. A respond key can be narrower than
+ * a manage key on the same route: Ask threads are read by their asker only, even
+ * for an admin's respond key and in solo (the handler judges it). Later phases add
+ * their reads here in the same change that mounts the guarded route.
  */
 const RESPOND_READS: ReadonlySet<string> = new Set([
 	...OBSERVE_READS,
@@ -163,6 +165,8 @@ const RESPOND_READS: ReadonlySet<string> = new Set([
 	"/ai/inbox",
 	"/ai/inbox/snoozes",
 	"/ai/proposals/:id/delivery",
+	// A thread's reply the phone was pushed about (ask_reply): a respond key reads only a thread it asked.
+	"/ai/ask/threads/:id",
 ]);
 
 /**
@@ -376,6 +380,11 @@ export const OWNER_CHECKED_ROUTES: ReadonlySet<string> = new Set([
 	"PUT /ai/sessions/:sessionId/watcher",
 	"DELETE /ai/sessions/:sessionId/watcher",
 	"POST /ai/ask/threads/:id/cancel",
+	// Ask threads belong to whoever asked: the list shows a member only their own, and a read or an archive
+	// of someone else's answers 404 (ask-service.ts threadAccessCondition).
+	"GET /ai/ask/threads",
+	"GET /ai/ask/threads/:id",
+	"DELETE /ai/ask/threads/:id",
 ]);
 
 export async function resolveEffectiveRole(

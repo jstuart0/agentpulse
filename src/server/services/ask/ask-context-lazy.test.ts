@@ -386,7 +386,7 @@ describeSqliteOnly("the history a turn reads is bounded to what it renders", () 
 
 	test("the dashboard's own read of a thread still returns every message", async () => {
 		seedThread(14, { sameSecond: true });
-		const all = await service.listMessages("t-long");
+		const all = await service.listMessagesUnchecked("t-long");
 		expect(all.length).toBe(14);
 		expect(all.map((m) => m.content)).toEqual(Array.from({ length: 14 }, (_, i) => `message ${i}`));
 	});

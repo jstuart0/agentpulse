@@ -120,6 +120,10 @@ describe("GET /capabilities", () => {
 				hitlForwarding: true,
 				inboxChanged: true,
 				respondDecisions: true,
+				sessionCardView: true,
+				detailEventsLimit: true,
+				timelineKeyset: true,
+				statsToday: true,
 			});
 			expect(body.pushEvents).toEqual(["ask_reply"]);
 			expect(Object.keys(body.ai).sort()).toEqual(["active", "build", "provider", "vectorSearch"]);

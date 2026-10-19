@@ -3,11 +3,11 @@ set -euo pipefail
 
 # AgentPulse Hook Setup Script
 # Usage: bash setup-hooks.sh --url https://your-server.com --key ap_xxxxx
-# Or:    curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-server.com --key ap_xxxxx
+# Or:    curl -fsSL --proto '=https' https://your-server.com/setup.sh | bash -s -- --url https://your-server.com --key ap_xxxxx
 #
 # F234: --key is briefly visible in `ps` during that one-time install.
 # Prefer the env-var form instead:
-#   AGENTPULSE_KEY=ap_xxxxx curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-server.com
+#   AGENTPULSE_KEY=ap_xxxxx curl -fsSL --proto '=https' https://your-server.com/setup.sh | bash -s -- --url https://your-server.com
 
 AGENTPULSE_URL=""
 # F234 (Low): --key is briefly visible in `ps` during a curl|bash install —

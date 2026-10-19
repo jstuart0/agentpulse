@@ -91,4 +91,38 @@ describe("session broadcasts are not filtered per viewer", () => {
 			otherSocket.close();
 		}
 	});
+
+	test("the Session frame carries when the turn in progress began, so a phone's running time survives a reconnect", async () => {
+		await setStoredMode("team");
+		const owner = await seedLocalUser("wb-turn");
+		await getDb().insert(sessions).values({
+			sessionId: "wb-turn-1",
+			agentType: "claude_code",
+			status: "completed",
+			ownerUserId: owner.id,
+			isWorking: true,
+			currentTurnStartedAt: "2026-10-19T09:30:00.000Z",
+			lastAgentTurnCompletedAt: "2026-10-01T09:00:00.000Z",
+		});
+		const socket = openSocket(owner.id);
+		try {
+			const res = await app.request(
+				"/api/v1/sessions/wb-turn-1/acknowledge",
+				jsonRequest("POST", {}, await cookieHeadersFor(owner.id)),
+			);
+			expect(res.status).toBe(200);
+			const frame = socket.received
+				.map(
+					(message) =>
+						JSON.parse(message) as { type: string; data: { session: Record<string, unknown> } },
+				)
+				.find(
+					(message) =>
+						message.type === "session_updated" && message.data.session.sessionId === "wb-turn-1",
+				);
+			expect(frame?.data.session.currentTurnStartedAt).toBe("2026-10-19T09:30:00.000Z");
+		} finally {
+			socket.close();
+		}
+	});
 });

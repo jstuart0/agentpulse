@@ -309,7 +309,7 @@ describe("category, interruption level and relay priority", () => {
 		],
 		[{ type: "session_failed", sessionId: "s" }, "SESSION_FAILED", "active", "normal"],
 		[
-			{ type: "hitl_opened", sessionId: "s", hitlId: "h1", proposalId: "p1" },
+			{ type: "hitl_opened", decision: "ask", sessionId: "s", hitlId: "h1", proposalId: "p1" },
 			"WATCHER_HITL",
 			"time-sensitive",
 			"needs-you",
@@ -361,6 +361,7 @@ describe("category, interruption level and relay priority", () => {
 		const { service } = makeService(liveClient(relay.url));
 		await service.sendToDevices([device], {
 			type: "hitl_opened",
+			decision: "ask",
 			sessionId: "s",
 			hitlId: "h",
 			proposalId: "p",
@@ -386,6 +387,7 @@ describe("category, interruption level and relay priority", () => {
 		const hash = "a".repeat(64);
 		await service.sendToDevices([device], {
 			type: "hitl_opened",
+			decision: "continue",
 			sessionId: "s1",
 			hitlId: "h1",
 			proposalId: "p1",
@@ -424,6 +426,7 @@ describe("category, interruption level and relay priority", () => {
 		const { service } = makeService(liveClient(relay.url));
 		await service.sendToDevices([device], {
 			type: "hitl_opened",
+			decision: "continue",
 			sessionId: "s",
 			hitlId: "h".repeat(80),
 			proposalId: "p",
@@ -699,6 +702,7 @@ describe("dedupe (60 s)", () => {
 		const { service } = makeService(liveClient(relay.url));
 		const hitl = (hitlId: string): PushEvent => ({
 			type: "hitl_opened",
+			decision: "ask",
 			sessionId: "s",
 			hitlId,
 			proposalId: "p",
@@ -950,6 +954,7 @@ describe("quotas: per session, per category, and the decision categories' own bu
 			(
 				await service.sendToDevices([device], {
 					type: "hitl_opened",
+					decision: "ask",
 					sessionId: "s",
 					hitlId: "h",
 					proposalId: "p",
@@ -1552,6 +1557,7 @@ describe("a push is only a hint (D27)", () => {
 		const { service } = makeService(liveClient(relay.url));
 		await service.sendToDevices([device], {
 			type: "hitl_opened",
+			decision: "continue",
 			sessionId: "s",
 			hitlId: "h",
 			proposalId: "p",
@@ -1561,6 +1567,7 @@ describe("a push is only a hint (D27)", () => {
 		const keys = Object.keys(payload).sort();
 		expect(keys).toEqual([
 			"cat",
+			"decision",
 			"hitlId",
 			"il",
 			"kid",
@@ -1573,8 +1580,11 @@ describe("a push is only a hint (D27)", () => {
 			"ts",
 			"v",
 		]);
+		// `decision` is the kind of item ("continue" sends the prompt, "ask" is a question), a label the
+		// phone shows; it never says what to do, and the phone still re-reads the item before offering anything.
+		expect(payload.decision).toBe("continue");
 		for (const key of keys)
-			expect(key).not.toMatch(/approve|decline|decision|allow|grant|action$|command|prompt$|url/i);
+			expect(key).not.toMatch(/approve|decline|verdict|allow|grant|action$|command|prompt$|url/i);
 	});
 });
 

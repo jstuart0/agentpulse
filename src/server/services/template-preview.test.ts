@@ -40,3 +40,38 @@ describe("validateTemplateInput — D5 Pattern A'", () => {
 		}
 	});
 });
+
+describe("validateTemplateInput — the working directory is the target machine's to check", () => {
+	const warningsFor = (cwd: string) =>
+		validateTemplateInput(
+			normalizeTemplateInput({
+				name: "t",
+				cwd,
+				agentType: "claude_code",
+				baseInstructions: "b",
+				taskPrompt: "p",
+			}),
+		).warnings;
+
+	test("a directory that exists on this server's disk and one that doesn't get the same answer: this disk says nothing about the machine the launch goes to", () => {
+		const present = warningsFor(process.cwd());
+		const absent = warningsFor("/definitely/not/a/real/directory/for/agentpulse");
+		expect(absent).toEqual(present);
+		for (const warning of [...present, ...absent]) {
+			expect(warning).not.toMatch(/exist/i);
+		}
+	});
+
+	test("the checks that don't depend on the machine are still made", () => {
+		const input = normalizeTemplateInput({ name: "t", cwd: "/tmp", agentType: "claude_code" });
+		const { errors, warnings } = validateTemplateInput(input);
+		expect(errors).toEqual([]);
+		expect(warnings).toContain("Base instructions are empty.");
+		expect(warnings).toContain("Task prompt is empty.");
+		expect(
+			validateTemplateInput(
+				normalizeTemplateInput({ name: "t", cwd: "/a/../b", agentType: "claude_code" }),
+			).errors,
+		).toContain("Working directory may not contain '..' segments.");
+	});
+});

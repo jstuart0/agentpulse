@@ -429,6 +429,10 @@ interface StatsBody {
 	byAgentType: Record<string, number>;
 	truncated: boolean;
 	operational: { waiting: number; working: number; idle: number; error: number };
+	completedToday: number;
+	failedToday: number;
+	launchesToday: number;
+	todayStartsAt: string;
 }
 
 describe("GET /sessions/stats?owner=", () => {
@@ -515,6 +519,11 @@ describe("GET /sessions/stats?owner=", () => {
 			byAgentType: { claude_code: 1, codex_cli: 1, copilot_cli: 0 },
 			truncated: false,
 			operational: { waiting: 1, working: 1, idle: 1, error: 1 },
+			// ended today: the completed row and the archived one; the failed one
+			completedToday: 2,
+			failedToday: 1,
+			launchesToday: 0,
+			todayStartsAt: expect.any(String),
 		});
 	});
 
@@ -536,6 +545,10 @@ describe("GET /sessions/stats?owner=", () => {
 			byAgentType: { claude_code: 4, codex_cli: 1, copilot_cli: 0 },
 			truncated: false,
 			operational: { waiting: 1, working: 4, idle: 1, error: 1 },
+			completedToday: 5,
+			failedToday: 1,
+			launchesToday: 0,
+			todayStartsAt: expect.any(String),
 		});
 		expect(await get<StatsBody>("/sessions/stats?owner=all", w.me.headers)).toEqual(everyone);
 	});
