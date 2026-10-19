@@ -60,6 +60,26 @@ export function TemplatePreviewPanel({
 						</code>
 					</div>
 
+					{preview.effectivePrivileges && (
+						<div className="rounded-md border border-border bg-background/60 p-3 text-xs space-y-1">
+							<div className="uppercase tracking-wide text-muted-foreground">What will run</div>
+							<div className="text-foreground">
+								Approval: {preview.effectivePrivileges.approvalPolicy.effective}
+								{preview.effectivePrivileges.approvalPolicy.permissive ? " (permissive)" : ""}
+							</div>
+							<div className="text-foreground">
+								Sandbox: {preview.effectivePrivileges.sandboxMode.effective}
+								{preview.effectivePrivileges.sandboxMode.permissive ? " (permissive)" : ""}
+							</div>
+							<div className="text-muted-foreground">
+								{preview.effectivePrivileges.defaultMeaning}
+							</div>
+							<div className="text-muted-foreground">
+								{preview.effectivePrivileges.enforcementScope}
+							</div>
+						</div>
+					)}
+
 					<div className="grid gap-3">
 						{[preview.guidance.claudeCode, preview.guidance.codexCli].map((item) => (
 							<div key={item.label} className="rounded-md border border-border p-3">

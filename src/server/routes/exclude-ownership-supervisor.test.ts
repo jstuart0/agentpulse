@@ -384,10 +384,12 @@ describe("team mode: an excluded launch's refusal", () => {
 		requestedLaunchMode: l.requestedLaunchMode,
 	});
 
-	test("with or without prelaunch actions it is one fixed status, and it is the same one a trusted-roots refusal leaves, as another member sees it", async () => {
+	test("with or without prelaunch actions it is one fixed status, and it is the same one a trusted-roots refusal leaves, as an admin sees it", async () => {
 		await setStoredMode("team");
 		const requester = await seedLocalUser("xo-requester");
-		const member = await seedLocalUser("xo-member");
+		// Another member can no longer open the requester's launch at all (it answers 404), so
+		// the viewer here is an admin, who can: what matters is that the stored refusal says nothing.
+		const member = await seedLocalUser("xo-admin-viewer", "admin");
 		const memberView = await cookieHeadersFor(member.id);
 		const w = world();
 		try {

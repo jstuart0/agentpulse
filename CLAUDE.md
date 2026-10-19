@@ -149,6 +149,15 @@ Schema is split across `src/server/db/schema/{core,ai,ask-projects}/` with per-t
 
 Note: `event_embeddings` (vector search) is SQLite-only in this release. The Postgres pgvector port is deferred to a follow-up campaign. The table's only multi-row reader is `services/ai/embeddings/vector-scan.ts`; see the Ask-path conventions below.
 
+### Launch privileges (approvalPolicy / sandboxMode)
+
+- One mapping, `src/shared/launch-privileges.ts`, is used by the server (validation, preview, stored spec, launch DTO) and the supervisor (argv, Codex thread parameters). Unknown values and unsupported combinations are rejected, never defaulted; unset/`default` adds no flag.
+- **What "enforced" covers**: the launch command line (Claude `--permission-mode`) and the managed Codex thread parameters, checked against what Codex reports. It does **not** cover the user's and project's own settings files, hooks or managed settings (`.claude/settings.json`, Codex `config.toml`), which can still widen permissions. Env that could redirect those (`HOME`, `CLAUDE_*`, `CODEX_*`, `AGENTPULSE_*`, `GIT_*`, `XDG_*`, `SSH_*`, `NODE_OPTIONS`, ...) is refused, and so is any name that is not `[A-Za-z_][A-Za-z0-9_]*` (a name containing `=` would be split by the child) (`src/shared/launch-env-policy.ts`). **This is a denylist over an open namespace, so it is defence in depth, not the boundary: the boundary is the trusted operator who may launch on a host at all.**
+- The supervisor re-checks every launch and resume directory itself: no `..` segments, the deepest existing ancestor must resolve under a trusted root before prelaunch actions run, and the agent is spawned in the realpath that was checked, never the original string. A resume uses the launch row's model and cwd and this host's own bridge record, not anything the agent reported.
+- The supervisor advertises `enforces_launch_privileges`; the server never routes, retries or claims a launch with a policy/sandbox to a supervisor without it, and fails a launch whose reported `providerLaunchMetadata.privileges.enforcedArgs` differs from the mapping.
+- Prompts go after `--` on every Claude argv and may not start with `-`.
+- `launchSpec.providerConfig.cliArgs` is informational and built by the server from the template alone; the supervisor never executes a client-supplied value.
+
 ### AI control plane features
 - Session intelligence classifier exposes `health` + reasonCode via
   `GET /api/v1/ai/sessions/:id/intelligence` and batch endpoint.

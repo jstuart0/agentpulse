@@ -1,4 +1,8 @@
 import { eq } from "drizzle-orm";
+import {
+	describeEffectivePrivileges,
+	describeUnsupportedPrivileges,
+} from "../../../shared/launch-privileges.js";
 import type { LaunchableAgentType, SessionTemplateInput } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
 import { sessionTemplates } from "../../db/schema/index.js";
@@ -28,6 +32,18 @@ export function mapTemplate(row: TemplateRow) {
 		isFavorite: row.isFavorite,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
+		// Read-time only, never stored: the values the mapping now refuses, with the change to
+		// offer. Nothing rewrites a template; a person applies the suggestion explicitly.
+		privilegesUnsupported: describeUnsupportedPrivileges(
+			row.agentType,
+			row.approvalPolicy,
+			row.sandboxMode,
+		),
+		effectivePrivileges: describeEffectivePrivileges(
+			row.agentType,
+			row.approvalPolicy,
+			row.sandboxMode,
+		),
 	};
 }
 

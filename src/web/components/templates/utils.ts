@@ -15,9 +15,19 @@ export type AgentFilter = "all" | AgentType;
 // Dropdown values include the leading "" to render the "(inherit)"
 // sentinel option. Members are derived from the canonical const lists
 // in shared/types.ts so adding a new policy/mode flows through here.
-export const approvalPolicies: Array<ApprovalPolicy | ""> = ["", ...APPROVAL_POLICIES];
+// 'auto' and 'on-failure' can't be applied to either agent (the supervisor refuses them), so
+// they are not offered. A template that still carries one is shown by the editor with a
+// one-click change to 'manual'; nothing rewrites it silently.
+const UNOFFERED_APPROVAL_POLICIES: ApprovalPolicy[] = ["auto", "on-failure"];
+export const approvalPolicies: Array<ApprovalPolicy | ""> = [
+	"",
+	...APPROVAL_POLICIES.filter((value) => !UNOFFERED_APPROVAL_POLICIES.includes(value)),
+];
 
-export const sandboxModes: Array<SandboxMode | ""> = ["", ...SANDBOX_MODES];
+/** Claude Code has no sandbox, so the sandbox setting isn't offered for it at all. */
+export function sandboxModesFor(agentType: AgentType): Array<SandboxMode | ""> {
+	return agentType === "claude_code" ? [] : ["", ...SANDBOX_MODES];
+}
 
 export function createBlankTemplate(
 	agentType: LaunchableAgentType = "codex_cli",

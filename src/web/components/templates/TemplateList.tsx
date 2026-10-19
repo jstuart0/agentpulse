@@ -70,6 +70,11 @@ export function TemplateListPanel({
 										{template.agentType === "claude_code" ? "Claude Code" : "Codex CLI"}
 									</div>
 								</div>
+								{template.privilegesUnsupported && (
+									<span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-400">
+										Needs attention
+									</span>
+								)}
 								{template.isFavorite && (
 									<span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-400">
 										Favorite

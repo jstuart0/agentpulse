@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
-import { chmod, mkdir } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { chmod, lstat, mkdir } from "node:fs/promises";
 import { createConnection } from "node:net";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { privilegeMetadata } from "../../shared/launch-privileges.js";
 import type { LaunchRequest } from "../../shared/types.js";
-import { loadSupervisorConfig } from "../config.js";
+import { loadSupervisorConfig, resolveHomeDir } from "../config.js";
 import type {
 	ClaudePromptAction,
 	InteractiveBridge,
@@ -15,9 +16,10 @@ import type {
 } from "./claude-shared.js";
 import {
 	appleScriptArgs,
-	buildActionPrompt,
 	buildLaunchBaseArgs,
 	buildLaunchEnv,
+	buildPrompt,
+	claudeLaunchPrivileges,
 	escapeAppleScript,
 	quoteShell,
 } from "./claude-shared.js";
@@ -26,12 +28,71 @@ const bridgeScriptPath = fileURLToPath(
 	new URL("../../../scripts/claude_terminal_bridge.py", import.meta.url),
 );
 
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const OWNER_FILE = "owner.json";
+
+function bridgeDirFor(sessionId: string) {
+	return join(resolveHomeDir(), ".agentpulse", "interactive", sessionId);
+}
+
+/** The bridge this supervisor created for the session, or null when it didn't (or the id isn't one of ours). */
+/** What lstat says about an entry that may hold a bridge: this user's, private, and the right kind (never a symlink). */
+export function isPrivateOwnStat(
+	info: Pick<Stats, "uid" | "mode" | "isSymbolicLink" | "isDirectory" | "isSocket">,
+	kind: "directory" | "socket",
+	uid: number | null,
+): boolean {
+	if (info.isSymbolicLink()) return false;
+	if (kind === "directory" ? !info.isDirectory() : !info.isSocket()) return false;
+	if (uid !== null && info.uid !== uid) return false;
+	return (info.mode & 0o077) === 0;
+}
+
+async function isPrivateOwnEntry(path: string, kind: "directory" | "socket"): Promise<boolean> {
+	try {
+		const uid = typeof process.getuid === "function" ? process.getuid() : null;
+		return isPrivateOwnStat(await lstat(path), kind, uid);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The bridge this supervisor created for the session, or null when it didn't (or the id isn't
+ * one of ours). The directory and the socket must be this user's own, private, and not
+ * symlinks: a directory someone else could write to is not a place to send a prompt.
+ */
+export async function readOwnedBridge(sessionId: string): Promise<InteractiveBridge | null> {
+	if (!SESSION_ID_PATTERN.test(sessionId)) return null;
+	const controlDir = bridgeDirFor(sessionId);
+	const configPath = join(controlDir, "bridge.json");
+	const socketPath = join(controlDir, "control.sock");
+	if (!(await isPrivateOwnEntry(controlDir, "directory"))) return null;
+	if (!(await isPrivateOwnEntry(socketPath, "socket"))) return null;
+	if (!(await Bun.file(configPath).exists())) return null;
+	return { socketPath, configPath, controlDir };
+}
+
+async function readTerminalOwner(controlDir: string): Promise<TerminalOwner | null> {
+	try {
+		const raw = await Bun.file(join(controlDir, OWNER_FILE)).json();
+		if (raw && (raw.app === "Terminal" || raw.app === "iTerm")) {
+			return { app: raw.app, windowId: typeof raw.windowId === "string" ? raw.windowId : null };
+		}
+	} catch {}
+	return null;
+}
+
 async function createInteractiveBridge(
 	launch: LaunchRequest,
 	config: Awaited<ReturnType<typeof loadSupervisorConfig>>,
 	command: string[],
 ) {
-	const controlDir = join(homedir(), ".agentpulse", "interactive", launch.launchCorrelationId);
+	// The id becomes a directory name, so it is checked before anything is created.
+	if (!SESSION_ID_PATTERN.test(launch.launchCorrelationId)) {
+		throw new Error("The launch id can't be used as an interactive bridge name.");
+	}
+	const controlDir = bridgeDirFor(launch.launchCorrelationId);
 	const socketPath = join(controlDir, "control.sock");
 	const configPath = join(controlDir, "bridge.json");
 	await mkdir(controlDir, { recursive: true });
@@ -132,8 +193,9 @@ export async function launchClaudeInteractiveRequest(
 	const config = await loadSupervisorConfig();
 	const executable =
 		config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude";
+	const privileges = claudeLaunchPrivileges(launch);
 	const args = buildLaunchBaseArgs(launch, executable);
-	args.push(launch.taskPrompt.trim() || "Continue working on this project.");
+	args.push("--", buildPrompt(launch));
 	const bridge = await createInteractiveBridge(launch, config, args);
 	const bridgeCommand = ["python3", bridgeScriptPath, "--config", bridge.configPath];
 
@@ -148,6 +210,7 @@ export async function launchClaudeInteractiveRequest(
 			metadata: {
 				mode: "interactive_terminal",
 				command: bridgeCommand,
+				privileges: privilegeMetadata(privileges),
 				resolvedExecutable: executable,
 				startedAt: new Date().toISOString(),
 				terminalSupport: config.capabilities.terminalSupport,
@@ -172,6 +235,11 @@ export async function launchClaudeInteractiveRequest(
 		);
 	}
 	if ("unref" in proc && typeof proc.unref === "function") proc.unref();
+	if (terminalOwner) {
+		const ownerPath = join(bridge.controlDir, OWNER_FILE);
+		await Bun.write(ownerPath, JSON.stringify(terminalOwner));
+		await chmod(ownerPath, 0o600);
+	}
 
 	if (callbacks) {
 		await callbacks.reportState({
@@ -212,6 +280,7 @@ export async function launchClaudeInteractiveRequest(
 		metadata: {
 			mode: "interactive_terminal",
 			command: bridgeCommand,
+			privileges: privilegeMetadata(privileges),
 			resolvedExecutable: executable,
 			startedAt: new Date().toISOString(),
 			terminalSupport: config.capabilities.terminalSupport,
@@ -228,32 +297,19 @@ export async function promptClaudeInteractiveSession(
 	callbacks?: LaunchCallbacks,
 ) {
 	const config = await loadSupervisorConfig();
-	const interactiveBridge =
-		action.interactiveBridge &&
-		typeof action.interactiveBridge === "object" &&
-		!Array.isArray(action.interactiveBridge) &&
-		typeof action.interactiveBridge.socketPath === "string"
-			? ({
-					socketPath: action.interactiveBridge.socketPath,
-					configPath:
-						typeof action.interactiveBridge.configPath === "string"
-							? action.interactiveBridge.configPath
-							: "",
-					controlDir:
-						typeof action.interactiveBridge.controlDir === "string"
-							? action.interactiveBridge.controlDir
-							: "",
-				} satisfies InteractiveBridge)
-			: null;
-	if (!interactiveBridge?.socketPath) {
+	// The bridge is found from this host's own records by session id; whatever the agent (or
+	// the server's copy of its reports) says the socket path is never used.
+	const interactiveBridge = await readOwnedBridge(action.sessionId);
+	if (!interactiveBridge) {
 		throw new Error(
 			"Interactive prompt handoff is unavailable because this session is not using an owned interactive bridge.",
 		);
 	}
+	const terminalOwner = await readTerminalOwner(interactiveBridge.controlDir);
 
 	await new Promise<void>((resolve, reject) => {
 		const socket = createConnection(interactiveBridge.socketPath, () => {
-			socket.end(`${buildActionPrompt(action)}\n`);
+			socket.end(`${action.prompt.trim()}\n`);
 		});
 		socket.on("close", () => resolve());
 		socket.on("error", (error) => reject(error));
@@ -272,7 +328,7 @@ export async function promptClaudeInteractiveSession(
 			providerCapabilitySnapshot: config.capabilities as unknown as Record<string, unknown>,
 			metadata: {
 				launchMode: "interactive_terminal",
-				terminalOwner: action.terminalOwner ?? null,
+				terminalOwner,
 				interactiveBridge,
 			},
 		});
@@ -302,7 +358,7 @@ export async function promptClaudeInteractiveSession(
 			startedAt: new Date().toISOString(),
 			terminalSupport: config.capabilities.terminalSupport,
 			terminalPreference: config.terminalPreference ?? null,
-			terminalOwner: action.terminalOwner ?? null,
+			terminalOwner,
 			interactiveBridge,
 			resume: true,
 		} satisfies LaunchMetadata,

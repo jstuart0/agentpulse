@@ -1,4 +1,8 @@
 import { Link } from "react-router-dom";
+import {
+	describeEffectivePrivileges,
+	describeUnsupportedPrivileges,
+} from "../../../shared/launch-privileges.js";
 import type {
 	ApprovalPolicy,
 	LaunchMode,
@@ -14,7 +18,7 @@ import type {
 } from "../../../shared/types.js";
 import { useHostLabel } from "../../hooks/useHostLabel.js";
 import { HostCompatibilityPanel } from "./HostCompatibilityPanel.js";
-import { approvalPolicies, formatLaunchTime, launchModeLabels, sandboxModes } from "./utils.js";
+import { approvalPolicies, formatLaunchTime, launchModeLabels, sandboxModesFor } from "./utils.js";
 
 export function TemplateEditorPanel(props: {
 	selectedId: string | null;
@@ -95,6 +99,18 @@ export function TemplateEditorPanel(props: {
 		onDuplicate,
 		onCreateLaunch,
 	} = props;
+
+	const sandboxOptions = sandboxModesFor(draft.agentType);
+	const unsupportedPrivileges = describeUnsupportedPrivileges(
+		draft.agentType,
+		draft.approvalPolicy ?? null,
+		draft.sandboxMode ?? null,
+	);
+	const effective = describeEffectivePrivileges(
+		draft.agentType,
+		draft.approvalPolicy ?? null,
+		draft.sandboxMode ?? null,
+	);
 
 	// A field is "inherited" when a project is linked and the field is not in overriddenFields.
 	function isInherited(fieldName: string) {
@@ -265,6 +281,9 @@ export function TemplateEditorPanel(props: {
 						}
 						className={normalInputClass}
 					>
+						{draft.approvalPolicy && !approvalPolicies.includes(draft.approvalPolicy) && (
+							<option value={draft.approvalPolicy}>{draft.approvalPolicy} (not supported)</option>
+						)}
 						{approvalPolicies.map((value) => (
 							<option key={value || "blank"} value={value}>
 								{value || "Default"}
@@ -272,22 +291,71 @@ export function TemplateEditorPanel(props: {
 						))}
 					</select>
 				</label>
-				<label className="space-y-1.5 text-sm">
-					<span className="text-foreground">Sandbox Mode</span>
-					<select
-						value={draft.sandboxMode ?? ""}
-						onChange={(e) =>
-							onUpdateDraft("sandboxMode", (e.target.value || null) as SandboxMode | null)
-						}
-						className={normalInputClass}
+				{sandboxOptions.length > 0 && (
+					<label className="space-y-1.5 text-sm">
+						<span className="text-foreground">Sandbox Mode</span>
+						<select
+							value={draft.sandboxMode ?? ""}
+							onChange={(e) =>
+								onUpdateDraft("sandboxMode", (e.target.value || null) as SandboxMode | null)
+							}
+							className={normalInputClass}
+						>
+							{sandboxOptions.map((value) => (
+								<option key={value || "blank"} value={value}>
+									{value || "Default"}
+								</option>
+							))}
+						</select>
+					</label>
+				)}
+				{unsupportedPrivileges && (
+					<div
+						role="alert"
+						className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs sm:col-span-2"
 					>
-						{sandboxModes.map((value) => (
-							<option key={value || "blank"} value={value}>
-								{value || "Default"}
-							</option>
+						<div className="font-medium text-amber-300">
+							This template has settings the supervisor can't apply, so it can't be saved or
+							launched as it is.
+						</div>
+						{unsupportedPrivileges.issues.map((issue) => (
+							<div key={issue.setting} className="flex flex-wrap items-center gap-2">
+								<span className="text-muted-foreground">{issue.reason}</span>
+								<button
+									type="button"
+									onClick={() =>
+										onUpdateDraft(
+											issue.setting,
+											issue.suggested as SessionTemplateInput[typeof issue.setting],
+										)
+									}
+									className="rounded-md border border-border px-2 py-1 text-foreground hover:bg-accent"
+								>
+									{issue.suggested === null
+										? `Clear ${issue.setting === "approvalPolicy" ? "approval policy" : "sandbox mode"}`
+										: `Change to ${issue.suggested}`}
+								</button>
+							</div>
 						))}
-					</select>
-				</label>
+					</div>
+				)}
+				{effective && (
+					<div className="space-y-1 rounded-md border border-border bg-background/60 p-3 text-xs sm:col-span-2">
+						<div className="font-medium text-foreground">What will actually run</div>
+						<div className="text-muted-foreground">
+							Approval: {effective.approvalPolicy.effective}
+							{effective.approvalPolicy.permissive ? " (permissive)" : ""}
+						</div>
+						<div className="text-muted-foreground">
+							Sandbox: {effective.sandboxMode.effective}
+							{effective.sandboxMode.permissive ? " (permissive)" : ""}
+						</div>
+						<div className="text-muted-foreground">
+							Flags: {effective.enforcedArgs.length > 0 ? effective.enforcedArgs.join(" ") : "none"}
+						</div>
+						<div className="text-muted-foreground">{effective.enforcementScope}</div>
+					</div>
+				)}
 				<label className="space-y-1.5 text-sm">
 					<span className="text-foreground">Launch Mode</span>
 					<select

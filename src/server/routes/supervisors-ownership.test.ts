@@ -361,6 +361,61 @@ describe("supervisor ownership guard — HTTP (F94)", () => {
 		expect(launchRow?.status).toBe("running");
 	});
 
+	test("claim payload carries expectedEnforcedArgs; a host without the feature never gets a launch with a policy", async () => {
+		const withPolicy = `claim-policy-${crypto.randomUUID().slice(0, 8)}`;
+		const row = await seedValidatedLaunch(withPolicy, supervisorA.id);
+		await getDb()
+			.update(launchRequests)
+			.set({ approvalPolicy: "manual" })
+			.where(eq(launchRequests.id, row.id));
+		const claim = () =>
+			app.request(`/api/v1/supervisors/${supervisorA.id}/launches/claim`, {
+				method: "POST",
+				headers: agentHeaders(supervisorA),
+			});
+
+		// supervisorA registered without the feature: the launch is failed, not handed over.
+		const refused = (await (await claim()).json()) as { launchRequest: unknown };
+		expect(refused.launchRequest).toBeNull();
+		const [failed] = await getDb()
+			.select()
+			.from(launchRequests)
+			.where(eq(launchRequests.id, row.id));
+		expect(failed.status).toBe("failed");
+
+		const [host] = await getDb()
+			.select()
+			.from(supervisors)
+			.where(eq(supervisors.id, supervisorA.id));
+		await getDb()
+			.update(supervisors)
+			.set({
+				capabilities: {
+					...(host.capabilities as object),
+					features: ["enforces_launch_privileges"],
+				},
+			})
+			.where(eq(supervisors.id, supervisorA.id));
+		const second = `claim-policy2-${crypto.randomUUID().slice(0, 8)}`;
+		const row2 = await seedValidatedLaunch(second, supervisorA.id);
+		await getDb()
+			.update(launchRequests)
+			.set({ approvalPolicy: "manual" })
+			.where(eq(launchRequests.id, row2.id));
+		const ok = (await (await claim()).json()) as {
+			launchRequest: { id: string; expectedEnforcedArgs: string[] };
+		};
+		expect(ok.launchRequest.id).toBe(row2.id);
+		expect(ok.launchRequest.expectedEnforcedArgs).toEqual(["--permission-mode", "default"]);
+
+		const third = `claim-plain-${crypto.randomUUID().slice(0, 8)}`;
+		await seedValidatedLaunch(third, supervisorA.id);
+		const plain = (await (await claim()).json()) as {
+			launchRequest: { expectedEnforcedArgs: string[] };
+		};
+		expect(plain.launchRequest.expectedEnforcedArgs).toEqual([]);
+	});
+
 	test("T8: bridge/early-events shapes — state without launchRequestId, events before state → 200", async () => {
 		const sessionIdState = `t8-state-sess-${crypto.randomUUID().slice(0, 8)}`;
 		await seedValidatedLaunch(sessionIdState, supervisorA.id);

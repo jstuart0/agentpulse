@@ -1,3 +1,7 @@
+import {
+	type ResolvedLaunchPrivileges,
+	privilegeMetadata,
+} from "../../shared/launch-privileges.js";
 import type { LaunchRequest } from "../../shared/types.js";
 import { loadSupervisorConfig } from "../config.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
@@ -17,6 +21,8 @@ import {
 	buildLaunchEnv,
 	buildPrompt,
 	buildResumeBaseArgs,
+	claudeLaunchPrivileges,
+	claudeResumePrivileges,
 	pushActivity,
 	readTextStream,
 	sanitizeCliText,
@@ -95,10 +101,12 @@ export async function disposeAllHeadlessRuntimes(graceMs = 2_000): Promise<void>
 function createHeadlessMetadata(
 	args: string[],
 	resolvedExecutable: string,
+	privileges: ResolvedLaunchPrivileges,
 ): HeadlessLaunchMetadata {
 	return {
 		mode: "headless",
 		command: args,
+		privileges: privilegeMetadata(privileges),
 		resolvedExecutable,
 		startedAt: new Date().toISOString(),
 		executionState: "running",
@@ -351,6 +359,7 @@ export async function launchClaudeHeadlessRequest(
 	const config = await loadSupervisorConfig();
 	const executable =
 		config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude";
+	const privileges = claudeLaunchPrivileges(launch);
 	const args = buildLaunchBaseArgs(launch, executable);
 	args.push(
 		"--print",
@@ -358,10 +367,11 @@ export async function launchClaudeHeadlessRequest(
 		"--output-format",
 		"stream-json",
 		"--include-partial-messages",
+		"--",
 		buildPrompt(launch),
 	);
 
-	const metadata = createHeadlessMetadata(args, executable);
+	const metadata = createHeadlessMetadata(args, executable, privileges);
 
 	if (process.env.AGENTPULSE_SUPERVISOR_DRY_RUN === "true") {
 		return {
@@ -414,6 +424,7 @@ export async function promptClaudeHeadlessSession(
 	const config = await loadSupervisorConfig();
 	const executable =
 		config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude";
+	const privileges = claudeResumePrivileges(action);
 	const args = buildResumeBaseArgs(action, executable);
 	args.push(
 		"--print",
@@ -421,10 +432,11 @@ export async function promptClaudeHeadlessSession(
 		"--output-format",
 		"stream-json",
 		"--include-partial-messages",
+		"--",
 		buildActionPrompt(action),
 	);
 
-	const metadata = createHeadlessMetadata(args, executable);
+	const metadata = createHeadlessMetadata(args, executable, privileges);
 	const proc = Bun.spawn({
 		cmd: args,
 		cwd: action.cwd,

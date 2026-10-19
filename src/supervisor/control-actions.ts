@@ -30,6 +30,7 @@ import type {
 import type { stopManagedCodexSession } from "./providers/codex-managed.js";
 import { CleanupError, type executeCleanupWorkArea } from "./services/cleanup-workarea.js";
 import { type ReportGate, controlRefusalBody } from "./services/report-gate.js";
+import { canonicalSpawnCwd } from "./services/spawn-cwd.js";
 
 export type ControlProviders = {
 	stopManagedCodexSession: typeof stopManagedCodexSession;
@@ -106,9 +107,11 @@ export function createControlActionHandler(
 			(MANAGED_STATES as readonly string[]).includes(metadata.managedState)
 				? (metadata.managedState as ManagedState)
 				: null;
+		// Absent (undefined) is not the same as null: null is the launch's recorded "agent
+		// default", absent means the action didn't carry the privileges and a resume refuses.
+		const approvalPolicy = "approvalPolicy" in metadata ? metadata.approvalPolicy : undefined;
+		const sandboxMode = "sandboxMode" in metadata ? metadata.sandboxMode : undefined;
 		const env = asRecord(metadata.env) ? (metadata.env as Record<string, string>) : {};
-		const terminalOwner = asRecord(metadata.terminalOwner);
-		const interactiveBridge = asRecord(metadata.interactiveBridge);
 		const callbacks: LaunchCallbacks = {
 			reportState: (body) => gate.reportState(body),
 			reportEvents: (events) => gate.reportEvents(sessionId, events),
@@ -128,8 +131,6 @@ export function createControlActionHandler(
 						model,
 						env,
 						managedState,
-						terminalOwner,
-						interactiveBridge,
 					},
 					callbacks,
 				);
@@ -137,8 +138,20 @@ export function createControlActionHandler(
 				return;
 			}
 
+			// A resume starts a new process in this directory, so it is judged like a launch: the
+			// server picked the directory from the launch row, and the host still checks it.
+			const spawnCwd = await canonicalSpawnCwd(cwd, deps.trustedRoots);
 			const response = await providers.promptClaudeHeadlessSession(
-				{ sessionId, prompt: text, cwd, model, env, managedState },
+				{
+					sessionId,
+					prompt: text,
+					cwd: spawnCwd,
+					model,
+					env,
+					managedState,
+					approvalPolicy,
+					sandboxMode,
+				},
 				async () => {},
 				callbacks,
 			);

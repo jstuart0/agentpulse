@@ -30,6 +30,7 @@ import { executePrelaunchActions } from "./services/prelaunch-actions.js";
 import { retryWithBackoff } from "./services/registration-retry.js";
 import { createReportGate, heartbeatBody } from "./services/report-gate.js";
 import { SupervisorRequestError } from "./services/report-resilience.js";
+import { assertTrustedRootsExcludeAgentpulseDir } from "./services/spawn-cwd.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 /** How often the exclude rules are re-read for a changed symlink, the stamp is refreshed and sessions a new rule covers are closed. */
@@ -67,6 +68,8 @@ async function main() {
 	// anything reads it.
 	ensureSupervisorConfigPrivate();
 	const config = await loadSupervisorConfig();
+	// Refuse to run with a trusted root that contains this supervisor's own state directory.
+	await assertTrustedRootsExcludeAgentpulseDir(config.trustedRoots);
 	// F43/D10: registration retries forever on any HTTP failure (including
 	// an old-shadow 401/403 from a not-yet-upgraded server during a
 	// mixed-version rollout) instead of exiting and crash-looping. Only a

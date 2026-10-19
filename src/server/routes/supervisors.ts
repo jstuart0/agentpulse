@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { privilegeCliArgs } from "../../shared/launch-privileges.js";
 import type {
 	ManagedSessionEventInput,
 	ManagedSessionStateInput,
@@ -338,7 +339,18 @@ supervisorsAgentRouter.post(
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
 		const launchRequest = await claimNextLaunchRequest(supervisorId);
-		return c.json({ launchRequest: launchRequest ?? null });
+		return c.json({
+			launchRequest: launchRequest
+				? {
+						...launchRequest,
+						expectedEnforcedArgs: privilegeCliArgs(
+							launchRequest.agentType,
+							launchRequest.approvalPolicy,
+							launchRequest.sandboxMode,
+						),
+					}
+				: null,
+		});
 	},
 );
 

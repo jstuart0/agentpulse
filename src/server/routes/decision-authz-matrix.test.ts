@@ -423,7 +423,26 @@ async function seedCell(entry: Entry, target: Target): Promise<Cell> {
 	if (managed) {
 		await getDb()
 			.insert(supervisors)
-			.values({ id: SUPERVISOR, hostName: "h", platform: "linux", arch: "x64", version: "0" })
+			.values({
+				id: SUPERVISOR,
+				hostName: "h",
+				platform: "linux",
+				arch: "x64",
+				version: "0",
+				// A retry is judged as a new launch, so the host has to be one that could take it.
+				trustedRoots: ["/tmp"],
+				capabilities: {
+					version: 1,
+					agentTypes: ["claude_code"],
+					launchModes: ["headless", "interactive_terminal"],
+					os: "linux",
+					terminalSupport: ["xterm"],
+					features: ["enforces_launch_privileges"],
+					executables: {
+						claude: { available: true, command: "claude", resolvedPath: "/bin/claude" },
+					},
+				},
+			} as never)
 			.onConflictDoNothing();
 		const { launchId } = await seedOwnedLaunch(sessionId, SUPERVISOR);
 		const now = new Date().toISOString();

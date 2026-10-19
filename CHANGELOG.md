@@ -62,6 +62,61 @@ section with a `⚠ breaking` prefix so they're easy to spot.
     approving an action request. Requests the AI raises for an owner's session are for an admin to approve.
 - New: `inbox_changed` WebSocket message, `promptHash` on decisions (409
   `prompt_changed`), and `ask_reply` push.
+- **⚠ breaking: a launch's approval policy and sandbox mode are now enforced.**
+  Until now the supervisor recorded `approvalPolicy` and `sandboxMode` and never
+  applied them, so every agent ran with its own defaults whatever a template said.
+  The supervisor now turns them into the agent's real settings, from one mapping
+  (`src/shared/launch-privileges.ts`) that the server uses too, so the preview shows
+  exactly what will run. An existing template that sets either value changes how its
+  agents run:
+  - Claude Code: `manual`, `suggest` and `untrusted` start it with
+    `--permission-mode default`. `default` or unset adds no flag. A headless Claude
+    launch has nobody to approve tool calls, so with this mode anything that needs
+    permission is denied; the preview warns about it.
+  - Codex (managed): `manual`, `suggest` and `untrusted` start the thread with
+    approval `untrusted`; the sandbox modes `read-only`, `workspace-write` and
+    `danger-full-access` are passed through unchanged. `default` or unset adds
+    nothing and Codex uses its own config. The launch record shows what Codex
+    reported it applied, and a launch fails if Codex reports a narrower guarantee
+    than requested (a different sandbox, network access on, extra writable roots).
+  - Not supported, refused with a clear error on save, preview and launch (never run
+    with defaults): approval `auto` and `on-failure` for both agents; sandbox
+    `read-only` and `workspace-write` for Claude Code, which has no sandbox flag
+    (`danger-full-access` is accepted for Claude and means what Claude already does:
+    no sandbox). Templates that carry these values are not rewritten; the template
+    list and editor flag them, offer an explicit change (to `manual`, or clearing the
+    sandbox), and the template API returns `privilegesUnsupported` with the suggestion.
+  - Unset or `default` is the agent's own default, with no flag. For both agents that
+    default can be widened by the user's and the project's own settings
+    (`.claude/settings.json` `defaultMode`/`permissions.allow`, Codex `config.toml`,
+    hooks); the preview and launch record say so and mark Claude's default permissive.
+  - A launch with a policy or sandbox set is only sent to a supervisor that advertises
+    `enforces_launch_privileges`. Update supervisors before relying on it; an older one
+    is refused such launches at validation, routing, retry and claim time, and a launch
+    whose supervisor reports different flags is failed.
+  - The host re-checks every launch and resume directory: `..` segments are refused, the
+    directory must resolve under a trusted root before any prelaunch action runs, and the agent is
+    started in the real path that was checked. A seed file name must be a plain file name.
+    Env names must be plain names (letters, digits, underscores), and `AGENTPULSE_*`, `GIT_*`,
+    `XDG_*`, `SSH_*`, `NPM_CONFIG_*`, shell-startup and proxy/CA variables are refused too.
+    A claim now carries `expectedEnforcedArgs`; a supervisor whose own mapping disagrees refuses to start.
+  - Launches are also refused if their env sets variables that change where the agent
+    reads its settings or what it runs (`HOME`, `PATH`, `NODE_OPTIONS`, `CLAUDE_*`,
+    `ANTHROPIC_*` other than the API key and model, `CODEX_*`, `OPENAI_*` other than the
+    API key and model, `DYLD_*`, `LD_*`, and similar), and a task prompt that starts
+    with `-` is refused. Prompts are also passed after `--` so they can never be read
+    as options.
+  - A resume runs in the launch's directory (not the one the agent last reported), and
+    the host re-checks it against its trusted roots.
+- `GET /launches` returns only the caller's launches in team mode (admins see all), is
+  paged (`limit` up to 200, default 50, and `offset`), never returns claim tokens, and
+  returns env values redacted in list rows. `GET /launches/:id` answers 404 for another
+  user's launch.
+- `POST /launches` accepts `metadata.clientRequestId` (1-128 printable characters) as an
+  idempotency key per requester for 48 hours: a repeat of the same request returns the
+  first launch with 200 and `idempotentReplay: true`, a different request under the same
+  key is 409. Client-supplied `launchSpec.prelaunchActions` are refused.
+  Migration `0015_launch_idempotency_key` adds the column on both dialects.
 
 - **The MCP server package is published to npm as `@craze0/agentpulse-mcp`**
   (the maintainer's own npm scope). `agentpulse mcp install` and the package

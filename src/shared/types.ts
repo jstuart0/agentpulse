@@ -4,6 +4,7 @@ import type {
 	SEMANTIC_STATUSES,
 	SESSION_STATUSES,
 } from "./constants.js";
+import type { EffectivePrivileges, PrivilegesUnsupported } from "./launch-privileges.js";
 import type { HostFilterEcho } from "./machine-scope.js";
 import type { OwnerScopeEcho } from "./owner-scope.js";
 import type { ActiveOperationalStatus, OperationalStatus } from "./session-state.js";
@@ -835,6 +836,9 @@ export interface SessionTemplate {
 	isFavorite: boolean;
 	createdAt: string;
 	updatedAt: string;
+	/** Set when the recorded approval policy or sandbox mode can't be applied to this agent; includes the suggested change. */
+	privilegesUnsupported?: PrivilegesUnsupported | null;
+	effectivePrivileges?: EffectivePrivileges | null;
 }
 
 export interface SessionTemplateInput {
@@ -924,6 +928,8 @@ export interface TemplatePreview {
 	warnings: string[];
 	hostCompatibility: TemplateHostCompatibility[];
 	firstCapableHostId: string | null;
+	/** What the agent will actually run with, including what `default` resolves to. Null when the mapping rejects the template's values. */
+	effectivePrivileges: EffectivePrivileges | null;
 }
 
 export type SupervisorStatus = "connected" | "stale" | "offline";
@@ -1036,6 +1042,17 @@ export interface LaunchRequest {
 	updatedAt: string;
 	/** The user who requested this launch. Null for DISABLE_AUTH / unattributed callers. */
 	requestedByUserId: string | null;
+	/**
+	 * What the agent runs with after the supervisor's mapping, including what an unset or
+	 * `default` setting resolves to. Derived from approvalPolicy/sandboxMode/agentType on
+	 * every read; null when the mapping rejects the recorded values.
+	 */
+	effectivePrivileges?: EffectivePrivileges | null;
+	/**
+	 * Sent in the claim payload only: the privilege flags the server confirmed. A supervisor whose
+	 * own mapping gives different flags refuses to start the launch.
+	 */
+	expectedEnforcedArgs?: string[];
 }
 
 export interface ControlAction {

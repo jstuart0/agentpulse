@@ -3,7 +3,10 @@ import type {
 	ControlAction,
 	ControlActionStatus,
 	ControlActionType,
+	LaunchMode,
 	LaunchRequest,
+	LaunchableAgentType,
+	SessionTemplateInput,
 } from "../../shared/types.js";
 import type { Actor } from "../auth/actor.js";
 import { getDb } from "../db/client.js";
@@ -17,9 +20,12 @@ import {
 } from "../db/schema/index.js";
 import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
+import { buildStoredCliArgs, validateAgainstSupervisor } from "./launch-compatibility.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { bumpVersionAndReload } from "./projects/cache.js";
 import { ownerLaunchJoin, resolveSessionOwner, sessionOwnedBy } from "./session-ownership.js";
+import { getSupervisor } from "./supervisor-registry.js";
+import { normalizeTemplateInput, validateTemplateInput } from "./template-preview.js";
 
 /** A database handle: the shared one, or the transaction a caller is running inside. */
 type DbHandle = ReturnType<typeof getDb>;
@@ -340,11 +346,6 @@ async function queuePromptActionIn(db: DbHandle, sessionId: string, prompt: stri
 		.where(eq(sessions.sessionId, sessionId))
 		.limit(1);
 	if (!session) throw new SessionNotFoundError();
-	const sessionMetadata =
-		session.metadata && typeof session.metadata === "object" && !Array.isArray(session.metadata)
-			? (session.metadata as Record<string, unknown>)
-			: {};
-
 	const launch = await resolveManagedLaunch(sessionId, managed.launchRequestId, db);
 	if (!launch) throw new LaunchNotFoundError();
 	// D12: refuse to embed another host's launch.env in a prompt when the
@@ -371,23 +372,20 @@ async function queuePromptActionIn(db: DbHandle, sessionId: string, prompt: stri
 			metadata: {
 				prompt: cleanPrompt,
 				agentType: session.agentType,
-				cwd: session.cwd,
-				model: session.model,
+				// The launch's directory (judged against the host's trusted roots when it was
+				// requested), never the agent-reported session.cwd, which the agent can change.
+				cwd: launch.cwd,
+				// The launch's model, not the agent-reported session.model.
+				model: launch.model ?? null,
+				// A resume starts a new agent process, so it must carry the launch's recorded
+				// privileges for the supervisor to re-apply them (null = the agent's default).
+				approvalPolicy: launch.approvalPolicy ?? null,
+				sandboxMode: launch.sandboxMode ?? null,
 				managedState: managed.managedState,
 				launchMode: launch.requestedLaunchMode,
 				env: launch.env ?? {},
-				terminalOwner:
-					sessionMetadata.terminalOwner &&
-					typeof sessionMetadata.terminalOwner === "object" &&
-					!Array.isArray(sessionMetadata.terminalOwner)
-						? (sessionMetadata.terminalOwner as Record<string, unknown>)
-						: null,
-				interactiveBridge:
-					sessionMetadata.interactiveBridge &&
-					typeof sessionMetadata.interactiveBridge === "object" &&
-					!Array.isArray(sessionMetadata.interactiveBridge)
-						? (sessionMetadata.interactiveBridge as Record<string, unknown>)
-						: null,
+				// The terminal owner and the interactive bridge are the supervisor's own records,
+				// found by session id on the host; nothing the agent reported is passed on.
 			},
 			createdAt: timestamp,
 			updatedAt: timestamp,
@@ -432,6 +430,39 @@ export async function retryLaunchForSession(sessionId: string, actor: Actor) {
 	}
 	await assertLaunchOwnedBySessionOwner(sessionId, original);
 
+	// A retry is a new launch, so it is judged again as one: the template's own checks, and
+	// the target host's (a host that was downgraded since, or no longer has the executable,
+	// must not receive it). The stored spec is rebuilt from the row so it can't drift.
+	const retryTemplate = normalizeTemplateInput({
+		name: "retry",
+		agentType: original.agentType as LaunchableAgentType,
+		cwd: original.cwd,
+		baseInstructions: original.baseInstructions,
+		taskPrompt: original.taskPrompt,
+		model: original.model,
+		approvalPolicy: original.approvalPolicy as SessionTemplateInput["approvalPolicy"],
+		sandboxMode: original.sandboxMode as SessionTemplateInput["sandboxMode"],
+		env: (original.env as Record<string, string>) ?? {},
+	});
+	const templateErrors = validateTemplateInput(retryTemplate).errors;
+	if (templateErrors.length > 0) {
+		throw new Error(`Launch can't be retried: ${templateErrors.join(" ")}`);
+	}
+	const retryHostId = original.requestedSupervisorId ?? original.resolvedSupervisorId;
+	const retryHost = retryHostId ? await getSupervisor(retryHostId) : null;
+	if (retryHost) {
+		const { errors } = validateAgainstSupervisor(
+			retryTemplate,
+			retryHost,
+			original.requestedLaunchMode as LaunchMode,
+		);
+		if (errors.length > 0) throw new Error(`Launch can't be retried: ${errors.join(" ")}`);
+	} else if (original.approvalPolicy != null || original.sandboxMode != null) {
+		throw new Error(
+			"Launch can't be retried: its host is gone, so the approval policy and sandbox mode can't be confirmed there.",
+		);
+	}
+
 	const timestamp = nowIso();
 	const newCorrelationId = crypto.randomUUID();
 	const [cloned] = await getDb()
@@ -451,6 +482,13 @@ export async function retryLaunchForSession(sessionId: string, actor: Actor) {
 			launchSpec: {
 				...(original.launchSpec as Record<string, unknown>),
 				launchCorrelationId: newCorrelationId,
+				approvalPolicy: retryTemplate.approvalPolicy ?? null,
+				sandboxMode: retryTemplate.sandboxMode ?? null,
+				providerConfig: {
+					...((original.launchSpec as { providerConfig?: Record<string, unknown> })
+						.providerConfig ?? {}),
+					cliArgs: buildStoredCliArgs(retryTemplate, original.requestedLaunchMode as LaunchMode),
+				},
 			},
 			requestedBy: actor.label,
 			requestedByUserId: actor.userId,

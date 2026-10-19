@@ -14,6 +14,7 @@ export type PrelaunchErrorCode =
 	| "git_init_failed"
 	| "claude_md_write_failed"
 	| "claude_md_sha_mismatch"
+	| "claude_md_path_invalid"
 	| "clone_url_invalid"
 	| "clone_scheme_disallowed"
 	| "clone_credentials_in_url"
@@ -260,11 +261,31 @@ async function runGitInit(target: string): Promise<void> {
 	}
 }
 
+export function isPlainFileName(name: unknown): name is string {
+	return (
+		typeof name === "string" &&
+		name.length > 0 &&
+		name.length <= 255 &&
+		name !== "." &&
+		name !== ".." &&
+		!/[\\/\0]/.test(name)
+	);
+}
+
 async function writeSeedClaudeMd(
 	dir: string,
 	seed: { content: string; path: string; sha256: string },
 	logWarning: ((msg: string) => void) | undefined,
 ): Promise<void> {
+	// The seed file is a plain file name inside the directory: a separator or '..' would write
+	// somewhere else (the content hash only says the content is what was asked for).
+	if (!isPlainFileName(seed.path)) {
+		throw new PrelaunchError(
+			"claude_md_path_invalid",
+			"The seed file name must be a plain file name with no path separators or '..'.",
+			dir,
+		);
+	}
 	const computed = await sha256Hex(seed.content);
 	if (computed !== seed.sha256) {
 		throw new PrelaunchError(

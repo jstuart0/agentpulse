@@ -1,5 +1,6 @@
 import { relative, resolve } from "node:path";
 import { AGENT_METADATA, LAUNCHABLE_AGENT_TYPES } from "../../shared/constants.js";
+import { privilegeCliArgs } from "../../shared/launch-privileges.js";
 import type {
 	LaunchMode,
 	LaunchSpec,
@@ -10,6 +11,9 @@ import type {
 	TemplateHostCompatibility,
 } from "../../shared/types.js";
 
+/** The supervisor feature that says it applies approvalPolicy / sandboxMode. */
+export const ENFORCES_LAUNCH_PRIVILEGES = "enforces_launch_privileges";
+
 // Shared with template-preview.ts (which imports this) so both provider
 // command lookups can't drift.
 export const PROVIDER_COMMAND: Record<LaunchableAgentType, string> = {
@@ -18,6 +22,8 @@ export const PROVIDER_COMMAND: Record<LaunchableAgentType, string> = {
 };
 
 function isWithinTrustedRoot(cwd: string, roots: string[]) {
+	// `resolve` folds `..` away lexically, but the operating system follows a symlink first.
+	if (cwd.split(/[\\/]/).includes("..")) return false;
 	const resolvedCwd = resolve(cwd);
 	for (const root of roots.map((value) => resolve(value))) {
 		const rel = relative(root, resolvedCwd);
@@ -76,6 +82,14 @@ export function validateAgainstSupervisor(
 			`${supervisor.hostName} cannot launch Codex because the codex executable is not configured or not on PATH.`,
 		);
 	}
+	if (
+		(template.approvalPolicy != null || template.sandboxMode != null) &&
+		!(supervisor.capabilities.features ?? []).includes(ENFORCES_LAUNCH_PRIVILEGES)
+	) {
+		errors.push(
+			`${supervisor.hostName} is running an older supervisor that doesn't apply approval policy or sandbox mode, so this launch would run without them. Update the supervisor on that host, or clear both settings.`,
+		);
+	}
 	if (!isWithinTrustedRoot(template.cwd, supervisor.trustedRoots)) {
 		errors.push("Working directory is outside the supervisor's trusted roots.");
 	}
@@ -106,6 +120,16 @@ export function validateAgainstSupervisor(
 					"AgentPulse cannot yet hand prompts back into the live terminal on this host.",
 			);
 		}
+	}
+	if (
+		requestedLaunchMode === "headless" &&
+		template.agentType === "claude_code" &&
+		template.approvalPolicy != null &&
+		template.approvalPolicy !== "default"
+	) {
+		warnings.push(
+			"A headless Claude launch has nobody to approve tool calls, so with permission mode 'default' anything that needs permission is denied.",
+		);
 	}
 	if (requestedLaunchMode === "headless") {
 		warnings.push(
@@ -179,6 +203,24 @@ function providerCommandForSpec(agentType: LaunchableAgentType): string {
 }
 
 /**
+ * The argv shown in a stored launch spec, built from the template alone: `--model`, the
+ * mapping's privilege flags, then the headless flags. Nothing a client put in its own
+ * `providerConfig.cliArgs` survives. The supervisor never executes these; it builds its
+ * own argv from the launch row.
+ */
+export function buildStoredCliArgs(template: SessionTemplateInput, mode: LaunchMode): string[] {
+	const cliArgs: string[] = [];
+	if (template.model) cliArgs.push("--model", quoteShellForSpec(template.model));
+	cliArgs.push(
+		...privilegeCliArgs(template.agentType, template.approvalPolicy, template.sandboxMode),
+	);
+	if (template.agentType === "claude_code" && mode === "headless") {
+		cliArgs.push("--print", "--output-format", "stream-json");
+	}
+	return cliArgs;
+}
+
+/**
  * Pure: construct a LaunchSpec from a normalized template + chosen mode +
  * chosen supervisor. Does not call any DB or async function.
  *
@@ -197,11 +239,7 @@ export function buildLaunchSpec(
 	const agentType = template.agentType;
 	const command = providerCommandForSpec(agentType);
 	const instructionsFile = AGENT_METADATA[agentType].instructionsFile;
-	const cliArgs: string[] = [];
-	if (template.model) cliArgs.push("--model", quoteShellForSpec(template.model));
-	if (agentType === "claude_code" && mode === "headless") {
-		cliArgs.push("--print", "--output-format", "stream-json");
-	}
+	const cliArgs = buildStoredCliArgs(template, mode);
 	return {
 		version: 1,
 		launchCorrelationId: crypto.randomUUID(),

@@ -35,4 +35,11 @@ describe("src/supervisor/index.ts main() startup order (AGEN-21)", () => {
 		expect(loadIndex).toBeGreaterThan(-1);
 		expect(tightenIndex).toBeLessThan(loadIndex);
 	});
+
+	test("main() refuses a trusted root containing ~/.agentpulse before it registers", () => {
+		const body = extractMainBody(SOURCE);
+		const check = body.indexOf("assertTrustedRootsExcludeAgentpulseDir(config.trustedRoots)");
+		expect(check).toBeGreaterThan(body.indexOf("loadSupervisorConfig()"));
+		expect(check).toBeLessThan(body.indexOf('request("/supervisors/register"'));
+	});
 });

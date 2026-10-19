@@ -12,6 +12,8 @@
  * directory against this host's trusted roots when the launch was requested, and
  * the prelaunch actions check their own paths.
  */
+import { launchEnvErrors } from "../shared/launch-env-policy.js";
+import { resolveLaunchPrivileges } from "../shared/launch-privileges.js";
 import type { LaunchRequest } from "../shared/types.js";
 import type { LaunchCallbacks } from "./providers/claude-shared.js";
 import type {
@@ -21,6 +23,7 @@ import type {
 import type { launchManagedCodexRequest } from "./providers/codex-managed.js";
 import { PrelaunchError, type executePrelaunchActions } from "./services/prelaunch-actions.js";
 import { LAUNCH_REFUSED_CODE, type ReportGate } from "./services/report-gate.js";
+import { assertCwdTrusted, canonicalSpawnCwd } from "./services/spawn-cwd.js";
 
 export type LaunchProviders = {
 	launchManagedCodex: typeof launchManagedCodexRequest;
@@ -58,6 +61,83 @@ export function createLaunchDispatcher(
 			return "rules_invalid: the exclude file or the gate's saved state has an error (see the earlier log lines), so no launch can be judged";
 		}
 		return null;
+	}
+
+	/**
+	 * Fail a launch whose approval policy or sandbox mode can't be applied to its agent
+	 * before anything else happens: no "launching" status, no prelaunch action, no process.
+	 * Never falls back to the agent's defaults. Returns true when the launch was failed.
+	 */
+	async function failUnenforceableLaunch(launch: LaunchRequest): Promise<boolean> {
+		const privileges = resolveLaunchPrivileges(
+			launch.agentType,
+			launch.approvalPolicy,
+			launch.sandboxMode,
+		);
+		const errors = [...(privileges.ok ? [] : privileges.errors), ...launchEnvErrors(launch.env)];
+		// A prompt that starts with '-' is refused here, before any prelaunch action runs, as it
+		// is later when the argv is built. Only Claude takes its prompt on the command line.
+		if (launch.agentType === "claude_code" && (launch.taskPrompt ?? "").trim().startsWith("-")) {
+			errors.push(
+				"The task prompt starts with '-', which could be read as a command-line option. Start it with a word instead.",
+			);
+		}
+		// This supervisor's own mapping must agree with the one the server confirmed to the user.
+		if (privileges.ok && launch.expectedEnforcedArgs !== undefined) {
+			const expected = launch.expectedEnforcedArgs;
+			if (
+				expected.length !== privileges.cliArgs.length ||
+				expected.some((arg, i) => arg !== privileges.cliArgs[i])
+			) {
+				errors.push(
+					`This supervisor would apply [${privileges.cliArgs.join(" ")}] but the server confirmed [${expected.join(" ")}]. The two are different versions; update them together.`,
+				);
+			}
+		}
+		if (errors.length === 0) return false;
+		log(`[supervisor] launch ${launch.id} not started: ${errors.join(" ")}`);
+		await gate.reportLaunchStatus(launch.id, {
+			status: "failed",
+			error: `Launch not started: ${errors.join(" ")}`,
+		});
+		return true;
+	}
+
+	/** A directory problem fails the launch (or, while rules exist, is the generic refusal). True when it did. */
+	async function failOnCwdProblem(launch: LaunchRequest, check: () => Promise<unknown>) {
+		try {
+			await check();
+			return false;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Working directory refused";
+			log(`[supervisor] launch ${launch.id} not started: ${message}`);
+			if (gate.rulesState() !== "none") {
+				await gate.refuseLaunch(launch.id);
+			} else {
+				await gate.reportLaunchStatus(launch.id, {
+					status: "failed",
+					error: `Launch not started: ${message}`,
+				});
+			}
+			return true;
+		}
+	}
+
+	/**
+	 * The real directory to start the agent in, or null when the launch was failed or refused. The
+	 * exclude rules are judged again against that real path: a symlink retargeted while prelaunch
+	 * actions ran must not be able to carry a launch into a directory the rules cover.
+	 */
+	async function resolveSpawnCwd(launch: LaunchRequest): Promise<string | null> {
+		let resolved: string | null = null;
+		const failed = await failOnCwdProblem(launch, async () => {
+			const canonical = await canonicalSpawnCwd(launch.cwd, deps.trustedRoots);
+			if (gate.verdictForDirectory(canonical) !== "send") {
+				throw new Error(`cwd_excluded: ${canonical} is covered by an exclude rule`);
+			}
+			resolved = canonical;
+		});
+		return failed ? null : resolved;
 	}
 
 	async function runPrelaunchActionsForLaunch(launch: LaunchRequest): Promise<boolean> {
@@ -104,10 +184,18 @@ export function createLaunchDispatcher(
 		}
 
 		if (launch.agentType === "codex_cli" && launch.requestedLaunchMode === "managed_codex") {
+			if (await failUnenforceableLaunch(launch)) return;
+			if (await failOnCwdProblem(launch, () => assertCwdTrusted(launch.cwd, deps.trustedRoots)))
+				return;
 			await gate.reportLaunchStatus(launch.id, { status: "launching" });
 			if (!(await runPrelaunchActionsForLaunch(launch))) return;
+			const spawnCwd = await resolveSpawnCwd(launch);
+			if (spawnCwd === null) return;
 			try {
-				const result = await providers.launchManagedCodex(launch, callbacksFor(launch));
+				const result = await providers.launchManagedCodex(
+					{ ...launch, cwd: spawnCwd },
+					callbacksFor(launch),
+				);
 				await gate.reportLaunchStatus(launch.id, {
 					status: "running",
 					pid: result.pid,
@@ -130,14 +218,20 @@ export function createLaunchDispatcher(
 			return;
 		}
 
+		if (await failUnenforceableLaunch(launch)) return;
+		if (await failOnCwdProblem(launch, () => assertCwdTrusted(launch.cwd, deps.trustedRoots)))
+			return;
 		await gate.reportLaunchStatus(launch.id, { status: "launching" });
 		if (!(await runPrelaunchActionsForLaunch(launch))) return;
+		const spawnCwd = await resolveSpawnCwd(launch);
+		if (spawnCwd === null) return;
+		const spawnLaunch = { ...launch, cwd: spawnCwd };
 
 		try {
 			const callbacks = callbacksFor(launch);
 			if (launch.requestedLaunchMode === "headless") {
 				const result = await providers.launchClaudeHeadless(
-					launch,
+					spawnLaunch,
 					async (update) => {
 						await gate.reportLaunchStatus(launch.id, {
 							status: update.status,
@@ -157,7 +251,7 @@ export function createLaunchDispatcher(
 				return;
 			}
 
-			const result = await providers.launchClaudeInteractive(launch, callbacks);
+			const result = await providers.launchClaudeInteractive(spawnLaunch, callbacks);
 			await gate.reportLaunchStatus(launch.id, {
 				status: "awaiting_session",
 				pid: result.pid,

@@ -212,7 +212,7 @@ export function likeStartsWith(col: AnyColumn | SQLWrapper, prefix: string): SQL
  * supported backend:
  *
  *   Postgres (postgres-js): error.code === '23505' (SQLSTATE unique_violation)
- *   SQLite   (bun:sqlite via Drizzle): error.message contains
+ *   SQLite   (bun:sqlite via Drizzle): error.code (or error.message) contains
  *            'SQLITE_CONSTRAINT_UNIQUE'
  *
  * Used by callers that need to distinguish a unique-violation from other DB
@@ -226,7 +226,7 @@ export function isUniqueViolationError(err: unknown): boolean {
 	// to the original error — check both the error itself and one level of cause.
 	if (typeof err === "object") {
 		const obj = err as Record<string, unknown>;
-		if (obj.code === "23505") return true;
+		if (obj.code === "23505" || obj.code === "SQLITE_CONSTRAINT_UNIQUE") return true;
 		// Check DrizzleQueryError.cause (set when Drizzle wraps a postgres-js error).
 		const cause = obj.cause;
 		if (cause && typeof cause === "object" && (cause as Record<string, unknown>).code === "23505") {

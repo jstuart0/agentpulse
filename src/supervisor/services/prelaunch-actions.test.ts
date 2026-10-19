@@ -596,3 +596,40 @@ describe("executePrelaunchActions: empty / null inputs", () => {
 		expect(info.isDirectory()).toBe(true);
 	});
 });
+
+describe("executePrelaunchActions: seedClaudeMd path", () => {
+	test.each(["../escape.md", "sub/dir.md", "a\\b.md", "..", ".", "", "/abs.md", "x\0y"])(
+		"%j is refused and nothing is written outside the directory",
+		async (seedPath) => {
+			const target = join(trustedRoot, "seed-path");
+			const content = "# x";
+			const sha = await sha256Hex(content);
+			try {
+				await executePrelaunchActions(
+					[scaffoldAction(target, { seedClaudeMd: { content, path: seedPath, sha256: sha } })],
+					{ trustedRoots: [trustedRoot] },
+				);
+				throw new Error("expected PrelaunchError");
+			} catch (err) {
+				expect(err).toBeInstanceOf(PrelaunchError);
+				expect((err as PrelaunchError).code).toBe("claude_md_path_invalid");
+			}
+			const entries = await readdir(trustedRoot);
+			expect(entries.filter((e) => e.endsWith(".md"))).toEqual([]);
+			await expect(stat(join(trustedRoot, "escape.md"))).rejects.toThrow();
+		},
+	);
+
+	test("AGENTS.md and CLAUDE.md are plain names and still work", async () => {
+		const content = "# x";
+		const sha = await sha256Hex(content);
+		for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+			const target = join(trustedRoot, `ok-${name}`);
+			await executePrelaunchActions(
+				[scaffoldAction(target, { seedClaudeMd: { content, path: name, sha256: sha } })],
+				{ trustedRoots: [trustedRoot] },
+			);
+			expect(await readFile(join(target, name), "utf8")).toBe(content);
+		}
+	});
+});

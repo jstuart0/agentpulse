@@ -1,3 +1,5 @@
+import { launchEnvErrors } from "../../shared/launch-env-policy.js";
+import { LaunchPrivilegeError, requireLaunchPrivileges } from "../../shared/launch-privileges.js";
 import type {
 	LaunchRequest,
 	ManagedSession,
@@ -31,6 +33,12 @@ export type LaunchCallbacks = {
 
 export type ClaudePromptAction = {
 	sessionId: string;
+	/**
+	 * The launch's recorded privileges, re-applied when a resume starts a new process.
+	 * `undefined` means the action didn't carry them, and a resume refuses to start.
+	 */
+	approvalPolicy?: unknown;
+	sandboxMode?: unknown;
 	prompt: string;
 	cwd: string;
 	model?: string | null;
@@ -233,11 +241,29 @@ export function activityToManagedEvent(activity: ActivityEntry): ManagedSessionE
 	};
 }
 
+/** What the launch's recorded privileges become for Claude Code. Throws when they can't be applied. */
+export function claudeLaunchPrivileges(launch: LaunchRequest) {
+	return requireLaunchPrivileges("claude_code", launch.approvalPolicy, launch.sandboxMode);
+}
+
+/** Same for a resume, which has no row: an action that didn't carry the privileges is refused. */
+export function claudeResumePrivileges(action: ClaudePromptAction) {
+	if (action.approvalPolicy === undefined || action.sandboxMode === undefined) {
+		throw new LaunchPrivilegeError([
+			"This resume doesn't carry the launch's approval policy and sandbox mode, so it can't be started with the right privileges. Start a new launch instead.",
+		]);
+	}
+	return requireLaunchPrivileges("claude_code", action.approvalPolicy, action.sandboxMode);
+}
+
 export function buildLaunchBaseArgs(launch: LaunchRequest, executable: string) {
+	const privileges = claudeLaunchPrivileges(launch);
+	assertEnvAllowed(launch.env);
 	const args = [executable, "--session-id", launch.launchCorrelationId];
 	if (launch.model) {
 		args.push("--model", launch.model);
 	}
+	args.push(...privileges.cliArgs);
 	if (launch.baseInstructions.trim()) {
 		args.push("--append-system-prompt", launch.baseInstructions.trim());
 	}
@@ -245,22 +271,45 @@ export function buildLaunchBaseArgs(launch: LaunchRequest, executable: string) {
 }
 
 export function buildResumeBaseArgs(action: ClaudePromptAction, executable: string) {
+	const privileges = claudeResumePrivileges(action);
+	assertEnvAllowed(action.env);
 	const args = [executable, "--resume", action.sessionId];
 	if (action.model) {
 		args.push("--model", action.model);
 	}
+	args.push(...privileges.cliArgs);
 	return args;
 }
 
-export function buildPrompt(launch: LaunchRequest) {
-	return launch.taskPrompt.trim() || "Continue working on this project.";
+/**
+ * A prompt that starts with '-' could be read as an option if it ever reached the command
+ * line bare. It is always placed after `--` as well; refusing it is the second layer.
+ */
+export function assertPromptNotOption(prompt: string): string {
+	if (prompt.startsWith("-")) {
+		throw new LaunchPrivilegeError([
+			"The prompt starts with '-', which could be read as a command-line option. Start it with a word instead.",
+		]);
+	}
+	return prompt;
 }
 
+export function buildPrompt(launch: LaunchRequest) {
+	return assertPromptNotOption(launch.taskPrompt.trim() || "Continue working on this project.");
+}
+
+/** For a prompt delivered as the last argv element (a headless resume). */
 export function buildActionPrompt(action: ClaudePromptAction) {
-	return action.prompt.trim();
+	return assertPromptNotOption(action.prompt.trim());
+}
+
+function assertEnvAllowed(env: Record<string, unknown> | undefined) {
+	const errors = launchEnvErrors(env);
+	if (errors.length > 0) throw new LaunchPrivilegeError(errors);
 }
 
 export function buildLaunchEnv(launch: LaunchRequest) {
+	assertEnvAllowed(launch.env);
 	return {
 		...process.env,
 		...launch.env,
@@ -269,6 +318,7 @@ export function buildLaunchEnv(launch: LaunchRequest) {
 }
 
 export function buildActionEnv(action: ClaudePromptAction) {
+	assertEnvAllowed(action.env);
 	return {
 		...process.env,
 		...(action.env ?? {}),

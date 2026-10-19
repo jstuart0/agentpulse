@@ -414,3 +414,24 @@ export async function mayCreateSessionForPendingLaunch(
 		.limit(1);
 	return host?.ownerUserId === posting.ownerUserId;
 }
+
+/**
+ * May this caller read this launch request? Solo: always. Team: the user who
+ * requested it, or an admin. A launch with no requester (an unattributed caller)
+ * is an admin's, and a caller with no user id (a service key that isn't a kept
+ * admin, a chat) reads none. Fails closed on an unknown mode (judged as team).
+ */
+export type LaunchReadScope = { kind: "all" } | { kind: "user"; userId: string } | { kind: "none" };
+
+/** Which launches this caller may read, as something a query can filter on. */
+export function launchReadScope(actor: Actor): LaunchReadScope {
+	if (actor.role === "none") return { kind: "none" };
+	if (actor.mode === "solo" || actor.role === "admin") return { kind: "all" };
+	return actor.userId === null ? { kind: "none" } : { kind: "user", userId: actor.userId };
+}
+
+export function canReadLaunch(actor: Actor, launch: { requestedByUserId: string | null }): boolean {
+	const scope = launchReadScope(actor);
+	if (scope.kind === "all") return true;
+	return scope.kind === "user" && scope.userId === launch.requestedByUserId;
+}

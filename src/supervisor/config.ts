@@ -32,7 +32,7 @@ export interface SupervisorConfig {
 // dir instead of the real ~/.agentpulse/supervisor.json. Falls back to
 // os.homedir() when the platform's env var isn't set, matching Node's own
 // documented os.homedir() behavior.
-function resolveHomeDir(): string {
+export function resolveHomeDir(): string {
 	const envHome = platform() === "win32" ? process.env.USERPROFILE : process.env.HOME;
 	return envHome || homedir();
 }
@@ -84,6 +84,7 @@ function buildDefaultConfig(): SupervisorConfig {
 				"can_cleanup_workarea",
 				"managed_codex",
 				"headless_claude",
+				"enforces_launch_privileges",
 			],
 		},
 	};
@@ -245,6 +246,7 @@ export async function withExecutableCapabilities(
 				"can_run_prelaunch_actions",
 				"can_cleanup_workarea",
 				"headless_claude",
+				"enforces_launch_privileges",
 				...(git.resolvedPath ? ["can_scaffold_workarea", "can_clone_repo"] : []),
 				...(terminalSupport.length > 0 ? ["interactive_terminal"] : []),
 				...(interactiveTerminalControl.available ? ["interactive_terminal_control"] : []),

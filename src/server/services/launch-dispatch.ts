@@ -1,4 +1,5 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
+import { privilegeCliArgs } from "../../shared/launch-privileges.js";
 import type { LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { launchRequests, sessions } from "../db/schema/index.js";
@@ -7,10 +8,12 @@ import { requestWsRevalidation } from "../ws/revalidation.js";
 import { applyAskInitiatedWatcher } from "./ai/auto-watcher.js";
 import { resolveObservedSessionCorrelation } from "./correlation-resolver.js";
 import { markSessionFailed } from "./event-processor.js";
+import { ENFORCES_LAUNCH_PRIVILEGES } from "./launch-compatibility.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { attachManagedSessionToLaunch } from "./managed-session-state.js";
 import { dispatchEvent } from "./push/dispatch.js";
 import { findLaunchRowByCorrelationId } from "./session-ownership.js";
+import { getSupervisor } from "./supervisor-registry.js";
 
 const PENDING_LAUNCH_STATUSES: readonly LaunchRequestStatus[] = [
 	"validated",
@@ -155,8 +158,21 @@ async function transitionLaunchStatus(
 	return updated;
 }
 
+const OLD_SUPERVISOR_ERROR =
+	"This host's supervisor is older than the launch's approval policy and sandbox mode settings and would run without them. Update the supervisor, or clear both settings.";
+
+function hasPrivilegeSettings(row: LaunchRow): boolean {
+	return row.approvalPolicy != null || row.sandboxMode != null;
+}
+
+/**
+ * Hands the supervisor its next validated launch. A launch with an approval policy or
+ * sandbox mode is only ever handed to a supervisor that advertises it applies them (the
+ * check at request time can be stale: the host may have been downgraded or replaced since).
+ * One that isn't is failed here, never claimed.
+ */
 export async function claimNextLaunchRequest(supervisorId: string) {
-	const [row] = await getDb()
+	const rows = await getDb()
 		.select()
 		.from(launchRequests)
 		.where(
@@ -166,22 +182,70 @@ export async function claimNextLaunchRequest(supervisorId: string) {
 			),
 		)
 		.orderBy(asc(launchRequests.createdAt))
-		.limit(1);
+		.limit(25);
 
-	if (!row) return null;
-
-	const claimToken = crypto.randomUUID();
-	const now = nowIso();
-	const claimed = await transitionLaunchStatus(
-		row.id,
-		{ status: "queued", claimedBySupervisorId: supervisorId, claimToken, updatedAt: now },
-		row.status,
-	);
-
-	return claimed ? mapLaunchRequest(claimed) : null;
+	let enforces: boolean | undefined;
+	for (const row of rows) {
+		if (hasPrivilegeSettings(row)) {
+			enforces ??= ((await getSupervisor(supervisorId))?.capabilities.features ?? []).includes(
+				ENFORCES_LAUNCH_PRIVILEGES,
+			);
+			if (!enforces) {
+				const now = nowIso();
+				await transitionLaunchStatus(
+					row.id,
+					{
+						status: "failed",
+						error: OLD_SUPERVISOR_ERROR,
+						dispatchFinishedAt: now,
+						updatedAt: now,
+					},
+					row.status,
+				);
+				continue;
+			}
+		}
+		const claimToken = crypto.randomUUID();
+		const now = nowIso();
+		const claimed = await transitionLaunchStatus(
+			row.id,
+			{ status: "queued", claimedBySupervisorId: supervisorId, claimToken, updatedAt: now },
+			row.status,
+		);
+		return claimed ? mapLaunchRequest(claimed) : null;
+	}
+	return null;
 }
 
-export async function updateLaunchDispatchStatus(input: {
+/**
+ * The backstop for version skew and bugs: when a supervisor reports a launch up, the
+ * privilege flags it says it applied must be exactly the ones the mapping gives for the
+ * row. Missing or different means the launch isn't what was confirmed, so it is failed.
+ * Returns the reason, or null when it matches.
+ */
+export function privilegeMismatch(
+	row: LaunchRow,
+	reported: Record<string, unknown> | null | undefined,
+): string | null {
+	const expected = privilegeCliArgs(row.agentType, row.approvalPolicy, row.sandboxMode);
+	const privileges = reported?.privileges as { enforcedArgs?: unknown } | undefined;
+	const actual = privileges?.enforcedArgs;
+	if (actual === undefined) {
+		return expected.length === 0
+			? null
+			: `The supervisor didn't report the privilege flags it applied (expected ${expected.join(" ")}).`;
+	}
+	if (
+		!Array.isArray(actual) ||
+		actual.length !== expected.length ||
+		actual.some((arg, i) => arg !== expected[i])
+	) {
+		return `The supervisor reported privilege flags [${Array.isArray(actual) ? actual.join(" ") : "?"}] instead of [${expected.join(" ")}].`;
+	}
+	return null;
+}
+
+export async function updateLaunchDispatchStatus(reported: {
 	supervisorId: string;
 	launchId: string;
 	status: LaunchRequestStatus;
@@ -193,9 +257,21 @@ export async function updateLaunchDispatchStatus(input: {
 	const [row] = await getDb()
 		.select()
 		.from(launchRequests)
-		.where(eq(launchRequests.id, input.launchId))
+		.where(eq(launchRequests.id, reported.launchId))
 		.limit(1);
-	if (!row || row.claimedBySupervisorId !== input.supervisorId) return null;
+	if (!row || row.claimedBySupervisorId !== reported.supervisorId) return null;
+
+	const mismatch =
+		reported.status === "running" || reported.status === "awaiting_session"
+			? privilegeMismatch(
+					row,
+					reported.providerLaunchMetadata ??
+						(row.providerLaunchMetadata as Record<string, unknown> | null),
+				)
+			: null;
+	const input = mismatch
+		? { ...reported, status: "failed" as const, error: `Launch failed: ${mismatch}` }
+		: reported;
 
 	const updates: Partial<LaunchRow> & { status: LaunchRequestStatus } = {
 		status: input.status,

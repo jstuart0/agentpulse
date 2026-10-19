@@ -1,3 +1,12 @@
+import {
+	CODEX_SANDBOX_RESPONSE_TYPE,
+	LaunchPrivilegeError,
+	type ReportedByAgent,
+	type ResolvedLaunchPrivileges,
+	privilegeMetadata,
+	requireLaunchPrivileges,
+	sanitizeReportedByAgent,
+} from "../../shared/launch-privileges.js";
 import type { LaunchRequest, ManagedSession } from "../../shared/types.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
 import { type JsonRpcNotification, findFreePort, spawnServer, waitForServer } from "./codex-rpc.js";
@@ -60,7 +69,82 @@ export function resolveProviderProtocolVersion(
 	return "app-server";
 }
 
+type ThreadStartResult = {
+	thread: { id: string; cwd: string; status: unknown; source: string };
+	approvalPolicy?: unknown;
+	sandbox?: { type?: unknown } | null;
+};
+
+/**
+ * The app-server answers thread/start with the policy and sandbox the thread really
+ * got. A requested value that doesn't come back identical (a managed requirements file
+ * narrowed it, an older server ignored the field) fails the launch rather than running
+ * with something other than what was confirmed.
+ */
+export interface CodexReportedPrivileges {
+	approvalPolicy: unknown;
+	sandbox: unknown;
+	/** workspaceWrite / readOnly extras the app-server reported, so a widened sandbox is visible. */
+	networkAccess: boolean | null;
+	writableRoots: string[];
+	/** True when what Codex reported is broad: no sandbox, approval `never`, or network access on. */
+	permissive: boolean;
+}
+
+function widenedSandbox(sandbox: ThreadStartResult["sandbox"]): string | null {
+	const extras = sandbox as { networkAccess?: unknown; writableRoots?: unknown } | null | undefined;
+	if (extras?.networkAccess === true) return "network access is on";
+	if (Array.isArray(extras?.writableRoots) && extras.writableRoots.length > 0) {
+		return `extra writable roots (${extras.writableRoots.join(", ")})`;
+	}
+	return null;
+}
+
+export function assertCodexThreadPrivileges(
+	started: Pick<ThreadStartResult, "approvalPolicy" | "sandbox">,
+	privileges: ResolvedLaunchPrivileges,
+): CodexReportedPrivileges {
+	const wanted = privileges.codexThread ?? {};
+	const reportedSandbox = started.sandbox?.type ?? null;
+	const widened = widenedSandbox(started.sandbox);
+	if (wanted.approvalPolicy !== undefined && started.approvalPolicy !== wanted.approvalPolicy) {
+		throw new LaunchPrivilegeError([
+			`Codex started the thread with approval policy ${JSON.stringify(started.approvalPolicy ?? null)} instead of '${wanted.approvalPolicy}'.`,
+		]);
+	}
+	if (wanted.sandbox !== undefined) {
+		if (reportedSandbox !== CODEX_SANDBOX_RESPONSE_TYPE[wanted.sandbox]) {
+			throw new LaunchPrivilegeError([
+				`Codex started the thread with sandbox ${JSON.stringify(reportedSandbox)} instead of '${wanted.sandbox}'.`,
+			]);
+		}
+		if (widened && wanted.sandbox !== "danger-full-access") {
+			throw new LaunchPrivilegeError([
+				`Codex started the thread with sandbox '${wanted.sandbox}' but ${widened}, which is wider than requested.`,
+			]);
+		}
+	}
+	const extras = started.sandbox as { networkAccess?: unknown; writableRoots?: unknown } | null;
+	return {
+		...(sanitizeReportedByAgent({
+			approvalPolicy: started.approvalPolicy,
+			sandbox: reportedSandbox,
+			networkAccess: extras?.networkAccess,
+			writableRoots: extras?.writableRoots,
+		}) as ReportedByAgent),
+		permissive:
+			reportedSandbox === "dangerFullAccess" ||
+			started.approvalPolicy === "never" ||
+			widened !== null,
+	} as CodexReportedPrivileges;
+}
+
 export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks: LaunchCallbacks) {
+	const privileges = requireLaunchPrivileges(
+		"codex_cli",
+		launch.approvalPolicy,
+		launch.sandboxMode,
+	);
 	if (process.env.AGENTPULSE_SUPERVISOR_DRY_RUN === "true") {
 		const threadId = crypto.randomUUID();
 		const desiredState = await callbacks.reportState({
@@ -87,7 +171,7 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		]);
 		return {
 			pid: 0,
-			metadata: { mode: "dry-run", threadId },
+			metadata: { mode: "dry-run", threadId, privileges: privilegeMetadata(privileges) },
 			runtime: {
 				sessionId: launch.launchCorrelationId,
 				threadId,
@@ -119,15 +203,26 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		},
 	});
 
-	const started = await client.request<{
-		thread: { id: string; cwd: string; status: unknown; source: string };
-	}>("thread/start", {
+	const started = await client.request<ThreadStartResult>("thread/start", {
 		cwd: launch.cwd,
 		experimentalRawEvents: false,
 		persistExtendedHistory: true,
 		sessionStartSource: "startup",
+		...privileges.codexThread,
 	});
 	const threadId = started.thread.id;
+	let reportedByAgent: CodexReportedPrivileges;
+	try {
+		reportedByAgent = assertCodexThreadPrivileges(started, privileges);
+	} catch (error) {
+		try {
+			client.close();
+		} catch {}
+		try {
+			serverProcess.kill();
+		} catch {}
+		throw error;
+	}
 
 	const bootstrap = await callbacks.reportState({
 		sessionId: launch.launchCorrelationId,
@@ -286,6 +381,11 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 			mode: "managed_codex",
 			threadId,
 			url,
+			privileges: {
+				...privilegeMetadata(privileges),
+				reportedByAgent,
+				permissive: reportedByAgent.permissive,
+			},
 		},
 		runtime,
 	};

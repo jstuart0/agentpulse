@@ -42,13 +42,15 @@ let home: string;
 let trusted: string;
 let work: string;
 let outside: string;
+let untrusted: string;
 
 beforeEach(() => {
 	home = realpathSync(mkdtempSync(join(tmpdir(), "ap-launch-exclude-")));
 	trusted = join(home, "trusted");
 	work = join(trusted, "secret-project");
-	outside = join(home, "elsewhere", "project");
-	for (const dir of [work, outside]) mkdirSync(dir, { recursive: true });
+	outside = join(trusted, "open-project");
+	untrusted = join(home, "elsewhere", "project");
+	for (const dir of [work, outside, untrusted]) mkdirSync(dir, { recursive: true });
 	mkdirSync(join(home, ".agentpulse"), { recursive: true, mode: 0o700 });
 	chmodSync(join(home, ".agentpulse"), 0o700);
 });
@@ -242,17 +244,22 @@ describe("a launch in an excluded directory is refused first, with one fixed sta
 		expect(roots.logs.some((l) => l.includes("cwd_excluded"))).toBe(false);
 	});
 
-	test("the top of a launch checks only the rules: a launch outside the trusted roots (the server judged that when it was requested) is not refused here, with no rules or with unrelated ones", async () => {
-		for (const rules of [null, [join(home, "unrelated")]]) {
-			const h = harness();
-			if (rules) writeRules(rules);
-			await h.dispatch(launchFor(outside));
-			expect(h.calls.map((c) => (c.body as { status: string }).status)).toEqual([
-				"launching",
-				"running",
-				"running",
-			]);
-			expect(h.ran).toEqual(["headless"]);
+	test("a launch whose directory is outside the trusted roots is failed here too (the host re-checks what the server judged): the specific failure with no rules, the generic refusal while rules exist", async () => {
+		for (const m of MODES) {
+			const none = harness();
+			await none.dispatch(launchFor(untrusted, { agentType: m.agentType, mode: m.mode }));
+			expect(none.ran, m.label).toEqual([]);
+			expect(none.calls, m.label).toHaveLength(1);
+			expect((none.calls[0].body as { status: string }).status).toBe("failed");
+			expect(String((none.calls[0].body as { error: string }).error)).toContain(
+				"outside this host's trusted roots",
+			);
+
+			const withRules = harness();
+			writeRules([join(home, "unrelated")]);
+			await withRules.dispatch(launchFor(untrusted, { agentType: m.agentType, mode: m.mode }));
+			expect(withRules.ran, m.label).toEqual([]);
+			expect(withRules.calls, m.label).toEqual([{ path: statusPath, body: GENERIC_BODY }]);
 			removeRules();
 		}
 	});
@@ -372,11 +379,6 @@ describe("with no rules file a launch issues exactly the requests it always did"
 
 	const ODD_LAUNCHES: [string, (mode: string) => LaunchRequest][] = [
 		[
-			"an empty directory",
-			(mode) =>
-				launchFor("", mode === "managed_codex" ? { agentType: "codex_cli", mode } : { mode }),
-		],
-		[
 			"an over-long correlation id",
 			(mode) =>
 				launchFor(work, {
@@ -409,19 +411,61 @@ describe("with no rules file a launch issues exactly the requests it always did"
 		}
 	}
 
-	test("a project directory that is a symlink under a trusted root pointing outside it starts as it did before (nothing about roots is checked on the way in)", async () => {
+	test("a project directory that is a symlink under a trusted root pointing outside it is failed, and a '..' after a symlink is refused up front", async () => {
 		const { symlinkSync } = await import("node:fs");
 		const link = join(trusted, "linked-project");
-		symlinkSync(outside, link);
+		symlinkSync(untrusted, link);
 		for (const m of MODES) {
-			const h = harness();
-			await h.dispatch(launchFor(link, { agentType: m.agentType, mode: m.mode }));
-			expect(
-				h.calls.map((c) => c.body),
-				m.label,
-			).toEqual(FIXTURES[m.label] as unknown[]);
-			expect(h.ran.length, m.label).toBe(1);
+			const viaLink = harness();
+			await viaLink.dispatch(launchFor(link, { agentType: m.agentType, mode: m.mode }));
+			expect(viaLink.ran, m.label).toEqual([]);
+			expect(String((viaLink.calls[0].body as { error: string }).error), m.label).toContain(
+				"outside this host's trusted roots",
+			);
+
+			const dots = harness();
+			await dots.dispatch(
+				launchFor(`${link}/../open-project`, { agentType: m.agentType, mode: m.mode }),
+			);
+			expect(dots.ran, m.label).toEqual([]);
+			expect(String((dots.calls[0].body as { error: string }).error), m.label).toContain("'..'");
 		}
+	});
+});
+
+describe("the rules are judged again against the real directory right before spawn", () => {
+	test("a symlink retargeted into an excluded directory while prelaunch actions run never reaches a provider", async () => {
+		const { symlinkSync, unlinkSync } = await import("node:fs");
+		for (const m of MODES) {
+			const alias = join(trusted, `alias-${m.mode}`);
+			symlinkSync(outside, alias);
+			const h = harness({
+				prelaunch: async () => {
+					unlinkSync(alias);
+					symlinkSync(work, alias);
+				},
+			});
+			writeRules([work]);
+			await h.dispatch(launchFor(alias, { agentType: m.agentType, mode: m.mode, actions: true }));
+			expect(h.ran, m.label).toEqual(["prelaunch"]);
+			expect(h.calls.at(-1), m.label).toEqual({ path: statusPath, body: GENERIC_BODY });
+			removeRules();
+		}
+	});
+
+	test("the same retarget into a directory the rules don't cover starts normally, in the new real path", async () => {
+		const { symlinkSync, unlinkSync } = await import("node:fs");
+		const alias = join(trusted, "alias-fine");
+		symlinkSync(outside, alias);
+		const h = harness({
+			prelaunch: async () => {
+				unlinkSync(alias);
+				symlinkSync(work, alias);
+			},
+		});
+		writeRules([join(home, "unrelated")]);
+		await h.dispatch(launchFor(alias, { actions: true }));
+		expect(h.ran).toEqual(["prelaunch", "headless"]);
 	});
 });
 

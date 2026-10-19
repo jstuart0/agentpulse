@@ -1,6 +1,13 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { AGENT_METADATA, isLaunchable } from "../../shared/constants.js";
+import { launchEnvErrors } from "../../shared/launch-env-policy.js";
+import {
+	agentDefaultsWarning,
+	describeEffectivePrivileges,
+	privilegeCliArgs,
+	resolveLaunchPrivileges,
+} from "../../shared/launch-privileges.js";
 import type {
 	ApprovalPolicy,
 	LaunchMode,
@@ -39,7 +46,8 @@ function sanitizeEnv(env: unknown): Record<string, string> {
 		const cleanKey = sanitizeString(key);
 		if (!cleanKey) continue;
 		if (typeof rawValue !== "string") continue;
-		result[cleanKey] = rawValue.replace(/\0/g, "").trim();
+		// NUL is kept so the launch checks can refuse it, rather than being quietly dropped.
+		result[cleanKey] = rawValue.trim();
 	}
 	return result;
 }
@@ -98,11 +106,34 @@ export function validateTemplateInput(input: SessionTemplateInput) {
 		errors.push("Base instructions must be 20,000 characters or fewer.");
 	if (taskPrompt.length > 12000) errors.push("Task prompt must be 12,000 characters or fewer.");
 
+	if (input.cwd.split(/[\\/]/).includes("..")) {
+		errors.push("Working directory may not contain '..' segments.");
+	}
 	if (input.cwd && !existsSync(input.cwd))
 		warnings.push("Working directory does not exist on this machine.");
 	if (!baseInstructions) warnings.push("Base instructions are empty.");
 	if (!taskPrompt) warnings.push("Task prompt is empty.");
 	if (baseInstructions.length > 8000) warnings.push("Base instructions are unusually large.");
+
+	errors.push(...launchEnvErrors(env));
+	if (taskPrompt.startsWith("-")) {
+		errors.push(
+			"Task prompt can't start with '-': it could be read as a command-line option. Start it with a word instead.",
+		);
+	}
+	if (isLaunchable(input.agentType)) {
+		const privileges = resolveLaunchPrivileges(
+			input.agentType,
+			input.approvalPolicy,
+			input.sandboxMode,
+		);
+		if (privileges.ok) {
+			const defaulted = agentDefaultsWarning(privileges);
+			if (defaulted) warnings.push(defaulted);
+		} else {
+			errors.push(...privileges.errors);
+		}
+	}
 
 	for (const envName of Object.keys(env)) {
 		if (SUSPICIOUS_ENV_NAMES.has(envName)) {
@@ -126,6 +157,7 @@ function buildProviderGuidance(
 	const args: string[] = [];
 
 	if (template.model) args.push(`--model ${quoteShell(template.model)}`);
+	args.push(...privilegeCliArgs(agentType, template.approvalPolicy, template.sandboxMode));
 	if (agentType === "claude_code" && requestedLaunchMode === "headless") {
 		args.push("--print", "--output-format", "stream-json");
 	}
@@ -200,7 +232,14 @@ export async function buildTemplatePreview(
 		env: normalizedTemplate.env ?? {},
 		providerConfig: {
 			command: providerCommand,
-			cliArgs: normalizedTemplate.model ? ["--model", normalizedTemplate.model] : [],
+			cliArgs: [
+				...(normalizedTemplate.model ? ["--model", normalizedTemplate.model] : []),
+				...privilegeCliArgs(
+					previewAgentType,
+					normalizedTemplate.approvalPolicy,
+					normalizedTemplate.sandboxMode,
+				),
+			],
 			instructionsFile,
 		},
 	};
@@ -234,5 +273,10 @@ export async function buildTemplatePreview(
 		warnings: validation.warnings,
 		hostCompatibility,
 		firstCapableHostId,
+		effectivePrivileges: describeEffectivePrivileges(
+			previewAgentType,
+			normalizedTemplate.approvalPolicy,
+			normalizedTemplate.sandboxMode,
+		),
 	};
 }

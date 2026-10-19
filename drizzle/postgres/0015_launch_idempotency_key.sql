@@ -1,0 +1,2 @@
+ALTER TABLE "launch_requests" ADD COLUMN "idempotency_key" text;--> statement-breakpoint
+ALTER TABLE "launch_requests" ADD CONSTRAINT "launch_requests_idempotency_key_unique" UNIQUE("idempotency_key");

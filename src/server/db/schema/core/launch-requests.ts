@@ -54,6 +54,8 @@ export const launchRequestsSqlite = sqliteTable("launch_requests", {
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 	/** The user who requested this launch. Null for DISABLE_AUTH / unattributed callers. */
 	requestedByUserId: text("requested_by_user_id"),
+	/** `<requester>:<clientRequestId>` for a create that carried a client nonce; cleared when its window passes. */
+	idempotencyKey: text("idempotency_key").unique(),
 });
 
 export const launchRequestsPg = pgTable("launch_requests", {
@@ -102,4 +104,6 @@ export const launchRequestsPg = pgTable("launch_requests", {
 	createdAt: tsColumn("postgres", "created_at"),
 	updatedAt: tsColumn("postgres", "updated_at"),
 	requestedByUserId: pgText("requested_by_user_id"),
+	/** `<requester>:<clientRequestId>` for a create that carried a client nonce; cleared when its window passes. */
+	idempotencyKey: pgText("idempotency_key").unique(),
 });
