@@ -595,6 +595,7 @@ AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). T
 | `AGENTPULSE_VECTOR_SCAN_MAX_MS` | `4000` | Longest one Ask semantic scan runs, in milliseconds, pacing included. Range 250 to 60,000. |
 | `AGENTPULSE_VECTOR_SCAN_CPU_SHARE` | `0.3` | Share of CPU all concurrent semantic scans together may use. Range 0.05 to 1; `1` turns pacing off. |
 | `AGENTPULSE_ASK_MAX_CONCURRENT` | `2` | Ask turns that may run at once, web and Telegram together, per process. Range 1 to 8. |
+| `AGENTPULSE_MANAGED_SESSION_MAX_SILENCE_HOURS` | `72` | Hours of silence after which a supervisor-launched session stops being exempt from the inactivity sweep, even while its host is heartbeating, and completes. The next hook reopens it. Range 1 to 720. |
 | `DATABASE_URL` | `""` (SQLite) | Postgres connection string. When set to a `postgres://...` URL, AgentPulse uses PostgreSQL instead of SQLite. Example: `postgres://agentpulse:password@host:5432/agentpulse?sslmode=require`. Leave unset or empty for SQLite. |
 | `AGENTPULSE_PG_POOL_MAX` | `10` | Maximum Postgres connection pool size. Integer in [1, 100]. Tune based on your Postgres server's `max_connections` and replica count. |
 | `AGENTPULSE_LEGACY_INIT` | (unset) | SQLite existing-install migration behaviour. Set to `"false"` to force a fresh Drizzle migrate on an existing SQLite install (opt-in, non-destructive if schema is already current). Unset keeps the legacy `initializeDatabase()` path for existing SQLite installs. |
