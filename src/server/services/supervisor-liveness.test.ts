@@ -191,7 +191,11 @@ describe("reader agreement (b)", () => {
 		const { t, ids, liveIds } = await seedPopulation();
 		const seen = new Set<string>();
 		for (const id of ids) {
-			if (await getConnectedSupervisor(id, t)) seen.add(id);
+			const record = await getConnectedSupervisor(id, t);
+			if (!record) continue;
+			// the record's own status is judged at the same instant, not a fresh clock
+			expect(record.status).toBe("connected");
+			seen.add(id);
 		}
 		expect(seen).toEqual(liveIds);
 	});

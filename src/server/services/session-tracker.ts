@@ -1865,7 +1865,7 @@ const STUCK_WORKING_RECOVERY_MS = 2 * SESSION_END_TIMEOUT_MS;
  */
 function withinSilenceCeiling(lastActivityAt: string, nowMs: number): boolean {
 	const at = parseDbTimestamp(lastActivityAt);
-	return at === null || at >= nowMs - config.managedSessionMaxSilenceMs;
+	return at === null || at > nowMs - config.managedSessionMaxSilenceMs;
 }
 
 /** The three sweep WHERE clauses; `protectedIds` are skipped by every one. */

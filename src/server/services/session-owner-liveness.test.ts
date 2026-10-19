@@ -389,6 +389,18 @@ describe("managed-silence ceiling", () => {
 		expect(r?.isWorking).toBe(false);
 	});
 
+	test("ceiling: silent for exactly the ceiling completes (strictly less than 72 h is protected)", async () => {
+		const T = Date.now();
+		await liveHostSession("c-exact", new Date(T - config.managedSessionMaxSilenceMs).toISOString());
+		await liveHostSession(
+			"c-just-in",
+			new Date(T - config.managedSessionMaxSilenceMs + 1).toISOString(),
+		);
+		await updateStaleSessions(T);
+		expect((await row("c-exact"))?.status).toBe("completed");
+		expect((await row("c-just-in"))?.status).toBe("active");
+	});
+
 	test("ceiling: silent 71 h stays active and working", async () => {
 		await liveHostSession("c-71", silentFor(71 * HOUR));
 		await updateStaleSessions();

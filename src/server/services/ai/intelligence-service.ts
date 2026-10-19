@@ -169,7 +169,7 @@ export async function intelligenceForSession(
 	const openHitl = await getOpenHitlForSession(sessionId);
 
 	const supervisorConnected: boolean | undefined = (
-		await getSessionOwnerConnections([sessionId])
+		await getSessionOwnerConnections([sessionId], now.getTime())
 	).get(sessionId);
 
 	return classifySession({
@@ -216,7 +216,7 @@ export async function intelligenceForSessions(
 	}
 
 	// 3) Owner-of-record supervisor connected-state, batched.
-	const ownerConnected = await getSessionOwnerConnections(presentIds);
+	const ownerConnected = await getSessionOwnerConnections(presentIds, now.getTime());
 	const managedBySession = new Map<string, { supervisorConnected: boolean }>();
 	for (const [id, connected] of ownerConnected) {
 		managedBySession.set(id, { supervisorConnected: connected });

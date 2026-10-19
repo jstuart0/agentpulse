@@ -238,4 +238,20 @@ describe("intelligence-service.intelligenceForSession — host lease", () => {
 		expect(live?.reasonCode).not.toBe("supervisor_offline");
 		expect(live?.health).not.toBe("blocked");
 	});
+
+	test("a supplied `now` decides the lease on both the single and bulk paths", async () => {
+		await seedHost("soon-expired", 60_000);
+		await seedManagedSession({
+			sessionId: "lease-now",
+			supervisorId: "soon-expired",
+			managedState: "interactive_terminal",
+		});
+		const later = new Date(Date.now() + 10 * 60_000);
+		expect((await intelligenceForSession("lease-now"))?.reasonCode).not.toBe("supervisor_offline");
+		expect((await intelligenceForSession("lease-now", later))?.reasonCode).toBe(
+			"supervisor_offline",
+		);
+		const bulk = await intelligenceForSessions(["lease-now"], later);
+		expect(bulk.get("lease-now")?.reasonCode).toBe("supervisor_offline");
+	});
 });

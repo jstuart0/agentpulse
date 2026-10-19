@@ -297,6 +297,16 @@ describe("deriveHostExcludeNotice", () => {
 
 	test("an unreadable lease date is not a live lease", () => {
 		expect(notice("invalid", { heartbeatLeaseExpiresAt: "not a date" })).toBeNull();
+		// bare SQLite (UTC, no zone) and Postgres +00 forms read by their true instant
+		const bare = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+		expect(notice("invalid", { heartbeatLeaseExpiresAt: bare(NOW + 60_000) })).not.toBeNull();
+		expect(notice("invalid", { heartbeatLeaseExpiresAt: bare(NOW - 60_000) })).toBeNull();
+		expect(
+			notice("invalid", { heartbeatLeaseExpiresAt: `${bare(NOW + 60_000)}.123456+00` }),
+		).not.toBeNull();
+		expect(
+			notice("invalid", { heartbeatLeaseExpiresAt: `${bare(NOW - 60_000)}.123456+00` }),
+		).toBeNull();
 		expect(notice("invalid", { heartbeatLeaseExpiresAt: undefined })).toBeNull();
 	});
 

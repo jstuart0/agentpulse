@@ -29,7 +29,7 @@ function leaseExpiryIso(base = Date.now()) {
 	return new Date(base + HEARTBEAT_LEASE_MS).toISOString();
 }
 
-function mapSupervisor(row: typeof supervisors.$inferSelect): SupervisorRecord {
+function mapSupervisor(row: typeof supervisors.$inferSelect, nowMs = Date.now()): SupervisorRecord {
 	return {
 		id: row.id,
 		hostName: row.hostName,
@@ -38,7 +38,7 @@ function mapSupervisor(row: typeof supervisors.$inferSelect): SupervisorRecord {
 		version: row.version,
 		capabilities: withCapabilityDefaults(row.capabilities),
 		trustedRoots: readTrustedRoots(row.trustedRoots),
-		status: deriveSupervisorStatus(row.heartbeatLeaseExpiresAt, row.enrollmentState, Date.now()),
+		status: deriveSupervisorStatus(row.heartbeatLeaseExpiresAt, row.enrollmentState, nowMs),
 		capabilitySchemaVersion: row.capabilitySchemaVersion,
 		configSchemaVersion: row.configSchemaVersion,
 		lastHeartbeatAt: row.lastHeartbeatAt,
@@ -204,7 +204,7 @@ export async function heartbeatSupervisor(id: string) {
 
 export async function listSupervisors() {
 	const rows = await getDb().select().from(supervisors).orderBy(desc(supervisors.updatedAt));
-	return rows.map(mapSupervisor);
+	return rows.map((row) => mapSupervisor(row));
 }
 
 export async function getSupervisor(id: string) {
@@ -216,7 +216,7 @@ export async function getConnectedSupervisor(id?: string | null, nowMs = Date.no
 	if (id) {
 		const [row] = await getDb().select().from(supervisors).where(eq(supervisors.id, id)).limit(1);
 		return row && isSupervisorLive(row.heartbeatLeaseExpiresAt, row.enrollmentState, nowMs)
-			? mapSupervisor(row)
+			? mapSupervisor(row, nowMs)
 			: null;
 	}
 
@@ -224,7 +224,7 @@ export async function getConnectedSupervisor(id?: string | null, nowMs = Date.no
 	const row = rows.find((r) =>
 		isSupervisorLive(r.heartbeatLeaseExpiresAt, r.enrollmentState, nowMs),
 	);
-	return row ? mapSupervisor(row) : null;
+	return row ? mapSupervisor(row, nowMs) : null;
 }
 
 /**
