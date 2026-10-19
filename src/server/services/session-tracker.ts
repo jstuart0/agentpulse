@@ -70,6 +70,7 @@ import { sanitizeNativeName } from "./name-sanitizer.js";
 import { notifySessionUpdated } from "./notifier.js";
 import { mapSessionDto } from "./session-dto.js";
 import { listLiveOwnedManagedSessions } from "./session-ownership.js";
+import { parseDbTimestamp } from "./util/db-time.js";
 
 /**
  * Rename a session atomically across `sessions` and (when present)
@@ -397,7 +398,8 @@ export async function unacknowledgeSession(
 
 // Managed states that indicate an agent process is still running under a live
 // supervisor. Sessions in these states must not be auto-completed by staleness
-// checks — the supervisor will report terminal state when the process exits.
+// checks — the supervisor will report terminal state when the process exits,
+// or the silence ceiling (config.managedSessionMaxSilenceMs) is reached.
 // Order is preserved from the original slice (interactive/headless/managed
 // first, pending last) — the slice TYPE-2b promotion narrows the element type
 // to ManagedState so adding a new live state requires picking it from the
@@ -1855,6 +1857,47 @@ async function computeStatsByHost(options?: {
 const STUCK_WORKING_RECOVERY_MS = 2 * SESSION_END_TIMEOUT_MS;
 
 /**
+ * Whether a managed session under a live supervisor is still inside the
+ * silence ceiling (D4). Decided in JS on the parsed instant, never by a
+ * lexical compare, because stored forms differ (ISO `Z`, bare SQLite,
+ * Postgres `+00`). A value that can't be read stays protected: the ceiling
+ * never acts on a time it can't parse.
+ */
+function withinSilenceCeiling(lastActivityAt: string, nowMs: number): boolean {
+	const at = parseDbTimestamp(lastActivityAt);
+	return at === null || at >= nowMs - config.managedSessionMaxSilenceMs;
+}
+
+/** The three sweep WHERE clauses; `protectedIds` are skipped by every one. */
+export function sweepConditions(input: {
+	idleCutoff: string;
+	endCutoff: string;
+	stuckWorkingCutoff: string;
+	protectedIds: readonly string[];
+}) {
+	const skipProtected =
+		input.protectedIds.length > 0 ? [notInArray(sessions.sessionId, [...input.protectedIds])] : [];
+	return {
+		stuckWorking: and(
+			eq(sessions.isWorking, true),
+			lt(sessions.lastActivityAt, input.stuckWorkingCutoff),
+			...skipProtected,
+		),
+		idle: and(
+			eq(sessions.status, "active"),
+			eq(sessions.isWorking, false),
+			lt(sessions.lastActivityAt, input.idleCutoff),
+			...skipProtected,
+		),
+		end: and(
+			eq(sessions.status, "idle"),
+			lt(sessions.lastActivityAt, input.endCutoff),
+			...skipProtected,
+		),
+	};
+}
+
+/**
  * Advance stale sessions through the lifecycle:
  *   active  → idle       when !isWorking and no activity for idle timeout
  *   idle    → completed  when no activity for end timeout
@@ -1862,8 +1905,11 @@ const STUCK_WORKING_RECOVERY_MS = 2 * SESSION_END_TIMEOUT_MS;
  * Working sessions never transition automatically — the user rule is
  * that isWorking=true must block idle/completed until Stop arrives.
  * Sessions whose managed process is still running under an owner-of-record
- * supervisor with an unexpired heartbeat lease are skipped entirely; those flip to
- * terminal state when the supervisor reports the process exited.
+ * supervisor with an unexpired heartbeat lease are skipped, but only while
+ * they have been silent less than `config.managedSessionMaxSilenceMs` (72 h
+ * by default): those flip to terminal state when the supervisor reports the
+ * process exited, or after that much silence as a stopgap. A later hook
+ * reopens a session the ceiling completed.
  *
  * Stuck-working recovery: if isWorking=true but there has been no
  * activity for 2× the end timeout, we assume the agent crashed and
@@ -1874,12 +1920,11 @@ export async function updateStaleSessions(now: number = Date.now()): Promise<num
 	const endCutoff = new Date(now - SESSION_END_TIMEOUT_MS).toISOString();
 	const stuckWorkingCutoff = new Date(now - STUCK_WORKING_RECOVERY_MS).toISOString();
 
-	const liveSessionIds = (await listLiveOwnedManagedSessions(LIVE_MANAGED_STATES, now)).map(
-		(row) => row.sessionId,
-	);
+	const protectedIds = (await listLiveOwnedManagedSessions(LIVE_MANAGED_STATES, now))
+		.filter((row) => withinSilenceCeiling(row.lastActivityAt, now))
+		.map((row) => row.sessionId);
 
-	const excludeLive =
-		liveSessionIds.length > 0 ? notInArray(sessions.sessionId, liveSessionIds) : undefined;
+	const conditions = sweepConditions({ idleCutoff, endCutoff, stuckWorkingCutoff, protectedIds });
 
 	// Stuck-working recovery: clear isWorking on sessions that have been
 	// silent for far too long. Runs first so the idle transition below
@@ -1887,27 +1932,14 @@ export async function updateStaleSessions(now: number = Date.now()): Promise<num
 	const cleared = await getDb()
 		.update(sessions)
 		.set({ isWorking: false })
-		.where(
-			and(
-				eq(sessions.isWorking, true),
-				lt(sessions.lastActivityAt, stuckWorkingCutoff),
-				...(excludeLive ? [excludeLive] : []),
-			),
-		)
+		.where(conditions.stuckWorking)
 		.returning({ sessionId: sessions.sessionId });
 
 	// active → idle: only when the session is NOT currently working.
 	const idled = await getDb()
 		.update(sessions)
 		.set({ status: "idle" })
-		.where(
-			and(
-				eq(sessions.status, "active"),
-				eq(sessions.isWorking, false),
-				lt(sessions.lastActivityAt, idleCutoff),
-				...(excludeLive ? [excludeLive] : []),
-			),
-		)
+		.where(conditions.idle)
 		.returning({ sessionId: sessions.sessionId });
 
 	// idle → completed: requires the session to have already moved to
@@ -1921,13 +1953,7 @@ export async function updateStaleSessions(now: number = Date.now()): Promise<num
 			status: "completed",
 			endedAt: new Date().toISOString(),
 		})
-		.where(
-			and(
-				eq(sessions.status, "idle"),
-				lt(sessions.lastActivityAt, endCutoff),
-				...(excludeLive ? [excludeLive] : []),
-			),
-		)
+		.where(conditions.end)
 		.returning({ sessionId: sessions.sessionId });
 
 	await broadcastSweptSessions([...cleared, ...idled, ...result].map((row) => row.sessionId));

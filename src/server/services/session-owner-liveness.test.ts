@@ -11,10 +11,12 @@
  * ai/intelligence-service.test.ts — both are under active sibling edits
  * (Risks → sibling overlap).
  */
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import "./ai/__test_db.js";
 
+const { config } = await import("../config.js");
+const { toDbTimestamp } = await import("./util/db-time.js");
 const { getDb, initializeDatabase } = await import("../db/client.js");
 const { managedSessions, sessions, supervisors } = await import("../db/schema/index.js");
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
@@ -257,7 +259,12 @@ describe("a supervisor stored as connected with an expired lease is not live (R1
 });
 
 describe("the sweep follows the lease (L5)", () => {
-	const longSilent = () => new Date(Date.now() - HUNDRED_DAYS).toISOString();
+	// The live host's session is silent 1 day: far past idle/end, inside the
+	// 72 h ceiling, so only the lease protects it.
+	const silentSince = (supervisorId: string) =>
+		new Date(
+			Date.now() - (supervisorId === "dead-host" ? HUNDRED_DAYS : 24 * 60 * MINUTE),
+		).toISOString();
 
 	test("L5: an interactive_terminal session under an expired lease completes in one tick; a live lease keeps it", async () => {
 		await seedStaleConnected("dead-host");
@@ -270,7 +277,11 @@ describe("the sweep follows the lease (L5)", () => {
 				sessionId,
 				supervisorId,
 				managedState: "interactive_terminal",
-				session: { status: "active", isWorking: true, lastActivityAt: longSilent() },
+				session: {
+					status: "active",
+					isWorking: true,
+					lastActivityAt: silentSince(supervisorId),
+				},
 			});
 		}
 		await updateStaleSessions();
@@ -342,5 +353,103 @@ describe("reopen after late heartbeat (R4)", () => {
 		await updateStaleSessions(T);
 		expect((await row("R4-beat"))?.status).toBe("active");
 		expect((await row("R4-silent"))?.status).toBe("completed");
+	});
+});
+
+// ─── D4: the managed-silence ceiling ────────────────────────────────────────
+
+describe("managed-silence ceiling", () => {
+	const HOUR = 60 * MINUTE;
+	const originalCeiling = config.managedSessionMaxSilenceMs;
+	afterEach(() => {
+		(config as Record<string, unknown>).managedSessionMaxSilenceMs = originalCeiling;
+	});
+
+	const row = async (id: string) =>
+		(await getDb().select().from(sessions).where(eq(sessions.sessionId, id)))[0];
+
+	async function liveHostSession(sessionId: string, lastActivityAt: string) {
+		if (!(await getDb().select().from(supervisors).where(eq(supervisors.id, "live-host"))).length) {
+			await seedSupervisor("live-host", { leaseOffsetMs: 60_000, leaseBaseMs: Date.now() });
+		}
+		await seedManagedSession({
+			sessionId,
+			supervisorId: "live-host",
+			managedState: "interactive_terminal",
+			session: { status: "active", isWorking: true, lastActivityAt },
+		});
+	}
+	const silentFor = (ms: number) => new Date(Date.now() - ms).toISOString();
+
+	test("ceiling: silent 73 h under a live host completes in one sweep", async () => {
+		await liveHostSession("c-73", silentFor(73 * HOUR));
+		await updateStaleSessions();
+		const r = await row("c-73");
+		expect(r?.status).toBe("completed");
+		expect(r?.isWorking).toBe(false);
+	});
+
+	test("ceiling: silent 71 h stays active and working", async () => {
+		await liveHostSession("c-71", silentFor(71 * HOUR));
+		await updateStaleSessions();
+		const r = await row("c-71");
+		expect(r?.status).toBe("active");
+		expect(r?.isWorking).toBe(true);
+	});
+
+	test("ceiling: a configured 1 h ceiling completes a session silent 2 h", async () => {
+		(config as Record<string, unknown>).managedSessionMaxSilenceMs = HOUR;
+		await liveHostSession("c-2h", silentFor(2 * HOUR));
+		await updateStaleSessions();
+		expect((await row("c-2h"))?.status).toBe("completed");
+	});
+
+	test("ceiling: a ceiling-completed session reopens on the next hook", async () => {
+		await liveHostSession("c-reopen", silentFor(73 * HOUR));
+		await updateStaleSessions();
+		expect((await row("c-reopen"))?.status).toBe("completed");
+		await processHookEvent(
+			{ hook_event_name: "UserPromptSubmit", session_id: "c-reopen", prompt: "back" } as never,
+			"claude_code",
+		);
+		const r = await row("c-reopen");
+		expect(r?.status).toBe("active");
+		expect(r?.endedAt).toBeNull();
+	});
+
+	describe("stored timestamp forms (raw last_activity_at)", () => {
+		const T = Date.now();
+		const forms: [string, (ms: number) => string][] = [
+			["ISO Z", (ms) => new Date(ms).toISOString()],
+			["bare SQLite", (ms) => toDbTimestamp(new Date(ms))],
+			["Postgres +00", (ms) => `${toDbTimestamp(new Date(ms))}.123456+00`],
+		];
+		for (const [name, format] of forms) {
+			test(`ceiling: ${name} at T-71h59m is protected, at T-72h01m completes`, async () => {
+				await liveHostSession("f-in", format(T - (71 * HOUR + 59 * MINUTE)));
+				await liveHostSession("f-out", format(T - (72 * HOUR + MINUTE)));
+				await updateStaleSessions(T);
+				const inside = await row("f-in");
+				expect(inside?.status).toBe("active");
+				expect(inside?.isWorking).toBe(true);
+				expect((await row("f-out"))?.status).toBe("completed");
+			});
+		}
+
+		test("ceiling: a freshly active bare-format session under a live host is untouched by the sweep", async () => {
+			await liveHostSession("f-fresh", toDbTimestamp(new Date(T - MINUTE)));
+			await updateStaleSessions(T);
+			const r = await row("f-fresh");
+			expect(r?.status).toBe("active");
+			expect(r?.isWorking).toBe(true);
+		});
+
+		test("ceiling: an unparseable last_activity_at stays protected", async () => {
+			await liveHostSession("f-bad", "0000-00-00 00:00:00");
+			await updateStaleSessions(T);
+			const r = await row("f-bad");
+			expect(r?.status).toBe("active");
+			expect(r?.isWorking).toBe(true);
+		});
 	});
 });

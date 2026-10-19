@@ -91,6 +91,13 @@ export const config = {
 	),
 	vectorScanCpuShare: clampedEnvNumber("AGENTPULSE_VECTOR_SCAN_CPU_SHARE", 0.3, 0.05, 1),
 
+	// A managed session whose supervisor lease is live is protected from the
+	// inactivity sweep only while it has been silent less than this long (a
+	// killed terminal bridge under a healthy host would otherwise stay Active
+	// forever). Read on every sweep, so a test can set it.
+	managedSessionMaxSilenceMs:
+		clampedEnvNumber("AGENTPULSE_MANAGED_SESSION_MAX_SILENCE_HOURS", 72, 1, 720) * 3_600_000,
+
 	// How many Ask turns may run at once, across the web and Telegram (see
 	// services/ask/ask-turn-limiter.ts). Read on every acquisition.
 	askMaxConcurrent: Math.floor(clampedEnvNumber("AGENTPULSE_ASK_MAX_CONCURRENT", 2, 1, 8)),
