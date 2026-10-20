@@ -28,6 +28,16 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   vanished kept protecting its managed sessions indefinitely. Sessions already
   stuck this way complete on the first sweep after upgrade, and open dashboards
   are told.
+- **Session summaries on slow local models no longer always time out**.
+  A summary call longer than 300 seconds was cut by Bun's own fetch limit
+  whatever the configured timeout; that limit is now lifted, so the configured
+  limit is the real one. A provider that stops sending in the middle of an
+  answer is now a timeout (the Summary tab says so) rather than an internal
+  error, and the same applies to the AI watcher, Ask and the classifier. An
+  immediate provider 5xx (including 502, 504 and 524) is reported as a provider
+  error, no longer as a timeout. The failed-summary message now names the
+  current model and limit and the setting that raises it. The unknown-outcome
+  daily ceiling is charged to the day the call started, not the day it ended.
 
 ### Added
 
@@ -35,9 +45,24 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   a managed session silent longer than this stops being exempt from the sweep
   and completes, even while its host is heartbeating (for example a terminal
   bridge that died). 72 hours outlasts a weekend.
+- `AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS` (default `360`, range 30 to 1800):
+  the time limit of one session-summary model call, per call (the repair call
+  gets it in full). Use the same value on every replica. See the README's
+  "Session summary" section.
 
 ### Changed
 
+- **Session summary time bounds follow the new call limit, for every install.**
+  The per-call limit rises from 120 to 360 seconds, the lease on a running
+  summary from 300 to 780 seconds (2 x the limit + 60), and the watchdog from
+  5 to 13 minutes. A hung call now holds a generation slot for 13 minutes, and on
+  Postgres a stuck `generating` row is recovered only at the lease. The failure
+  breaker window is the longer of 10 minutes and two leases and a minute (27
+  minutes at the default), and a forgotten subject is dropped after the longer
+  of 60 minutes and that window. A running generation is aborted when it is
+  released (watchdog, lease or shutdown), so its connection closes.
+- **LLM responses are capped**: a success body or stream at 8 MiB, an error body
+  at 4 KiB. Over the cap is a provider error.
 - **The watcher routes to a human for hosts whose lease has expired.** Such a
   host now reads offline to the AI watcher and the session classifier, even if
   its stored status says connected: no continue or report is attempted, auto

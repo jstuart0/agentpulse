@@ -79,7 +79,7 @@ batches of 1,000 (percy TB10 review: 5,000-row batches held the event loop
 148–202ms each on SQLite), without blocking ingest. The `sessions` row and
 its denormalized state are never touched — the `events` history ages out, and
 so do stored session summaries: the same pass deletes a summary generated
-before the cutoff (and a row left `generating` past its lease by a crash), in
+before the cutoff (a row left `generating` is spared while its lease is live, and a lapsed one is deleted only if it is also older than the cutoff), in
 batches of 500, in its own transaction under the same advisory lock on
 Postgres. A summary is the only other thing this pass deletes.
 `GET /api/v1/health`'s `retention` field reports the last pass as `lastRun`
@@ -605,6 +605,7 @@ numbers are clamped; a non-number falls back to the default.
 | `AGENTPULSE_VECTOR_SCAN_MAX_MS` | `4000` | 250 to 60,000 | Longest one scan runs, pacing included. |
 | `AGENTPULSE_VECTOR_SCAN_CPU_SHARE` | `0.3` | 0.05 to 1 | Share of CPU all concurrent scans together may use (`1` = no pacing). A lower share leaves more CPU for hook ingest while a scan runs, at the cost of a slower scan. |
 | `AGENTPULSE_ASK_MAX_CONCURRENT` | `2` | 1 to 8 | Ask turns that run at once, web and Telegram together. Per process: with N replicas the real limit is N times this. |
+| `AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS` | `360` | 30 to 1800 | Session summary: time limit of one model call, per call (the repair call gets it too). The summary lease is 2 × this + 60 s (780 s at the default) and the breaker window follows it. Use the same value on every replica. On Postgres a stuck `generating` row is recovered only when the lease lapses (13 minutes at the default, 61 at the maximum); SQLite also recovers it at boot. |
 
 **Checking a scan after deploy.** Ask a free-form question (one that isn't a
 launch, an approval or another direct command), then look in the server log
@@ -676,11 +677,14 @@ retention pass when `eventsRetentionDays` is on (see Event retention above).
 Limits that live in each server process, and so loosen with more than one
 replica (keep the single-replica recommendation):
 
-- Two summary generations run at once per process.
+- Two summary generations run at once per process. A hung call frees its slot
+  at the lease (780 s at the default call limit), so two hung runs can hold
+  both for that long.
 - A caller may make 6 summary requests a minute; in team mode, one running
   generation per caller.
 - The per-caller breaker: three provider failures charged the per-call
-  maximum within ten minutes make that caller's new requests answer busy for
+  maximum within the breaker window (10 minutes, or two leases and a minute
+  when longer: 27 minutes at the default call limit) make that caller's new requests answer busy for
   5, then 10, 20, 40 and 60 minutes on each consecutive re-open, until one of
   their calls succeeds. A session charged the maximum stays shut for 10
   minutes.
