@@ -7,6 +7,17 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-10-20
+
+### Upgrade notes
+
+- No schema change. On the first inactivity sweeps after upgrading (it runs
+  every 60 seconds), managed sessions whose host stopped heartbeating complete,
+  so the Active tab can shrink at once. They reopen if their host comes back
+  and posts a hook.
+- Optional: set `AGENTPULSE_MANAGED_SESSION_MAX_SILENCE_HOURS` to change the
+  72-hour ceiling below.
+
 ### Fixed
 
 - **Sessions of a host that stopped heartbeating no longer stay Active
