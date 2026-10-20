@@ -321,7 +321,7 @@ function LastAttempt({ notice }: { notice: SummaryViewModel["notice"] }) {
 	return (
 		<output
 			className={cn(
-				"block rounded-md border px-3 py-2 text-xs",
+				"block break-words rounded-md border px-3 py-2 text-xs",
 				error
 					? "border-red-500/30 bg-red-500/10 text-red-800 dark:text-red-300"
 					: "border-border text-muted-foreground",

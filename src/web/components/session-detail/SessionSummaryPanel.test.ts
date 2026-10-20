@@ -96,6 +96,11 @@ const withSummary = (patch: Partial<StoredSessionSummary["summary"]>): SessionSu
 	stored: { ...STORED, summary: { ...STORED.summary, ...patch } },
 });
 
+const timeoutOf = (v: SessionSummaryView) =>
+	v.attempt.timeoutSeconds === undefined
+		? undefined
+		: { seconds: v.attempt.timeoutSeconds, model: v.provider?.model ?? null };
+
 describe("every state: the heading row and the state tag", () => {
 	test("TC-8.3 an h2 'Summary' and the Labs badge are present in every named state", () => {
 		for (const [name, view] of Object.entries(F)) {
@@ -498,7 +503,7 @@ describe("failures and refusals", () => {
 	test("BN-19 every error code's sentence appears in a polite status region, in red when nothing is stored", () => {
 		for (const [code, view] of Object.entries(FAILED_VIEW_FIXTURES)) {
 			const h = html(view);
-			const sentence = failureCopy(code, ADMIN, view.spend.resetsAt, CLOCK);
+			const sentence = failureCopy(code, ADMIN, view.spend.resetsAt, CLOCK, timeoutOf(view));
 			expect(textOf(h), code).toContain(sentence);
 			expect(h, code).toMatch(
 				/<output[^>]*>[\s\S]*Last attempt, (?:just now|\d+ min ago), didn&#x27;t finish:/,
@@ -895,7 +900,7 @@ describe("T-2 the muted last-attempt notice stays with a stored summary", () => 
 	test("every error code reads 'Last attempt' and its own sentence over a stored summary", () => {
 		for (const code of Object.keys(FAILED_VIEW_FIXTURES)) {
 			const view = failedWith(code as never, F.ready);
-			const sentence = failureCopy(code, ADMIN, view.spend.resetsAt, CLOCK);
+			const sentence = failureCopy(code, ADMIN, view.spend.resetsAt, CLOCK, timeoutOf(view));
 			const h = html(view);
 			expect(textOf(h), code).toContain("Last attempt");
 			expect(textOf(h), code).toContain(sentence);

@@ -70,6 +70,7 @@ import {
 	URL_SCAN_SLICE_CHARS,
 	breakerIdleDropMs,
 	breakerWindowMs,
+	summaryCallTimeoutSeconds,
 	summaryLeaseSeconds,
 } from "./ai/session-summary/service-limits.js";
 import { collectUserPromptUrls } from "./ai/session-summary/tripwire.js";
@@ -384,6 +385,9 @@ function attemptOf(
 			? ((row.attemptErrorCode?.replace(LONG_COOLDOWN_MARK, "") as SummaryErrorCode | undefined) ??
 				"internal_error")
 			: null;
+	if (errorCode === "provider_timeout") {
+		return { status, startedAt, errorCode, timeoutSeconds: summaryCallTimeoutSeconds() };
+	}
 	return { status, startedAt, errorCode };
 }
 
