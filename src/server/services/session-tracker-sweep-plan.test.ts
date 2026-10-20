@@ -12,19 +12,21 @@ const { getDb, getSqlite, initializeDatabase } = await import("../db/client.js")
 const { sessions } = await import("../db/schema/index.js");
 const { sweepConditions } = await import("./session-tracker.js");
 
-// These two indexes come from the legacy init path (db/client.ts) that existing
-// installs run; a fresh Drizzle-migrate database doesn't have them, so the plan
-// would depend on which test file ran first. Create them as client.ts does, so
-// the test pins how the UPDATE shapes use the indexes production installs have.
-beforeAll(async () => {
-	await initializeDatabase();
-	getSqlite().exec(
-		"CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);" +
-			"CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity_at);",
-	);
-});
-
 describeSqliteOnly("sweep UPDATE plans", () => {
+	// SQLite-only setup stays inside this block: getSqlite() on a Postgres boot trips the
+	// client's tripwire for the whole process.
+	// These two indexes come from the legacy init path (db/client.ts) that existing
+	// installs run; a fresh Drizzle-migrate database doesn't have them, so the plan
+	// would depend on which test file ran first. Create them as client.ts does, so
+	// the test pins how the UPDATE shapes use the indexes production installs have.
+	beforeAll(async () => {
+		await initializeDatabase();
+		getSqlite().exec(
+			"CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);" +
+				"CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity_at);",
+		);
+	});
+
 	const cutoff = new Date().toISOString();
 	const conditions = sweepConditions({
 		idleCutoff: cutoff,
