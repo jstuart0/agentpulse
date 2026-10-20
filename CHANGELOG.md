@@ -34,6 +34,9 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Changed
 
+- **Ask: a respond key can stop only a turn it asked.** `POST /ai/ask/threads/:id/cancel` applies the same own-thread rule as the thread read: an admin's respond key and a solo respond key no longer stop another person's running turn (the 404 is the same as for no turn). Manage credentials keep the admin and solo rule.
+- **`ask_reply` push targets only phones that can open the thread.** The push still goes to the requester's devices, but a device is skipped when its respond key would get a 404 on `GET /ai/ask/threads/:id`: an admin or solo caller who continued another person's thread, a thread asked by a different ownerless key, and a thread that can't be found push to nobody. A key owned by a person reads every thread that person owns (including one started on the web), so the common case is unchanged. In solo, an ownerless respond key reads only threads that exact key asked; nothing links two ownerless keys to one person, so none is guessed.
+- A failed launch's `failureReason` now also reduces `/root/...` and `/var/root/...` to `~`. The scrub is pattern-based (documented in `session-card.ts`): homes in other locations and account names outside a path are not caught.
 - **Ask threads belong to whoever asked them** (migration 0016: `ask_threads.owner_user_id` / `owner_key_id`, set at creation).
   In team mode, reading, listing, archiving and cancelling a thread is for the asker (by user, or by key for a key with no
   owner) or an admin; anyone else gets the same 404 as for a thread that doesn't exist. Threads that already exist have no owner,

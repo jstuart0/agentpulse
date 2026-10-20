@@ -45,6 +45,31 @@ describe("safeFailureReason redacts", () => {
 		expect(windows).not.toContain("Dana");
 	});
 
+	test("root's home, /root and /var/root, becomes ~ whole or with a path under it", () => {
+		expect(safeFailureReason("cannot open /root/app/run.sh")).toBe("cannot open ~/app/run.sh");
+		expect(safeFailureReason("cannot open /var/root/Library/x")).toBe("cannot open ~/Library/x");
+		expect(safeFailureReason("cwd /root: not a directory")).toBe("cwd ~: not a directory");
+		expect(safeFailureReason("in (/var/root) and /root.")).toBe("in (~) and ~.");
+	});
+
+	test("/root is scrubbed only as a whole component that starts a path", () => {
+		for (const kept of [
+			"cannot open /opt/app/root/x",
+			"cannot open /srv/rootfs/x",
+			"cannot open /rooted/x",
+			"cannot open /tmp/var/root",
+			"cannot open /root-ca.pem",
+			"cannot open /root.pem",
+		]) {
+			expect(safeFailureReason(kept)).toBe(kept);
+		}
+	});
+
+	test("known gap: a home kept outside the recognised shapes is not scrubbed (the scrub is pattern-based)", () => {
+		expect(safeFailureReason("cannot open /srv/alice/app")).toBe("cannot open /srv/alice/app");
+		expect(safeFailureReason("run as alice@build-host")).toBe("run as alice@build-host");
+	});
+
 	test("a path that isn't a home directory is left alone", () => {
 		expect(safeFailureReason("claude is not installed at /usr/local/bin/claude")).toBe(
 			"claude is not installed at /usr/local/bin/claude",

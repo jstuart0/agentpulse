@@ -40,19 +40,20 @@ export function registerRunningTurn(threadId: string, who: Pick<RunningTurn, "us
 
 /**
  * Stops the turn on this thread if `caller` asked it (or is an admin in team mode; anyone in solo,
- * where there is one person). Returns false for no such turn and for someone else's, so a caller
- * can't learn that another person's thread is busy.
+ * where there is one person). `ownOnly` (a respond key, the same flag the thread read rule uses) drops
+ * that admin/solo shortcut: such a caller stops only a turn it asked itself, by user or by key.
+ * Returns false for no such turn and for someone else's, so a caller can't learn that another
+ * person's thread is busy.
  */
 export function cancelRunningTurn(
 	threadId: string,
-	caller: { actor: Actor; keyId: string | null },
+	caller: { actor: Actor; keyId: string | null; ownOnly?: boolean },
 ): boolean {
 	const turn = running.get(threadId);
 	if (!turn) return false;
-	const { actor, keyId } = caller;
+	const { actor, keyId, ownOnly } = caller;
 	const mine =
-		actor.mode === "solo" ||
-		actor.role === "admin" ||
+		(!ownOnly && (actor.mode === "solo" || actor.role === "admin")) ||
 		(turn.userId !== null && actor.userId === turn.userId) ||
 		(turn.userId === null && keyId !== null && keyId === turn.keyId);
 	if (!mine) return false;

@@ -6,7 +6,15 @@
  */
 import { and, eq, isNull, ne } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { apiKeys, launchRequests, mobileDevices, sessions, users } from "../../db/schema/index.js";
+import {
+	apiKeys,
+	askThreads,
+	launchRequests,
+	mobileDevices,
+	sessions,
+	users,
+} from "../../db/schema/index.js";
+import type { ThreadOwner } from "../ask/thread-ownership.js";
 import type {
 	EligibleDevice,
 	PushDeviceSource,
@@ -155,6 +163,17 @@ export class DbPushSubjects implements PushSubjectReader {
 			.where(eq(sessions.sessionId, sessionId))
 			.limit(1);
 		return row ? { ownerUserId: row.ownerUserId ?? null } : null;
+	}
+
+	async askThreadOwner(threadId: string): Promise<ThreadOwner | null> {
+		const [row] = await getDb()
+			.select({ ownerUserId: askThreads.ownerUserId, ownerKeyId: askThreads.ownerKeyId })
+			.from(askThreads)
+			.where(eq(askThreads.id, threadId))
+			.limit(1);
+		return row
+			? { ownerUserId: row.ownerUserId ?? null, ownerKeyId: row.ownerKeyId ?? null }
+			: null;
 	}
 
 	async launchRequester(launchId: string): Promise<SubjectOwner | null> {

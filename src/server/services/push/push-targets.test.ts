@@ -109,9 +109,17 @@ describe("PolicyPushTargets", () => {
 		"s-open": null,
 	};
 	const launches: Record<string, string | null> = { "l-alice": "alice", "l-none": null };
+	// Ask threads: t-alice is alice's, t-bob bob's, t-key an ownerless key's (k1), t-orphan has no owner at all.
+	const threads: Record<string, { ownerUserId: string | null; ownerKeyId: string | null }> = {
+		"t-alice": { ownerUserId: "alice", ownerKeyId: null },
+		"t-bob": { ownerUserId: "bob", ownerKeyId: null },
+		"t-key": { ownerUserId: null, ownerKeyId: "k1" },
+		"t-orphan": { ownerUserId: null, ownerKeyId: null },
+	};
 	const subjects: PushSubjectReader = {
 		sessionOwner: async (id) => (id in owners ? { ownerUserId: owners[id] ?? null } : null),
 		launchRequester: async (id) => (id in launches ? { ownerUserId: launches[id] ?? null } : null),
+		askThreadOwner: async (id) => threads[id] ?? null,
 	};
 	const fleet = () =>
 		new InMemoryDeviceSource(
@@ -191,13 +199,14 @@ describe("PolicyPushTargets", () => {
 	test("an Ask reply reaches the requester's devices in either mode: the person's, else the asking key's; nobody if neither is known", async () => {
 		const byUser: PushEvent = {
 			type: "ask_reply",
-			threadId: "t",
+			threadId: "t-alice",
 			assistantMessageId: "m",
 			requesterUserId: "alice",
 			requesterKeyId: "k-x",
 		};
 		const byKey: PushEvent = {
 			...byUser,
+			threadId: "t-key",
 			requesterUserId: null,
 			requesterKeyId: "k1",
 		} as PushEvent;
@@ -216,7 +225,7 @@ describe("PolicyPushTargets", () => {
 	test("an Ask reply never reaches another person's devices or a device with no live standing", async () => {
 		const event: PushEvent = {
 			type: "ask_reply",
-			threadId: "t",
+			threadId: "t-bob",
 			assistantMessageId: "m",
 			requesterUserId: "bob",
 			requesterKeyId: null,
@@ -227,6 +236,39 @@ describe("PolicyPushTargets", () => {
 		});
 		expect(await ids("team", event, revoked)).toEqual([]);
 	});
+
+	// The matrix the F94 follow-up exists for: the push goes to the requester's devices, and only those
+	// whose key could then open the thread. [thread, requester user, requester key, devices that are pushed]
+	const ASK_REPLY_MATRIX: Array<[string, string | null, string | null, string[]]> = [
+		["t-alice", "alice", null, ["alice-ipad", "alice-phone"]],
+		["t-bob", "bob", null, ["bob-phone"]],
+		// an admin (or any solo caller) continued someone else's thread: the admin's phone can't open it
+		["t-alice", "root", null, []],
+		["t-bob", "alice", null, []],
+		// an ownerless key's thread continued by a person, and the reverse
+		["t-key", "alice", null, []],
+		["t-alice", null, "k1", []],
+		// an ownerless key asked a thread another ownerless key started
+		["t-key", null, "k2", []],
+		["t-key", null, "k1", ["keyonly-phone"]],
+		// no owner on the thread, or no such thread: nobody, even for its asker
+		["t-orphan", "alice", null, []],
+		["t-gone", "alice", null, []],
+	];
+	for (const [threadId, requesterUserId, requesterKeyId, pushed] of ASK_REPLY_MATRIX) {
+		test(`ask_reply on ${threadId} asked by ${requesterUserId ?? `key ${requesterKeyId}`}: ${pushed.length === 0 ? "nobody" : pushed.join(", ")}`, async () => {
+			const event: PushEvent = {
+				type: "ask_reply",
+				threadId,
+				assistantMessageId: "m",
+				requesterUserId,
+				requesterKeyId,
+			};
+			for (const mode of ["solo", "team"] as const) {
+				expect(await ids(mode, event)).toEqual(pushed);
+			}
+		});
+	}
 
 	test("team: a launch status reaches the requester's devices; none recorded, the admins'; unknown launch, nobody", async () => {
 		expect(await ids("team", { type: "launch_status", launchId: "l-alice" })).toEqual([

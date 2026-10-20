@@ -309,6 +309,7 @@ describe("the eligible-device cache", () => {
 	const subjects: PushSubjectReader = {
 		sessionOwner: async () => ({ ownerUserId: null }),
 		launchRequester: async () => ({ ownerUserId: null }),
+		askThreadOwner: async () => null,
 	};
 
 	test("is reused inside the window and re-read after it", async () => {
@@ -489,6 +490,7 @@ describe("PolicyPushTargets.invalidate", () => {
 	const subjects: PushSubjectReader = {
 		sessionOwner: async () => ({ ownerUserId: null }),
 		launchRequester: async () => ({ ownerUserId: null }),
+		askThreadOwner: async () => null,
 	};
 	const stuck: PushEvent = { type: "stuck", sessionId: "s" };
 

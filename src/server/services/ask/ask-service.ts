@@ -1,4 +1,4 @@
-import { type SQL, and, count, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { type SQL, and, count, desc, eq, isNull, sql } from "drizzle-orm";
 import type { AskMessageRole, AskThreadOrigin } from "../../../shared/types.js";
 import { type Actor, TELEGRAM_ACTOR } from "../../auth/actor.js";
 import { config } from "../../config.js";
@@ -73,6 +73,7 @@ import {
 	sessionActionGatePasses,
 } from "./launch-intent-detector.js";
 import { fetchSessionsById, resolveCandidateSessions } from "./resolver.js";
+import { ownsThreadCondition } from "./thread-ownership.js";
 
 /**
  * End-to-end orchestration for an Ask turn:
@@ -170,12 +171,7 @@ async function threadAccessCondition(asker: AskAsker): Promise<SQL | undefined> 
 	const mode = actor.mode ?? (await getMode());
 	if (!asker.ownOnly && (mode === "solo" || actor.role === "admin")) return undefined;
 	if (actor.label === "telegram") return eq(askThreads.origin, "telegram");
-	const owned: SQL[] = [];
-	if (actor.userId) owned.push(eq(askThreads.ownerUserId, actor.userId));
-	if (asker.keyId) {
-		owned.push(and(isNull(askThreads.ownerUserId), eq(askThreads.ownerKeyId, asker.keyId)) as SQL);
-	}
-	return owned.length > 0 ? (or(...owned) as SQL) : sql`1 = 0`;
+	return ownsThreadCondition({ userId: actor.userId, keyId: asker.keyId });
 }
 
 /** The asker's own threads (all of them for an admin or in solo), newest first. */

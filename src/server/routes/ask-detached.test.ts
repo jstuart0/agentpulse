@@ -261,15 +261,20 @@ describeSqliteOnly("cancelling an Ask turn that is still writing", () => {
 		expect(pushed).toEqual([]);
 	});
 
-	test("solo mode is one person: any of their keys, a respond key included, may stop a running turn", async () => {
+	test("solo: another of their keys with manage scope may stop a running turn, but a respond key may not (it stops only what it asked)", async () => {
 		const respond = await createApiKey(`ask-respond-${crypto.randomUUID()}`, ["respond"]);
+		const otherManage = await createApiKey(`ask-manage-${crypto.randomUUID()}`, ["manage"]);
 		const release = llm.holdAnswerCalls();
 		const res = await post();
 		const reader = (res.body as ReadableStream<Uint8Array>).getReader();
 		const threadId = await threadOf(reader);
 
-		const stopped = await cancel(threadId, { authorization: `Bearer ${respond.key}` });
-		expect(stopped.status).toBe(200);
+		const refused = await cancel(threadId, { authorization: `Bearer ${respond.key}` });
+		expect(refused.status).toBe(404);
+		expect(await refused.json()).toMatchObject({ error: "not_found" });
+		expect((await cancel(threadId, { authorization: `Bearer ${otherManage.key}` })).status).toBe(
+			200,
+		);
 		release();
 		await waitFor(() => stats().running === 0, "the slot to be released");
 		expect(assistantMessages()).toHaveLength(0);

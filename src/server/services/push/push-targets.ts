@@ -17,7 +17,12 @@
  *   launch_status                  all devices   the requester's devices;
  *                                                none recorded: admins'
  *   ask_reply                      the requester's devices, in both modes: the person's, else
- *                                 the devices paired with the key that asked; no requester: nobody
+ *                                 the devices paired with the key that asked; no requester: nobody.
+ *                                 Then only the devices whose key can open the thread (ownsThread:
+ *                                 the same own-thread rule a respond key is read under), so a tap
+ *                                 never lands on "wasn't found". A thread the requester only
+ *                                 continued (an admin or a solo caller on someone else's thread)
+ *                                 reaches nobody; a thread that can't be found, nobody.
  *   daily_digest                   each device   each device
  *   device_test                    nobody here (the route targets one chosen device)
  *
@@ -28,6 +33,7 @@
  * reaches nobody.
  */
 import type { Actor } from "../../auth/actor.js";
+import { type ThreadOwner, type ThreadReader, ownsThread } from "../ask/thread-ownership.js";
 import { canReadSession, sessionAudience } from "../authorization.js";
 import type { PushDevice, PushDispatchContext, PushEvent, PushTargetResolver } from "./types.js";
 
@@ -51,6 +57,8 @@ export interface SubjectOwner {
 export interface PushSubjectReader {
 	sessionOwner(sessionId: string): Promise<SubjectOwner | null>;
 	launchRequester(launchId: string): Promise<SubjectOwner | null>;
+	/** Who owns an Ask thread (user, else key). Null means the thread doesn't exist. */
+	askThreadOwner(threadId: string): Promise<ThreadOwner | null>;
 }
 
 export type InstanceModeReader = () => Promise<"solo" | "team">;
@@ -58,6 +66,7 @@ export type InstanceModeReader = () => Promise<"solo" | "team">;
 const NO_SUBJECTS: PushSubjectReader = {
 	sessionOwner: async () => null,
 	launchRequester: async () => null,
+	askThreadOwner: async () => null,
 };
 
 function adminDevices(eligible: EligibleDevice[]): PushDevice[] {
@@ -133,15 +142,24 @@ export class PolicyPushTargets implements PushTargetResolver {
 			.map((e) => e.device);
 	}
 
-	/** An Ask reply is private to whoever asked, whatever the mode: their devices, else the asking key's. */
-	private askReplyTargets(
+	/**
+	 * An Ask reply is private to whoever asked, whatever the mode: their devices, else the asking key's.
+	 * A device is kept only if its key could open the thread as a respond key (which reads only what it
+	 * owns). The device's key is read from the stored identity: a person's id for an owned key, `key:<id>`
+	 * for an ownerless one. A manage-scope phone key could read more, but the push doesn't assume it.
+	 */
+	private async askReplyTargets(
 		event: Extract<PushEvent, { type: "ask_reply" }>,
 		eligible: EligibleDevice[],
-	): PushDevice[] {
+	): Promise<PushDevice[]> {
 		const requester =
 			event.requesterUserId ?? (event.requesterKeyId ? `key:${event.requesterKeyId}` : null);
 		if (requester === null) return [];
-		return eligible.filter((e) => e.device.userId === requester).map((e) => e.device);
+		const devices = eligible.filter((e) => e.device.userId === requester).map((e) => e.device);
+		if (devices.length === 0) return [];
+		const owner = await this.subjects.askThreadOwner(event.threadId);
+		if (!owner) return [];
+		return devices.filter((device) => ownsThread(owner, readerOf(device)));
 	}
 
 	private async launchTargets(launchId: string, eligible: EligibleDevice[]): Promise<PushDevice[]> {
@@ -164,6 +182,15 @@ export function canDeviceReadSession(
 ): boolean {
 	if (mode === "solo") return true;
 	return canReadSession(actorFor(entry), { ownerUserId: sessionOwnerUserId });
+}
+
+const OWNERLESS_KEY_PREFIX = "key:";
+
+/** The credential behind a device, as a thread reader: see `PushDevice.userId` for the `key:<id>` form. */
+function readerOf(device: PushDevice): ThreadReader {
+	return device.userId.startsWith(OWNERLESS_KEY_PREFIX)
+		? { userId: null, keyId: device.userId.slice(OWNERLESS_KEY_PREFIX.length) }
+		: { userId: device.userId, keyId: null };
 }
 
 function actorFor(entry: EligibleDevice): Actor {

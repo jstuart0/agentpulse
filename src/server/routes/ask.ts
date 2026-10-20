@@ -134,14 +134,12 @@ askRouter.get("/ai/ask/threads/:id", async (c) => {
 });
 
 // Stops an answer that is still being written (for example one the phone left running). Only the
-// person who asked it, or an admin in team mode; anything else is the same 404 as no answer running.
+// person who asked it, or an admin in team mode (a respond key, whatever its owner's role or the mode,
+// stops only what it asked); anything else is the same 404 as no answer running.
 askRouter.post("/ai/ask/threads/:id/cancel", async (c) => {
 	const gate = await ensureEnabled(c);
 	if (gate) return gate;
-	const stopped = cancelRunningTurn(c.req.param("id") ?? "", {
-		actor: await getRequestActor(c),
-		keyId: (await getAuthUser(c))?.keyId ?? null,
-	});
+	const stopped = cancelRunningTurn(c.req.param("id") ?? "", await askerOf(c));
 	if (!stopped) {
 		return c.json({ error: "not_found", message: "No answer is running for that thread." }, 404);
 	}

@@ -63,8 +63,19 @@ export function permissionWaitCount(metadata: unknown): number {
 	return ids + anon;
 }
 
-/** A user's home directory in a path (macOS, Linux, Windows): the account name is what it gives away. */
-const HOME_PATH = /(?:\/Users\/|\/home\/|[A-Za-z]:\\Users\\)[^/\\\s]+/g;
+/**
+ * A home directory in a path, reduced to `~`: the account name is what it gives away.
+ *
+ * This is a PATTERN scrub, not a guarantee. It recognises these shapes only: the Users folder on macOS and
+ * on Windows (`<drive>:\...`), `/home/<name>` (Linux), and root's own home, `/root` and
+ * `/var/root` (the latter two only as a whole path component that starts a path, so `/opt/app/root`
+ * is left alone). It cannot catch: a home kept anywhere else (`/srv/alice`, `/export/home/alice`,
+ * `/Volumes/x/alice`, a network home), an account name that appears outside a path (`user alice`,
+ * `alice@host`, a hostname), a path that was URL-encoded or split across lines, or a name with a
+ * space in it (only the first word is replaced). Secrets are the redactor's job, not this one's.
+ */
+const HOME_PATH =
+	/(?:\/Users\/|\/home\/|[A-Za-z]:\\Users\\)[^/\\\s]+|(?<![\w.\-/])\/(?:var\/)?root(?![\w-]|\.\w)/g;
 
 /**
  * A launch's error as one short, printable line, or null when there is nothing

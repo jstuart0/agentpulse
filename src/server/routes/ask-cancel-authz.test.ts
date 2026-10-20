@@ -3,6 +3,8 @@
  * and the real route is called, so this runs on Postgres as well as SQLite.
  *
  * The rule: the person who asked, or any key of the one person in solo mode, or an admin in team mode.
+ * A respond key (a phone's) is narrower: it stops only a turn it asked, by user or by key, whatever its
+ * owner's role and whatever the mode (`ownOnly`, the same flag the thread read rule uses).
  * Everything else is the same 404 as "nothing is running", so a thread's busyness isn't an oracle.
  */
 import {
@@ -137,6 +139,66 @@ describe("cancelRunningTurn, as a table", () => {
 		});
 	}
 
+	// The same callers as respond keys (ownOnly): the admin and solo shortcuts are gone.
+	const OWN_ONLY_CASES: typeof CASES = [
+		[
+			"ownOnly, team: an admin's respond key against a member's turn",
+			actor({ userId: "root", role: "admin" }),
+			"k9",
+			{ userId: "u1", keyId: null },
+			false,
+		],
+		[
+			"ownOnly, team: an admin's respond key against its own turn",
+			actor({ userId: "root", role: "admin" }),
+			"k9",
+			{ userId: "root", keyId: null },
+			true,
+		],
+		[
+			"ownOnly, solo: a respond key against another person's turn",
+			actor({ mode: "solo", userId: "u3" }),
+			"k7",
+			{ userId: "u1", keyId: "k1" },
+			false,
+		],
+		[
+			"ownOnly, solo: a respond key against its person's own turn",
+			actor({ mode: "solo", userId: "u1" }),
+			"k7",
+			{ userId: "u1", keyId: "k1" },
+			true,
+		],
+		[
+			"ownOnly, solo: an ownerless respond key against another key's turn",
+			actor({ mode: "solo" }),
+			"k7",
+			{ userId: null, keyId: "k1" },
+			false,
+		],
+		[
+			"ownOnly, solo: an ownerless respond key against its own turn",
+			actor({ mode: "solo" }),
+			"k1",
+			{ userId: null, keyId: "k1" },
+			true,
+		],
+		[
+			"ownOnly, team: a member's respond key against its owner's turn",
+			actor({ userId: "u1" }),
+			"k9",
+			{ userId: "u1", keyId: null },
+			true,
+		],
+	];
+	for (const [name, caller, keyId, asker, may] of OWN_ONLY_CASES) {
+		test(name, () => {
+			const turn = running("t-table-own", asker);
+			expect(cancelRunningTurn("t-table-own", { actor: caller, keyId, ownOnly: true })).toBe(may);
+			expect(turn.isCancelled()).toBe(may);
+		});
+	}
+
 	test("no turn on the thread: nothing to stop, for anyone", () => {
 		expect(cancelRunningTurn("t-none", { actor: actor({ role: "admin" }), keyId: "k1" })).toBe(
 			false,
@@ -217,6 +279,88 @@ describe("the cancel route", () => {
 		expect((await cancel("t-4b", bearerHeaders(mine.key))).status).toBe(404);
 		expect((await cancel("t-4b", bearerHeaders(loose.key))).status).toBe(404);
 		expect(theirs.isCancelled()).toBe(false);
+	});
+
+	describe("by credential: who may stop a member's turn (the F94 matrix)", () => {
+		// [caller, may stop alice's turn, may stop its own turn]
+		const callers = async () => {
+			const alice = await seedLocalUser("cx-m-alice");
+			const admin = await seedLocalUser("cx-m-admin", "admin");
+			return {
+				alice,
+				admin,
+				headers: {
+					adminRespond: bearerHeaders(
+						(await seedKey("cx-m-admin-resp", ["respond"], admin.id)).key,
+					),
+					adminManageKey: bearerHeaders(
+						(await seedKey("cx-m-admin-mgr", ["manage"], admin.id)).key,
+					),
+					adminCookie: await cookieHeadersFor(admin.id),
+					aliceRespond: bearerHeaders(
+						(await seedKey("cx-m-alice-resp", ["respond"], alice.id)).key,
+					),
+					aliceCookie: await cookieHeadersFor(alice.id),
+				},
+			};
+		};
+
+		test("team: an admin's respond key can't stop a member's turn (404, turn goes on); a manage admin can", async () => {
+			await setStoredMode("team");
+			const { alice, headers } = await callers();
+			const turn = running("t-m1", { userId: alice.id, keyId: null });
+			const refused = await cancel("t-m1", headers.adminRespond);
+			expect(refused.status).toBe(404);
+			expect(await refused.json()).toMatchObject({ error: "not_found" });
+			expect(turn.isCancelled()).toBe(false);
+			const viaKey = running("t-m1-key", { userId: alice.id, keyId: null });
+			const viaCookie = running("t-m1-cookie", { userId: alice.id, keyId: null });
+			expect((await cancel("t-m1-key", headers.adminManageKey)).status).toBe(200);
+			expect((await cancel("t-m1-cookie", headers.adminCookie)).status).toBe(200);
+			expect([viaKey.isCancelled(), viaCookie.isCancelled()]).toEqual([true, true]);
+		});
+
+		test("team: an admin's respond key stops the turn it asked itself", async () => {
+			await setStoredMode("team");
+			const { admin, headers } = await callers();
+			const turn = running("t-m2", { userId: admin.id, keyId: null });
+			expect((await cancel("t-m2", headers.adminRespond)).status).toBe(200);
+			expect(turn.isCancelled()).toBe(true);
+		});
+
+		test("team: an owner's respond key stops its owner's turn, and the refusal is the same 404 as no turn", async () => {
+			await setStoredMode("team");
+			const { alice, headers } = await callers();
+			const bob = await seedLocalUser("cx-m-bob");
+			const bobsTurn = running("t-m3b", { userId: bob.id, keyId: null });
+			running("t-m3a", { userId: alice.id, keyId: null });
+			const foreign = await cancel("t-m3b", headers.aliceRespond);
+			const none = await cancel("t-m3-nothing", headers.aliceRespond);
+			expect([foreign.status, await foreign.json()]).toEqual([none.status, await none.json()]);
+			expect(bobsTurn.isCancelled()).toBe(false);
+			expect((await cancel("t-m3a", headers.aliceRespond)).status).toBe(200);
+		});
+
+		test("solo: a respond key can't stop another person's turn; a manage key still can; its own it can", async () => {
+			await setStoredMode("solo");
+			const { alice, headers } = await callers();
+			const other = await seedLocalUser("cx-m-other");
+			const solo = bearerHeaders((await seedKey("cx-m-solo-resp", ["respond"], other.id)).key);
+			const soloLoose = await seedKey("cx-m-solo-loose", ["respond"], null);
+			const turn = running("t-m4", { userId: alice.id, keyId: null });
+			expect((await cancel("t-m4", solo)).status).toBe(404);
+			expect((await cancel("t-m4", bearerHeaders(soloLoose.key))).status).toBe(404);
+			expect(turn.isCancelled()).toBe(false);
+			// the manage credential keeps the one-person rule
+			expect((await cancel("t-m4", headers.adminManageKey)).status).toBe(200);
+			expect(turn.isCancelled()).toBe(true);
+			const mine = running("t-m4b", { userId: other.id, keyId: null });
+			expect((await cancel("t-m4b", solo)).status).toBe(200);
+			expect(mine.isCancelled()).toBe(true);
+			const loose = running("t-m4c", { userId: null, keyId: soloLoose.id });
+			expect((await cancel("t-m4c", bearerHeaders(soloLoose.key))).status).toBe(200);
+			expect(loose.isCancelled()).toBe(true);
+		});
 	});
 
 	test("an observe key and an ingest key never reach the route: 403, whatever is running", async () => {
