@@ -10,6 +10,9 @@ const { intelligenceForSession, intelligenceForSessions } = await import(
 	"./intelligence-service.js"
 );
 const { completeProposalAsHitl, createPendingProposal } = await import("./proposals-service.js");
+const { seedManagedSession, seedSupervisor } = await import(
+	"../../test-utils/supervisor-fixture.js"
+);
 
 beforeAll(() => {
 	return initializeDatabase();
@@ -60,19 +63,13 @@ async function mkEvent(
 		.execute();
 }
 
-async function mkSupervisor(id: string, status: "connected" | "disconnected") {
-	await getDb()
-		.insert(supervisors)
-		.values({
-			id,
-			hostName: `h-${id}`,
-			platform: "darwin",
-			arch: "arm64",
-			version: "0.0.0-test",
-			status,
-		})
-		.execute();
-}
+const mkSupervisor = (id: string, status: "connected" | "disconnected") =>
+	seedSupervisor(id, {
+		storedStatus: status,
+		hostName: `h-${id}`,
+		leaseOffsetMs: status === "connected" ? 60_000 : -200_000,
+		leaseBaseMs: Date.now(),
+	});
 
 async function mkManaged(sessionId: string, supervisorId: string) {
 	await getDb()
@@ -214,5 +211,47 @@ describe("intelligence-service.intelligenceForSessions", () => {
 		const out = await intelligenceForSessions(["real", "ghost"]);
 		expect(out.has("real")).toBe(true);
 		expect(out.has("ghost")).toBe(false);
+	});
+});
+
+describe("intelligence-service.intelligenceForSession — host lease", () => {
+	const seedHost = (id: string, leaseOffsetMs: number) =>
+		seedSupervisor(id, { storedStatus: "connected", leaseOffsetMs, leaseBaseMs: Date.now() });
+
+	test("a stored-connected host with an expired lease reads supervisor_offline / blocked; a live lease does not", async () => {
+		await seedHost("dead-host", -100 * 24 * 3600 * 1000);
+		await seedHost("live-host", 60_000);
+		await seedManagedSession({
+			sessionId: "lease-dead",
+			supervisorId: "dead-host",
+			managedState: "interactive_terminal",
+		});
+		await seedManagedSession({
+			sessionId: "lease-live",
+			supervisorId: "live-host",
+			managedState: "interactive_terminal",
+		});
+		const dead = await intelligenceForSession("lease-dead");
+		expect(dead?.reasonCode).toBe("supervisor_offline");
+		expect(dead?.health).toBe("blocked");
+		const live = await intelligenceForSession("lease-live");
+		expect(live?.reasonCode).not.toBe("supervisor_offline");
+		expect(live?.health).not.toBe("blocked");
+	});
+
+	test("a supplied `now` decides the lease on both the single and bulk paths", async () => {
+		await seedHost("soon-expired", 60_000);
+		await seedManagedSession({
+			sessionId: "lease-now",
+			supervisorId: "soon-expired",
+			managedState: "interactive_terminal",
+		});
+		const later = new Date(Date.now() + 10 * 60_000);
+		expect((await intelligenceForSession("lease-now"))?.reasonCode).not.toBe("supervisor_offline");
+		expect((await intelligenceForSession("lease-now", later))?.reasonCode).toBe(
+			"supervisor_offline",
+		);
+		const bulk = await intelligenceForSessions(["lease-now"], later);
+		expect(bulk.get("lease-now")?.reasonCode).toBe("supervisor_offline");
 	});
 });

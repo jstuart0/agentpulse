@@ -7,8 +7,38 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sessions of a host that stopped heartbeating no longer stay Active
+  forever** (AGEN-76). A supervisor now counts as connected only while its
+  heartbeat lease is unexpired, decided in one place for the inactivity sweep,
+  the AI watcher and classifier, and the launch recommender. Previously the
+  stored `supervisors.status` was never cleared on expiry, so a host that
+  vanished kept protecting its managed sessions indefinitely. Sessions already
+  stuck this way complete on the first sweep after upgrade, and open dashboards
+  are told.
+
+### Added
+
+- `AGENTPULSE_MANAGED_SESSION_MAX_SILENCE_HOURS` (default `72`, range 1 to 720):
+  a managed session silent longer than this stops being exempt from the sweep
+  and completes, even while its host is heartbeating (for example a terminal
+  bridge that died). 72 hours outlasts a weekend.
+
 ### Changed
 
+- **The watcher routes to a human for hosts whose lease has expired.** Such a
+  host now reads offline to the AI watcher and the session classifier, even if
+  its stored status says connected: no continue or report is attempted, auto
+  dispatch goes to human review, and the card badge shows
+  `blocked/supervisor_offline`. The launch recommender no longer suggests such a
+  host.
+- **A sleeping laptop's managed sessions now age out like unmanaged ones** once
+  the host's lease lapses (idle after 5 minutes, completed after 30). Nothing is
+  lost: the next hook reopens the session as `active`.
+- Sessions completed this way stay `managed` and controllable: `managed` means a
+  supervisor launched the session, not that it is live. A prompt or stop queued
+  for a dead host waits until that host returns.
 - **The MCP server package is published to npm as `@craze0/agentpulse-mcp`**
   (the maintainer's own npm scope). `agentpulse mcp install` and the package
   README now print `npx -y @craze0/agentpulse-mcp@<version> serve` (still pinned
