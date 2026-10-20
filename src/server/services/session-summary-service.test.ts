@@ -471,25 +471,57 @@ describe("provider failures", () => {
 		}
 	});
 
-	test("a provider error body's text is in neither the stored row nor the view", async () => {
+	describe("provider text stays out of the row, the view and the failure log", () => {
 		const SENTINEL = "SENTINEL-PROVIDER-TEXT";
-		const bad = Bun.serve({
-			port: 0,
-			hostname: "127.0.0.1",
-			fetch: () => new Response(`{"error":"${SENTINEL}"}`, { status: 500 }),
-		});
-		try {
-			await H.resetWorld(stub);
-			await H.enableAi();
-			await H.seedProviderAt(`http://127.0.0.1:${bad.port}/v1`);
+
+		async function expectSentinelAbsent(run: () => Promise<void>) {
 			await H.seedActiveSession(SID);
-			await H.runGeneration(SID);
+			const logs = H.captureLogs();
+			try {
+				await run();
+			} finally {
+				logs.restore();
+			}
 			expect((await summaryOf(SID)).attemptErrorCode).not.toBeNull();
 			expect(await serialized(SID)).not.toContain(SENTINEL);
 			expect(JSON.stringify(await viewOf(SID))).not.toContain(SENTINEL);
-		} finally {
-			bad.stop(true);
+			// The failure line was written, and it carries a code, never provider text.
+			expect(logs.lines.some((l) => l.includes("[session-summary] attempt failed"))).toBe(true);
+			expect(logs.lines.filter((l) => l.includes(SENTINEL))).toEqual([]);
 		}
+
+		test("in a provider error body (the adapter copies up to 300 characters into its LlmError message)", async () => {
+			const bad = Bun.serve({
+				port: 0,
+				hostname: "127.0.0.1",
+				fetch: () => new Response(`{"error":"${SENTINEL}"}`, { status: 500 }),
+			});
+			try {
+				await H.resetWorld(stub);
+				await H.enableAi();
+				await H.seedProviderAt(`http://127.0.0.1:${bad.port}/v1`);
+				await expectSentinelAbsent(() => H.runGeneration(SID));
+			} finally {
+				bad.stop(true);
+			}
+		});
+
+		test("inside an LlmError message", async () => {
+			const spy = spyOn(registry, "getAdapter").mockImplementation(
+				() =>
+					({
+						kind: "openai",
+						complete: async () => {
+							throw new LlmError("unknown", `openai 500: ${SENTINEL}`, 500);
+						},
+					}) as never,
+			);
+			try {
+				await expectSentinelAbsent(() => H.runGeneration(SID));
+			} finally {
+				spy.mockRestore();
+			}
+		});
 	});
 
 	test("TC-5.14c an undecryptable key is a failed attempt after the claim (P5-7): provider_key_unreadable, a 5 s soft cooldown, nothing sent", async () => {
