@@ -7,7 +7,7 @@
  * `/devices/:id/test` answers 503, and capabilities don't advertise it. Nothing
  * else about the server changes.
  *
- * The Live Activity publisher starts and stops with push. Who hears about an event is `PolicyPushTargets`: solo, every eligible phone;
+ * The Live Activity publisher and, in a build with AI, the health and digest triggers start and stop with push. Who hears about an event is `PolicyPushTargets`: solo, every eligible phone;
  * team, the session owner's phones (see push-targets.ts).
  */
 import { and, eq, isNull } from "drizzle-orm";
@@ -15,6 +15,7 @@ import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
 import { mobileDeviceActivities } from "../../db/schema/index.js";
 import { observeWsRevalidation } from "../../ws/revalidation.js";
+import { isAiBuildEnabled } from "../ai/feature.js";
 import { decryptSecretAsync } from "../ai/secrets.js";
 import { getMode } from "../instance-mode.js";
 import { revokeDeviceRow } from "../mobile-devices-service.js";
@@ -27,8 +28,10 @@ import {
 } from "./live-activity-publisher.js";
 import { pushCapability } from "./push-capability.js";
 import { enrichPushEvent } from "./push-enrich.js";
+import { PushTriggerScheduler } from "./push-scheduler.js";
 import { PushService } from "./push-service.js";
 import { PolicyPushTargets } from "./push-targets.js";
+import { createDbTriggerPorts } from "./push-trigger-ports.js";
 import { RelayClient, loadRelayUrl } from "./relay-client.js";
 import { type PushLogger, type PushRevocationSink, consolePushLogger } from "./types.js";
 
@@ -43,11 +46,16 @@ export type PushAvailability =
 
 let relayOrigin: string | null = null;
 let publisher: LiveActivityPublisher | null = null;
+let triggers: PushTriggerScheduler | null = null;
 let stopInvalidatingTargets: (() => void) | null = null;
 
 /** The running Live Activity publisher, or null when push is off. */
 export function getLiveActivityPublisher(): LiveActivityPublisher | null {
 	return publisher;
+}
+/** The running health and digest triggers, or null when push is off or the build has no AI. */
+export function getPushTriggers(): PushTriggerScheduler | null {
+	return triggers;
 }
 let offReason: PushOffReason = "relay_not_configured";
 
@@ -128,6 +136,10 @@ export function startPush(
 	});
 	publisher = createDbLiveActivityPublisher(service, sessionBus, logger);
 	publisher.start();
+	if (isAiBuildEnabled()) {
+		triggers = new PushTriggerScheduler({ ports: createDbTriggerPorts(service), logger });
+		triggers.start();
+	}
 	relayOrigin = capability.push.relayOrigin;
 	logger.info("push enabled", { relay: relayOrigin });
 	return { available: true, relayOrigin };
@@ -136,6 +148,8 @@ export function startPush(
 export function stopPush(): void {
 	publisher?.stop();
 	publisher = null;
+	triggers?.stop();
+	triggers = null;
 	stopInvalidatingTargets?.();
 	stopInvalidatingTargets = null;
 	configurePushRuntime(null);

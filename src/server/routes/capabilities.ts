@@ -104,6 +104,34 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		value: true,
 	},
 	{
+		// GET /ai/ask/threads for a respond key: the caller's own threads only (D74).
+		name: "askThreadsList",
+		proof: { kind: "route", method: "GET", path: "/ai/ask/threads" },
+		value: true,
+	},
+	{
+		// Compact events keep the hook's duration and outcome in `rawPayload` (see event-compact.ts).
+		name: "compactToolOutcome",
+		proof: { kind: "route", method: "GET", path: "/sessions/:sessionId/timeline" },
+		value: true,
+	},
+	{
+		// `stuck` and `risky` pushes from the health job; it runs only while AI is active, beside push.
+		name: "healthPush",
+		proof: { kind: "route", method: "GET", path: "/ai/inbox" },
+		value: true,
+		pushEvents: ["stuck", "risky"],
+		isAvailable: (snapshot) => snapshot.push.available && snapshot.aiActive,
+	},
+	{
+		// A `daily_digest` push at the device's own digestHour; same availability as the health job (push on and AI active).
+		name: "digestPush",
+		proof: { kind: "route", method: "GET", path: "/ai/digest" },
+		value: true,
+		pushEvents: ["daily_digest"],
+		isAvailable: (snapshot) => snapshot.push.available && snapshot.aiActive,
+	},
+	{
 		// Needs a configured relay and the instance secrets key; `push.relayOrigin` travels with it.
 		name: "mobilePush",
 		proof: { kind: "route", method: "POST", path: "/devices/:id/test" },
@@ -115,6 +143,8 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 /** What the availability checks may look at; read once per request. */
 export interface CapabilitySnapshot {
 	push: PushAvailability;
+	/** Whether AI is built in, switched on and not paused: the health and digest jobs send nothing otherwise. */
+	aiActive: boolean;
 }
 
 export function advertisedFeatures(snapshot: CapabilitySnapshot): readonly CapabilityFeature[] {
@@ -134,7 +164,8 @@ capabilitiesRouter.get("/capabilities", async (c) => {
 	const mode = await getMode();
 	const aiBuild = isAiBuildEnabled();
 	const provider = aiBuild ? await getDefaultProvider() : null;
-	const snapshot: CapabilitySnapshot = { push: pushAvailability() };
+	const aiActive = await isAiActive();
+	const snapshot: CapabilitySnapshot = { push: pushAvailability(), aiActive };
 	const push = snapshot.push;
 	const features = advertisedFeatures(snapshot);
 
@@ -157,7 +188,7 @@ capabilitiesRouter.get("/capabilities", async (c) => {
 			: null,
 		ai: {
 			build: aiBuild,
-			active: await isAiActive(),
+			active: aiActive,
 			provider: provider?.kind ?? null,
 			vectorSearch: await isVectorSearchActive(),
 		},

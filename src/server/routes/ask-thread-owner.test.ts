@@ -40,7 +40,9 @@ const { app } = await import("../app.js");
 const { upsertSetting } = await import("../services/settings-service.js");
 const { setLabsFlag } = await import("../services/labs-service.js");
 const { invalidateAiFlagsCache } = await import("../services/ai/feature.js");
-const { countOpenProposals } = await import("../services/ask/ask-service.js");
+const { AskRequestError, countOpenProposals, runAskTurn } = await import(
+	"../services/ask/ask-service.js"
+);
 
 beforeAll(() => initializeDatabase(), 60_000);
 beforeEach(async () => {
@@ -176,10 +178,10 @@ describe("team mode: read (GET /ai/ask/threads/:id)", () => {
 		}
 	});
 
-	test("a respond key can read a thread but not list them or archive one", async () => {
+	test("a respond key can read and list its own threads but not archive one", async () => {
 		const w = await world();
 		const headers = w.callers.aliceRespond as Headers;
-		expect((await list(headers)).status).toBe(403);
+		expect((await list(headers)).status).toBe(200);
 		const res = await archive(w.threads.alice, headers);
 		expect(res.status).toBe(403);
 		const [row] = await getDb().select().from(askThreads).where(eq(askThreads.id, w.threads.alice));
@@ -365,5 +367,141 @@ describe("a respond key reads only a thread it asked, whatever its role or the m
 				expect((await read(w.threads[name], w.callers[caller] as Headers)).status).toBe(200);
 			}
 		}
+	});
+});
+
+const listedIds = async (headers: Headers): Promise<string[]> => {
+	const res = await list(headers);
+	expect(res.status).toBe(200);
+	const { threads } = (await res.json()) as { threads: Array<{ id: string }> };
+	return threads.map((t) => t.id).sort();
+};
+
+describe("a respond key lists only the threads it asked, whatever its role or the mode (D74, F107)", () => {
+	const names = ["alice", "bob", "loose", "none", "telegram"] as const;
+
+	test("an owner's respond key lists its owner's threads and no one else's", async () => {
+		const w = await world();
+		expect(await listedIds(w.callers.aliceRespond as Headers)).toEqual([w.threads.alice]);
+	});
+
+	test("an admin's respond key lists its admin's own threads only: not the others', ownerless and Telegram ones included", async () => {
+		const w = await world();
+		const admin = await seedLocalUser("ao-admin-respond-list", "admin");
+		const adminRespond = bearerHeaders(
+			(await seedKey("ao-admin-resp-list", ["respond"], admin.id)).key,
+		);
+		expect(await listedIds(adminRespond)).toEqual([]);
+		const mine = await insertThread({ title: "the admin's", ownerUserId: admin.id });
+		expect(await listedIds(adminRespond)).toEqual([mine]);
+		// the same admin on a manage credential still lists everything (and the new thread)
+		expect(await listedIds(await cookieHeadersFor(admin.id))).toEqual(
+			[...names.map((name) => w.threads[name]), mine].sort(),
+		);
+	});
+
+	test("solo: a respond key lists what its person (or it) asked, not what a manage key lists", async () => {
+		const w = await world();
+		await setStoredMode("solo");
+		const alice = await seedLocalUser("ao-solo-alice-list");
+		const owned = await insertThread({ ownerUserId: alice.id });
+		const loose = await seedKey("ao-solo-loose-respond-list", ["respond"], null);
+		const byKey = await insertThread({ ownerKeyId: loose.id });
+		const aliceRespond = bearerHeaders(
+			(await seedKey("ao-solo-alice-resp-list", ["respond"], alice.id)).key,
+		);
+		expect(await listedIds(aliceRespond)).toEqual([owned]);
+		expect(await listedIds(bearerHeaders(loose.key))).toEqual([byKey]);
+		const manage = bearerHeaders((await seedKey("ao-solo-manage-list", ["manage"], null)).key);
+		expect(await listedIds(manage)).toEqual(
+			[...names.map((name) => w.threads[name]), owned, byKey].sort(),
+		);
+	});
+
+	test("a respond key with no person behind it lists only the threads that key asked", async () => {
+		const w = await world();
+		const loose = await seedKey("ao-loose-respond-list", ["respond"], null);
+		expect(await listedIds(bearerHeaders(loose.key))).toEqual([]);
+		const mine = await insertThread({ ownerKeyId: loose.id });
+		expect(await listedIds(bearerHeaders(loose.key))).toEqual([mine]);
+		expect(w.threads.loose).not.toBe(mine);
+	});
+
+	test("a manage admin credential keeps the usual rule: every thread", async () => {
+		const w = await world();
+		const all = names.map((name) => w.threads[name]).sort();
+		for (const caller of ["admin", "adminKey"]) {
+			expect(await listedIds(w.callers[caller] as Headers)).toEqual(all);
+		}
+	});
+
+	test("the list names no owner and holds no archived thread", async () => {
+		const w = await world();
+		const res = await list(w.callers.aliceRespond as Headers);
+		const { threads } = (await res.json()) as { threads: Array<Record<string, unknown>> };
+		expect(Object.keys(threads[0] ?? {}).sort()).toEqual([
+			"archivedAt",
+			"createdAt",
+			"id",
+			"origin",
+			"telegramChatId",
+			"title",
+			"updatedAt",
+		]);
+		await getDb()
+			.update(askThreads)
+			.set({ archivedAt: new Date().toISOString() })
+			.where(eq(askThreads.id, w.threads.alice));
+		expect(await listedIds(w.callers.aliceRespond as Headers)).toEqual([]);
+	});
+
+	test("a respond key still cannot start an Ask turn (POST /ai/ask stays manage-only)", async () => {
+		const w = await world();
+		const res = await app.request("/api/v1/ai/ask", {
+			method: "POST",
+			headers: new Headers({
+				...Object.fromEntries((w.callers.aliceRespond as Headers).entries()),
+				"content-type": "application/json",
+			}),
+			body: JSON.stringify({ message: "hi" }),
+		});
+		expect(res.status).toBe(403);
+	});
+});
+
+describe("starting a turn on a thread (openTurn) follows the same ownOnly rule (F96)", () => {
+	const turn = (actor: { userId: string; ownOnly: boolean }, threadId: string) =>
+		runAskTurn({
+			threadId,
+			message: "hello",
+			actor: { userId: actor.userId, label: "api_key", role: "admin", mode: "team" },
+			requesterKeyId: null,
+			ownOnly: actor.ownOnly,
+		});
+	const threadCount = async () => (await getDb().select().from(askThreads)).length;
+
+	test("an admin on a manage credential reaches a Telegram thread, so is told it is Telegram-only", async () => {
+		const w = await world();
+		const admin = await seedLocalUser("ao-turn-admin", "admin");
+		await expect(
+			turn({ userId: admin.id, ownOnly: false }, w.threads.telegram),
+		).rejects.toBeInstanceOf(AskRequestError);
+	});
+
+	test("with ownOnly the same admin reaches only its own: another's thread is an unknown id, a new thread starts, and the thread's origin is not revealed", async () => {
+		const w = await world();
+		const admin = await seedLocalUser("ao-turn-admin-own", "admin");
+		const before = await threadCount();
+		const outcome = await turn({ userId: admin.id, ownOnly: true }, w.threads.telegram).then(
+			() => null,
+			(err: unknown) => err,
+		);
+		expect(outcome).not.toBeInstanceOf(AskRequestError);
+		expect(await threadCount()).toBe(before + 1);
+		const messages = await getDb()
+			.select()
+			.from(askMessages)
+			.where(eq(askMessages.threadId, w.threads.telegram));
+		expect(messages).toHaveLength(1); // only the seeded question: nothing was added to someone else's thread
 	});
 });

@@ -539,7 +539,13 @@ describe("GET /sessions/:id with eventsLimit, compact and omit", () => {
 			content: `content ${i} ${"c".repeat(5000)}`,
 			toolResponse: "r".repeat(5000),
 			toolInput: { command: "k".repeat(6000), cwd: "/work" },
-			rawPayload: { i, blob: "b".repeat(3000) },
+			rawPayload: {
+				i,
+				blob: "b".repeat(3000),
+				duration_ms: 1000 + i,
+				tool_use_id: `toolu_${String(i).padStart(24, "0")}`,
+				tool_response: JSON.stringify({ exit_code: i % 3, stdout: "o" }),
+			},
 		}));
 	});
 
@@ -569,12 +575,17 @@ describe("GET /sessions/:id with eventsLimit, compact and omit", () => {
 		}
 	});
 
-	test("compact drops the raw payload and cuts each long field, flagging the cut", async () => {
+	test("compact keeps only the duration and outcome of the raw payload (F106), and cuts each long field, flagging the cut", async () => {
 		const full = await json(`/sessions/${sessionId}`);
 		const { body } = await json(`/sessions/${sessionId}?compact=true`);
 		expect(body.events).toHaveLength(full.body.events.length);
 		const event = body.events[0];
-		expect("rawPayload" in event).toBe(false);
+		const source = full.body.events[0].rawPayload;
+		expect(event.rawPayload).toEqual({
+			duration_ms: source.duration_ms,
+			tool_use_id: source.tool_use_id,
+			exit_code: JSON.parse(source.tool_response).exit_code,
+		});
 		expect(event.contentTruncated).toBe(true);
 		expect(event.toolResponseTruncated).toBe(true);
 		expect(event.toolInputTruncated).toBe(true);
@@ -836,7 +847,13 @@ describe("gzip budgets on the fat fixture", () => {
 			content: prose(i * 3 + 1, 4 * 1024),
 			toolInput: { command: prose(i * 3 + 2, 8 * 1024), description: "run" },
 			toolResponse: prose(i * 3 + 4, 4 * 1024),
-			rawPayload: { transcript: prose(i * 3 + 3, 32 * 1024), i },
+			rawPayload: {
+				transcript: prose(i * 3 + 3, 32 * 1024),
+				i,
+				duration_ms: 1000 + i,
+				tool_use_id: `toolu_${String(i).padStart(24, "0")}`,
+				tool_response: JSON.stringify({ exit_code: i % 3, interrupted: false }),
+			},
 		}));
 		const heavy = prose(99, 80_000);
 		for (let i = 0; i < FAT_ROWS; i++) {

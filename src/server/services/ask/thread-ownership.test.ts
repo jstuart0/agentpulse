@@ -18,8 +18,8 @@ afterEach(async () => {
 	await getDb().delete(askThreads);
 }, 60_000);
 
-const IDS = [null, "u1", "u2"] as const;
-const KEYS = [null, "k1", "k2"] as const;
+const IDS = [null, "", "u1", "u2"] as const;
+const KEYS = [null, "", "k1", "k2"] as const;
 
 describe("ownsThread", () => {
 	// [owner user, owner key, reader user, reader key, owns]
@@ -34,6 +34,13 @@ describe("ownsThread", () => {
 		[null, "k1", "u1", null, false],
 		[null, null, "u1", "k1", false],
 		[null, null, null, null, false],
+		// "" is no id, on the owner side and the reader side alike
+		["", "k1", null, "k1", true],
+		["", "k1", "", "k1", true],
+		["", null, "", null, false],
+		[null, "", null, "", false],
+		["u1", "", "", "", false],
+		["", "", "", "", false],
 	];
 	for (const [ownerUserId, ownerKeyId, userId, keyId, owns] of TABLE) {
 		test(`thread(user ${ownerUserId}, key ${ownerKeyId}) read by (user ${userId}, key ${keyId}): ${owns}`, () => {
@@ -73,7 +80,7 @@ describe("the SQL condition and the function agree", () => {
 				compared++;
 			}
 		}
-		expect(made).toHaveLength(9);
-		expect(compared).toBe(9);
+		expect(made).toHaveLength(16);
+		expect(compared).toBe(16);
 	});
 });

@@ -599,17 +599,37 @@ export async function registerDevice(
 				deviceName: registration.deviceName ?? existing.deviceName,
 				appVersion: registration.appVersion ?? existing.appVersion,
 				osVersion: registration.osVersion ?? existing.osVersion,
-				prefsJson: registration.prefsJson ?? existing.prefsJson,
+				prefsJson:
+					registration.prefsJson === null
+						? existing.prefsJson
+						: carryDigestMarker(registration.prefsJson, existing.prefsJson),
 			})
 			.where(
 				and(
 					eq(mobileDevices.id, existing.id),
 					ownedBy(existing.userId),
 					isNull(mobileDevices.revokedAt),
+					prefsUnchanged(existing.prefsJson),
 				),
 			)
 			.returning();
-		if (!updated) throw new DeviceConflictError(); // it changed under us: the phone retries
+		if (!updated) {
+			// Only a change of the stored prefs (the digest job's marker) is worth another look; a change of owner
+			// or a revocation is the phone's to retry.
+			const [now] = await db
+				.select({ prefsJson: mobileDevices.prefsJson })
+				.from(mobileDevices)
+				.where(
+					and(
+						eq(mobileDevices.id, existing.id),
+						ownedBy(existing.userId),
+						isNull(mobileDevices.revokedAt),
+					),
+				)
+				.limit(1);
+			if (now && now.prefsJson !== existing.prefsJson) continue;
+			throw new DeviceConflictError();
+		}
 		return { device: updated, created: false };
 	}
 	throw new DeviceConflictError();
@@ -631,23 +651,62 @@ export async function listDevices(filter: DeviceFilter): Promise<DeviceRow[]> {
 	return getDb().select().from(mobileDevices).where(where).orderBy(mobileDevices.createdAt);
 }
 
+/**
+ * `prefs.lastDigestDate` belongs to the server (the digest job writes it): the new prefs carry the stored
+ * value, whatever the phone sent, and have none when nothing is stored. Unreadable stored prefs carry nothing.
+ */
+export function carryDigestMarker(newPrefsJson: string, storedPrefsJson: string | null): string {
+	const prefs = JSON.parse(newPrefsJson) as Record<string, unknown>;
+	prefs.lastDigestDate = undefined;
+	try {
+		const stored = storedPrefsJson
+			? (JSON.parse(storedPrefsJson) as Record<string, unknown>)
+			: null;
+		if (typeof stored?.lastDigestDate === "string" && DIGEST_DATE.test(stored.lastDigestDate)) {
+			prefs.lastDigestDate = stored.lastDigestDate;
+		}
+	} catch {
+		// unreadable stored prefs hold no marker
+	}
+	return JSON.stringify(prefs);
+}
+
+/** A column-equals-text guard that also matches NULL. */
+function prefsUnchanged(stored: string | null) {
+	return stored === null ? isNull(mobileDevices.prefsJson) : eq(mobileDevices.prefsJson, stored);
+}
+
+/** Times a PATCH of prefs is retried when the stored prefs changed between its read and its write. */
+const PREFS_WRITE_ATTEMPTS = 3;
+
 export async function updateDevice(
 	id: string,
 	patch: DevicePatch,
 	now: Date = new Date(),
 ): Promise<DeviceRow | null> {
 	const nowIso = now.toISOString();
-	const [row] = await getDb()
-		.update(mobileDevices)
-		.set({
-			...(patch.deviceName !== undefined ? { deviceName: patch.deviceName } : {}),
-			...(patch.prefsJson !== undefined ? { prefsJson: patch.prefsJson } : {}),
-			lastSeenAt: nowIso,
-			updatedAt: nowIso,
-		})
-		.where(and(eq(mobileDevices.id, id), isNull(mobileDevices.revokedAt)))
-		.returning();
-	return row ?? null;
+	const db = getDb();
+	const live = and(eq(mobileDevices.id, id), isNull(mobileDevices.revokedAt));
+	const common = {
+		...(patch.deviceName !== undefined ? { deviceName: patch.deviceName } : {}),
+		lastSeenAt: nowIso,
+		updatedAt: nowIso,
+	};
+	if (patch.prefsJson === undefined) {
+		const [row] = await db.update(mobileDevices).set(common).where(live).returning();
+		return row ?? null;
+	}
+	for (let attempt = 0; attempt < PREFS_WRITE_ATTEMPTS; attempt++) {
+		const [current] = await db.select().from(mobileDevices).where(live).limit(1);
+		if (!current) return null;
+		const [row] = await db
+			.update(mobileDevices)
+			.set({ ...common, prefsJson: carryDigestMarker(patch.prefsJson, current.prefsJson) })
+			.where(and(live, prefsUnchanged(current.prefsJson)))
+			.returning();
+		if (row) return row;
+	}
+	throw new DeviceConflictError();
 }
 
 // ── Revocation ───────────────────────────────────────────────────────────────

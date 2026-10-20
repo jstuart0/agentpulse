@@ -18,6 +18,13 @@ const { SCOPE_GRANTS } = await import("../auth/route-scope-policy.js");
 const { WS_UPGRADE_PATHS } = await import("../ws/ws-auth.js");
 const { CAPABILITY_FEATURES, CAPABILITIES_API_LEVEL } = await import("./capabilities.js");
 const pushRuntime = await import("../services/push/push-runtime.js");
+const { upsertSetting } = await import("../services/settings-service.js");
+const { invalidateAiFlagsCache } = await import("../services/ai/feature.js");
+
+async function setAiRuntime(on: boolean) {
+	await upsertSetting("ai.enabled", on, { allowProtected: true });
+	invalidateAiFlagsCache();
+}
 
 const originalDisableAuth = config.disableAuth;
 const originalAi = { aiEnabled: config.aiEnabled, secretsKey: config.secretsKey };
@@ -124,6 +131,8 @@ describe("GET /capabilities", () => {
 				detailEventsLimit: true,
 				timelineKeyset: true,
 				statsToday: true,
+				askThreadsList: true,
+				compactToolOutcome: true,
 			});
 			expect(body.pushEvents).toEqual(["ask_reply"]);
 			expect(Object.keys(body.ai).sort()).toEqual(["active", "build", "provider", "vectorSearch"]);
@@ -210,6 +219,68 @@ describe("GET /capabilities", () => {
 			expect(body.ai.provider).toBeNull();
 		} finally {
 			Object.assign(config as Record<string, unknown>, originalAi);
+		}
+	});
+});
+
+describe("the health and digest pushes", () => {
+	const on = { available: true, relayOrigin: "https://relay.example.test" } as const;
+
+	test("advertised with push while AI is active, with the events they send", async () => {
+		await setAiRuntime(true);
+		const spy = spyOn(pushRuntime, "pushAvailability").mockReturnValue(on);
+		try {
+			const body = (await (await get(respondKey)).json()) as {
+				features: Record<string, unknown>;
+				pushEvents: string[];
+			};
+			expect(body.features.healthPush).toBe(true);
+			expect(body.features.digestPush).toBe(true);
+			expect(body.pushEvents).toEqual(["ask_reply", "stuck", "risky", "daily_digest"]);
+		} finally {
+			spy.mockRestore();
+			await setAiRuntime(false);
+		}
+	});
+
+	test("not advertised when AI is built in but switched off, because the jobs send nothing then", async () => {
+		await setAiRuntime(false);
+		const spy = spyOn(pushRuntime, "pushAvailability").mockReturnValue(on);
+		try {
+			const body = (await (await get(respondKey)).json()) as {
+				features: Record<string, unknown>;
+				pushEvents: string[];
+			};
+			expect("healthPush" in body.features).toBe(false);
+			expect("digestPush" in body.features).toBe(false);
+			expect(body.pushEvents).toEqual(["ask_reply"]);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("not advertised without push, or in a build without AI, because the job doesn't run", async () => {
+		const noPush = (await (await get(respondKey)).json()) as {
+			features: Record<string, unknown>;
+			pushEvents: string[];
+		};
+		expect("healthPush" in noPush.features).toBe(false);
+		expect("digestPush" in noPush.features).toBe(false);
+
+		const original = { aiEnabled: config.aiEnabled };
+		Object.assign(config as Record<string, unknown>, { aiEnabled: false });
+		const spy = spyOn(pushRuntime, "pushAvailability").mockReturnValue(on);
+		try {
+			const body = (await (await get(respondKey)).json()) as {
+				features: Record<string, unknown>;
+				pushEvents: string[];
+			};
+			expect("healthPush" in body.features).toBe(false);
+			expect("digestPush" in body.features).toBe(false);
+			expect(body.pushEvents).toEqual(["ask_reply"]);
+		} finally {
+			spy.mockRestore();
+			Object.assign(config as Record<string, unknown>, original);
 		}
 	});
 });

@@ -17,6 +17,7 @@ function device(id: string): PushDevice {
 		userId: "user-1",
 		platform: "ios",
 		relayDeviceId: `relayDevice${id}`,
+		ownerlessKeyId: null,
 		sendTokenCiphertext: "stored-token",
 		kid: `kid-${id}`,
 		publicKey: "AAAA",
@@ -41,7 +42,7 @@ afterEach(() => configurePushRuntime(null));
 describe("dispatchEvent", () => {
 	test("with no runtime it returns at once and touches nothing", async () => {
 		expect(getPushRuntime()).toBeNull();
-		await expect(dispatchEvent(event)).resolves.toBeUndefined();
+		await expect(dispatchEvent(event)).resolves.toBe("settled");
 	});
 
 	test("resolves targets for the event and hands them to the service with the event", async () => {
@@ -120,7 +121,7 @@ describe("dispatchEvent", () => {
 				},
 			},
 		});
-		await expect(dispatchEvent(event)).resolves.toBeUndefined();
+		await expect(dispatchEvent(event)).resolves.toBe("retry");
 		expect(called).toBe(false);
 		expect(warnings).toEqual([
 			{ message: "dispatch failed", fields: { type: "permission_wait", error: "TypeError" } },
@@ -135,7 +136,7 @@ describe("dispatchEvent", () => {
 			...base,
 			service: { sendToDevices: async () => Promise.reject(new RangeError("boom")) },
 		});
-		await expect(dispatchEvent(event)).resolves.toBeUndefined();
+		await expect(dispatchEvent(event)).resolves.toBe("retry");
 		configurePushRuntime({
 			...base,
 			service: {
@@ -144,7 +145,7 @@ describe("dispatchEvent", () => {
 				},
 			},
 		});
-		await expect(dispatchEvent(event)).resolves.toBeUndefined();
+		await expect(dispatchEvent(event)).resolves.toBe("retry");
 		expect(warnings.map((w) => w.fields?.error)).toEqual(["RangeError", "Error"]);
 	});
 

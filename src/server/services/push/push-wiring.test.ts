@@ -34,9 +34,8 @@ const { dispatchEvent, getPushRuntime } = await import("./dispatch.js");
 const { DbPushDeviceSource, getPushDevice, parsePrefs, toPushDevice } = await import(
 	"./device-source.js"
 );
-const { createRevocationSink, pushAvailability, startPush, stopPush } = await import(
-	"./push-runtime.js"
-);
+const { createRevocationSink, getPushTriggers, pushAvailability, startPush, stopPush } =
+	await import("./push-runtime.js");
 
 // biome-ignore lint/suspicious/noExplicitAny: response bodies are dynamically shaped JSON
 type Json = Record<string, any>;
@@ -194,6 +193,31 @@ describe("starting push", () => {
 		expect(pushAvailability().available).toBe(false);
 	});
 
+	test("the health and digest triggers start and stop with push, in a build with AI only", () => {
+		const original = config.aiEnabled;
+		try {
+			Object.assign(config as Record<string, unknown>, { aiEnabled: true });
+			enable();
+			const running = getPushTriggers();
+			expect(running).not.toBeNull();
+			stopPush();
+			expect(getPushTriggers()).toBeNull();
+
+			Object.assign(config as Record<string, unknown>, { aiEnabled: false });
+			enable();
+			expect(getPushRuntime()).not.toBeNull();
+			expect(getPushTriggers()).toBeNull();
+			// starting again stops the previous triggers rather than leaking a second timer
+			Object.assign(config as Record<string, unknown>, { aiEnabled: true });
+			enable();
+			const first = getPushTriggers();
+			enable();
+			expect(getPushTriggers()).not.toBe(first);
+		} finally {
+			Object.assign(config as Record<string, unknown>, { aiEnabled: original });
+		}
+	});
+
 	test("when push is off, dispatching an event is a no-op that touches nothing", async () => {
 		const a = await owner();
 		await phone(a.headers);
@@ -300,10 +324,49 @@ describe("the device table as the target source", () => {
 		expect(await getPushDevice(id)).toBeNull();
 	});
 
-	test("an ownerless key's phones are grouped by the key", async () => {
+	test("an ownerless key's phones are grouped by the key, and say so in ownerlessKeyId", async () => {
 		const key = await seedKey("wire-ownerless", ["respond"], null);
 		const { id } = await phone(asKey(key.key));
-		expect((await getPushDevice(id))?.userId).toBe(`key:${key.id}`);
+		const device = await getPushDevice(id);
+		expect(device?.userId).toBe(`key:${key.id}`);
+		expect(device?.ownerlessKeyId).toBe(key.id);
+	});
+
+	test("a person's phone has no ownerlessKeyId", async () => {
+		const a = await owner();
+		const { id } = await phone(a.headers);
+		expect((await getPushDevice(id))?.ownerlessKeyId).toBeNull();
+	});
+
+	test("no user id can be spelled like an ownerless key (`key:`): every way a user row is created mints a UUID (F96)", async () => {
+		const { createUser } = await import("../local-auth-service.js");
+		const { resolveSsoUser } = await import("../user-identity.js");
+		const local = await createUser({
+			username: "wire-local-id",
+			password: "a-long-enough-pass-1!",
+		});
+		const sso = await resolveSsoUser({
+			provider: "p",
+			subject: "key:fake",
+			source: "uid",
+			username: "key:fake",
+		});
+		for (const id of [local.id, sso.id]) {
+			expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+		}
+		// the third creator (first-run signup) mints its id the same way
+		const authRoute = await Bun.file(new URL("../../routes/auth.ts", import.meta.url)).text();
+		expect(authRoute).toContain("const userId = crypto.randomUUID();");
+		// and no creator takes a caller-chosen id: a new insert into users must be added here on purpose
+		const creators = [
+			"../../routes/auth.ts",
+			"../user-identity.ts",
+			"../local-auth-service.ts",
+		].map((f) => new URL(f, import.meta.url));
+		let inserts = 0;
+		for (const f of creators)
+			inserts += (await Bun.file(f).text()).split(".insert(users)").length - 1;
+		expect(inserts).toBe(3);
 	});
 
 	test("unreadable or oddly typed stored prefs are ignored, never fatal", () => {

@@ -859,3 +859,148 @@ describe("the public key", () => {
 		}
 	});
 });
+
+describe("prefs.lastDigestDate is the server's (D76)", () => {
+	const storedPrefs = async (id: string) => {
+		const [row] = await getDb().select().from(mobileDevices).where(eq(mobileDevices.id, id));
+		return JSON.parse(row?.prefsJson as string) as Record<string, unknown>;
+	};
+	const withMarker = async (id: string, date: string) => {
+		const prefs = await storedPrefs(id);
+		await getDb()
+			.update(mobileDevices)
+			.set({ prefsJson: JSON.stringify({ ...prefs, lastDigestDate: date }) })
+			.where(eq(mobileDevices.id, id));
+	};
+	async function registered() {
+		const owner = await person("ldd-owner");
+		const key = await keyFor(owner.id, "ldd-key");
+		const body = await deviceBody({ prefs: { digestHour: 8, categories: { DIGEST: true } } });
+		const created = await json(await call("POST", "/devices", key.headers, body));
+		return { key, body, id: created.id as string };
+	}
+
+	test("a PATCH of prefs without the marker keeps the stored one", async () => {
+		const { key, id } = await registered();
+		await withMarker(id, "2026-10-20");
+		const res = await call("PATCH", `/devices/${id}`, key.headers, { prefs: { digestHour: 9 } });
+		expect(res.status).toBe(200);
+		expect(await storedPrefs(id)).toEqual({ digestHour: 9, lastDigestDate: "2026-10-20" });
+		expect((await json(res)).prefs).toEqual({ digestHour: 9, lastDigestDate: "2026-10-20" });
+	});
+
+	test("a forged marker in a PATCH is ignored, in both directions", async () => {
+		const { key, id } = await registered();
+		await withMarker(id, "2026-10-20");
+		await call("PATCH", `/devices/${id}`, key.headers, {
+			prefs: { digestHour: 8, lastDigestDate: "2099-01-01" },
+		});
+		expect((await storedPrefs(id)).lastDigestDate).toBe("2026-10-20");
+		// with nothing stored, a client-sent marker does not start one
+		const other = await registered();
+		await call("PATCH", `/devices/${other.id}`, other.key.headers, {
+			prefs: { lastDigestDate: "2026-10-19" },
+		});
+		expect("lastDigestDate" in (await storedPrefs(other.id))).toBe(false);
+	});
+
+	test("a PATCH of the name alone leaves the prefs, marker included", async () => {
+		const { key, id } = await registered();
+		await withMarker(id, "2026-10-20");
+		await call("PATCH", `/devices/${id}`, key.headers, { deviceName: "Renamed" });
+		expect((await storedPrefs(id)).lastDigestDate).toBe("2026-10-20");
+	});
+
+	test("a re-register keeps the stored marker and ignores the one in the body", async () => {
+		const { key, body, id } = await registered();
+		await withMarker(id, "2026-10-20");
+		const again = await call("POST", "/devices", key.headers, {
+			...body,
+			prefs: { digestHour: 7, lastDigestDate: "2099-01-01" },
+		});
+		expect(again.status).toBe(200);
+		expect((await json(again)).id).toBe(id);
+		expect(await storedPrefs(id)).toEqual({ digestHour: 7, lastDigestDate: "2026-10-20" });
+		// re-register without prefs keeps the stored prefs as they were
+		await call("POST", "/devices", key.headers, { ...body, prefs: undefined });
+		expect((await storedPrefs(id)).lastDigestDate).toBe("2026-10-20");
+	});
+
+	test("a revoked device claimed again starts clean: no inherited marker", async () => {
+		const { key, body, id } = await registered();
+		await withMarker(id, "2026-10-20");
+		await getDb()
+			.update(mobileDevices)
+			.set({ revokedAt: new Date().toISOString(), revokedReason: "relay_gone" })
+			.where(eq(mobileDevices.id, id));
+		await call("POST", "/devices", key.headers, { ...body, prefs: { digestHour: 6 } });
+		expect(await storedPrefs(id)).toEqual({ digestHour: 6 });
+	});
+
+	/** Runs `beforeWrite` after the next update of the device table is built and before it executes. */
+	function racingNextUpdate(beforeWrite: () => Promise<void>) {
+		const realGetDb = dbClient.getDb;
+		let armed = true;
+		return spyOn(dbClient, "getDb").mockImplementation(() => {
+			const db = realGetDb();
+			return new Proxy(db, {
+				get(target, prop, receiver) {
+					if (prop !== "update") return Reflect.get(target, prop, receiver);
+					return (table: unknown) => {
+						const builder = (target.update as (t: unknown) => never)(table) as Record<
+							string,
+							never
+						>;
+						if (table !== mobileDevices || !armed) return builder;
+						armed = false;
+						const wrap = (
+							node: Record<string, (...a: unknown[]) => unknown>,
+							steps: string[],
+						): unknown =>
+							new Proxy(node, {
+								get(n, key: string) {
+									const member = n[key]?.bind(n);
+									if (key === "returning") {
+										return async (...a: unknown[]) => {
+											await beforeWrite();
+											return member?.(...a);
+										};
+									}
+									if (!steps.includes(key)) return member;
+									return (...a: unknown[]) => wrap(member?.(...a) as never, steps);
+								},
+							});
+						return wrap(builder as never, ["set", "where"]);
+					};
+				},
+			});
+		});
+	}
+
+	test("a PATCH that loses a race to the digest job's marker reads again and keeps it", async () => {
+		const { key, id } = await registered();
+		const spy = racingNextUpdate(() => withMarker(id, "2026-10-20"));
+		try {
+			const res = await call("PATCH", `/devices/${id}`, key.headers, { prefs: { digestHour: 11 } });
+			expect(res.status).toBe(200);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(await storedPrefs(id)).toEqual({ digestHour: 11, lastDigestDate: "2026-10-20" });
+	});
+
+	test("a re-register that loses the same race keeps the marker too", async () => {
+		const { key, body, id } = await registered();
+		const spy = racingNextUpdate(() => withMarker(id, "2026-10-20"));
+		try {
+			const res = await call("POST", "/devices", key.headers, {
+				...body,
+				prefs: { digestHour: 11 },
+			});
+			expect(res.status).toBe(200);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(await storedPrefs(id)).toEqual({ digestHour: 11, lastDigestDate: "2026-10-20" });
+	});
+});

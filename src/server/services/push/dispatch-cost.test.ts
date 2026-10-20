@@ -36,6 +36,7 @@ const phone: PushDevice = {
 	userId: "u",
 	platform: "ios",
 	relayDeviceId: "relay-phone",
+	ownerlessKeyId: null,
 	sendTokenCiphertext: "t",
 	kid: "k",
 	publicKey: "AAAA",
@@ -300,6 +301,7 @@ describe("the eligible-device cache", () => {
 		userId: "u",
 		platform: "ios",
 		relayDeviceId: `relay-${id}`,
+		ownerlessKeyId: null,
 		sendTokenCiphertext: "t",
 		kid: "k",
 		publicKey: "AAAA",
@@ -533,5 +535,72 @@ describe("PolicyPushTargets.invalidate", () => {
 		await first;
 		expect(await targets.resolve(stuck)).toEqual([]);
 		expect(listed).toBe(2);
+	});
+});
+
+describe("what dispatch says became of an event (the health job's retry decision)", () => {
+	const outcomes = (status: string) =>
+		[{ deviceId: "phone", status, pushId: null }] as unknown as AlertOutcome[];
+	function installWith(devices: PushDevice[], result: () => AlertOutcome[]) {
+		configurePushRuntime({
+			targets: { resolve: async () => devices },
+			service: { sendToDevices: async () => result() },
+			logger,
+		});
+	}
+
+	test("sent: a phone was handed the push", async () => {
+		installWith([phone], sent);
+		expect(await dispatchEvent({ type: "stuck", sessionId: "r1" })).toBe("sent");
+	});
+
+	test("retry: nobody to tell, so a repeat after a device pairs may reach it", async () => {
+		installWith([], sent);
+		expect(await dispatchEvent({ type: "stuck", sessionId: "r2" })).toBe("retry");
+		expect(await dispatchEvent({ type: "stuck", sessionId: "r2" })).toBe("retry");
+	});
+
+	test("retry: every send refused before the relay (queue_full); settled when the relay may have taken it (unavailable)", async () => {
+		installWith([phone], () => outcomes("queue_full"));
+		expect(await dispatchEvent({ type: "stuck", sessionId: "r3" })).toBe("retry");
+		installWith([phone], () => outcomes("unavailable"));
+		expect(await dispatchEvent({ type: "stuck", sessionId: "r4" })).toBe("settled");
+	});
+
+	test("settled: every phone answered definitively without a send (category off, a limit)", async () => {
+		installWith([phone], () => outcomes("skipped"));
+		expect(await dispatchEvent({ type: "stuck", sessionId: "r5" })).toBe("settled");
+		installWith([phone], () => outcomes("category_limited"));
+		expect(await dispatchEvent({ type: "stuck", sessionId: "r6" })).toBe("settled");
+	});
+
+	test("settled: the same event again inside the window; settled with no runtime at all", async () => {
+		installWith([phone], sent);
+		await dispatchEvent({ type: "stuck", sessionId: "r7" });
+		expect(await dispatchEvent({ type: "stuck", sessionId: "r7" })).toBe("settled");
+		configurePushRuntime(null);
+		expect(await dispatchEvent({ type: "stuck", sessionId: "r8" })).toBe("settled");
+	});
+
+	test("retry: a failure while resolving, and a drop for the origin's in-flight cap", async () => {
+		configurePushRuntime({
+			targets: {
+				resolve: async () => {
+					throw new Error("db down");
+				},
+			},
+			service: { sendToDevices: async () => sent() },
+			logger,
+		});
+		expect(await dispatchEvent({ type: "stuck", sessionId: "r9" })).toBe("retry");
+
+		install({ hold: true });
+		const held = Array.from({ length: MAX_INFLIGHT_PER_ORIGIN }, (_, i) =>
+			dispatchEvent({ type: "stuck", sessionId: `held-${i}` }, "origin-x"),
+		);
+		await settle();
+		expect(await dispatchEvent({ type: "stuck", sessionId: "over" }, "origin-x")).toBe("retry");
+		release();
+		await Promise.all(held);
 	});
 });

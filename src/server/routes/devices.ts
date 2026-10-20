@@ -154,7 +154,7 @@ devicesRouter.get("/devices", async (c: Context) => {
 	return c.json({ devices: await toDeviceDtos(devices) });
 });
 
-// PATCH /api/v1/devices/:id - { deviceName?, prefs? }; prefs replace the old ones.
+// PATCH /api/v1/devices/:id - { deviceName?, prefs? }; prefs replace the old ones, except `lastDigestDate`, which the server owns and keeps.
 devicesRouter.patch("/devices/:id", limitBody, async (c: Context) => {
 	const refusal = refuseBadOrigin(c);
 	if (refusal) return refusal;
@@ -168,6 +168,7 @@ devicesRouter.patch("/devices/:id", limitBody, async (c: Context) => {
 		if (err instanceof InvalidDeviceError) {
 			return c.json({ error: "invalid_request", field: err.field }, 400);
 		}
+		if (err instanceof DeviceConflictError) return c.json({ error: "device_conflict" }, 409);
 		throw err;
 	}
 });

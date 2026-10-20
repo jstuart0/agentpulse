@@ -155,7 +155,7 @@ const INGEST_WRITES: ReadonlySet<string> = new Set(["PUT /sessions/:sessionId/na
  * is also in OBSERVE_READ_PATHS or INTENTIONALLY_MANAGE_ONLY (guarded by the drift
  * test), so a respond key never reaches a route a manage key can't and never reads
  * a DTO the C1/F23 exclusions keep from observe. A respond key can be narrower than
- * a manage key on the same route: Ask threads are read by their asker only, even
+ * a manage key on the same route: Ask threads (the list and each thread) are read by their asker only, even
  * for an admin's respond key and in solo (the handler judges it). Later phases add
  * their reads here in the same change that mounts the guarded route.
  */
@@ -167,6 +167,8 @@ const RESPOND_READS: ReadonlySet<string> = new Set([
 	"/ai/proposals/:id/delivery",
 	// A thread's reply the phone was pushed about (ask_reply): a respond key reads only a thread it asked.
 	"/ai/ask/threads/:id",
+	// The phone's Ask history (D74): the list holds only the threads this caller asked, whatever its role or the mode.
+	"/ai/ask/threads",
 ]);
 
 /**

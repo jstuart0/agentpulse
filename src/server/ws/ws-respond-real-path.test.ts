@@ -129,7 +129,7 @@ const event = (sessionId: string) => ({
 	content: "hi",
 	toolInput: null,
 	toolResponse: null,
-	rawPayload: { secret: "do-not-send" },
+	rawPayload: { secret: "do-not-send", duration_ms: 1500 },
 	createdAt: "2026-10-01T00:00:00.000Z",
 });
 
@@ -155,7 +155,8 @@ describe("a respond key over a real socket", () => {
 		expect(
 			phone.received.map((m) => `${m.type}:${m.data.sessionId ?? m.data.session.sessionId}`),
 		).toEqual(["new_event:rp-alice", "session_updated:rp-alice"]);
-		expect("rawPayload" in phone.received[0].data).toBe(false);
+		// only the duration/outcome subset crosses (F106); the rest of the raw payload never does
+		expect(phone.received[0].data.rawPayload).toEqual({ duration_ms: 1500 });
 	});
 
 	test("a manage key that asks for ?profile=mobile gets no rawPayload but is not owner-filtered", async () => {
@@ -169,7 +170,8 @@ describe("a respond key over a real socket", () => {
 		await settle();
 
 		expect(phone.received.map((m) => m.type)).toEqual(["new_event", "session_updated"]);
-		expect("rawPayload" in phone.received[0].data).toBe(false);
+		// only the duration/outcome subset crosses (F106); the rest of the raw payload never does
+		expect(phone.received[0].data.rawPayload).toEqual({ duration_ms: 1500 });
 	});
 
 	test("a manage key with no profile gets the dashboard feed, raw payload included", async () => {
@@ -179,7 +181,7 @@ describe("a respond key over a real socket", () => {
 		await settle();
 		broadcastToSession("rp-bob", "new_event", event("rp-bob"));
 		await settle();
-		expect(web.received[0]?.data.rawPayload).toEqual({ secret: "do-not-send" });
+		expect(web.received[0]?.data.rawPayload).toEqual({ secret: "do-not-send", duration_ms: 1500 });
 	});
 });
 

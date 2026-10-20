@@ -66,6 +66,16 @@ export function createPushRuntime(options: {
 	};
 }
 
+/**
+ * What became of a dispatch, for the triggers that must know whether to try again (the health job).
+ *  - `sent`: at least one phone was handed the push.
+ *  - `settled`: it was judged and nothing more should be done now (already dispatched in the window, or every
+ *    phone answered definitively: off, limited, capped, gone, refused, or a send whose outcome is unknown).
+ *  - `retry`: it never got to a phone for a reason that may pass (over budget, nobody to tell yet, a failure,
+ *    or every send refused before reaching the relay).
+ */
+export type DispatchResult = "sent" | "settled" | "retry";
+
 /** Events being resolved or sent. Past this the newest are dropped: a stalled relay must not pile up work behind ingest. */
 export const MAX_INFLIGHT_DISPATCHES = 500;
 /** The top of that budget is kept for events that need the person, so a flood of the rest cannot crowd them out. */
@@ -149,9 +159,9 @@ function noteDrop(logger: PushLogger, type: string, now: number): void {
  * Ingest events with no key context use `ANON_ORIGIN`. Events the server makes for itself
  * (hitl, action requests, launches) pass none.
  */
-export async function dispatchEvent(event: PushEvent, origin?: string): Promise<void> {
+export async function dispatchEvent(event: PushEvent, origin?: string): Promise<DispatchResult> {
 	const current = runtime;
-	if (!current) return;
+	if (!current) return "settled";
 	const logger = current.logger ?? consolePushLogger;
 	const now = Date.now();
 	const budget = NEEDS_THE_PERSON.has(categoryFor(event))
@@ -159,13 +169,13 @@ export async function dispatchEvent(event: PushEvent, origin?: string): Promise<
 		: MAX_INFLIGHT_DISPATCHES - TIME_SENSITIVE_HEADROOM;
 	if (inflight >= budget) {
 		noteDrop(logger, event.type, now);
-		return;
+		return "retry";
 	}
 	if (origin !== undefined && (inflightByOrigin.get(origin) ?? 0) >= MAX_INFLIGHT_PER_ORIGIN) {
 		noteDrop(logger, event.type, now);
-		return;
+		return "retry";
 	}
-	if (seenRecently(event, now)) return;
+	if (seenRecently(event, now)) return "settled";
 	inflight += 1;
 	const startedInEpoch = epoch;
 	if (origin !== undefined) inflightByOrigin.set(origin, (inflightByOrigin.get(origin) ?? 0) + 1);
@@ -176,7 +186,7 @@ export async function dispatchEvent(event: PushEvent, origin?: string): Promise<
 		const devices = await current.targets.resolve(event, ctx);
 		if (devices.length === 0) {
 			recent.delete(dedupeKey); // nobody was told; a repeat after a device pairs may reach it
-			return;
+			return "retry";
 		}
 		const outcomes = await current.service.sendToDevices(
 			devices,
@@ -189,12 +199,18 @@ export async function dispatchEvent(event: PushEvent, origin?: string): Promise<
 			if (outcomes.some((o) => AMBIGUOUS_OUTCOMES.has(o.status))) holdBriefly(dedupeKey);
 			else recent.delete(dedupeKey);
 		}
+		if (outcomes.some((o) => o.status === "sent")) return "sent";
+		const repeatable = outcomes.every(
+			(o) => REFUNDED_OUTCOMES.has(o.status) && !AMBIGUOUS_OUTCOMES.has(o.status),
+		);
+		return repeatable ? "retry" : "settled";
 	} catch (err) {
 		recent.delete(dedupeKey); // a dispatch that failed hasn't told anyone; a repeat may try again
 		logger.warn("dispatch failed", {
 			type: event.type,
 			error: err instanceof Error ? err.name : "unknown",
 		});
+		return "retry";
 	} finally {
 		if (startedInEpoch === epoch) {
 			inflight -= 1;

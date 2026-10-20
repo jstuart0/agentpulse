@@ -25,6 +25,8 @@ import type { DevicePrefs, PushDevice, QuietHours, SessionSnapshot } from "./typ
 
 type DeviceRow = typeof mobileDevices.$inferSelect;
 
+const DIGEST_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
 function isQuietHours(value: unknown): value is QuietHours {
 	const q = value as Record<string, unknown> | null;
 	return (
@@ -50,6 +52,17 @@ export function parsePrefs(prefsJson: string | null): DevicePrefs {
 	if (typeof raw.includeAgentText === "boolean") prefs.includeAgentText = raw.includeAgentText;
 	if (isQuietHours(raw.quietHours)) prefs.quietHours = raw.quietHours;
 	if (typeof raw.timezone === "string") prefs.timezone = raw.timezone;
+	if (
+		typeof raw.digestHour === "number" &&
+		Number.isInteger(raw.digestHour) &&
+		raw.digestHour >= 0 &&
+		raw.digestHour <= 23
+	) {
+		prefs.digestHour = raw.digestHour;
+	}
+	if (typeof raw.lastDigestDate === "string" && DIGEST_DATE.test(raw.lastDigestDate)) {
+		prefs.lastDigestDate = raw.lastDigestDate;
+	}
 	if (typeof raw.categories === "object" && raw.categories !== null) {
 		const categories: Record<string, boolean> = {};
 		for (const [name, enabled] of Object.entries(raw.categories)) {
@@ -65,6 +78,7 @@ export function toPushDevice(row: DeviceRow): PushDevice {
 		id: row.id,
 		// An ownerless key's phones are grouped by the key, so the per-user fan-out cap still means something.
 		userId: row.userId ?? `key:${row.apiKeyId}`,
+		ownerlessKeyId: row.userId === null ? row.apiKeyId : null,
 		platform: row.platform,
 		relayDeviceId: row.relayDeviceId,
 		sendTokenCiphertext: row.sendToken,

@@ -72,6 +72,7 @@ async function makeDevice(over: Partial<PushDevice> = {}) {
 	const device: PushDevice = {
 		id: `dev-${n}`,
 		userId: "user-1",
+		ownerlessKeyId: null,
 		platform: "ios",
 		relayDeviceId: `relayDevice${String(n).padStart(12, "0")}`,
 		sendTokenCiphertext: storedToken(`send-token-SECRET-${n}.0123456789abcdef`),

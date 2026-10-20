@@ -1323,7 +1323,8 @@ describe("coverage", () => {
 		},
 		"GET /ai/ask/threads": {
 			file: "routes/ask-thread-owner.test.ts",
-			marker: "list (GET /ai/ask/threads)",
+			// the respond-key rows (admin, solo, owner, ownerless; D74) live in the second describe
+			marker: "a respond key lists only the threads it asked",
 		},
 		"GET /ai/ask/threads/:id": {
 			file: "routes/ask-thread-owner.test.ts",

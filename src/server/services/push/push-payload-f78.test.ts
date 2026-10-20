@@ -22,6 +22,7 @@ function device(prefs: DevicePrefs = {}): PushDevice {
 		userId: "user-1",
 		platform: "ios",
 		relayDeviceId: "relay-device-0123456789",
+		ownerlessKeyId: null,
 		sendTokenCiphertext: "ciphertext",
 		kid: ID64,
 		publicKey: "unused",

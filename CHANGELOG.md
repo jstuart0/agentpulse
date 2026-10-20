@@ -9,6 +9,13 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Added
 
+- **Health and digest pushes** (with mobile push, in a build with AI): `stuck` and `risky` when a session moves into that
+  state (snoozes suppress, the first pass after a start only records), and a `daily_digest` at the hour a phone chose
+  (`prefs.digestHour`, in its `prefs.timezone`), once per local day, built from the sessions that phone's owner may read.
+  The server records the day in the device's `prefs.lastDigestDate`, which a phone's PATCH or re-register can no longer change. Both jobs stop while AI is switched off. Capabilities `healthPush`, `digestPush`. Each replica
+  runs its own scheduler.
+- **`GET /ai/ask/threads` for a respond key**: lists only the threads that key's caller asked (an admin's respond key and solo
+  included). Capability `askThreadsList`.
 - **Lighter session reads for a phone** (all opt-in; without the parameters every response is what it was, plus
   `currentTurnStartedAt` on session rows):
   - `GET /sessions?view=card` returns card rows: the fields a list draws, the owner, the `managed` flag, the effective
@@ -21,8 +28,9 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   - `GET /sessions/:id/timeline?beforeId=&compact=`: keyset paging (`id DESC`, exclusive), stable while events are written;
     not combinable with `offset`. A read with `beforeId` or `compact` (and no `offset`) also returns `nextBeforeId`: the oldest
     id of the page when the page is full, else `null`. Plain and offset reads keep the `{ events }` shape. `GET /sessions/:id/events/:eventId/context?compact=` takes the same compact form.
-  - A compact event has no `rawPayload`, and no `content`/`toolResponse`/`toolInput` over 2 KB (sibling `…Truncated` flags);
-    it is the same form the mobile WebSocket profile already used.
+  - A compact event carries only a tiny `rawPayload` subset (the hook's `duration_ms` and `tool_use_id`, and the tool outcome: `exit_code`,
+    `success`, `interrupted`, `is_error`; present only when found, omitted otherwise) and no `content`/`toolResponse`/`toolInput`
+    over 2 KB (sibling `…Truncated` flags); it is the same form the mobile WebSocket profile uses. Capability `compactToolOutcome`.
   - `GET /sessions/stats` adds `completedToday`, `failedToday` (sessions that ended today, by outcome) and `launchesToday`
     (drafts and rejected requests excluded), and `todayStartsAt` (the server's local midnight as an ISO instant, so a client can
     label "today" honestly). Capabilities: `sessionCardView`, `detailEventsLimit`, `timelineKeyset`, `statsToday`.

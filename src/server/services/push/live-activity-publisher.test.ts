@@ -27,6 +27,7 @@ const device = (id: string, userId: string): PushDevice => ({
 	userId,
 	platform: "ios",
 	relayDeviceId: `relay-${id}`,
+	ownerlessKeyId: null,
 	sendTokenCiphertext: "stored",
 	kid: "kid",
 	publicKey: "AAAA",

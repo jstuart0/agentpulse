@@ -37,7 +37,7 @@ describe("trigger sites", () => {
 		expect([...defined.keys()]).toEqual(["services/push/dispatch.ts"]);
 	});
 
-	test("S4 owns eight of Pattern #5's ten call sites; the Ask reply (S5) is the ninth, and the scheduler (S7) will add the last", () => {
+	test("S4 owns eight of Pattern #5's ten call sites; the Ask reply (S5) is the ninth, and the S7 health job (below) the tenth", () => {
 		const calls = occurrences(/^(?!\s*(\/\/|\*)).*\bvoid dispatchEvent\(/);
 		expect(Object.fromEntries([...calls].sort())).toEqual({
 			"services/ai/action-requests-service.ts": 1,
@@ -49,6 +49,12 @@ describe("trigger sites", () => {
 		});
 	});
 
+	test("the tenth site, the S7 health job, awaits its dispatch (to learn whether to retry) under its own origin", () => {
+		expect([...occurrences(/\bdispatchEvent\(event, HEALTH_DISPATCH_ORIGIN\)/).keys()]).toEqual([
+			"services/push/push-trigger-ports.ts",
+		]);
+	});
+
 	test("push is started from index.ts and nowhere else", () => {
 		expect([...occurrences(/\bstartPush\(/).keys()].sort()).toEqual([
 			"index.ts",
@@ -56,10 +62,14 @@ describe("trigger sites", () => {
 		]);
 	});
 
-	test("only dispatch and the single-device test route call sendToDevices", () => {
+	// The digest goes to exactly the devices that are due (each has its own local day), which dispatchEvent's
+	// per-event dedupe and all-devices targeting can't express, so its trigger (push-scheduler.ts, through the push-trigger-ports.ts port) sends through the service itself.
+	test("only dispatch, the single-device test route and the per-device digest call sendToDevices", () => {
 		expect([...occurrences(/\.sendToDevices\(/).keys()].sort()).toEqual([
 			"routes/devices.ts",
 			"services/push/dispatch.ts",
+			"services/push/push-scheduler.ts",
+			"services/push/push-trigger-ports.ts",
 		]);
 	});
 });
@@ -93,6 +103,7 @@ describe("PolicyPushTargets", () => {
 	const device = (id: string, userId: string, token = "t"): PushDevice => ({
 		id,
 		userId,
+		ownerlessKeyId: userId.startsWith("key:") ? userId.slice(4) : null,
 		platform: "ios",
 		relayDeviceId: `relay-${id}`,
 		sendTokenCiphertext: token,
@@ -270,6 +281,26 @@ describe("PolicyPushTargets", () => {
 		});
 	}
 
+	test("a person whose id merely looks like `key:k1` is not the ownerless key k1 (F96): the kind of owner comes from ownerlessKeyId, never from the id's spelling", async () => {
+		const lookalike: PushDevice = { ...device("lookalike-phone", "key:k1"), ownerlessKeyId: null };
+		const source = new InMemoryDeviceSource([lookalike, device("keyonly-phone", "key:k1")], {
+			"lookalike-phone": "member",
+			"keyonly-phone": null,
+		});
+		const byKey: PushEvent = {
+			type: "ask_reply",
+			threadId: "t-key",
+			assistantMessageId: "m",
+			requesterUserId: null,
+			requesterKeyId: "k1",
+		};
+		// the real key's phone is pushed; the look-alike person's phone is not, though its `userId` is spelled the same
+		expect(await ids("team", byKey, source)).toEqual(["keyonly-phone"]);
+		// and the look-alike asking as a person reaches only its own device, never the key's
+		const asLookalike: PushEvent = { ...byKey, requesterUserId: "key:k1", requesterKeyId: null };
+		expect(await ids("team", asLookalike, source)).toEqual([]);
+	});
+
 	test("team: a launch status reaches the requester's devices; none recorded, the admins'; unknown launch, nobody", async () => {
 		expect(await ids("team", { type: "launch_status", launchId: "l-alice" })).toEqual([
 			"alice-ipad",
@@ -281,8 +312,10 @@ describe("PolicyPushTargets", () => {
 		expect(await ids("team", { type: "launch_status", launchId: "l-gone" })).toEqual([]);
 	});
 
-	test("team: the daily digest is for each device", async () => {
-		expect(await ids("team", { type: "daily_digest", digestDate: "2026-01-01" })).toEqual(ALL);
+	test("the daily digest: every device in solo; in team mode nobody, because it is built per owner and must never go to everyone (xander L1)", async () => {
+		const digest: PushEvent = { type: "daily_digest", digestDate: "2026-01-01" };
+		expect(await ids("solo", digest)).toEqual(ALL);
+		expect(await ids("team", digest)).toEqual([]);
 	});
 
 	test("team: an ownerless key's device is nobody's target for a session", async () => {

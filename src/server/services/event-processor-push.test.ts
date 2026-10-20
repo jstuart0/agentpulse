@@ -61,6 +61,7 @@ const recordedPhone: PushDevice = {
 	userId: "recorded-user",
 	platform: "ios",
 	relayDeviceId: "relay-recorded",
+	ownerlessKeyId: null,
 	sendTokenCiphertext: "t",
 	kid: "k",
 	publicKey: "AAAA",

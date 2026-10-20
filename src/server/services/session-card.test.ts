@@ -52,6 +52,21 @@ describe("safeFailureReason redacts", () => {
 		expect(safeFailureReason("in (/var/root) and /root.")).toBe("in (~) and ~.");
 	});
 
+	test("macOS's /private/var/root and a file:/// URL of root's home are scrubbed too (F96)", () => {
+		expect(safeFailureReason("cannot open /private/var/root/Library/x")).toBe(
+			"cannot open ~/Library/x",
+		);
+		expect(safeFailureReason("cwd /private/var/root: gone")).toBe("cwd ~: gone");
+		expect(safeFailureReason("cannot open file:///root/app/run.sh")).toBe(
+			"cannot open ~/app/run.sh",
+		);
+		expect(safeFailureReason("at file:///private/var/root/x and file:///var/root.")).toBe(
+			"at ~/x and ~.",
+		);
+		expect(safeFailureReason("at (file:///root)")).toBe("at (~)");
+		expect(safeFailureReason(`at file://${home("dana")}/app`)).not.toContain("dana");
+	});
+
 	test("/root is scrubbed only as a whole component that starts a path", () => {
 		for (const kept of [
 			"cannot open /opt/app/root/x",
@@ -60,6 +75,10 @@ describe("safeFailureReason redacts", () => {
 			"cannot open /tmp/var/root",
 			"cannot open /root-ca.pem",
 			"cannot open /root.pem",
+			"cannot open /private/root/x",
+			"cannot open file:///rootfs/x",
+			"cannot open file:///opt/root/x",
+			"cannot open /tmp/private/var/root",
 		]) {
 			expect(safeFailureReason(kept)).toBe(kept);
 		}

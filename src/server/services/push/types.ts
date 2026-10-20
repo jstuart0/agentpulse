@@ -143,8 +143,12 @@ export interface DevicePrefs {
 	quietHours?: QuietHours;
 	/** Category -> enabled. Absent means the category's default. */
 	categories?: Partial<Record<PushCategory, boolean>>;
-	/** IANA zone for quiet hours. */
+	/** IANA zone for quiet hours and for the daily digest's local day. */
 	timezone?: string;
+	/** Local hour (0-23) from which the daily digest may be sent. Absent: no scheduled digest. */
+	digestHour?: number;
+	/** The local date (YYYY-MM-DD) of the last digest sent to this device. The server writes it. */
+	lastDigestDate?: string;
 }
 
 /**
@@ -156,7 +160,14 @@ export interface DevicePrefs {
 export interface PushDevice {
 	/** This server's id for the device (revocation and logs). */
 	id: string;
+	/**
+	 * Who the device belongs to, as one string: the person's id, or `key:<api key id>` for a phone whose key
+	 * has no person behind it (so the per-user fan-out cap still groups an ownerless key's phones). It is a
+	 * grouping label only: never parse it to learn which kind of owner it is; read `ownerlessKeyId`.
+	 */
 	userId: string;
+	/** The api key id when no person stands behind the device's key, else null. */
+	ownerlessKeyId: string | null;
 	platform: string;
 	/** The relay's id for the device: the `d` of every envelope. */
 	relayDeviceId: string;

@@ -196,6 +196,7 @@ describeIf("real relay + mock APNs", () => {
 			userId: "e2e-user",
 			platform: "ios",
 			relayDeviceId: deviceId,
+			ownerlessKeyId: null,
 			sendTokenCiphertext: encryptSecret(minted.body.sendToken as string),
 			kid: `e2e-kid-${n}`,
 			publicKey: b64u(new Uint8Array(await suite.kem.serializePublicKey(pair.publicKey))),

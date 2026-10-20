@@ -425,6 +425,8 @@ export interface AskTurnInput {
 	actor: Actor;
 	/** The API key the request came with, if any: the owner of a thread a key with no user asked. */
 	requesterKeyId?: string | null;
+	/** The same flag as `AskAsker.ownOnly`: a caller without manage reaches only the threads it asked, even for an existing `threadId`. */
+	ownOnly?: boolean;
 	/**
 	 * A slot the caller already holds from the turn limiter. The turn then takes
 	 * none and does not release this one: that stays with the caller.
@@ -489,7 +491,11 @@ async function openTurn(input: AskTurnInput): Promise<{
 	if (text.length > ASK_MESSAGE_MAX_CHARS) throw new AskMessageTooLongError();
 
 	const callerOrigin: AskThreadOrigin = input.origin ?? "web";
-	const asker: AskAsker = { actor: input.actor, keyId: input.requesterKeyId ?? null };
+	const asker: AskAsker = {
+		actor: input.actor,
+		keyId: input.requesterKeyId ?? null,
+		ownOnly: input.ownOnly,
+	};
 	if (input.threadId) {
 		// Only a thread the asker may reach says anything about itself; another's is an unknown id.
 		const existing = await getThreadFor(input.threadId, asker);

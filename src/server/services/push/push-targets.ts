@@ -23,7 +23,7 @@
  *                                 never lands on "wasn't found". A thread the requester only
  *                                 continued (an admin or a solo caller on someone else's thread)
  *                                 reaches nobody; a thread that can't be found, nobody.
- *   daily_digest                   each device   each device
+ *   daily_digest                   each device   nobody here (the digest job picks per owner)
  *   device_test                    nobody here (the route targets one chosen device)
  *
  * Eligibility comes first and applies to every send, alerts and Live Activity
@@ -120,7 +120,10 @@ export class PolicyPushTargets implements PushTargetResolver {
 		if (eligible.length === 0) return [];
 		if (event.type === "ask_reply") return this.askReplyTargets(event, eligible);
 		const mode = await this.mode();
-		if (mode === "solo" || event.type === "daily_digest") return eligible.map((e) => e.device);
+		if (mode === "solo") return eligible.map((e) => e.device);
+		// A digest is built for each device's owner (the sessions they may read), so in team mode there is no
+		// one list to resolve here: the digest job picks its own targets, device by device. Never everyone.
+		if (event.type === "daily_digest") return [];
 		if (event.type === "action_request_opened") return adminDevices(eligible);
 		if (event.type === "launch_status") return this.launchTargets(event.launchId, eligible);
 		return this.sessionTargets(event.sessionId, eligible, ctx);
@@ -152,10 +155,15 @@ export class PolicyPushTargets implements PushTargetResolver {
 		event: Extract<PushEvent, { type: "ask_reply" }>,
 		eligible: EligibleDevice[],
 	): Promise<PushDevice[]> {
-		const requester =
-			event.requesterUserId ?? (event.requesterKeyId ? `key:${event.requesterKeyId}` : null);
-		if (requester === null) return [];
-		const devices = eligible.filter((e) => e.device.userId === requester).map((e) => e.device);
+		const { requesterUserId, requesterKeyId } = event;
+		if (!requesterUserId && !requesterKeyId) return [];
+		const devices = eligible
+			.filter(({ device }) =>
+				requesterUserId
+					? device.ownerlessKeyId === null && device.userId === requesterUserId
+					: device.ownerlessKeyId === requesterKeyId,
+			)
+			.map((e) => e.device);
 		if (devices.length === 0) return [];
 		const owner = await this.subjects.askThreadOwner(event.threadId);
 		if (!owner) return [];
@@ -184,13 +192,11 @@ export function canDeviceReadSession(
 	return canReadSession(actorFor(entry), { ownerUserId: sessionOwnerUserId });
 }
 
-const OWNERLESS_KEY_PREFIX = "key:";
-
-/** The credential behind a device, as a thread reader: see `PushDevice.userId` for the `key:<id>` form. */
+/** The credential behind a device, as a thread reader. */
 function readerOf(device: PushDevice): ThreadReader {
-	return device.userId.startsWith(OWNERLESS_KEY_PREFIX)
-		? { userId: null, keyId: device.userId.slice(OWNERLESS_KEY_PREFIX.length) }
-		: { userId: device.userId, keyId: null };
+	return device.ownerlessKeyId === null
+		? { userId: device.userId, keyId: null }
+		: { userId: null, keyId: device.ownerlessKeyId };
 }
 
 function actorFor(entry: EligibleDevice): Actor {

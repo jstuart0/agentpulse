@@ -14,7 +14,7 @@
  *     to one person, so another ownerless key reads nothing of theirs;
  *   - a thread with neither (predates owners, Telegram, auth off) is nobody's here.
  */
-import { type SQL, and, eq, isNull, or, sql } from "drizzle-orm";
+import { type SQL, and, eq, or, sql } from "drizzle-orm";
 import { askThreads } from "../../db/schema/index.js";
 
 export interface ThreadOwner {
@@ -28,9 +28,16 @@ export interface ThreadReader {
 	keyId: string | null;
 }
 
+/** An empty id is no id: the table has no CHECK, so `""` may be stored, and both forms read it as absent. */
+function present(id: string | null | undefined): string | null {
+	return id ? id : null;
+}
+
 export function ownsThread(owner: ThreadOwner, who: ThreadReader): boolean {
-	if (owner.ownerUserId !== null) return who.userId === owner.ownerUserId;
-	return owner.ownerKeyId !== null && who.keyId === owner.ownerKeyId;
+	const ownerUserId = present(owner.ownerUserId);
+	const ownerKeyId = present(owner.ownerKeyId);
+	if (ownerUserId !== null) return who.userId === ownerUserId;
+	return ownerKeyId !== null && who.keyId === ownerKeyId;
 }
 
 /** The same rule as `ownsThread`, for a WHERE clause. */
@@ -38,7 +45,13 @@ export function ownsThreadCondition(who: ThreadReader): SQL {
 	const owned: SQL[] = [];
 	if (who.userId) owned.push(eq(askThreads.ownerUserId, who.userId));
 	if (who.keyId) {
-		owned.push(and(isNull(askThreads.ownerUserId), eq(askThreads.ownerKeyId, who.keyId)) as SQL);
+		// NULLIF: a stored "" owner user is no owner (see `present`), so the key rule applies to it.
+		owned.push(
+			and(
+				sql`NULLIF(${askThreads.ownerUserId}, '') IS NULL`,
+				eq(askThreads.ownerKeyId, who.keyId),
+			) as SQL,
+		);
 	}
 	return owned.length > 0 ? (or(...owned) as SQL) : sql`1 = 0`;
 }

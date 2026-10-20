@@ -77,7 +77,9 @@ async function readAskBody(c: Context): Promise<{
 // of its path (path-prefixed use() only fires on matching paths, which would
 // silently miss a hypothetical non-/ai/ask route added later).
 askRouter.use("*", requireAuth());
-// Manage-only: /ai/ask is an NL side-channel excluded from observe (D2).
+// Scope: /ai/ask is an NL side-channel excluded from observe (D2), so asking is manage-only. A respond key
+// (see route-scope-policy.ts) reaches only GET /ai/ask/threads and /threads/:id (its own threads) and
+// POST /threads/:id/cancel; the handlers judge ownership (`askerOf`, `ownOnly`).
 askRouter.use("*", requireOperatorScope());
 
 /** The push for a finished reply, saying how many proposals it left waiting; a count that can't be read is left out, not guessed. */
@@ -177,12 +179,14 @@ askRouter.post("/ai/ask", askBodyLimit, async (c) => {
 		throw err;
 	}
 	try {
+		const asker = await askerOf(c);
 		const res = await runAskTurn({
 			threadId: body.threadId ?? null,
 			message: body.message,
 			sessionIds,
-			actor: await getRequestActor(c),
-			requesterKeyId: (await getAuthUser(c))?.keyId ?? null,
+			actor: asker.actor,
+			requesterKeyId: asker.keyId,
+			ownOnly: asker.ownOnly,
 			// A caller that goes away while waiting for a slot leaves the queue;
 			// once its turn has started it runs to completion regardless.
 			signal: c.req.raw.signal,
@@ -230,7 +234,7 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 	// A thread already streaming a turn takes no second one: say so before anything is written.
 	// Only for a thread the caller may reach: another person's busy thread says nothing to them.
 	const asker = await askerOf(c);
-	const { actor, keyId: requesterKeyId } = asker;
+	const { actor, keyId: requesterKeyId, ownOnly } = asker;
 	if (
 		typeof body.threadId === "string" &&
 		isThreadRunning(body.threadId) &&
@@ -287,6 +291,7 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 					origin: "web",
 					actor,
 					requesterKeyId,
+					ownOnly,
 					signal: AbortSignal.any([c.req.raw.signal, clientGone.signal]),
 				})) {
 					if (evt.kind === "start") {
