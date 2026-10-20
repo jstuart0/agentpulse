@@ -471,6 +471,27 @@ describe("provider failures", () => {
 		}
 	});
 
+	test("a provider error body's text is in neither the stored row nor the view", async () => {
+		const SENTINEL = "SENTINEL-PROVIDER-TEXT";
+		const bad = Bun.serve({
+			port: 0,
+			hostname: "127.0.0.1",
+			fetch: () => new Response(`{"error":"${SENTINEL}"}`, { status: 500 }),
+		});
+		try {
+			await H.resetWorld(stub);
+			await H.enableAi();
+			await H.seedProviderAt(`http://127.0.0.1:${bad.port}/v1`);
+			await H.seedActiveSession(SID);
+			await H.runGeneration(SID);
+			expect((await summaryOf(SID)).attemptErrorCode).not.toBeNull();
+			expect(await serialized(SID)).not.toContain(SENTINEL);
+			expect(JSON.stringify(await viewOf(SID))).not.toContain(SENTINEL);
+		} finally {
+			bad.stop(true);
+		}
+	});
+
 	test("TC-5.14c an undecryptable key is a failed attempt after the claim (P5-7): provider_key_unreadable, a 5 s soft cooldown, nothing sent", async () => {
 		await H.seedActiveSession(SID);
 		const { llmProviders } = await import("../db/schema/index.js");

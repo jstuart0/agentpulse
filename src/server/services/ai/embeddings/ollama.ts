@@ -1,3 +1,4 @@
+import { llmFetch, readErrorBody, readJsonCapped } from "../http.js";
 import type { EmbeddingAdapter } from "./types.js";
 
 /**
@@ -56,40 +57,48 @@ export async function createOllamaEmbeddingAdapter(
 	};
 }
 
+const EMBED_TIMEOUT_MS = 60_000;
+
 async function embedRaw(baseUrl: string, model: string, inputs: string[]): Promise<Float32Array[]> {
 	// Try the modern batch endpoint first.
-	const res = await fetch(`${baseUrl}/api/embed`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ model, input: inputs }),
-		signal: AbortSignal.timeout(60_000),
-	});
+	const res = await llmFetch(
+		`${baseUrl}/api/embed`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ model, input: inputs }),
+		},
+		{ timeoutMs: EMBED_TIMEOUT_MS, label: "Ollama embed" },
+	);
 	if (res.ok) {
-		const json = (await res.json()) as { embeddings?: number[][] };
+		const json = (await readJsonCapped(res)) as { embeddings?: number[][] };
 		if (json.embeddings && json.embeddings.length === inputs.length) {
 			return json.embeddings.map((v) => Float32Array.from(v));
 		}
 		throw new Error(`Ollama /api/embed returned ${json.embeddings?.length ?? 0} vectors`);
 	}
 	if (res.status !== 404) {
-		const body = await res.text().catch(() => "");
+		const body = await readErrorBody(res);
 		throw new Error(`Ollama embed failed: ${res.status} ${body.slice(0, 200)}`);
 	}
 
 	// Fallback: legacy singular endpoint, called once per input.
 	const vectors: Float32Array[] = [];
 	for (const input of inputs) {
-		const legacy = await fetch(`${baseUrl}/api/embeddings`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ model, prompt: input }),
-			signal: AbortSignal.timeout(60_000),
-		});
+		const legacy = await llmFetch(
+			`${baseUrl}/api/embeddings`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ model, prompt: input }),
+			},
+			{ timeoutMs: EMBED_TIMEOUT_MS, label: "Ollama embeddings" },
+		);
 		if (!legacy.ok) {
-			const body = await legacy.text().catch(() => "");
+			const body = await readErrorBody(legacy);
 			throw new Error(`Ollama embeddings failed: ${legacy.status} ${body.slice(0, 200)}`);
 		}
-		const json = (await legacy.json()) as { embedding?: number[] };
+		const json = (await readJsonCapped(legacy)) as { embedding?: number[] };
 		if (!json.embedding) throw new Error("Ollama embeddings response missing 'embedding'");
 		vectors.push(Float32Array.from(json.embedding));
 	}

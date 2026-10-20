@@ -10,6 +10,9 @@ function clampedEnvNumber(name: string, fallback: number, min: number, max: numb
 	return Math.min(max, Math.max(min, value));
 }
 
+/** Longest time one LLM call may be given; the clamp and `llmFetch` share it. */
+export const MAX_LLM_CALL_TIMEOUT_SECONDS = 1800;
+
 export const config = {
 	port: Number(process.env.PORT || 3000),
 	host: process.env.HOST || "127.0.0.1",
