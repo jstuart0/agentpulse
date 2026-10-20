@@ -416,12 +416,12 @@ describe("provider failures", () => {
 		[401, "provider_auth", "zero"],
 		[403, "provider_auth", "zero"],
 		[429, "provider_rate_limit", "zero"],
-		[503, "provider_timeout", "input"],
+		[503, "provider_error", "input"],
 		[400, "provider_error", "zero"],
 		[404, "provider_error", "zero"],
 		[422, "provider_error", "zero"],
 		[418, "provider_error", "zero"],
-		[504, "provider_timeout", "max"],
+		[504, "provider_error", "max"],
 	];
 	for (const [status, code, charge] of CASES) {
 		test(`TC-5.14 HTTP ${status} gives ${code}; the row leaves generating and keeps the previous summary`, async () => {

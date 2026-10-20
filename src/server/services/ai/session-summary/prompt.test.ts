@@ -464,13 +464,12 @@ describe("the request", () => {
 			model: "model-x",
 			maxTokens: 4000,
 			temperature: 0.2,
-			timeoutMs: 120_000,
+			timeoutMs: 360_000,
 			disableReasoning: true,
 		});
 		expect(SUMMARY_CALL_OPTIONS).toEqual({
 			maxTokens: 4000,
 			temperature: 0.2,
-			timeoutMs: 120_000,
 			disableReasoning: true,
 		});
 		const trailer = repairTrailer({ kind: "truncated" });

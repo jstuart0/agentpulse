@@ -232,3 +232,63 @@ describe("ask turn concurrency", () => {
 		expect(await load("")).toBe(2);
 	});
 });
+
+describe("AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS (AGEN-77)", () => {
+	const KEY = "AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS";
+	let saved: string | undefined;
+	let fresh = 0;
+	beforeEach(() => {
+		saved = process.env[KEY];
+	});
+	afterEach(() => {
+		if (saved === undefined) delete process.env[KEY];
+		else process.env[KEY] = saved;
+	});
+
+	/** config.ts computes this once at import, so each case imports a fresh copy of the module. */
+	async function load(value?: string) {
+		if (value === undefined) delete process.env[KEY];
+		else process.env[KEY] = value;
+		const mod = (await import(`./config.js?summary-timeout-${++fresh}`)) as {
+			config: { sessionSummaryTimeoutSeconds: number };
+		};
+		return mod.config.sessionSummaryTimeoutSeconds;
+	}
+
+	test("unset gives 360", async () => {
+		expect(await load()).toBe(360);
+	});
+
+	test("clamps to 30..1800 with both boundaries accepted exactly", async () => {
+		expect(await load("29")).toBe(30);
+		expect(await load("30")).toBe(30);
+		expect(await load("31")).toBe(31);
+		expect(await load("1799")).toBe(1799);
+		expect(await load("1800")).toBe(1800);
+		expect(await load("1801")).toBe(1800);
+	});
+
+	test("a fraction is floored and junk falls back to the default", async () => {
+		expect(await load("45.9")).toBe(45);
+		expect(await load("abc")).toBe(360);
+		expect(await load("")).toBe(360);
+	});
+
+	test("the clamp's maximum is the largest timeout the fetch helper accepts", async () => {
+		const { MAX_LLM_CALL_TIMEOUT_SECONDS } = await import("./config.js");
+		const { llmFetch } = await import("./services/ai/http.js");
+		expect(await load("99999")).toBe(MAX_LLM_CALL_TIMEOUT_SECONDS);
+		const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("ok") });
+		try {
+			const url = `http://127.0.0.1:${server.port}/`;
+			const res = await llmFetch(url, {}, { timeoutMs: MAX_LLM_CALL_TIMEOUT_SECONDS * 1000 });
+			expect(res.status).toBe(200);
+			await res.text();
+			await expect(
+				llmFetch(url, {}, { timeoutMs: MAX_LLM_CALL_TIMEOUT_SECONDS * 1000 + 1 }),
+			).rejects.toThrow();
+		} finally {
+			server.stop(true);
+		}
+	});
+});

@@ -67,7 +67,7 @@ import { config } from "../config.js";
 import { getDb, getSqlite } from "../db/client.js";
 import { events, aiSessionSummaries, settings } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
-import { SUMMARY_LEASE_SECONDS } from "./ai/session-summary/service-limits.js";
+import { summaryLeaseSeconds } from "./ai/session-summary/service-limits.js";
 import { toDbTimestamp } from "./util/db-time.js";
 
 export const EVENTS_RETENTION_DAYS_KEY = "eventsRetentionDays";
@@ -418,7 +418,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 
 		let summariesDeleted = 0;
 		if (!skippedReason) {
-			const leaseCutoff = toDbTimestamp(new Date(now.getTime() - SUMMARY_LEASE_SECONDS * 1000));
+			const leaseCutoff = toDbTimestamp(new Date(now.getTime() - summaryLeaseSeconds() * 1000));
 			const summaries = await deleteExpiredSummaries(cutoff, leaseCutoff);
 			summariesDeleted = summaries.deleted;
 			if (summaries.lockLost) skippedReason = "lock_held_elsewhere";
