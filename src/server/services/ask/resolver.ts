@@ -74,6 +74,25 @@ const STOPWORDS = new Set([
 	"or",
 ]);
 
+/**
+ * A message that leans on the conversation: a pronoun or "same / also / again"
+ * pointing back, or a short question that cannot stand alone ("how many stages
+ * total?"). Only these inherit the previous turn's sessions; a long message
+ * that names its own subject is resolved on its own words.
+ */
+const FOLLOW_UP_WORDS =
+	/\b(it|its|those|these|they|them|same|also|again|more|else|further|above|previous|earlier|other|another|first|second|third|last|next)\b|^\s*(and|so|but|then|what about|how about)\b/i;
+const FOLLOW_UP_MAX_WORDS = 8;
+
+/** The most sessions a follow-up inherits; the rest of the slots stay for the message's own matches. */
+export const CARRIED_SESSIONS_MAX = 3;
+
+export function looksLikeFollowUp(message: string): boolean {
+	const words = message.trim().split(/\s+/).filter(Boolean);
+	if (words.length === 0) return false;
+	return words.length <= FOLLOW_UP_MAX_WORDS || FOLLOW_UP_WORDS.test(message);
+}
+
 function tokenize(message: string): string[] {
 	return (
 		message
@@ -137,6 +156,13 @@ export interface ResolveInput {
 	 * paraphrased but not literal. Null / undefined = lexical-only.
 	 */
 	enricher?: SemanticEnricher | null;
+	/**
+	 * The sessions the conversation's last answer was built from, best first.
+	 * When the message looks like a follow-up they come first (at most
+	 * CARRIED_SESSIONS_MAX), whatever the message itself matched, so "how many
+	 * stages are there?" asked about a session stays about that session.
+	 */
+	carriedSessionIds?: string[];
 }
 
 /**
@@ -269,6 +295,23 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 		}
 	}
 
+	// A follow-up keeps the sessions the previous answer was about, even when
+	// they are completed or fell outside the recency window.
+	const carriedIds = looksLikeFollowUp(input.message)
+		? [...new Set(input.carriedSessionIds ?? [])].slice(0, CARRIED_SESSIONS_MAX)
+		: [];
+	if (carriedIds.length > 0) {
+		const known = new Set(extendedPool.map((r) => r.sessionId));
+		const missing = carriedIds.filter((id) => !known.has(id));
+		if (missing.length > 0) {
+			const extra = await getDb()
+				.select(SESSION_COLUMNS_SANS_OWNERSHIP)
+				.from(sessions)
+				.where(and(inArray(sessions.sessionId, missing), eq(sessions.isArchived, false)));
+			extendedPool = extendedPool.concat(extra);
+		}
+	}
+
 	const scoredAll = extendedPool.map((row) => {
 		let score = scoreSession(tokens, row);
 		const ftsBoost = ftsScores.get(row.sessionId);
@@ -284,12 +327,21 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 	// sessions so the LLM has something to answer with instead of an
 	// empty block.
 	const useFallback = input.fallbackToActive && (!hasAnyMatch || tokens.length === 0);
-	const scored = scoredAll
+	const ranked = scoredAll
 		.filter((r) => (useFallback ? true : r.score > 0))
 		.sort(
 			(a, b) => b.score - a.score || a.row.lastActivityAt.localeCompare(b.row.lastActivityAt) * -1,
-		)
-		.slice(0, limit);
+		);
+	const byId = new Map(scoredAll.map((r) => [r.row.sessionId, r]));
+	const carried = carriedIds
+		.map((id) => byId.get(id))
+		.filter((r): r is NonNullable<typeof r> => r !== undefined)
+		.slice(0, Math.max(0, limit - 2));
+	const carriedSet = new Set(carried.map((r) => r.row.sessionId));
+	const scored = [...carried, ...ranked.filter((r) => !carriedSet.has(r.row.sessionId))].slice(
+		0,
+		limit,
+	);
 
 	return scored.map((r) => ({
 		sessionId: r.row.sessionId,

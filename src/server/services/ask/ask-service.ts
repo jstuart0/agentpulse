@@ -323,6 +323,22 @@ export class AskMessageTooLongError extends AskRequestError {
 // session context, and local models (Qwen 8B) can choke on giant prompts.
 const MAX_HISTORY_TURNS = 6;
 
+/**
+ * The sessions the newest answer that was built from sessions used, best first.
+ * A reply from a gate (search, digest, a launch) records none, so a follow-up
+ * to "what's running?" inherits from the last free-form answer before it, if
+ * that is still in the bounded history.
+ */
+function lastAnswerSessionIds(history: AskMessageRecord[]): string[] {
+	for (let i = history.length - 1; i >= 0; i--) {
+		const message = history[i];
+		if (message?.role === "assistant" && message.contextSessionIds?.length) {
+			return message.contextSessionIds;
+		}
+	}
+	return [];
+}
+
 function renderHistory(history: AskMessageRecord[]): string {
 	const tail = history.slice(-MAX_HISTORY_TURNS * 2);
 	if (tail.length === 0) return "";
@@ -467,6 +483,10 @@ async function buildTurnContext(
 		path: "free_form",
 		enrichment: pinned ? "skipped_pinned" : "semantic",
 	});
+	// The history is read first: a follow-up inherits the sessions the last
+	// answer was built from. It is the same bounded read as before (the newest
+	// 12), only earlier.
+	const history = await listRecentMessages(thread.id, MAX_HISTORY_TURNS * 2);
 	// Build the semantic enricher once per turn. Returns null when AI
 	// isn't active or no default provider — the resolver then falls back
 	// to lexical-only search automatically. Pinned sessions need no resolving.
@@ -477,6 +497,7 @@ async function buildTurnContext(
 				limit: wantsBreadth ? 20 : 5,
 				fallbackToActive: true,
 				enricher: await getSemanticEnricher(),
+				carriedSessionIds: lastAnswerSessionIds(history),
 			});
 	// Hand the FTS query to the context builder so per-session snapshots
 	// include the events that *matched* — not just the most-recent 12.
@@ -485,7 +506,6 @@ async function buildTurnContext(
 	const ftsQuery = pinned ? undefined : text;
 	const context = await buildAskContext({ resolved, ftsQuery });
 
-	const history = await listRecentMessages(thread.id, MAX_HISTORY_TURNS * 2);
 	const transcript = [renderHistory(history), context.block, `USER: ${text}`]
 		.filter(Boolean)
 		.join("\n\n");
