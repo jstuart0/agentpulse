@@ -10,6 +10,10 @@ services:
       - PUBLIC_URL=http://localhost:3000
       # Per-call time limit of a session summary, in seconds (30 to 1800). Empty means the default (360).
       - AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS=${AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS:-}
+      # Time limit of an Ask answer, in seconds (30 to 1800). Empty means the default (180).
+      - AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS=${AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS:-}
+      # Time limit of the short helper calls (Ask classifiers and query expansion), in seconds (5 to 300). Empty means the default (20).
+      - AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS=${AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS:-}
     volumes:
       - agentpulse-data:/app/data
     restart: unless-stopped

@@ -72,3 +72,11 @@ data:
   # default 360). Slow local models on large sessions may need more. The summary
   # lease and the failure breaker window follow it; use one value on every replica.
   # AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS: "360"
+  #
+  # Ask: time limit of the answering model call and of a per-session Q&A answer,
+  # in seconds (30 to 1800, default 180).
+  # AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS: "180"
+  #
+  # Short helper calls (Ask intent classifiers, Ask query expansion, alert-rule
+  # yes/no check): time limit in seconds (5 to 300, default 20).
+  # AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS: "20"
