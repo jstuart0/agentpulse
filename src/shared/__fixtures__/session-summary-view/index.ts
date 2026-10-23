@@ -147,7 +147,12 @@ export function failedWith(
 	}
 	return {
 		...base,
-		attempt: { status: "failed", startedAt: "2026-10-04T11:59:40.000Z", errorCode: code },
+		attempt: {
+			status: "failed",
+			startedAt: "2026-10-04T11:59:40.000Z",
+			errorCode: code,
+			...(code === "provider_timeout" ? { timeoutSeconds: 360 } : {}),
+		},
 		blocked: "summary_cooldown",
 		cooldownSeconds: 10,
 	};
@@ -169,6 +174,7 @@ export const SUMMARY_VIEW_FIXTURES = {
 	stale_one: { ...READY, staleEvents: 1 },
 	stale_capped: { ...READY, staleEvents: 100 },
 	failed: FAILED_VIEW_FIXTURES.parse_failed,
+	failedTimeout: FAILED_VIEW_FIXTURES.provider_timeout,
 	failed_ai_inactive: failedWith("ai_inactive", READY),
 	interrupted: FAILED_VIEW_FIXTURES.interrupted,
 	// With no default provider `spend.maxCostCents` is 0 and means nothing.

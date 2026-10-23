@@ -90,6 +90,13 @@ export interface SessionSummaryView {
 		startedAt: string | null;
 		/** Non-null only with status `failed`. */
 		errorCode: SummaryErrorCode | null;
+		/**
+		 * The per-call time limit the server is configured with now, in seconds. Present only on a
+		 * `failed` / `provider_timeout` attempt (a deadline the server fired); absent from an older
+		 * server, which a client must tolerate. It is the current setting, not the one the failed
+		 * call ran with.
+		 */
+		timeoutSeconds?: number;
 	};
 	/**
 	 * D-21: material events (everything but `user_ack`) after `throughEventId`, counted up to

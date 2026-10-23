@@ -52,10 +52,8 @@ import {
 	ACTIVITY_ACTION_WINDOW,
 	ACTIVITY_PROMPT_OLDEST_WINDOW,
 	BREAKER_FAILURES,
-	BREAKER_IDLE_DROP_MS,
 	BREAKER_MAX_ENTRIES,
 	BREAKER_OPEN_STEPS_MS,
-	BREAKER_WINDOW_MS,
 	BUSY_RETRY_AFTER_SECONDS,
 	JOIN_WAIT_BUDGET_MS,
 	KEY_UNREADABLE_COOLDOWN_SECONDS,
@@ -68,9 +66,12 @@ import {
 	SHUTTING_DOWN_RETRY_AFTER_SECONDS,
 	STALE_SCAN_WINDOW,
 	SUMMARY_COOLDOWN_SECONDS,
-	SUMMARY_LEASE_SECONDS,
 	UNKNOWN_OUTCOME_CEILING_PERCENT,
 	URL_SCAN_SLICE_CHARS,
+	breakerIdleDropMs,
+	breakerWindowMs,
+	summaryCallTimeoutSeconds,
+	summaryLeaseSeconds,
 } from "./ai/session-summary/service-limits.js";
 import { collectUserPromptUrls } from "./ai/session-summary/tripwire.js";
 import {
@@ -86,6 +87,7 @@ import {
 	releaseReservedSpend,
 	reserveSpendCents,
 	settleReservedSpend,
+	today,
 	topUpReservation,
 } from "./ai/spend-service.js";
 import { logAdminAction } from "./audit-log.js";
@@ -123,7 +125,7 @@ function clockAt(date: Date = new Date()): Clock {
 	const nowMs = parseDbTimestamp(toDbTimestamp(date)) as number;
 	return {
 		nowMs,
-		leaseCutoff: toDbTimestamp(new Date(nowMs - SUMMARY_LEASE_SECONDS * 1000)),
+		leaseCutoff: toDbTimestamp(new Date(nowMs - summaryLeaseSeconds() * 1000)),
 		cooldownCutoff: toDbTimestamp(new Date(nowMs - SUMMARY_COOLDOWN_SECONDS * 1000)),
 		longCooldownCutoff: toDbTimestamp(new Date(nowMs - MAX_CHARGED_COOLDOWN_SECONDS * 1000)),
 	};
@@ -383,6 +385,9 @@ function attemptOf(
 			? ((row.attemptErrorCode?.replace(LONG_COOLDOWN_MARK, "") as SummaryErrorCode | undefined) ??
 				"internal_error")
 			: null;
+	if (errorCode === "provider_timeout") {
+		return { status, startedAt, errorCode, timeoutSeconds: summaryCallTimeoutSeconds() };
+	}
 	return { status, startedAt, errorCode };
 }
 
@@ -513,6 +518,10 @@ interface Entry {
 	finishCents: number | null;
 	/** Fires at the lease expiry if the run is still hanging: see `expireEntry`. */
 	watchdog: ReturnType<typeof setTimeout> | null;
+	/** Aborted, after `taken` is set, when the watchdog or a shutdown gives the run up: the socket closes. */
+	abort: AbortController;
+	/** The model call in flight or last sent: the limit actually sent, when it began, and which it was. */
+	call: { limitMs: number; startedMs: number; kind: "first" | "repair" } | null;
 }
 
 const entries = new Set<Entry>();
@@ -553,7 +562,7 @@ export interface SummaryTestHooks {
 let hooks: SummaryTestHooks | null = null;
 
 /** The delays the module waits on: the limits, unless a test hook shortens one. */
-export const watchdogDelayMs = (): number => hooks?.watchdogMs ?? SUMMARY_LEASE_SECONDS * 1000;
+export const watchdogDelayMs = (): number => hooks?.watchdogMs ?? summaryLeaseSeconds() * 1000;
 export const joinWaitMs = (): number => hooks?.joinWaitMs ?? JOIN_WAIT_BUDGET_MS;
 export const releaseBudgetMs = (): number => hooks?.releaseBudgetMs ?? SHUTDOWN_RELEASE_BUDGET_MS;
 
@@ -568,9 +577,10 @@ export function _setSummaryHooksForTest(next: SummaryTestHooks | null): void {
 /** Abandons every running generation as a dead process would: nothing is written or settled. */
 export function _resetSummaryGenerationsForTest(): void {
 	breakers.clear();
-	unknownOutcome = { date: "", cents: 0 };
+	unknownOutcome.clear();
 	for (const entry of [...entries]) {
 		entry.taken = true;
+		entry.abort.abort();
 		dropEntry(entry);
 	}
 }
@@ -715,6 +725,15 @@ const LLM_CODES: Record<LlmError["subType"], SummaryErrorCode> = {
 };
 
 /**
+ * Only a deadline we fired is a timeout. A `transient_timeout` without the flag is an HTTP 5xx (the
+ * provider answered, with an error), which reads as a provider error.
+ */
+function llmCodeOf(error: LlmError): SummaryErrorCode {
+	if (error.subType === "transient_timeout" && !error.deadline) return "provider_error";
+	return LLM_CODES[error.subType] ?? "provider_error";
+}
+
+/**
  * How much of a call in flight a failure may have cost: nothing (the request cannot have left, or
  * the provider refused it with a 4xx), the priced input (an ordinary 5xx), or the single-call
  * maximum (the outcome is unknown).
@@ -768,7 +787,7 @@ function describeFailure(error: unknown, entry: Entry): FailureDetail {
 		const inFlight =
 			charge === "none" ? 0 : charge === "input" ? entry.pendingInputCents : entry.pendingMaxCents;
 		return {
-			code: LLM_CODES[error.subType] ?? "provider_error",
+			code: llmCodeOf(error),
 			subType: error.subType,
 			status: error.status ?? null,
 			chargeCents: completed + inFlight,
@@ -792,7 +811,7 @@ function describeFailure(error: unknown, entry: Entry): FailureDetail {
 /**
  * A provider that times out, or that a gateway cuts off, costs the single-call maximum on every
  * attempt. Per caller (the same `subject` as the in-flight rule; solo and auth-disabled have one, so
- * there it is process-wide), `BREAKER_FAILURES` such failures within `BREAKER_WINDOW_MS` close the
+ * there it is process-wide), `BREAKER_FAILURES` such failures within `breakerWindowMs()` close the
  * door for that subject: new requests answer `busy` with the wait, nothing reserved, claimed or
  * charged. After the open period one probe goes through; a failure re-opens it for the next, longer
  * period (5, 10, 20, 40, then 60 minutes); a success by that subject resets it. Process-wide and in
@@ -810,18 +829,18 @@ const breakers = new Map<string, BreakerState>();
 function pruneBreakers(now: number): void {
 	for (const [subject, state] of breakers) {
 		// Idle is counted from the end of the open period, so a probe just after a 60-minute one keeps its level.
-		if (now - Math.max(state.openUntil, state.lastFailure) > BREAKER_IDLE_DROP_MS) {
+		if (now - Math.max(state.openUntil, state.lastFailure) > breakerIdleDropMs()) {
 			breakers.delete(subject);
 		}
 	}
 }
 
-function recordMaxChargedFailure(subject: string, now = Date.now()): void {
+export function recordMaxChargedFailure(subject: string, now = Date.now()): void {
 	pruneBreakers(now);
 	const state = breakers.get(subject) ?? { failures: [], opens: 0, openUntil: 0, lastFailure: now };
 	breakers.delete(subject);
 	state.lastFailure = now;
-	state.failures = state.failures.filter((t) => now - t < BREAKER_WINDOW_MS);
+	state.failures = state.failures.filter((t) => now - t < breakerWindowMs());
 	state.failures.push(now);
 	if (now >= state.openUntil && (state.failures.length >= BREAKER_FAILURES || state.opens > 0)) {
 		const step = Math.min(state.opens, BREAKER_OPEN_STEPS_MS.length - 1);
@@ -848,8 +867,8 @@ function breakerRetryAfterSeconds(subject: string, now = Date.now()): number {
 /** For tests: the breaker's state without running a generation. */
 export const _breakerForTest = {
 	reset: (): void => breakers.clear(),
-	record: (subject: string): void => recordMaxChargedFailure(subject),
-	retryAfter: (subject: string): number => breakerRetryAfterSeconds(subject),
+	record: (subject: string, now?: number): void => recordMaxChargedFailure(subject, now),
+	retryAfter: (subject: string, now?: number): number => breakerRetryAfterSeconds(subject, now),
 	size: (): number => breakers.size,
 	has: (subject: string): boolean => breakers.has(subject),
 };
@@ -862,25 +881,34 @@ export const _breakerForTest = {
  * can lose to an outage is the ceiling plus the calls in flight. Successful summaries and failures
  * that charged nothing or the priced input never count. Per process: N replicas give N ceilings.
  */
-let unknownOutcome = { date: "", cents: 0 };
-
-function localDay(now = new Date()): string {
-	return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
-}
+const unknownOutcome = new Map<string, number>();
 
 export const unknownOutcomeCeilingCents = (): number =>
 	hooks?.unknownCeilingCents ??
 	Math.floor((DEFAULT_DAILY_CAP_CENTS * UNKNOWN_OUTCOME_CEILING_PERCENT) / 100);
 
 function unknownOutcomeCents(): number {
-	return unknownOutcome.date === localDay() ? unknownOutcome.cents : 0;
+	return unknownOutcome.get(today()) ?? 0;
 }
 
-function recordUnknownOutcomeCharge(cents: number): void {
-	const day = localDay();
-	if (unknownOutcome.date !== day) unknownOutcome = { date: day, cents: 0 };
-	unknownOutcome.cents += cents;
+/**
+ * Charged to the day the reservation was made on (the day the spend row is settled on), not the day
+ * the failure is recorded: a call that crosses midnight counts where its money went. Entries older
+ * than yesterday are dropped, so the map holds at most a few days.
+ */
+function recordUnknownOutcomeCharge(cents: number, reservationDate: string): void {
+	unknownOutcome.set(reservationDate, (unknownOutcome.get(reservationDate) ?? 0) + cents);
+	const yesterday = today(new Date(Date.now() - 86_400_000));
+	for (const day of unknownOutcome.keys()) if (day < yesterday) unknownOutcome.delete(day);
 }
+
+/** For tests: the ceiling's per-day counters. */
+export const _unknownOutcomeForTest = {
+	record: recordUnknownOutcomeCharge,
+	cents: (day: string): number => unknownOutcome.get(day) ?? 0,
+	today: unknownOutcomeCents,
+	reset: (): void => unknownOutcome.clear(),
+};
 
 const unknownOutcomeCeilingReached = (): boolean =>
 	unknownOutcomeCents() >= unknownOutcomeCeilingCents();
@@ -921,8 +949,11 @@ async function callModel(
 ): Promise<CallResult> {
 	const { entry, provider } = ctx;
 	const built1 = buildSummaryLlmRequest(built, provider.model, repair);
-	const request =
-		hooks?.callTimeoutMs === undefined ? built1 : { ...built1, timeoutMs: hooks.callTimeoutMs };
+	const request = {
+		...built1,
+		...(hooks?.callTimeoutMs === undefined ? {} : { timeoutMs: hooks.callTimeoutMs }),
+		signal: entry.abort.signal,
+	};
 	const sentText = request.systemPrompt + request.transcriptPrompt;
 	const worstInputTokens = worstCaseInputTokens(sentText);
 	const pricedInputCents = priceCompletion(provider.kind, provider.model, {
@@ -954,6 +985,11 @@ async function callModel(
 	entry.pendingInputCents = pricedInputCents;
 	entry.pendingMaxCents = maxCents;
 	entry.phase = "calling";
+	entry.call = {
+		limitMs: request.timeoutMs as number,
+		startedMs: Date.now(),
+		kind: repair ? "repair" : "first",
+	};
 	const response = await adapter.complete(request);
 	recordCallSuccess(entry.subject);
 	// An adapter that reports no usage estimates the input from the transcript alone: price the whole
@@ -1098,7 +1134,7 @@ async function finish(
 	if (entry.taken) return;
 	entry.taken = true;
 	entry.phase = "finishing";
-	const settling = settleRun(entry, token, outcome, detail);
+	const settling = settleRun(entry, token, outcome, detail, ctx.provider.model);
 	entry.settling = settling;
 	await settling;
 }
@@ -1109,6 +1145,7 @@ async function settleRun(
 	token: string,
 	outcome: Outcome,
 	detail: FailureDetail | null,
+	model: string,
 ): Promise<void> {
 	entry.finishCents = outcome.ok ? entry.settledCents : outcome.chargeCents;
 	try {
@@ -1131,6 +1168,7 @@ async function settleRun(
 						code: outcome.code,
 						subType: detail?.subType ?? null,
 						status: detail?.status ?? null,
+						...(outcome.code === "provider_timeout" ? timeoutFacts(entry, model) : {}),
 					}),
 				);
 				await writeAttempt(entry.sessionId, token, failedRow(outcome.code, outcome.longCooldown));
@@ -1150,6 +1188,17 @@ async function settleRun(
 	} finally {
 		dropEntry(entry);
 	}
+}
+
+/** The facts of a deadline we fired, for the operator's log only: the limit sent, how long it ran, which call. */
+function timeoutFacts(entry: Entry, model: string) {
+	const call = entry.call;
+	return {
+		model: model.replace(/[\p{Cc}\p{Cf}]/gu, "").slice(0, 128),
+		limitSeconds: call ? call.limitMs / 1000 : null,
+		ranSeconds: call ? Math.round((Date.now() - call.startedMs) / 100) / 10 : null,
+		call: call?.kind ?? null,
+	};
 }
 
 /** An error's class name only: never its message, which can carry a body or a key. */
@@ -1184,7 +1233,10 @@ async function runGeneration(ctx: RunContext): Promise<void> {
 		detail = describeFailure(error, ctx.entry);
 		if (detail.maxCharged && !ctx.entry.taken) {
 			recordMaxChargedFailure(ctx.entry.subject);
-			recordUnknownOutcomeCharge(ctx.entry.pendingMaxCents);
+			recordUnknownOutcomeCharge(
+				ctx.entry.pendingMaxCents,
+				(ctx.entry.reservation as SpendReservation).date,
+			);
 			longCooldown = true;
 		}
 		if (error instanceof EvidenceReadError) {
@@ -1250,6 +1302,10 @@ function takeSlot(entry: Entry, caller: SummaryRequestCaller): SessionSummaryRef
 		}
 	}
 	if (entries.size >= MAX_CONCURRENT_GENERATIONS) {
+		console.warn(
+			"[session-summary] slots busy",
+			JSON.stringify({ running: entries.size, max: MAX_CONCURRENT_GENERATIONS }),
+		);
 		return { error: "busy", retryAfterSeconds: BUSY_RETRY_AFTER_SECONDS };
 	}
 	entries.add(entry);
@@ -1355,6 +1411,8 @@ export async function requestSummaryGeneration(
 		settling: null,
 		finishCents: null,
 		watchdog: null,
+		abort: new AbortController(),
+		call: null,
 	};
 	const slotRefusal = takeSlot(entry, caller);
 	if (slotRefusal) return joinOrRefuse(sessionId, slotRefusal, entry);
@@ -1499,6 +1557,7 @@ async function expireEntry(entry: Entry): Promise<void> {
 		return;
 	}
 	entry.taken = true;
+	entry.abort.abort();
 	console.error("[session-summary] run outlived its lease", JSON.stringify({ phase: entry.phase }));
 	if (entry.token === null) {
 		// Stuck before the hand-over: free the slot and give back the reservation now; if the
@@ -1535,7 +1594,7 @@ async function releaseEntry(entry: Entry): Promise<void> {
 	const unknownCharge = entry.phase !== "reading" ? entry.pendingMaxCents : 0;
 	if (unknownCharge > 0) {
 		recordMaxChargedFailure(entry.subject);
-		recordUnknownOutcomeCharge(unknownCharge);
+		recordUnknownOutcomeCharge(unknownCharge, (entry.reservation as SpendReservation).date);
 	}
 	try {
 		await writeAttempt(
@@ -1587,6 +1646,7 @@ export async function releaseOwnSummaryClaims(): Promise<void> {
 		}
 		if (entry.token === null) continue;
 		entry.taken = true;
+		entry.abort.abort();
 		work.push(releaseEntry(entry));
 	}
 	let timer: ReturnType<typeof setTimeout> | undefined;

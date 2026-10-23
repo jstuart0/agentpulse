@@ -4,13 +4,20 @@
  */
 import { estimateTokens } from "../llm/types.js";
 import { LEDGER_CHAR_BUDGET, TOP_FILES } from "./limits.js";
-import { SUMMARY_CALL_OPTIONS } from "./prompt-limits.js";
+import { SUMMARY_CALL_OPTIONS, summaryCallTimeoutSeconds } from "./prompt-limits.js";
 import { SESSION_SUMMARY_SYSTEM_PROMPT } from "./prompt.js";
 
 /** A new attempt waits this long after the last one began (not after an interrupted one). */
 export const SUMMARY_COOLDOWN_SECONDS = 30;
-/** A `generating` row older than this reads as `failed / interrupted`: two 120 s calls plus the reads. */
-export const SUMMARY_LEASE_SECONDS = 300;
+export { summaryCallTimeoutSeconds };
+/** Time for the evidence reads, the spend reservation and the write around the model calls. */
+const LEASE_SLACK_SECONDS = 60;
+/**
+ * A `generating` row older than this reads as `failed / interrupted`: two model calls (the first and
+ * the repair) at the configured limit, plus the reads. 780 s at the default limit of 360 s.
+ */
+export const summaryLeaseSeconds = (): number =>
+	2 * summaryCallTimeoutSeconds() + LEASE_SLACK_SECONDS;
 /** Generations running at once in this process, counting one that is writing its result. */
 export const MAX_CONCURRENT_GENERATIONS = 2;
 /**
@@ -38,12 +45,20 @@ export const SHUTDOWN_RELEASE_BUDGET_MS = 2000;
  * period) takes the next, longer period; a success by that subject resets it.
  */
 export const BREAKER_FAILURES = 3;
-export const BREAKER_WINDOW_MS = 10 * 60 * 1000;
+export const BREAKER_WINDOW_FLOOR_MS = 10 * 60 * 1000;
+/**
+ * Three serial runs that each time out land about one lease apart, so the window must hold two
+ * leases and a minute; below that the breaker could never trip.
+ */
+export const breakerWindowMs = (): number =>
+	Math.max(BREAKER_WINDOW_FLOOR_MS, (2 * summaryLeaseSeconds() + 60) * 1000);
 export const BREAKER_OPEN_STEPS_MS: readonly number[] = [5, 10, 20, 40, 60].map(
 	(m) => m * 60 * 1000,
 );
 /** An entry with nothing open and no failure for this long is forgotten; the map holds at most this many. */
-export const BREAKER_IDLE_DROP_MS = 60 * 60 * 1000;
+export const BREAKER_IDLE_DROP_FLOOR_MS = 60 * 60 * 1000;
+export const breakerIdleDropMs = (): number =>
+	Math.max(BREAKER_IDLE_DROP_FLOOR_MS, breakerWindowMs());
 export const BREAKER_MAX_ENTRIES = 1000;
 /** A session whose last attempt was charged the maximum for an unknown outcome stays shut this long, for everyone. */
 export const MAX_CHARGED_COOLDOWN_SECONDS = 10 * 60;

@@ -8,6 +8,8 @@ services:
       - HOST=0.0.0.0
       - LOG_LEVEL=debug
       - PUBLIC_URL=http://localhost:3000
+      # Per-call time limit of a session summary, in seconds (30 to 1800). Empty means the default (360).
+      - AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS=${AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS:-}
     volumes:
       - agentpulse-data:/app/data
     restart: unless-stopped

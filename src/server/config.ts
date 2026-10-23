@@ -10,6 +10,9 @@ function clampedEnvNumber(name: string, fallback: number, min: number, max: numb
 	return Math.min(max, Math.max(min, value));
 }
 
+/** Longest time one LLM call may be given; the clamp and `llmFetch` share it. */
+export const MAX_LLM_CALL_TIMEOUT_SECONDS = 1800;
+
 export const config = {
 	port: Number(process.env.PORT || 3000),
 	host: process.env.HOST || "127.0.0.1",
@@ -101,6 +104,19 @@ export const config = {
 	// How many Ask turns may run at once, across the web and Telegram (see
 	// services/ask/ask-turn-limiter.ts). Read on every acquisition.
 	askMaxConcurrent: Math.floor(clampedEnvNumber("AGENTPULSE_ASK_MAX_CONCURRENT", 2, 1, 8)),
+
+	// The session-summary model call's time limit, per call (the repair call
+	// gets it too). The lease, the watchdog, the stuck-row judgement,
+	// retention's spare window and the breaker window all derive from it.
+	// Replicas must agree on it.
+	sessionSummaryTimeoutSeconds: Math.floor(
+		clampedEnvNumber(
+			"AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS",
+			360,
+			30,
+			MAX_LLM_CALL_TIMEOUT_SECONDS,
+		),
+	),
 
 	// Telegram HITL channel — instance-wide bot token serves every
 	// per-user channel enrollment. When unset, Telegram features stay

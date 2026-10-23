@@ -3,13 +3,17 @@
  * stores. Kept apart from `limits.ts` (the evidence path's limits).
  */
 
-/** The model call, primary and repair alike. */
+import { config } from "../../../config.js";
+
+/** The model call, primary and repair alike. The timeout is `summaryCallTimeoutSeconds()`. */
 export const SUMMARY_CALL_OPTIONS = {
 	maxTokens: 4000,
 	temperature: 0.2,
-	timeoutMs: 120_000,
 	disableReasoning: true,
 } as const;
+
+/** One model call's time limit (per call: the repair call gets the full value too). Read per call. */
+export const summaryCallTimeoutSeconds = (): number => config.sessionSummaryTimeoutSeconds;
 
 /** Agent-supplied identity fields in the user prompt (code points). */
 export const DETAIL_FIELD_CAP = 200;

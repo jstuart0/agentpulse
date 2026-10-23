@@ -976,6 +976,57 @@ describe("the GET body has the fixture's shape", () => {
 		});
 	}
 
+	test("AGEN-77 attempt.timeoutSeconds is present only for a failed provider_timeout, and the polled view's attempt is identical", async () => {
+		const headers = disableAuth();
+		await activeSession(SID);
+		const seedFailed = (code: string) =>
+			H.seedSummaryRow(SID, {
+				attemptStatus: "failed",
+				attemptStartedAt: toDbTimestamp(new Date(Date.now() - 20_000)),
+				attemptErrorCode: code,
+			});
+		await seedFailed("provider_timeout~long");
+		const full = await get(SID, headers);
+		const polled = await poll(SID, headers);
+		expect(full.json?.attempt).toMatchObject({
+			errorCode: "provider_timeout",
+			timeoutSeconds: 360,
+		});
+		expect(polled.json?.attempt).toEqual(full.json?.attempt);
+		await getDb().delete(aiSessionSummaries);
+		for (const code of ["provider_error", "provider_rate_limit", "interrupted"]) {
+			await seedFailed(code);
+			const view = await get(SID, headers);
+			expect("timeoutSeconds" in (view.json?.attempt as object), code).toBe(false);
+			await getDb().delete(aiSessionSummaries);
+		}
+		const idle = await get(SID, headers);
+		expect("timeoutSeconds" in (idle.json?.attempt as object)).toBe(false);
+	});
+
+	test("AGEN-77 no timeoutSeconds on a generating attempt (held), nor on a lapsed generating lease", async () => {
+		const headers = disableAuth();
+		const edit = await activeSession(SID);
+		const gate = scriptGated([edit]);
+		expect((await post(SID, headers)).status).toBe(202);
+		await H.withDeadline(gate.arrived);
+		for (const view of [await get(SID, headers), await poll(SID, headers)]) {
+			expect((view.json?.attempt as { status: string }).status).toBe("generating");
+			expect("timeoutSeconds" in (view.json?.attempt as object)).toBe(false);
+		}
+		gate.release();
+		await waitForGenerations();
+		await getDb().delete(aiSessionSummaries);
+		await H.seedSummaryRow(SID, {
+			attemptStatus: "generating",
+			attemptToken: "old",
+			attemptStartedAt: toDbTimestamp(new Date(Date.now() - 3600_000)),
+		});
+		const lapsed = await get(SID, headers);
+		expect(lapsed.json?.attempt).toMatchObject({ status: "failed", errorCode: "interrupted" });
+		expect("timeoutSeconds" in (lapsed.json?.attempt as object)).toBe(false);
+	});
+
 	test("TC-6.5r2 a real failed run (the provider answers badly) reads back as a failed view", async () => {
 		const edit = await activeSession(SID);
 		void edit;

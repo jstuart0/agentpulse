@@ -164,6 +164,20 @@ export function formatWait(seconds: number): string {
 	return `${Math.floor(total / HOUR_S)}:${String(m).padStart(2, "0")}:${sec}`;
 }
 
+/**
+ * A length of time in words, for a limit rather than a countdown (`formatWait` is the countdown):
+ * "30 seconds", "90 seconds", "2 minutes", "6 minutes 1 second". Whole seconds, rounded up.
+ */
+export function formatDuration(seconds: number): string {
+	const total = Math.max(1, Math.ceil(Number.isFinite(seconds) ? seconds : 1));
+	const minutes = Math.floor(total / MINUTE_S);
+	const rest = total % MINUTE_S;
+	const secondsText = `${rest} ${plural(rest, "second", "seconds")}`;
+	if (total < 2 * MINUTE_S && rest !== 0) return `${total} ${plural(total, "second", "seconds")}`;
+	const minutesText = `${minutes} ${plural(minutes, "minute", "minutes")}`;
+	return rest === 0 ? minutesText : `${minutesText} ${secondsText}`;
+}
+
 export function formatElapsed(startedAt: string | null, now: Date): string {
 	if (!startedAt) return "";
 	const at = parseDate(startedAt);
@@ -297,6 +311,13 @@ export interface SummaryViewer {
 
 export const GENERIC_FAILURE_COPY = "Something went wrong. Try again.";
 
+const TIMEOUT_SETTING = "AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS";
+const MODEL_NAME_MAX_CHARS = 128;
+
+/** A model name comes from the provider record: no control, bidi or zero-width characters, and a cap. */
+const stripInvisible = (text: string): string =>
+	text.replace(/[\p{Cc}\p{Cf}]/gu, "").slice(0, MODEL_NAME_MAX_CHARS);
+
 const ASK_ADMIN_TO_CHECK_PROVIDER = "Ask an admin to check the provider.";
 
 type PlainFailureCode = Exclude<
@@ -330,8 +351,20 @@ export function failureCopy(
 	viewer: Pick<SummaryViewer, "adminSettingsLocked">,
 	resetsAt?: string | null,
 	clock?: ClockOptions,
+	timeout?: { seconds: number; model: string | null },
 ): string {
 	switch (code) {
+		case "provider_timeout": {
+			if (!timeout) return FAILURE_COPY.provider_timeout;
+			const model = timeout.model ? stripInvisible(timeout.model) : "";
+			return `The model didn't answer within ${formatDuration(timeout.seconds)}. Large sessions on ${
+				model || "slow models"
+			} can take longer; ${
+				viewer.adminSettingsLocked
+					? "ask an admin to have the time limit raised."
+					: `whoever runs the server can raise ${TIMEOUT_SETTING} and restart it.`
+			}`;
+		}
 		case "provider_auth":
 			return `The provider rejected the API key. ${
 				viewer.adminSettingsLocked ? ASK_ADMIN_TO_CHECK_PROVIDER : "Check it in Settings."

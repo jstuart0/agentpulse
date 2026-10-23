@@ -350,7 +350,7 @@ describe("blocked reasons", () => {
 });
 
 describe("the attempt", () => {
-	test("TC-5.22a lease: 300 s is still generating, 301 s reads failed / interrupted without writing", async () => {
+	test("TC-5.22a lease: 780 s is still generating, 781 s reads failed / interrupted without writing", async () => {
 		await H.seedActiveSession(SID);
 		await H.seedProvider(stub);
 		setSystemTime(new Date(Date.UTC(2031, 0, 1, 12, 0, 0)));
@@ -360,14 +360,14 @@ describe("the attempt", () => {
 			attemptStartedAt: started,
 			attemptToken: "tok",
 		});
-		setSystemTime(new Date(Date.UTC(2031, 0, 1, 12, 5, 0)));
-		const at300 = await view();
-		expect(at300.attempt.status).toBe("generating");
-		expect(at300.attempt.errorCode).toBeNull();
-		expect(at300.blocked).toBeNull();
-		setSystemTime(new Date(Date.UTC(2031, 0, 1, 12, 5, 1)));
-		const at301 = await view();
-		expect(at301.attempt).toEqual({
+		setSystemTime(new Date(Date.UTC(2031, 0, 1, 12, 13, 0)));
+		const atLease = await view();
+		expect(atLease.attempt.status).toBe("generating");
+		expect(atLease.attempt.errorCode).toBeNull();
+		expect(atLease.blocked).toBeNull();
+		setSystemTime(new Date(Date.UTC(2031, 0, 1, 12, 13, 1)));
+		const afterLease = await view();
+		expect(afterLease.attempt).toEqual({
 			status: "failed",
 			startedAt: "2031-01-01T12:00:00.000Z",
 			errorCode: "interrupted",

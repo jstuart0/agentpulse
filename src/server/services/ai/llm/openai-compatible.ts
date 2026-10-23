@@ -1,3 +1,4 @@
+import { llmFetch, readJsonCapped, readStreamCapped } from "../http.js";
 import {
 	type LlmAdapter,
 	LlmError,
@@ -66,9 +67,9 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 				body.reasoning_effort = "none";
 			}
 
-			let response: Response;
-			try {
-				response = await fetch(`${baseUrl}/chat/completions`, {
+			const response = await llmFetch(
+				`${baseUrl}/chat/completions`,
+				{
 					method: "POST",
 					headers: {
 						"Content-Type": "application/json",
@@ -76,21 +77,16 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 						...extraHeaders,
 					},
 					body: JSON.stringify(body),
-					signal: AbortSignal.timeout(timeoutMs),
-				});
-			} catch (err) {
-				if (err instanceof Error && err.name === "TimeoutError") {
-					throw new LlmError("transient_timeout", `${kind} request timed out`, undefined, err);
-				}
-				throw new LlmError("unknown", `${kind} request failed: ${err}`, undefined, err);
-			}
+				},
+				{ timeoutMs, signal: request.signal, label: `${kind} request` },
+			);
 
 			if (!response.ok) {
 				const { subType, body: errBody, status } = await classifyHttpError(response);
 				throw new LlmError(subType, `${kind} ${status}: ${errBody.slice(0, 300)}`, status);
 			}
 
-			const json = (await response.json()) as {
+			const json = (await readJsonCapped(response)) as {
 				choices?: Array<{
 					message?: { content?: string | null; reasoning?: string | null };
 					finish_reason?: string | null;
@@ -140,9 +136,9 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 				stream_options: { include_usage: true },
 			};
 
-			let response: Response;
-			try {
-				response = await fetch(`${baseUrl}/chat/completions`, {
+			const response = await llmFetch(
+				`${baseUrl}/chat/completions`,
+				{
 					method: "POST",
 					headers: {
 						"Content-Type": "application/json",
@@ -151,21 +147,15 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 						...extraHeaders,
 					},
 					body: JSON.stringify(body),
-					signal: AbortSignal.timeout(timeoutMs),
-				});
-			} catch (err) {
-				if (err instanceof Error && err.name === "TimeoutError") {
-					throw new LlmError("transient_timeout", `${kind} stream timed out`, undefined, err);
-				}
-				throw new LlmError("unknown", `${kind} stream failed: ${err}`, undefined, err);
-			}
+				},
+				{ timeoutMs, signal: request.signal, label: `${kind} stream` },
+			);
 
 			if (!response.ok || !response.body) {
 				const { subType, body: errBody, status } = await classifyHttpError(response);
 				throw new LlmError(subType, `${kind} stream ${status}: ${errBody.slice(0, 300)}`, status);
 			}
 
-			const reader = response.body.getReader();
 			const decoder = new TextDecoder();
 			let buffer = "";
 			let fullText = "";
@@ -173,56 +163,45 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 			let completionTokens: number | undefined;
 			let finalRaw: unknown = null;
 			let finishReason: string | null | undefined;
-
-			try {
-				while (true) {
-					const { value, done } = await reader.read();
-					if (done) break;
-					buffer += decoder.decode(value, { stream: true });
-					// SSE frames are separated by blank lines. Keep any partial
-					// frame in the buffer until we see its terminator.
-					let sepIdx = buffer.indexOf("\n\n");
-					while (sepIdx !== -1) {
-						const frame = buffer.slice(0, sepIdx);
-						buffer = buffer.slice(sepIdx + 2);
-						sepIdx = buffer.indexOf("\n\n");
-						for (const rawLine of frame.split("\n")) {
-							const line = rawLine.trim();
-							if (!line.startsWith("data:")) continue;
-							const payload = line.slice(5).trim();
-							if (!payload || payload === "[DONE]") continue;
-							let parsed: {
-								choices?: Array<{
-									delta?: { content?: string | null };
-									finish_reason?: string | null;
-								}>;
-								usage?: { prompt_tokens?: number; completion_tokens?: number };
-							};
-							try {
-								parsed = JSON.parse(payload);
-							} catch {
-								// Servers occasionally emit a keep-alive / comment; skip.
-								continue;
-							}
-							finalRaw = parsed;
-							finishReason = parsed.choices?.[0]?.finish_reason ?? finishReason;
-							const delta = parsed.choices?.[0]?.delta?.content;
-							if (typeof delta === "string" && delta.length > 0) {
-								fullText += delta;
-								yield { kind: "delta", text: delta };
-							}
-							if (parsed.usage) {
-								promptTokens = parsed.usage.prompt_tokens ?? promptTokens;
-								completionTokens = parsed.usage.completion_tokens ?? completionTokens;
-							}
+			for await (const value of readStreamCapped(response)) {
+				buffer += decoder.decode(value, { stream: true });
+				// SSE frames are separated by blank lines. Keep any partial
+				// frame in the buffer until we see its terminator.
+				let sepIdx = buffer.indexOf("\n\n");
+				while (sepIdx !== -1) {
+					const frame = buffer.slice(0, sepIdx);
+					buffer = buffer.slice(sepIdx + 2);
+					sepIdx = buffer.indexOf("\n\n");
+					for (const rawLine of frame.split("\n")) {
+						const line = rawLine.trim();
+						if (!line.startsWith("data:")) continue;
+						const payload = line.slice(5).trim();
+						if (!payload || payload === "[DONE]") continue;
+						let parsed: {
+							choices?: Array<{
+								delta?: { content?: string | null };
+								finish_reason?: string | null;
+							}>;
+							usage?: { prompt_tokens?: number; completion_tokens?: number };
+						};
+						try {
+							parsed = JSON.parse(payload);
+						} catch {
+							// Servers occasionally emit a keep-alive / comment; skip.
+							continue;
+						}
+						finalRaw = parsed;
+						finishReason = parsed.choices?.[0]?.finish_reason ?? finishReason;
+						const delta = parsed.choices?.[0]?.delta?.content;
+						if (typeof delta === "string" && delta.length > 0) {
+							fullText += delta;
+							yield { kind: "delta", text: delta };
+						}
+						if (parsed.usage) {
+							promptTokens = parsed.usage.prompt_tokens ?? promptTokens;
+							completionTokens = parsed.usage.completion_tokens ?? completionTokens;
 						}
 					}
-				}
-			} finally {
-				try {
-					reader.releaseLock();
-				} catch {
-					// Reader already released — ignore.
 				}
 			}
 

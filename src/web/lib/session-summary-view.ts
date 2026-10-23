@@ -675,7 +675,15 @@ function deriveNotice(
 		lead: startedAt
 			? `Last attempt, ${relativeAgo(startedAt, clock)}, didn't finish:`
 			: "Last attempt didn't finish:",
-		reason: failureCopy(view.attempt.errorCode, viewer, view.spend.resetsAt, clock),
+		reason: failureCopy(
+			view.attempt.errorCode,
+			viewer,
+			view.spend.resetsAt,
+			clock,
+			view.attempt.timeoutSeconds === undefined
+				? undefined
+				: { seconds: view.attempt.timeoutSeconds, model: view.provider?.model ?? null },
+		),
 		startedAt,
 		link:
 			(view.attempt.errorCode === "provider_key_unreadable" ||
