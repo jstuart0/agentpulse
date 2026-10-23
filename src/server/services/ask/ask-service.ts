@@ -598,7 +598,8 @@ async function runAskGates(text: string, ctx: AskGateCtx): Promise<GateRunResult
 				continue;
 			}
 			if (outcome.kind === "classifier_failed" && !preamble && gate.label !== null) {
-				preamble = `_(Heads up: I tried to detect ${article(gate.label)} ${gate.label} request but the classifier failed: ${outcome.error}. Answering as a general question.)_\n\n`;
+				// The classifier's own error text is for the log, not the chat.
+				preamble = `_(Heads up: I couldn't check whether this was ${article(gate.label)} ${gate.label} request, so I answered it as a general question.)_\n\n`;
 			}
 			// kind: "none" — fall through silently.
 			continue;
