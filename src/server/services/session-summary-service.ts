@@ -721,6 +721,7 @@ const LLM_CODES: Record<LlmError["subType"], SummaryErrorCode> = {
 	transient_rate_limit: "provider_rate_limit",
 	transient_timeout: "provider_timeout",
 	permanent_validation: "provider_error",
+	empty_output: "provider_error",
 	unknown: "provider_error",
 };
 

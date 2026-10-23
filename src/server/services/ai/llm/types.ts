@@ -85,6 +85,8 @@ export type LlmErrorSubType =
 	| "transient_timeout"
 	| "permanent_auth"
 	| "permanent_validation"
+	/** The provider answered, but with no answer text (e.g. all output went to reasoning). */
+	| "empty_output"
 	| "unknown";
 
 export class LlmError extends Error {

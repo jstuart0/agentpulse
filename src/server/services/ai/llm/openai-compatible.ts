@@ -23,6 +23,63 @@ interface OpenAICompatibleParams {
 }
 
 /**
+ * The chat-completions body shared by `complete` and `completeStream`.
+ *
+ * Thinking-mode opt-outs. Qwen3 and similar reasoning models spend the whole
+ * output window on chain of thought by default and leave `content` empty.
+ * Three flags exist and servers honour different ones, so all are sent:
+ *   - `think: false`: Ollama-native /api/chat (NOT honoured on /v1)
+ *   - `chat_template_kwargs.enable_thinking: false`: vLLM / SGLang style servers
+ *   - `reasoning_effort: "none"`: the OpenAI-spec parameter, and the only one
+ *     Ollama's /v1 endpoint honours. Sent only when the caller asks for it
+ *     (`disableReasoning`), so a call that wants the model's own default is
+ *     not changed. Every call that produces an answer or a JSON decision sets it.
+ */
+function buildRequestBody(request: LlmRequest): Record<string, unknown> {
+	const body: Record<string, unknown> = {
+		model: request.model,
+		temperature: request.temperature ?? 0.2,
+		max_tokens: request.maxTokens ?? 1024,
+		// response_format is OpenAI-only. We skip it since we want this
+		// adapter to work with Ollama and other OpenAI-like servers
+		// that don't implement structured output.
+		messages: [
+			{ role: "system", content: request.systemPrompt },
+			{ role: "user", content: request.transcriptPrompt },
+		],
+		think: false,
+		chat_template_kwargs: { enable_thinking: false },
+	};
+	if (request.disableReasoning) body.reasoning_effort = "none";
+	return body;
+}
+
+/**
+ * A reply with no answer text. Saying why matters to whoever reads the log:
+ * a `length` stop means the model ran out of `max_tokens` (usually while
+ * thinking), which the caller fixes with `disableReasoning` or a larger
+ * budget, not by retrying the same call.
+ */
+function emptyOutputError(
+	kind: string,
+	finishReason: string | null | undefined,
+	hadReasoning: boolean,
+): LlmError {
+	const why =
+		finishReason === "length"
+			? hadReasoning
+				? "ran out of output tokens while reasoning"
+				: "ran out of output tokens"
+			: hadReasoning
+				? "returned only reasoning"
+				: "returned nothing";
+	return new LlmError(
+		"empty_output",
+		`${kind} returned no answer text (the model ${why}; finish_reason=${finishReason ?? "none"})`,
+	);
+}
+
+/**
  * Adapter for any provider that speaks the OpenAI chat completions API at
  * `${baseUrl}/chat/completions`. Covers:
  * - OpenAI itself (baseUrl = https://api.openai.com/v1)
@@ -41,31 +98,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 		kind,
 		async complete(request: LlmRequest): Promise<LlmResponse> {
 			const timeoutMs = request.timeoutMs ?? 60_000;
-			const body: Record<string, unknown> = {
-				model: request.model,
-				temperature: request.temperature ?? 0.2,
-				max_tokens: request.maxTokens ?? 1024,
-				// response_format is OpenAI-only. We skip it since we want this
-				// adapter to work with Ollama and other OpenAI-like servers
-				// that don't implement structured output.
-				messages: [
-					{ role: "system", content: request.systemPrompt },
-					{ role: "user", content: request.transcriptPrompt },
-				],
-				// Thinking-mode opt-outs. Qwen3 and similar reasoning models
-				// consume the whole output window on CoT by default, leaving
-				// `content` empty. Servers that don't recognize these ignore them.
-				//   - `think: false` — Ollama-native /api/chat (NOT honored on /v1)
-				//   - `chat_template_kwargs.enable_thinking: false` — vLLM / SGLang
-				think: false,
-				chat_template_kwargs: { enable_thinking: false },
-			};
-			if (request.disableReasoning) {
-				// Empirically the only flag Ollama's /v1 endpoint actually honors
-				// to suppress qwen3's thinking phase. Real OpenAI-spec parameter,
-				// safe for non-Ollama servers (most ignore unknown reasoning_effort).
-				body.reasoning_effort = "none";
-			}
+			const body = buildRequestBody(request);
 
 			const response = await llmFetch(
 				`${baseUrl}/chat/completions`,
@@ -97,19 +130,22 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 				};
 			};
 
-			// Fall back to `reasoning` when `content` is empty. Some servers
-			// (Ollama / vLLM serving Qwen3) return the thinking block as a
-			// separate `reasoning` field and an empty `content` if the
-			// answer itself didn't fit in the output budget. Better to
-			// return the raw reasoning text than an empty string — the
-			// caller can still mine comma-separated candidates out of it.
+			// `reasoning` is never an answer. A reasoning model that runs out of
+			// output budget mid-thought returns an empty `content` and its chain
+			// of thought here; passing that on as the reply shows the user a
+			// truncated monologue as if it were the answer. A refusal is the one
+			// empty reply the caller handles itself, by its stop reason.
 			const choice = json.choices?.[0]?.message;
-			const text = choice?.content?.trim() ? choice.content : (choice?.reasoning ?? "");
+			const text = choice?.content ?? "";
+			const stopReason = mapStopReason(json.choices?.[0]?.finish_reason, OPENAI_STOP_REASONS);
+			if (!text.trim() && stopReason !== "refusal") {
+				throw emptyOutputError(kind, json.choices?.[0]?.finish_reason, Boolean(choice?.reasoning));
+			}
 			const usage = json.usage ?? {};
 
 			return {
 				text,
-				stopReason: mapStopReason(json.choices?.[0]?.finish_reason, OPENAI_STOP_REASONS),
+				stopReason,
 				usage: {
 					inputTokens:
 						usage.prompt_tokens ?? estimateTokens(request.systemPrompt + request.transcriptPrompt),
@@ -122,13 +158,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 		async *completeStream(request: LlmRequest): AsyncIterable<LlmStreamEvent> {
 			const timeoutMs = request.timeoutMs ?? 60_000;
 			const body = {
-				model: request.model,
-				temperature: request.temperature ?? 0.2,
-				max_tokens: request.maxTokens ?? 1024,
-				messages: [
-					{ role: "system", content: request.systemPrompt },
-					{ role: "user", content: request.transcriptPrompt },
-				],
+				...buildRequestBody(request),
 				stream: true,
 				// Ollama + OpenAI both support usage in the final SSE chunk
 				// when stream_options.include_usage = true. Harmless on the
@@ -163,6 +193,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 			let completionTokens: number | undefined;
 			let finalRaw: unknown = null;
 			let finishReason: string | null | undefined;
+			let sawReasoning = false;
 			for await (const value of readStreamCapped(response)) {
 				buffer += decoder.decode(value, { stream: true });
 				// SSE frames are separated by blank lines. Keep any partial
@@ -179,7 +210,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 						if (!payload || payload === "[DONE]") continue;
 						let parsed: {
 							choices?: Array<{
-								delta?: { content?: string | null };
+								delta?: { content?: string | null; reasoning?: string | null };
 								finish_reason?: string | null;
 							}>;
 							usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -192,6 +223,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 						}
 						finalRaw = parsed;
 						finishReason = parsed.choices?.[0]?.finish_reason ?? finishReason;
+						if (parsed.choices?.[0]?.delta?.reasoning) sawReasoning = true;
 						const delta = parsed.choices?.[0]?.delta?.content;
 						if (typeof delta === "string" && delta.length > 0) {
 							fullText += delta;
@@ -205,11 +237,15 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 				}
 			}
 
+			const stopReason = mapStopReason(finishReason, OPENAI_STOP_REASONS);
+			if (!fullText.trim() && stopReason !== "refusal") {
+				throw emptyOutputError(kind, finishReason, sawReasoning);
+			}
 			yield {
 				kind: "done",
 				response: {
 					text: fullText,
-					stopReason: mapStopReason(finishReason, OPENAI_STOP_REASONS),
+					stopReason,
 					usage: {
 						inputTokens:
 							promptTokens ?? estimateTokens(request.systemPrompt + request.transcriptPrompt),
