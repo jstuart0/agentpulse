@@ -105,6 +105,28 @@ export const config = {
 	// services/ask/ask-turn-limiter.ts). Read on every acquisition.
 	askMaxConcurrent: Math.floor(clampedEnvNumber("AGENTPULSE_ASK_MAX_CONCURRENT", 2, 1, 8)),
 
+	// Time limit of an Ask answer and of a per-session Q&A answer, per call.
+	// The call that carries the whole conversation context and decodes the
+	// answer is the slowest one an Ask turn makes (prefill of the context
+	// block plus the answer's tokens). Read on every call.
+	askAnswerTimeoutSeconds: Math.floor(
+		clampedEnvNumber(
+			"AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS",
+			180,
+			30,
+			MAX_LLM_CALL_TIMEOUT_SECONDS,
+		),
+	),
+	// Time limit of the short helper calls: the Ask intent classifiers, the Ask
+	// query expander and the alert-rule yes/no classifier. They produce a few
+	// tokens, so on a warm model they take about two seconds; the limit covers a
+	// model that has to load first (one measurement: a cold 27B-class model
+	// answered a 64-token call in about 8 seconds), with room for a queue
+	// behind another call. Read on every call.
+	aiHelperTimeoutSeconds: Math.floor(
+		clampedEnvNumber("AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS", 20, 5, 300),
+	),
+
 	// The session-summary model call's time limit, per call (the repair call
 	// gets it too). The lease, the watchdog, the stuck-row judgement,
 	// retention's spare window and the breaker window all derive from it.

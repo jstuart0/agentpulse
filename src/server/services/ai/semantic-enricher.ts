@@ -14,6 +14,7 @@
  * into the same resolver seam so the integration point doesn't churn.
  */
 
+import { config } from "../../config.js";
 import { isAiActive } from "./feature.js";
 import { getAdapter } from "./llm/registry.js";
 import type { LlmAdapter } from "./llm/types.js";
@@ -73,14 +74,13 @@ export class LlmQueryExpander implements SemanticEnricher {
 				// Other providers harmlessly ignore the directive.
 				transcriptPrompt: `/no_think\nQuestion: ${trimmed}\nTerms:`,
 				model: this.model,
-				// Generous ceiling so that even models that can't be talked
-				// out of thinking still have room for the real answer after
-				// the CoT block; parseExpansion strips any leading <think>.
-				maxTokens: 400,
+				// 5 to 10 terms of one to three words is well under 100 tokens.
+				maxTokens: 120,
 				// Low but non-zero: we want some variation in synonym choice
 				// without the model going off the rails.
 				temperature: 0.3,
-				timeoutMs: 15_000,
+				disableReasoning: true,
+				timeoutMs: config.aiHelperTimeoutSeconds * 1000,
 			});
 			const extraTerms = parseExpansion(res.text);
 			return { extraTerms, directHits: new Map() };

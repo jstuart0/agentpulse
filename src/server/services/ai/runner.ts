@@ -378,6 +378,8 @@ export class WatcherRunner {
 				systemPrompt: ctx.systemPrompt,
 				transcriptPrompt: ctx.transcriptPrompt,
 				model: provider.model,
+				// The decision is a JSON object; reasoning would take the token budget.
+				disableReasoning: true,
 			});
 			responseText = res.text;
 			usageInput = res.usage.inputTokens;
@@ -413,6 +415,7 @@ export class WatcherRunner {
 						systemPrompt: ctx.systemPrompt,
 						transcriptPrompt: `${ctx.transcriptPrompt}\n\nRESPONSE PARSE ERROR: ${parsed.error}. Respond with exactly one JSON object per the schema. No prose.`,
 						model: provider.model,
+						disableReasoning: true,
 					});
 					responseText = retry.text;
 					if (retry.usage && !retry.usage.estimated) {

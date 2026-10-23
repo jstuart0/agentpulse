@@ -1033,10 +1033,10 @@ async function runAskTurnBody(input: AskTurnInput, trace: TurnTrace): Promise<As
 			model: llm.provider.model,
 			maxTokens: 800,
 			temperature: 0.3,
-			// 180s accommodates cold-load on local 20B+ models served via
-			// Ollama/vLLM where the first request after model eviction can
-			// take 60-90s before any tokens flow.
-			timeoutMs: 180_000,
+			// The answer is the text, never the model's chain of thought: a
+			// reasoning model that thinks first spends the 800 tokens on it.
+			disableReasoning: true,
+			timeoutMs: config.askAnswerTimeoutSeconds * 1000,
 		});
 		const reply = preamble + (res.text.trim() || "(no response)");
 		const assistantMessage = await appendMessage({
@@ -1321,9 +1321,10 @@ async function* runAskTurnStreamBody(
 			model: llm.provider.model,
 			maxTokens: 800,
 			temperature: 0.3,
-			// Mirrors runAskTurn's 180s — a cold 20B+ model can take 60-90s
+			disableReasoning: true,
+			// The same limit as runAskTurn's: a cold model can take a minute
 			// to emit its first streamed token.
-			timeoutMs: 180_000,
+			timeoutMs: config.askAnswerTimeoutSeconds * 1000,
 		})) {
 			if (evt.kind === "delta") {
 				collected += evt.text;

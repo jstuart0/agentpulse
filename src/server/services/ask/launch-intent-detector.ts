@@ -6,6 +6,7 @@ import {
 	SESSION_MUTATION_KINDS,
 	type SessionMutationKind,
 } from "../../../shared/types.js";
+import { config } from "../../config.js";
 import type { ProjectDraftFields } from "../../db/schema/index.js";
 import { getAdapter } from "../ai/llm/registry.js";
 import { getDefaultProvider, getProvider, getProviderApiKey } from "../ai/providers-service.js";
@@ -176,7 +177,7 @@ async function classifyJson<T>(opts: {
 			model: full.model,
 			maxTokens: opts.maxTokens ?? 200,
 			temperature: 0.0,
-			timeoutMs: 8_000,
+			timeoutMs: config.aiHelperTimeoutSeconds * 1000,
 			disableReasoning: true,
 		});
 

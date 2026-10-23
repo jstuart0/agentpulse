@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
+import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
 import {
 	events,
@@ -306,7 +307,9 @@ async function classifyFreeformCondition(
 			model: full.model,
 			maxTokens: 10,
 			temperature: 0.0,
-			timeoutMs: 8_000,
+			// A thinking model spends all 10 tokens on reasoning and can never say yes or no.
+			disableReasoning: true,
+			timeoutMs: config.aiHelperTimeoutSeconds * 1000,
 		});
 		const answer = res.text.trim().toLowerCase();
 		if (answer === "yes") return { matched: true };

@@ -292,3 +292,54 @@ describe("AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS (AGEN-77)", () => {
 		}
 	});
 });
+
+describe("AI call timeouts (AGEN-79)", () => {
+	const ANSWER = "AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS";
+	const HELPER = "AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS";
+	const saved: Record<string, string | undefined> = {};
+	let fresh = 0;
+	beforeEach(() => {
+		for (const key of [ANSWER, HELPER]) saved[key] = process.env[key];
+	});
+	afterEach(() => {
+		for (const key of [ANSWER, HELPER]) {
+			if (saved[key] === undefined) delete process.env[key];
+			else process.env[key] = saved[key];
+		}
+	});
+
+	async function load(env: Record<string, string | undefined> = {}) {
+		for (const key of [ANSWER, HELPER]) {
+			const value = env[key];
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		const mod = (await import(`./config.js?ai-timeouts-${++fresh}`)) as {
+			config: { askAnswerTimeoutSeconds: number; aiHelperTimeoutSeconds: number };
+		};
+		return mod.config;
+	}
+
+	test("unset: the answer gets 180 s and a helper call 20 s", async () => {
+		const c = await load();
+		expect(c.askAnswerTimeoutSeconds).toBe(180);
+		expect(c.aiHelperTimeoutSeconds).toBe(20);
+	});
+
+	test("the answer limit clamps to 30..1800, the helper limit to 5..300, boundaries exact", async () => {
+		expect((await load({ [ANSWER]: "29" })).askAnswerTimeoutSeconds).toBe(30);
+		expect((await load({ [ANSWER]: "30" })).askAnswerTimeoutSeconds).toBe(30);
+		expect((await load({ [ANSWER]: "1800" })).askAnswerTimeoutSeconds).toBe(1800);
+		expect((await load({ [ANSWER]: "1801" })).askAnswerTimeoutSeconds).toBe(1800);
+		expect((await load({ [HELPER]: "4" })).aiHelperTimeoutSeconds).toBe(5);
+		expect((await load({ [HELPER]: "5" })).aiHelperTimeoutSeconds).toBe(5);
+		expect((await load({ [HELPER]: "300" })).aiHelperTimeoutSeconds).toBe(300);
+		expect((await load({ [HELPER]: "301" })).aiHelperTimeoutSeconds).toBe(300);
+	});
+
+	test("a fraction is floored and junk falls back to the default", async () => {
+		expect((await load({ [ANSWER]: "90.9" })).askAnswerTimeoutSeconds).toBe(90);
+		expect((await load({ [ANSWER]: "abc" })).askAnswerTimeoutSeconds).toBe(180);
+		expect((await load({ [HELPER]: "" })).aiHelperTimeoutSeconds).toBe(20);
+	});
+});
