@@ -3,7 +3,8 @@
  *
  * Bun's fetch cuts a request at 300 s of socket idle time unless `timeout:
  * false` is passed. This answers a local request at 330 s through `llmFetch`
- * and expects the 200 to arrive.
+ * and expects the 200 to arrive. The server is a raw socket because Bun.serve
+ * itself drops an idle connection at 255 s.
  *
  *   bun scripts/check-fetch-idle-cap.ts
  */
@@ -11,13 +12,23 @@ import { llmFetch, readTextCapped } from "../src/server/services/ai/http.js";
 
 const ANSWER_AFTER_MS = 330_000;
 
-const server = Bun.serve({
-	port: 0,
+// Bun.serve caps its own idleTimeout at 255 s and would drop the connection
+// before the client's 300 s cap is reached, so the server is a raw socket that
+// stays silent, then answers.
+const RESPONSE = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+const server = Bun.listen({
 	hostname: "127.0.0.1",
-	idleTimeout: 255,
-	async fetch() {
-		await Bun.sleep(ANSWER_AFTER_MS);
-		return new Response("ok");
+	port: 0,
+	socket: {
+		data(socket) {
+			setTimeout(() => {
+				socket.write(RESPONSE);
+				socket.end();
+			}, ANSWER_AFTER_MS);
+		},
+		open() {},
+		close() {},
+		error() {},
 	},
 });
 
