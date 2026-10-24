@@ -26,29 +26,16 @@ const MESSAGES: Record<string, string> = {
 	insufficient_scope: "This key doesn't have permission to do that.",
 	busy: "The server is busy. Try again in a moment.",
 	key_not_user_settable: "That setting can't be changed here.",
-	// Approving or sending a watcher's suggestion.
-	prompt_not_deliverable:
-		"AgentPulse can't type into this session right now. Copy the prompt from the dashboard instead.",
-	dispatch_blocked: "Blocked by the safety filter. Edit the prompt to send it.",
-	prompt_unsafe:
-		"That prompt has characters or a leading symbol AgentPulse won't type into a session. Edit it to send it.",
-	stale_proposal: "This suggestion is out of date: the session has moved on.",
-	expired: "This request expired.",
-	prompt_changed: "The suggestion changed after you opened it. Reload and review it again.",
-	not_approvable: "This suggestion contained hidden or unsafe characters; edit it to send.",
-	already_resolved: "Someone already answered this.",
-	ai_paused: "AI is paused, so nothing is sent.",
-	empty_prompt: "There is no prompt to send.",
-	prompt_too_long: "That prompt is too long to send from here. Shorten it.",
-	human_required: "Sign in to the dashboard to do that. An API key can't.",
-	detail_full_needs_private_chat:
-		"Full detail isn't available for a group chat. Re-link the channel from a private chat first.",
-	invalid_provider: "That provider no longer exists.",
-	invalid_channel: "That channel can't be used for this session.",
-	session_missing: "That session no longer exists.",
-	launch_missing: "AgentPulse can't find how this session was launched.",
-	dispatch_failed: "Something went wrong sending it. Nothing was sent.",
 };
+
+/**
+ * Sentences a feature adds for its own refusals when its code loads, so the
+ * main bundle doesn't carry text only one screen can show.
+ */
+const registered: Record<string, string> = {};
+export function registerApiErrorMessages(messages: Record<string, string>): void {
+	Object.assign(registered, messages);
+}
 
 const RATE_LIMITED = "Too many requests. Wait a moment and try again.";
 const PASSWORD_REFUSED = "password_complexity_failed";
@@ -73,6 +60,7 @@ export function describeApiError(err: unknown, fallback: string): string {
 		if (typeof reason === "string" && reason) return reason;
 	}
 	if (err.code && Object.hasOwn(MESSAGES, err.code)) return MESSAGES[err.code];
+	if (err.code && Object.hasOwn(registered, err.code)) return registered[err.code];
 	if (err.status === 429) return RATE_LIMITED;
 	return fallback;
 }

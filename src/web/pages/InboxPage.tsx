@@ -1,3 +1,4 @@
+import "../lib/watcher-api-errors.js";
 import { useCallback, useEffect, useState } from "react";
 import { LabsBadge } from "../components/LabsBadge.js";
 import { SkeletonCardList } from "../components/SkeletonCard.js";

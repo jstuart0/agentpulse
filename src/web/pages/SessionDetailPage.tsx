@@ -5,7 +5,6 @@ import { AGENT_METADATA } from "../../shared/constants.js";
 import { type OperationalStatus, getOperationalStatus } from "../../shared/session-state.js";
 import type { AgentType, ControlAction, Session, SessionEvent } from "../../shared/types.js";
 import { ActivityTimeline } from "../components/session-detail/ActivityTimeline.js";
-import { AiPanel } from "../components/session-detail/AiPanel.js";
 import { ControlHistory } from "../components/session-detail/ControlHistory.js";
 import {
 	ClaudeMdPanel,
@@ -63,6 +62,11 @@ const SessionSummaryTab = lazy(() =>
 	import("../components/session-detail/SessionSummaryTab.js").then((m) => ({
 		default: m.SessionSummaryTab,
 	})),
+);
+
+// The AI tab (watcher modes, reports, approval cards) loads when the tab opens: most visits never use it.
+const AiPanel = lazy(() =>
+	import("../components/session-detail/AiPanel.js").then((m) => ({ default: m.AiPanel })),
 );
 
 /** Scrolls to an event's element and flashes it; false while it isn't in the DOM yet. */
@@ -801,7 +805,15 @@ export function SessionDetailPage() {
 				) : workspaceTab === "instructions" ? (
 					<ClaudeMdPanel session={session} readOnlyReason={notesReadOnlyReason} />
 				) : workspaceTab === "ai" ? (
-					<AiPanel sessionId={session.sessionId} />
+					<Suspense
+						fallback={
+							<div aria-busy="true" className="p-6 text-sm text-muted-foreground">
+								Loading…
+							</div>
+						}
+					>
+						<AiPanel sessionId={session.sessionId} />
+					</Suspense>
 				) : session.managedSession?.launchRequestId ? (
 					<EmbeddedLaunchPanel launchId={session.managedSession.launchRequestId} />
 				) : (

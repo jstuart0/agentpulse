@@ -1,3 +1,4 @@
+import "../../lib/watcher-api-errors.js";
 import { useState } from "react";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { plainErrorMessage } from "../../lib/api-errors.js";

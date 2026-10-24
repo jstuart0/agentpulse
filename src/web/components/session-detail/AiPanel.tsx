@@ -1,3 +1,4 @@
+import "../../lib/watcher-api-errors.js";
 import { useCallback, useEffect, useState } from "react";
 import { plainErrorMessage } from "../../lib/api-errors.js";
 import {

@@ -1,3 +1,4 @@
+import "../../lib/watcher-api-errors.js";
 import { useEffect, useState } from "react";
 import { apiErrorCode, plainErrorMessage } from "../../lib/api-errors.js";
 import { type AiProvider, type AiProviderKind, api } from "../../lib/api.js";
