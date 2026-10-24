@@ -20,9 +20,10 @@ import {
 	seedLocalUser,
 	setStoredMode,
 } from "../test-utils/team-fixtures.js";
+import { seedVerifiedChannel, tapUpdate } from "../test-utils/telegram-fixtures.js";
 
 const { initializeDatabase, getDb } = await import("../db/client.js");
-const { aiActionRequests, sessions } = await import("../db/schema/index.js");
+const { aiActionRequests, notificationChannels, sessions } = await import("../db/schema/index.js");
 const { app } = await import("../app.js");
 const { upsertSetting } = await import("../services/settings-service.js");
 const { createActionRequest, getActionRequest } = await import(
@@ -34,6 +35,10 @@ const { handleTelegramUpdate } = await import("./channels.js");
 const CHAT_REFUSAL =
 	"Approve this in the dashboard. Chat approvals can't act on a member's session in team mode.";
 
+/** The enrolled chat these taps come from; its channel is owned by a real (non-"local") user. */
+const CHAT_ID = 555;
+let chatChannelId = "";
+
 /** What the bot answered to the callback tap. The network call itself is replaced. */
 async function tapFromChat(requestId: string, action: "approve" | "decline"): Promise<string[]> {
 	const answers: string[] = [];
@@ -41,15 +46,7 @@ async function tapFromChat(requestId: string, action: "approve" | "decline"): Pr
 		answers.push(text ?? "");
 	});
 	try {
-		await handleTelegramUpdate({
-			update_id: 1,
-			callback_query: {
-				id: "cb-1",
-				from: { id: 555 },
-				data: `act:${action}:${requestId}`,
-				message: { chat: { id: 555 } },
-			},
-		} as never);
+		await handleTelegramUpdate(tapUpdate({ data: `act:${action}:${requestId}`, chatId: CHAT_ID }));
 	} finally {
 		spy.mockRestore();
 	}
@@ -63,11 +60,13 @@ async function reset() {
 	await resetIdentityState();
 	await clearInstanceSettings();
 	await getDb().delete(aiActionRequests);
+	await getDb().delete(notificationChannels);
 	await getDb().delete(sessions);
 }
 beforeEach(async () => {
 	await reset();
 	await upsertSetting("ai.enabled", true, { allowProtected: true });
+	chatChannelId = await seedVerifiedChannel({ chatId: String(CHAT_ID), userId: "chat-owner" });
 });
 afterEach(async () => {
 	await reset();
@@ -96,6 +95,7 @@ async function archiveRequest(sessionId: string) {
 		question: "Archive?",
 		payload: { sessionId, sessionDisplayName: sessionId },
 		origin: "web",
+		channelId: chatChannelId,
 	});
 }
 const decide = (id: string, headers: Headers, decision: "applied" | "declined" = "applied") =>

@@ -1,6 +1,13 @@
 import type { ChannelStats, NotificationChannelRecord } from "../../lib/api.js";
 import { formatTimeAgo } from "../../lib/utils.js";
 
+const RELINK_NOTICE = {
+	group_chat:
+		"Re-link from a private chat to approve or ask from Telegram. A group chat can't be tied to one person, so taps and messages from it are ignored.",
+	unowned_channel:
+		"This channel belongs to nobody in team mode, so Telegram approvals and action buttons are refused until an admin re-links it.",
+} as const;
+
 /**
  * List of enrolled Telegram channels with per-channel stats, test-send,
  * ask-toggle, and delete-with-usage-warning.
@@ -11,12 +18,14 @@ export function ChannelList({
 	onTest,
 	onDelete,
 	onAskToggle,
+	onRelink,
 }: {
 	channels: NotificationChannelRecord[];
 	stats: Record<string, ChannelStats>;
 	onTest: (id: string) => void;
 	onDelete: (id: string) => void;
 	onAskToggle: (id: string, askEnabled: boolean) => void;
+	onRelink: (id: string) => void;
 }) {
 	if (channels.length === 0) {
 		return (
@@ -59,6 +68,13 @@ export function ChannelList({
 								)}
 								<button
 									type="button"
+									onClick={() => onRelink(ch.id)}
+									className="text-[11px] px-2 py-1 rounded border border-border text-foreground hover:bg-muted"
+								>
+									{ch.verifiedAt ? "Re-link" : "New code"}
+								</button>
+								<button
+									type="button"
 									onClick={() => onDelete(ch.id)}
 									className="text-[11px] px-2 py-1 rounded border border-border text-red-300 hover:bg-red-500/10"
 								>
@@ -66,6 +82,11 @@ export function ChannelList({
 								</button>
 							</div>
 						</div>
+						{ch.needsRelink && (
+							<div className="rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-200">
+								{RELINK_NOTICE[ch.needsRelink]}
+							</div>
+						)}
 						{ch.verifiedAt && (
 							<label className="flex items-center gap-2 text-[11px] text-muted-foreground cursor-pointer">
 								<input

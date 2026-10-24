@@ -53,6 +53,8 @@ export function TelegramChannelPanel() {
 	const [pending, setPending] = useState<{
 		channelId: string;
 		enrollmentCode: string;
+		/** A re-linked channel keeps its id (watchers point at it), so cancelling must not delete it. */
+		relinked: boolean;
 	} | null>(null);
 
 	const publicUrl = typeof window !== "undefined" ? window.location.origin : "";
@@ -145,6 +147,7 @@ export function TelegramChannelPanel() {
 			setPending({
 				channelId: res.channel.id,
 				enrollmentCode: res.enrollmentCode,
+				relinked: false,
 			});
 			await load();
 		} catch (err) {
@@ -163,6 +166,25 @@ export function TelegramChannelPanel() {
 		try {
 			await api.deleteChannel(id);
 			showToast("ok", "Channel deleted.");
+			await load();
+		} catch (err) {
+			showToast("err", plainErrorMessage(err));
+		}
+	}
+
+	async function handleRelink(id: string) {
+		const channel = channels.find((c) => c.id === id);
+		const warning = channel?.verifiedAt
+			? "Re-link this channel? The chat linked now stops working until a new code is redeemed from a private chat."
+			: "Get a new enrollment code for this channel? The old code stops working.";
+		if (!confirm(warning)) return;
+		try {
+			const res = await api.relinkChannel(id);
+			setPending({
+				channelId: res.channel.id,
+				enrollmentCode: res.enrollmentCode,
+				relinked: true,
+			});
 			await load();
 		} catch (err) {
 			showToast("err", plainErrorMessage(err));
@@ -304,8 +326,9 @@ export function TelegramChannelPanel() {
 					code={pending.enrollmentCode}
 					onCopy={copy}
 					onCancel={async () => {
-						// Cancel = delete the pending channel so the code can't be reused.
-						await api.deleteChannel(pending.channelId).catch(() => {});
+						// Cancel = delete a brand-new pending channel so the code can't be reused.
+						// A re-linked channel stays (watchers point at it); its code expires on its own.
+						if (!pending.relinked) await api.deleteChannel(pending.channelId).catch(() => {});
 						setPending(null);
 						await load();
 					}}
@@ -336,6 +359,7 @@ export function TelegramChannelPanel() {
 				onTest={handleTest}
 				onDelete={handleDelete}
 				onAskToggle={handleAskToggle}
+				onRelink={handleRelink}
 			/>
 		</div>
 	);

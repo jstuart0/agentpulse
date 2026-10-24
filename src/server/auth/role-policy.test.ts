@@ -194,6 +194,20 @@ const EXPECTED_OWNER_CHECKED_ROUTES = new Set([
 	"POST /ai/proposals/:id/decision",
 	"POST /ai/inbox/hitl/:id/decide",
 	"POST /ai/inbox/batch-decline",
+	// Channels: judged on the channel's own user.
+	"GET /channels/:id",
+	"GET /channels/:id/stats",
+	"DELETE /channels/:id",
+	"PATCH /channels/:id/config",
+	"POST /channels/:id/test",
+	"POST /channels/:id/relink",
+]);
+
+// The channel routes that are admin-only in team mode AND owner-checked in the handler.
+const ALSO_TEAM_ADMIN = new Set([
+	"DELETE /channels/:id",
+	"PATCH /channels/:id/config",
+	"POST /channels/:id/test",
 ]);
 
 describe("routes judged inside the handler (owner-or-admin, through the authorization service)", () => {
@@ -208,7 +222,10 @@ describe("routes judged inside the handler (owner-or-admin, through the authoriz
 				registered: true,
 			});
 			expect(ALWAYS_ADMIN_ROUTES.has(entry)).toBe(false);
-			expect(TEAM_ADMIN_ROUTES.has(entry)).toBe(false);
+			expect({ entry, teamAdmin: TEAM_ADMIN_ROUTES.has(entry) }).toEqual({
+				entry,
+				teamAdmin: ALSO_TEAM_ADMIN.has(entry),
+			});
 		}
 		for (const named of [
 			"POST /sessions/:sessionId/acknowledge",

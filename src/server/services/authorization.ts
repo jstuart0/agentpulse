@@ -33,7 +33,7 @@ import { resolveSessionHost } from "./session-ownership.js";
 export const NOT_OWNER_MESSAGE = "Only the owner or an admin can do that.";
 
 export class NotOwnerError extends Error {
-	constructor(readonly resource: "session" | "key" | "host") {
+	constructor(readonly resource: "session" | "key" | "host" | "channel") {
 		super(`Only the ${resource}'s owner or an admin can do that.`);
 		this.name = "NotOwnerError";
 	}
@@ -148,6 +148,30 @@ async function assertKeyOwnerOrAdmin(actor: Actor, keyId: string): Promise<void>
 
 export const assertCanRevokeKey = assertKeyOwnerOrAdmin;
 export const assertCanViewKey = assertKeyOwnerOrAdmin;
+
+/**
+ * May this actor see, change or re-link this notification channel? Solo:
+ * everyone, as before. Team: an admin, or the user the channel belongs to. A
+ * channel whose user is "local" belongs to nobody in team mode, so only an
+ * admin may touch it (the one who re-links it claims it).
+ */
+export async function mayManageChannel(
+	actor: Actor,
+	channel: { userId: string },
+): Promise<boolean> {
+	if ((await modeOf(actor)) === "solo") return true;
+	if (actor.role === "none") return false;
+	if (actor.role === "admin") return true;
+	if (channel.userId === "local") return false;
+	return actor.userId !== null && actor.userId === channel.userId;
+}
+
+export async function assertCanManageChannel(
+	actor: Actor,
+	channel: { userId: string },
+): Promise<void> {
+	if (!(await mayManageChannel(actor, channel))) throw new NotOwnerError("channel");
+}
 
 /** Rotate or revoke a host: its owner or an admin. Never consulted for launching on it. */
 export async function assertCanManageHost(actor: Actor, supervisorId: string): Promise<void> {

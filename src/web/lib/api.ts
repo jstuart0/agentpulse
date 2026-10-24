@@ -799,6 +799,13 @@ export const api = {
 			instructions: string;
 		}>("/channels", { method: "POST", body: JSON.stringify(body) }),
 	getChannel: (id: string) => request<{ channel: NotificationChannelRecord }>(`/channels/${id}`),
+	/** Unlink a channel and get a fresh one-time enrollment code (shown once). */
+	relinkChannel: (id: string) =>
+		request<{
+			channel: NotificationChannelRecord;
+			enrollmentCode: string;
+			instructions: string;
+		}>(`/channels/${id}/relink`, { method: "POST", body: JSON.stringify({}) }),
 	deleteChannel: (id: string) => request<{ ok: true }>(`/channels/${id}`, { method: "DELETE" }),
 	setupTelegramWebhook: (publicUrl?: string) =>
 		request<{ ok: true; webhookUrl: string }>("/channels/telegram/setup-webhook", {
@@ -1232,6 +1239,11 @@ export interface ChannelStats {
 export interface NotificationChannelRecord {
 	id: string;
 	userId: string;
+	/**
+	 * Set when Telegram can't act through this channel until it is re-linked from a private chat:
+	 * `group_chat` (enrolled in a group) or `unowned_channel` (team mode, owned by nobody).
+	 */
+	needsRelink?: "group_chat" | "unowned_channel" | null;
 	kind: NotificationChannelKind;
 	label: string;
 	config: Record<string, unknown> | null;

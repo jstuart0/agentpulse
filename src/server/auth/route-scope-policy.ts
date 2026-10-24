@@ -262,6 +262,14 @@ export const OWNER_CHECKED_ROUTES: ReadonlySet<string> = new Set([
 	"POST /ai/proposals/:id/decision",
 	"POST /ai/inbox/hitl/:id/decide",
 	"POST /ai/inbox/batch-decline",
+	// Channels: judged on the channel's own user (404 for one the caller can't see).
+	// The mutating ones are also in TEAM_ADMIN_ROUTES, so in team mode they stay admin-only.
+	"GET /channels/:id",
+	"GET /channels/:id/stats",
+	"DELETE /channels/:id",
+	"PATCH /channels/:id/config",
+	"POST /channels/:id/test",
+	"POST /channels/:id/relink",
 ]);
 
 export async function resolveEffectiveRole(
