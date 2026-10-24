@@ -266,6 +266,21 @@ export function TelegramChannelPanel() {
 		}
 	}
 
+	async function handleDetailChange(id: string, detail: "minimal" | "full") {
+		try {
+			await api.updateChannelConfig(id, { detail });
+			showToast(
+				"ok",
+				detail === "full"
+					? "Full detail on — redacted session text will be sent to Telegram."
+					: "Minimal detail on — Telegram gets the verdict and a generic reason only.",
+			);
+			await load();
+		} catch (err) {
+			showToast("err", plainErrorMessage(err));
+		}
+	}
+
 	async function handleTest(id: string) {
 		try {
 			await api.testChannel(id);
@@ -359,6 +374,7 @@ export function TelegramChannelPanel() {
 				onTest={handleTest}
 				onDelete={handleDelete}
 				onAskToggle={handleAskToggle}
+				onDetailChange={handleDetailChange}
 				onRelink={handleRelink}
 			/>
 		</div>

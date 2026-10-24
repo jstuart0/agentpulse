@@ -41,6 +41,8 @@ const MESSAGES: Record<string, string> = {
 	empty_prompt: "There is no prompt to send.",
 	prompt_too_long: "That prompt is too long to send from here. Shorten it.",
 	human_required: "Sign in to the dashboard to do that. An API key can't.",
+	detail_full_needs_private_chat:
+		"Full detail isn't available for a group chat. Re-link the channel from a private chat first.",
 	invalid_provider: "That provider no longer exists.",
 	invalid_channel: "That channel can't be used for this session.",
 	session_missing: "That session no longer exists.",

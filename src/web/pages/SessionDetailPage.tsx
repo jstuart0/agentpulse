@@ -801,10 +801,7 @@ export function SessionDetailPage() {
 				) : workspaceTab === "instructions" ? (
 					<ClaudeMdPanel session={session} readOnlyReason={notesReadOnlyReason} />
 				) : workspaceTab === "ai" ? (
-					<AiPanel
-						sessionId={session.sessionId}
-						sessionIsManaged={Boolean(session.managedSession)}
-					/>
+					<AiPanel sessionId={session.sessionId} />
 				) : session.managedSession?.launchRequestId ? (
 					<EmbeddedLaunchPanel launchId={session.managedSession.launchRequestId} />
 				) : (

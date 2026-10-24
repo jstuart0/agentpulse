@@ -18,6 +18,7 @@ export function ChannelList({
 	onTest,
 	onDelete,
 	onAskToggle,
+	onDetailChange,
 	onRelink,
 }: {
 	channels: NotificationChannelRecord[];
@@ -25,6 +26,7 @@ export function ChannelList({
 	onTest: (id: string) => void;
 	onDelete: (id: string) => void;
 	onAskToggle: (id: string, askEnabled: boolean) => void;
+	onDetailChange: (id: string, detail: "minimal" | "full") => void;
 	onRelink: (id: string) => void;
 }) {
 	if (channels.length === 0) {
@@ -105,6 +107,9 @@ export function ChannelList({
 								</span>
 							</label>
 						)}
+						{ch.verifiedAt && (
+							<MessageDetail channel={ch} onChange={(detail) => onDetailChange(ch.id, detail)} />
+						)}
 						{s && (
 							<div className="flex flex-wrap gap-3 text-[10px] text-muted-foreground">
 								<span>
@@ -134,5 +139,49 @@ export function ChannelList({
 				);
 			})}
 		</ul>
+	);
+}
+
+function MessageDetail({
+	channel,
+	onChange,
+}: {
+	channel: NotificationChannelRecord;
+	onChange: (detail: "minimal" | "full") => void;
+}) {
+	const detail =
+		(channel.config as Record<string, unknown> | null)?.detail === "full" ? "full" : "minimal";
+	// A group can't be tied to one person, so it never gets session text.
+	const fullBlocked = channel.needsRelink === "group_chat";
+	return (
+		<fieldset className="space-y-1 text-[11px] text-muted-foreground">
+			<legend className="text-foreground">Message detail</legend>
+			<div className="flex flex-wrap gap-4">
+				{(["minimal", "full"] as const).map((value) => (
+					<label
+						key={value}
+						className={`flex min-h-[44px] items-center gap-1.5 md:min-h-0 ${
+							value === "full" && fullBlocked ? "opacity-50" : "cursor-pointer"
+						}`}
+					>
+						<input
+							type="radio"
+							name={`detail-${channel.id}`}
+							checked={detail === value}
+							disabled={value === "full" && fullBlocked}
+							onChange={() => onChange(value)}
+							className="h-3.5 w-3.5"
+						/>
+						<span>{value === "minimal" ? "Minimal" : "Full"}</span>
+					</label>
+				))}
+			</div>
+			<p>
+				Minimal sends the verdict and a generic reason. Full adds the note and, for approval
+				requests, the suggested prompt. Telegram is a third-party service; Full sends redacted
+				session text to it.
+				{fullBlocked && " Full isn't available for a group chat."}
+			</p>
+		</fieldset>
 	);
 }

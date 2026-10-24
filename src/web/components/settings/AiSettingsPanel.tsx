@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { plainErrorMessage } from "../../lib/api-errors.js";
+import { apiErrorCode, plainErrorMessage } from "../../lib/api-errors.js";
 import { type AiProvider, type AiProviderKind, api } from "../../lib/api.js";
 import { useAiStatusStore } from "../../stores/ai-status-store.js";
 import { VectorSearchSection } from "./VectorSearchSection.js";
@@ -79,6 +79,28 @@ export function AiSettingsPanel() {
 			await useAiStatusStore.getState().update({ autoEnableWatcherForAsk });
 		} catch (err) {
 			setBanner({ kind: "error", text: plainErrorMessage(err) });
+		}
+	}
+
+	async function setWatcherDefault(key: "notify" | "continue", value: boolean) {
+		const current = status?.watcherDefaults ?? { notify: true, continue: false };
+		try {
+			await useAiStatusStore.getState().update({ watcherDefaults: { ...current, [key]: value } });
+		} catch (err) {
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
+		}
+	}
+
+	async function setAutoSendPaused(paused: boolean) {
+		try {
+			await useAiStatusStore.getState().update({ watcherAutoSendPaused: paused });
+		} catch (err) {
+			// Turning it back on is allowed for anyone; turning it off needs a signed-in person.
+			const text =
+				apiErrorCode(err) === "human_required"
+					? "Sign in to the dashboard to turn this off."
+					: plainErrorMessage(err);
+			setBanner({ kind: "error", text });
 		}
 	}
 
@@ -199,6 +221,52 @@ export function AiSettingsPanel() {
 							className="w-4 h-4"
 						/>
 						<span className="text-xs">Enabled</span>
+					</label>
+				</div>
+				<fieldset className="border-t border-border pt-3">
+					<legend className="text-sm font-semibold">New watchers start with</legend>
+					<div className="text-xs text-muted-foreground mb-2">
+						Each session can change this in its AI tab. Notify reports to your inbox when a turn
+						ends. Continue suggests the next prompt; sending it needs your approval unless the
+						session is set to automatic.
+					</div>
+					<div className="flex flex-wrap gap-4">
+						<label className="inline-flex min-h-[44px] items-center gap-2 cursor-pointer md:min-h-0">
+							<input
+								type="checkbox"
+								checked={status.watcherDefaults?.notify ?? true}
+								onChange={(e) => setWatcherDefault("notify", e.target.checked)}
+								className="w-4 h-4"
+							/>
+							<span className="text-xs">Notify</span>
+						</label>
+						<label className="inline-flex min-h-[44px] items-center gap-2 cursor-pointer md:min-h-0">
+							<input
+								type="checkbox"
+								checked={status.watcherDefaults?.continue ?? false}
+								onChange={(e) => setWatcherDefault("continue", e.target.checked)}
+								className="w-4 h-4"
+							/>
+							<span className="text-xs">Continue</span>
+						</label>
+					</div>
+				</fieldset>
+				<div className="flex items-center justify-between border-t border-border pt-3">
+					<div>
+						<div className="text-sm font-semibold">Pause automatic prompt sending</div>
+						<div className="text-xs text-muted-foreground">
+							On by default. While on, a session set to automatic opens a request for you instead of
+							sending. Turning it off needs you signed in to the dashboard, not an API key.
+						</div>
+					</div>
+					<label className="inline-flex min-h-[44px] items-center gap-2 cursor-pointer md:min-h-0">
+						<input
+							type="checkbox"
+							checked={status.watcherAutoSendPaused !== false}
+							onChange={(e) => setAutoSendPaused(e.target.checked)}
+							className="w-4 h-4"
+						/>
+						<span className="text-xs">Paused</span>
 					</label>
 				</div>
 				<div className="border-t border-border pt-3 text-xs text-muted-foreground">
