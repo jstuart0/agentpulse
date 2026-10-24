@@ -38,12 +38,26 @@ interface OpenAICompatibleParams {
  *   - `reasoning_effort: "none"` is sent, when the caller asks for it
  *     (`disableReasoning`), to `openai_compatible` (the only flag Ollama's /v1
  *     honours) and `openrouter` (which ignores what an upstream model does not
- *     take; checked against one non-reasoning model). It is not sent to
- *     `openai`, because "none" is not valid for every OpenAI reasoning model
- *     and a non-reasoning model has no use for it, nor to `google`, where some
- *     models cannot turn thinking off. A reasoning model there that spends its
- *     budget thinking now ends in an `empty_output` error, not a bad answer.
+ *     take; checked against one non-reasoning model).
+ *   - `openai` gets `reasoning_effort` only for its reasoning model families,
+ *     with the lowest value each accepts (see `openAiLowestEffort`), and nothing
+ *     for other models, which have no use for it. `google` gets nothing: some
+ *     models there cannot turn thinking off. A reasoning model that spends its
+ *     budget thinking anyway now ends in an `empty_output` error, not a bad answer.
  */
+/**
+ * The lowest `reasoning_effort` an OpenAI model accepts, or null for a model
+ * that does not reason. From OpenAI's documentation, not verified against the
+ * API: gpt-5.1 and later accept "none"; gpt-5, gpt-5-mini and gpt-5-nano
+ * accept "minimal" but not "none"; the o-series accepts "low" as its lowest.
+ */
+export function openAiLowestEffort(model: string): "none" | "minimal" | "low" | null {
+	if (/^gpt-5\.\d/.test(model)) return "none";
+	if (/^gpt-5/.test(model)) return "minimal";
+	if (/^o\d/.test(model)) return "low";
+	return null;
+}
+
 const THINKING_FLAGS_KINDS: ReadonlySet<ProviderKind> = new Set(["openai_compatible"]);
 const REASONING_EFFORT_KINDS: ReadonlySet<ProviderKind> = new Set([
 	"openai_compatible",
@@ -67,8 +81,13 @@ function buildRequestBody(request: LlmRequest, kind: ProviderKind): Record<strin
 		body.think = false;
 		body.chat_template_kwargs = { enable_thinking: false };
 	}
-	if (request.disableReasoning && REASONING_EFFORT_KINDS.has(kind)) {
-		body.reasoning_effort = "none";
+	if (request.disableReasoning) {
+		if (REASONING_EFFORT_KINDS.has(kind)) {
+			body.reasoning_effort = "none";
+		} else if (kind === "openai") {
+			const effort = openAiLowestEffort(request.model);
+			if (effort) body.reasoning_effort = effort;
+		}
 	}
 	return body;
 }

@@ -349,7 +349,9 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 	const adjusted = scoredAll.flatMap((r) => {
 		if (!carriedSet.has(r.row.sessionId)) return [r];
 		if (r.score === 0 && strongNewMatch) return [];
-		return [{ ...r, score: r.score + CARRY_BOOST }];
+		// The previous answer's order breaks ties between carried sessions.
+		const rank = carriedIds.indexOf(r.row.sessionId);
+		return [{ ...r, score: r.score + CARRY_BOOST + (CARRIED_SESSIONS_MAX - rank) * 0.01 }];
 	});
 	const scored = adjusted
 		.filter((r) => (useFallback ? true : r.score > 0))

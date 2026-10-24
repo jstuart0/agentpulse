@@ -5,7 +5,7 @@
  * showed its truncated chain of thought as the reply.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { createOpenAICompatibleAdapter } from "./openai-compatible.js";
+import { createOpenAICompatibleAdapter, openAiLowestEffort } from "./openai-compatible.js";
 import { LlmError, type LlmRequest, type LlmStreamEvent, type ProviderKind } from "./types.js";
 
 const originalFetch = globalThis.fetch;
@@ -251,11 +251,27 @@ describe("request fields follow what each provider kind accepts (AGEN-79)", () =
 		}
 	});
 
-	test("reasoning_effort none goes to self-hosted servers and OpenRouter, not to OpenAI or Google", async () => {
+	test("reasoning_effort none goes to self-hosted servers and OpenRouter, not to Google", async () => {
 		expect((await bodyFor("openai_compatible", true)).reasoning_effort).toBe("none");
 		expect((await bodyFor("openrouter", true)).reasoning_effort).toBe("none");
-		expect("reasoning_effort" in (await bodyFor("openai", true))).toBe(false);
 		expect("reasoning_effort" in (await bodyFor("google", true))).toBe(false);
+	});
+
+	test("OpenAI gets reasoning_effort only for reasoning models, each at its lowest accepted value", async () => {
+		const forModel = async (model: string) => {
+			mockJson({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] });
+			bodies = [];
+			await adapter("openai").complete({ ...REQUEST, model, disableReasoning: true });
+			return bodies[0] ?? {};
+		};
+		expect((await forModel("gpt-4o-mini")).reasoning_effort).toBeUndefined();
+		expect("reasoning_effort" in (await forModel("gpt-4.1"))).toBe(false);
+		expect((await forModel("gpt-5-mini")).reasoning_effort).toBe("minimal");
+		expect((await forModel("gpt-5")).reasoning_effort).toBe("minimal");
+		expect((await forModel("gpt-5.1")).reasoning_effort).toBe("none");
+		expect((await forModel("o3-mini")).reasoning_effort).toBe("low");
+		expect(openAiLowestEffort("gpt-5-nano")).toBe("minimal");
+		expect(openAiLowestEffort("claude-x")).toBeNull();
 	});
 
 	test("without disableReasoning no kind gets reasoning_effort", async () => {
