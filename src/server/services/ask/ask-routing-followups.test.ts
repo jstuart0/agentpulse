@@ -3,7 +3,7 @@
  * Whole turns through the scripted LLM and the shared Ask fixture, so the
  * routing decision is asserted on what the user reads, not on a helper.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { describeSqliteOnly } from "../../test-utils/backend.js";
 import "../ai/__test_db.js";
 
@@ -20,6 +20,8 @@ const { inputFor, runSync } = await import("../../test-utils/ask-turn-cases.js")
 const { ASK_ACTOR } = await import("../../test-utils/ask-turn-fixture.js");
 const { runAskTurn } = await import("./ask-service.js");
 const { looksLikeFollowUp } = await import("./resolver.js");
+const { LlmError } = await import("../ai/llm/types.js");
+const { runStream } = await import("../../test-utils/ask-turn-cases.js");
 
 afterAll(() => {
 	mock.module(REGISTRY_PATH, () => realRegistry);
@@ -177,5 +179,85 @@ describe("looksLikeFollowUp", () => {
 		]) {
 			expect({ m, v: looksLikeFollowUp(m) }).toEqual({ m, v: false });
 		}
+	});
+});
+
+describeSqliteOnly("Ask failure copy and logs (AGEN-79)", () => {
+	beforeEach(async () => {
+		await resetAskWorld();
+	});
+
+	const ask = (message: string) =>
+		({ name: "failure", message, script: [] }) as Parameters<typeof inputFor>[0];
+
+	test("an empty answer reads as 'no answer', not as an unreachable provider (sync and streamed)", async () => {
+		llm.setAnswerError(new LlmError("empty_output", "openai_compatible returned no answer text"));
+		for (const run of [runSync, runStream]) {
+			const out = await run(inputFor(ask("hello there caching")));
+			expect(out.reply).toContain("The model returned no answer");
+			expect(out.reply).not.toMatch(/couldn't reach|didn't respond/);
+		}
+	});
+
+	test("positive control: a timeout still reads as a timeout, other errors as unreachable", async () => {
+		llm.setAnswerError(
+			new LlmError("transient_timeout", "request timed out", undefined, undefined, true),
+		);
+		expect((await runSync(inputFor(ask("hello there caching")))).reply).toContain(
+			"didn't respond in time",
+		);
+		llm.setAnswerError(new Error("connection refused"));
+		expect((await runSync(inputFor(ask("hello there caching")))).reply).toContain(
+			"couldn't reach the LLM provider",
+		);
+	});
+
+	test("a failed classifier logs its gate and sub-type, and nothing of the message or the error text", async () => {
+		llm.scriptClassifierError(
+			"add-project-intent classifier",
+			new LlmError("empty_output", "secret-provider-text"),
+		);
+		const lines: Array<Record<string, unknown>> = [];
+		const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+			if (typeof args[0] !== "string") return;
+			try {
+				lines.push(JSON.parse(args[0]));
+			} catch {
+				// not structured
+			}
+		});
+		try {
+			await runSync(inputFor(ask("add project gizmo please")));
+		} finally {
+			spy.mockRestore();
+		}
+		const entry = lines.find((l) => l.kind === "ask_gate_classifier_failed");
+		expect(entry).toMatchObject({ gate: "project-creation", subType: "empty_output" });
+		const raw = JSON.stringify(lines);
+		expect(raw).not.toContain("secret-provider-text");
+		expect(raw).not.toContain("add project gizmo please");
+	});
+
+	test("a silent gate's failure is logged too", async () => {
+		llm.scriptClassifierError("session-Q&A classifier", new LlmError("transient_timeout", "x"));
+		const lines: Array<Record<string, unknown>> = [];
+		const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+			if (typeof args[0] === "string") {
+				try {
+					lines.push(JSON.parse(args[0]));
+				} catch {
+					// not structured
+				}
+			}
+		});
+		try {
+			await runSync(inputFor(ask("summarize session alpha")));
+		} finally {
+			spy.mockRestore();
+		}
+		expect(lines.find((l) => l.kind === "ask_gate_classifier_failed")).toMatchObject({
+			gate: "silent",
+			subType: "transient_timeout",
+		});
 	});
 });
