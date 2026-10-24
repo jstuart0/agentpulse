@@ -78,8 +78,18 @@ async function assertLaunchOwnedBySessionOwner(
 	}
 }
 
-async function expireStaleControlLock(sessionId: string) {
-	const [managed] = await getDb()
+/**
+ * Fails a managed session's active control action once its lock has expired,
+ * and clears the lock. Takes the handle to write through: a request passes
+ * `getDb()`, a dispatch transaction passes its own `tx` (every statement of a
+ * locked body must go through it).
+ */
+export async function expireStaleControlLock(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	sessionId: string,
+) {
+	const [managed] = await db
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
@@ -88,7 +98,7 @@ async function expireStaleControlLock(sessionId: string) {
 	if (new Date(managed.controlLockExpiresAt).getTime() > Date.now()) return;
 
 	const timestamp = nowIso();
-	await getDb()
+	await db
 		.update(controlActions)
 		.set({
 			status: "failed",
@@ -98,7 +108,7 @@ async function expireStaleControlLock(sessionId: string) {
 		})
 		.where(eq(controlActions.id, managed.activeControlActionId));
 
-	await getDb()
+	await db
 		.update(managedSessions)
 		.set({
 			activeControlActionId: null,
@@ -124,7 +134,7 @@ async function expireStaleControlLocksForSupervisor(supervisorId: string) {
 		);
 
 	for (const row of stale) {
-		await expireStaleControlLock(row.sessionId);
+		await expireStaleControlLock(getDb(), row.sessionId);
 	}
 }
 
@@ -157,7 +167,7 @@ export async function listControlActionsForSession(sessionId: string) {
 }
 
 export async function queueStopAction(sessionId: string, actor: Actor) {
-	await expireStaleControlLock(sessionId);
+	await expireStaleControlLock(getDb(), sessionId);
 	const [managed] = await getDb()
 		.select()
 		.from(managedSessions)
@@ -204,7 +214,7 @@ export async function queueStopAction(sessionId: string, actor: Actor) {
 export async function queuePromptAction(sessionId: string, prompt: string, actor: Actor) {
 	const cleanPrompt = prompt.trim();
 	if (!cleanPrompt) throw new Error("Prompt is required.");
-	await expireStaleControlLock(sessionId);
+	await expireStaleControlLock(getDb(), sessionId);
 
 	const [managed] = await getDb()
 		.select()

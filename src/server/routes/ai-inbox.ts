@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { ActionRequestDecision, HitlReplyKind } from "../../shared/types.js";
-import { getRequestActor } from "../auth/route-scope-policy.js";
+import { getRequestActor, refuseBadOrigin } from "../auth/route-scope-policy.js";
 import {
 	getActionRequest,
 	listOpenActionRequests,
@@ -13,7 +13,11 @@ import {
 	invalidateDigestCache,
 } from "../services/ai/digest-service.js";
 import { isAiBuildEnabled } from "../services/ai/feature.js";
-import { resolveHitlRequest, supersedeOpenHitl } from "../services/ai/hitl-service.js";
+import {
+	getHitlRequest,
+	resolveHitlRequest,
+	supersedeOpenHitl,
+} from "../services/ai/hitl-service.js";
 import { type InboxWorkItem, buildInbox } from "../services/ai/inbox-service.js";
 import {
 	type InboxKind,
@@ -22,7 +26,11 @@ import {
 	unsnooze,
 	unsnoozeTarget,
 } from "../services/ai/inbox-snooze-service.js";
-import { NOT_OWNER_MESSAGE } from "../services/authorization.js";
+import {
+	NOT_OWNER_MESSAGE,
+	NotOwnerError,
+	assertCanDecideProposal,
+} from "../services/authorization.js";
 import { requireAiActive, requireAiBuild } from "./ai-gates.js";
 
 const aiInboxRouter = new Hono();
@@ -56,11 +64,22 @@ aiInboxRouter.get("/ai/inbox", async (c) => {
 aiInboxRouter.post("/ai/inbox/hitl/:id/decide", async (c) => {
 	const gate = await requireAiActive(c);
 	if (gate) return gate;
+	const badOrigin = refuseBadOrigin(c);
+	if (badOrigin) return badOrigin;
 	const id = c.req.param("id") ?? "";
 	const body = await c.req.json<{
 		action: HitlReplyKind;
 		customPrompt?: string;
 	}>();
+	// Authorize on the HITL's own session, never on anything the body names.
+	const existing = await getHitlRequest(id);
+	if (!existing) return c.json({ error: "hitl not found" }, 404);
+	try {
+		await assertCanDecideProposal(await getRequestActor(c), existing.sessionId);
+	} catch (err) {
+		if (err instanceof NotOwnerError) return c.json({ error: "not_owner" }, 403);
+		throw err;
+	}
 	const resolved = await resolveHitlRequest({
 		id,
 		status: body.action === "decline" ? "declined" : "applied",
@@ -137,6 +156,21 @@ aiInboxRouter.post("/ai/inbox/batch-decline", async (c) => {
 	const gate = await requireAiActive(c);
 	if (gate) return gate;
 	const body = await c.req.json<{ hitlIds?: string[]; sessionIds?: string[] }>();
+
+	// Authorize every session the batch touches before closing anything.
+	const touched = new Set(body.sessionIds ?? []);
+	for (const hid of body.hitlIds ?? []) {
+		const hitl = await getHitlRequest(hid);
+		if (hitl) touched.add(hitl.sessionId);
+	}
+	const actor = await getRequestActor(c);
+	try {
+		for (const sessionId of touched) await assertCanDecideProposal(actor, sessionId);
+	} catch (err) {
+		if (err instanceof NotOwnerError) return c.json({ error: "not_owner" }, 403);
+		throw err;
+	}
+
 	let closed = 0;
 	for (const hid of body.hitlIds ?? []) {
 		const r = await resolveHitlRequest({

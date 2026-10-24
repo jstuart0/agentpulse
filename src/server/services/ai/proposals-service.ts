@@ -26,6 +26,11 @@ export interface ProposalRecord {
 	state: ProposalState;
 	decision: WatcherDecision["decision"] | null;
 	nextPrompt: string | null;
+	/** The watcher's suggestion, whether or not it can be sent from here. Written once. */
+	suggestedPrompt: string | null;
+	continueKind: string | null;
+	/** The turn this proposal is about (one proposal per session turn). */
+	turnKey: string | null;
 	reportSummary: string | null;
 	rawResponse: Record<string, unknown> | null;
 	triggerEventId: string | null;
@@ -47,6 +52,9 @@ function toRecordBase(row: typeof watcherProposals.$inferSelect): ProposalRecord
 		state: row.state as ProposalState,
 		decision: (row.decision as ProposalRecord["decision"]) ?? null,
 		nextPrompt: row.nextPrompt,
+		suggestedPrompt: row.suggestedPrompt,
+		continueKind: row.continueKind,
+		turnKey: row.turnKey,
 		reportSummary: row.reportSummary,
 		rawResponse: row.rawResponse ?? null,
 		triggerEventId: row.triggerEventId,

@@ -256,6 +256,12 @@ export const OWNER_CHECKED_ROUTES: ReadonlySet<string> = new Set([
 	"POST /admin/supervisors/:id/rotate",
 	"POST /admin/supervisors/:id/revoke",
 	"POST /ai/action-requests/:id/decide",
+	// Watcher: a member may configure or decide only on sessions they own.
+	"PUT /ai/sessions/:sessionId/watcher",
+	"DELETE /ai/sessions/:sessionId/watcher",
+	"POST /ai/proposals/:id/decision",
+	"POST /ai/inbox/hitl/:id/decide",
+	"POST /ai/inbox/batch-decline",
 ]);
 
 export async function resolveEffectiveRole(
@@ -281,6 +287,19 @@ export async function resolveEffectiveRole(
 export function isHumanAdmin(authUser: AuthUser): boolean {
 	if (config.disableAuth) return true;
 	return authUser.source !== "api_key" && authUser.userId !== null && authUser.role === "admin";
+}
+
+/**
+ * A human at the dashboard: the DISABLE_AUTH operator, or a cookie or SSO
+ * caller with a user id. Never an API key, whoever owns it. Unlike
+ * isHumanAdmin it does not need the admin role: it gates the things a person
+ * must do themselves (confirming `auto`, un-pausing, re-linking) on their own
+ * sessions. Under DISABLE_AUTH every caller is "human", so these gates are
+ * inert there, which is that flag's existing posture.
+ */
+export function isHumanCaller(authUser: AuthUser): boolean {
+	if (config.disableAuth) return true;
+	return authUser.source !== "api_key" && authUser.userId !== null;
 }
 
 const MODE_KEY = "instanceModePromise";

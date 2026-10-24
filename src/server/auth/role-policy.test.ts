@@ -171,10 +171,35 @@ describe("the route sets match the real app", () => {
 	});
 });
 
+const EXPECTED_OWNER_CHECKED_ROUTES = new Set([
+	"POST /sessions/:sessionId/acknowledge",
+	"DELETE /sessions/:sessionId/acknowledge",
+	"PUT /sessions/:sessionId/archive",
+	"PUT /sessions/:sessionId/rename",
+	"PUT /sessions/:sessionId/pin",
+	"PUT /sessions/:sessionId/notes",
+	"PUT /sessions/:sessionId/claude-md",
+	"DELETE /sessions/:sessionId",
+	"PUT /sessions/:sessionId/native-name",
+	"GET /api-keys/:id",
+	"DELETE /api-keys/:id",
+	"POST /api-keys",
+	"PUT /settings",
+	"POST /admin/supervisors/:id/rotate",
+	"POST /admin/supervisors/:id/revoke",
+	"POST /ai/action-requests/:id/decide",
+	// Watcher modes: configuring or deciding on a session needs its owner or an admin.
+	"PUT /ai/sessions/:sessionId/watcher",
+	"DELETE /ai/sessions/:sessionId/watcher",
+	"POST /ai/proposals/:id/decision",
+	"POST /ai/inbox/hitl/:id/decide",
+	"POST /ai/inbox/batch-decline",
+]);
+
 describe("routes judged inside the handler (owner-or-admin, through the authorization service)", () => {
 	test("are listed, pinned in size, registered on the real app, and in neither policy set", async () => {
 		const { app } = await import("../app.js");
-		expect(OWNER_CHECKED_ROUTES.size).toBe(16);
+		expect(new Set(OWNER_CHECKED_ROUTES)).toEqual(EXPECTED_OWNER_CHECKED_ROUTES);
 		const registered = new Set(app.routes.map((route) => `${route.method} ${route.path}`));
 		for (const entry of OWNER_CHECKED_ROUTES) {
 			const [method, template] = entry.split(" ");

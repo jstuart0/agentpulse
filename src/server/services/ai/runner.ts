@@ -1,12 +1,11 @@
 import { eq } from "drizzle-orm";
-import type { ManagedState, Session, SessionEvent } from "../../../shared/types.js";
+import type { Session, SessionEvent } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { managedSessions, sessions } from "../../db/schema/index.js";
+import { sessions } from "../../db/schema/index.js";
 import { SESSION_COLUMNS_SANS_OWNERSHIP } from "../../db/session-columns.js";
 import { dispatchHitlToChannel } from "../channels/dispatch.js";
 import { stampUserPrompt, stampWatcherState } from "../managed-session-state.js";
 import { sessionBus } from "../notifier.js";
-import { getSessionOwnerConnections } from "../session-ownership.js";
 import { emitAiEvent } from "./ai-events.js";
 import {
 	evaluateFreeformRules,
@@ -25,6 +24,7 @@ import { getAdapter } from "./llm/registry.js";
 import { LlmError } from "./llm/types.js";
 import { emitAiMetric } from "./metrics.js";
 import { parseDecision } from "./parser.js";
+import { loadManagedContext } from "./prompt-deliverability.js";
 import {
 	cancelOpenHitl,
 	completeProposal,
@@ -758,25 +758,6 @@ function triggerEventFromRun(
 ): SessionEvent | undefined {
 	if (!run.triggerEventId) return undefined;
 	return recent.find((e) => e.id === run.triggerEventId);
-}
-
-async function loadManagedContext(sessionId: string): Promise<{
-	managedSession: { managedState: ManagedState };
-	supervisorConnected: boolean;
-} | null> {
-	const [managedRow] = await getDb()
-		.select()
-		.from(managedSessions)
-		.where(eq(managedSessions.sessionId, sessionId))
-		.limit(1);
-	if (!managedRow) return null;
-	const connected = (await getSessionOwnerConnections([sessionId])).get(sessionId) ?? false;
-	return {
-		// Drizzle column is `text`, but every producer only writes
-		// ManagedState members — narrow at the boundary.
-		managedSession: { managedState: managedRow.managedState as ManagedState },
-		supervisorConnected: connected,
-	};
 }
 
 // Single instance used by server bootstrap.

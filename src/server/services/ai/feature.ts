@@ -19,6 +19,20 @@ export const AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY = "ai.autoEnableWatcherForAsk";
 // Optional provider id for the small, latency-sensitive calls (see
 // fast-provider.ts). Unset or empty means the default provider.
 export const AI_FAST_PROVIDER_ID_KEY = "ai.fastProviderId";
+// What a newly created watcher config starts with when the creator names no
+// modes: {notify: boolean, continue: boolean}. Existing configs are untouched.
+export const AI_WATCHER_DEFAULTS_KEY = "ai.watcherDefaults";
+// While true (and while unset), the `auto` policy never sends: it opens a
+// HITL instead. Human approvals are unaffected.
+export const AI_WATCHER_AUTO_SEND_PAUSED_KEY = "ai.watcherAutoSendPaused";
+
+export interface WatcherDefaults {
+	notify: boolean;
+	continue: boolean;
+}
+
+/** What a new watcher starts with when nothing is stored: report to me, don't type for me. */
+export const SHIPPED_WATCHER_DEFAULTS: WatcherDefaults = { notify: true, continue: false };
 
 // All AI feature-flag reads share one cache. Keying by settings-row key keeps
 // the helper generic and lets `invalidateAiFlagsCache(key)` target a single
@@ -72,10 +86,83 @@ export async function isAiRuntimeEnabled(): Promise<boolean> {
 	return (await getCachedFlag(AI_RUNTIME_ENABLED_KEY)) === true;
 }
 
+/**
+ * The kill switch from a stored value, failing closed: an absent row is "not
+ * killed" (today's default), but a value that is neither true nor false (a
+ * corrupted write) counts as killed rather than as "not killed".
+ */
+export function interpretKillSwitch(value: unknown): boolean {
+	if (value === undefined || value === false) return false;
+	return true;
+}
+
+/** Auto-send pause from a stored value: only an explicit `false` un-pauses it. */
+export function interpretAutoSendPaused(value: unknown): boolean {
+	return value !== false;
+}
+
+/** A settings read through some handle: the value (undefined for no row), or unreadable. */
+export type AiFlagRead = { ok: true; value: unknown } | { ok: false };
+
+/**
+ * Reads one flag straight from the settings table through `db` (a transaction
+ * handle inside a dispatch), bypassing the cache so a kill can't be delayed by
+ * its TTL or by the invalidate-during-load race. An unreadable value is
+ * reported as such so the caller can fail closed.
+ */
+export async function readAiFlagUncached(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	key: string,
+): Promise<AiFlagRead> {
+	try {
+		const [row] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
+		return { ok: true, value: row?.value };
+	} catch {
+		return { ok: false };
+	}
+}
+
+async function readCachedFlagOrUnreadable(key: string): Promise<AiFlagRead> {
+	try {
+		return { ok: true, value: await getCachedFlag(key) };
+	} catch {
+		return { ok: false };
+	}
+}
+
 /** Is the global kill switch active? When true, AI behavior is paused. */
 export async function isKillSwitchActive(): Promise<boolean> {
 	if (!isAiBuildEnabled()) return false;
-	return (await getCachedFlag(AI_KILL_SWITCH_KEY)) === true;
+	const read = await readCachedFlagOrUnreadable(AI_KILL_SWITCH_KEY);
+	return read.ok ? interpretKillSwitch(read.value) : true;
+}
+
+/** Is automatic prompt sending paused? Unset, non-boolean and unreadable all read as paused. */
+export async function isWatcherAutoSendPaused(): Promise<boolean> {
+	const read = await readCachedFlagOrUnreadable(AI_WATCHER_AUTO_SEND_PAUSED_KEY);
+	return read.ok ? interpretAutoSendPaused(read.value) : true;
+}
+
+/** The stored watcher defaults, or the shipped ones when the value is absent or malformed. */
+export function interpretWatcherDefaults(value: unknown): WatcherDefaults {
+	if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+		const candidate = value as Record<string, unknown>;
+		const keys = Object.keys(candidate);
+		if (
+			keys.length === 2 &&
+			typeof candidate.notify === "boolean" &&
+			typeof candidate.continue === "boolean"
+		) {
+			return { notify: candidate.notify, continue: candidate.continue };
+		}
+	}
+	return { ...SHIPPED_WATCHER_DEFAULTS };
+}
+
+export async function getWatcherDefaults(): Promise<WatcherDefaults> {
+	const read = await readCachedFlagOrUnreadable(AI_WATCHER_DEFAULTS_KEY);
+	return read.ok ? interpretWatcherDefaults(read.value) : { ...SHIPPED_WATCHER_DEFAULTS };
 }
 
 /** Is the AI feature both built-in AND runtime-enabled AND not paused? */

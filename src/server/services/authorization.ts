@@ -130,6 +130,10 @@ export const assertCanRenameSession = assertSessionOwnerOrAdmin;
 export const assertCanPinSession = assertSessionOwnerOrAdmin;
 /** Notes and the stored CLAUDE.md (which feeds the owner's AI watcher context). */
 export const assertCanEditSessionNotes = assertSessionOwnerOrAdmin;
+/** Configure or remove a session's watcher. Solo: everyone. Team: the session's owner or an admin. */
+export const assertCanConfigureWatcher = assertSessionOwnerOrAdmin;
+/** Approve, decline or edit a watcher proposal on a session. Same rule as configuring it. */
+export const assertCanDecideProposal = assertSessionOwnerOrAdmin;
 
 async function assertKeyOwnerOrAdmin(actor: Actor, keyId: string): Promise<void> {
 	if ((await modeOf(actor)) === "solo") return;

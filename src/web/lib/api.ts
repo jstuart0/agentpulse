@@ -893,6 +893,8 @@ export const api = {
 		classifierEnabled?: boolean;
 		classifierAffectsRunner?: boolean;
 		autoEnableWatcherForAsk?: boolean;
+		watcherDefaults?: { notify: boolean; continue: boolean };
+		watcherAutoSendPaused?: boolean;
 	}) =>
 		request<AiStatusResponse>("/ai/status", {
 			method: "PUT",
@@ -1007,9 +1009,12 @@ export const api = {
 		}),
 
 	getAiWatcher: (sessionId: string) =>
-		request<{ config: AiWatcherConfig | null; proposals: AiProposal[] }>(
-			`/ai/sessions/${sessionId}/watcher`,
-		),
+		request<{
+			config: AiWatcherConfig | null;
+			proposals: AiProposal[];
+			promptDelivery: PromptDelivery;
+			reports: AiWatcherReport[];
+		}>(`/ai/sessions/${sessionId}/watcher`),
 	updateAiWatcher: (sessionId: string, body: AiWatcherConfigUpdate) =>
 		request<{ config: AiWatcherConfig }>(`/ai/sessions/${sessionId}/watcher`, {
 			method: "PUT",
@@ -1383,6 +1388,10 @@ export interface AiProviderUpdate {
 export interface AiWatcherConfig {
 	sessionId: string;
 	enabled: boolean;
+	/** Report to the inbox and Telegram when a turn ends. */
+	notifyEnabled: boolean;
+	/** Suggest the next prompt; sends on approval for sessions AgentPulse launched. */
+	continueEnabled: boolean;
 	providerId: string;
 	policy: AiWatcherPolicy;
 	channelId: string | null;
@@ -1390,8 +1399,35 @@ export interface AiWatcherConfig {
 	continuationsUsed: number;
 	maxDailyCents: number | null;
 	systemPrompt: string | null;
+	/** Set when a person confirmed the `auto` policy; auto is honoured only while this is set. */
+	autoConfirmedAt: string | null;
 	createdAt: string;
 	updatedAt: string;
+}
+
+/** Why AgentPulse can't type a prompt into a session right now. */
+export type PromptNotDeliverableReason =
+	| "observed"
+	| "supervisor_offline"
+	| "managed_state"
+	| "control_busy";
+
+export type PromptDelivery =
+	| { deliverable: true }
+	| { deliverable: false; reason: PromptNotDeliverableReason };
+
+export type AiReportVerdict = "finished" | "stuck" | "needs_you";
+
+/** One Notify report for a turn. */
+export interface AiWatcherReport {
+	id: string;
+	turnKey: string;
+	verdict: AiReportVerdict | null;
+	why: string | null;
+	status: "claimed" | "delivered" | "failed" | "suppressed";
+	failureCode: string | null;
+	telegramStatus: "sent" | "skipped_rate_limit" | "skipped_no_channel" | "failed" | null;
+	createdAt: string;
 }
 
 /** A refused `POST /ai/sessions/:id/summary` as the web sees it (AGEN-69). `code` is null for a body the contract doesn't list. */
@@ -1434,6 +1470,10 @@ export interface AiStatusResponse {
 	classifierEnabled?: boolean;
 	classifierAffectsRunner?: boolean;
 	autoEnableWatcherForAsk?: boolean;
+	/** What a newly created watcher starts with. */
+	watcherDefaults?: { notify: boolean; continue: boolean };
+	/** While true, the `auto` policy opens a request instead of sending. */
+	watcherAutoSendPaused?: boolean;
 }
 
 export type SessionHealthState = "healthy" | "blocked" | "stuck" | "risky" | "complete_candidate";
@@ -1449,6 +1489,10 @@ export interface SessionIntelligence {
 
 export interface AiWatcherConfigUpdate {
 	enabled?: boolean;
+	notifyEnabled?: boolean;
+	continueEnabled?: boolean;
+	/** Zero the automatic-send counter. Needs a signed-in person, never an API key. */
+	resetContinuations?: boolean;
 	providerId?: string;
 	policy?: AiWatcherPolicy;
 	channelId?: string | null;
@@ -1456,6 +1500,8 @@ export interface AiWatcherConfigUpdate {
 	maxDailyCents?: number | null;
 	systemPrompt?: string | null;
 }
+
+export type AiContinueKind = "proceed" | "retry_failed_step" | "run_tests" | "summarize_status";
 
 export interface AiProposal {
 	id: string;
@@ -1471,6 +1517,10 @@ export interface AiProposal {
 		| "failed";
 	decision: DecisionKind | null;
 	nextPrompt: string | null;
+	/** The watcher's suggested text, kept even when it can't be sent from here. */
+	suggestedPrompt: string | null;
+	/** The kind of nudge the watcher chose, when it chose one. */
+	continueKind: AiContinueKind | null;
 	reportSummary: string | null;
 	rawResponse: Record<string, unknown> | null;
 	triggerEventId: string | null;

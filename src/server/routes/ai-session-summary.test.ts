@@ -1271,7 +1271,7 @@ describe("both mounts", () => {
 // ── TC-6.8: classification ───────────────────────────────────────────────────
 
 describe("classification", () => {
-	test("TC-6.8 the GET is in INTENTIONALLY_MANAGE_ONLY once and in no other set; the POST is in none; both are registered on both mounts; OWNER_CHECKED_ROUTES stays 16", () => {
+	test("TC-6.8 the GET is in INTENTIONALLY_MANAGE_ONLY once and in no other set; the POST is in none; both are registered on both mounts; neither summary route is owner-checked", () => {
 		expect(INTENTIONALLY_MANAGE_ONLY.has(GET_ROUTE)).toBe(true);
 		expect(OBSERVE_READ_PATHS.has(GET_ROUTE)).toBe(false);
 		for (const set of [TEAM_ADMIN_ROUTES, OWNER_CHECKED_ROUTES, INGEST_WRITABLE_ROUTES]) {
@@ -1280,7 +1280,6 @@ describe("classification", () => {
 		}
 		expect(ALWAYS_ADMIN_ROUTES.has(POST_ROUTE)).toBe(false);
 		expect(ALWAYS_ADMIN_ROUTES.has(`GET ${GET_ROUTE}`)).toBe(false);
-		expect(OWNER_CHECKED_ROUTES.size).toBe(16);
 
 		const registered = new Set(app.routes.map((r) => `${r.method} ${r.path}`));
 		for (const mount of MOUNTS) {
