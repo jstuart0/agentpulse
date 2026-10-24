@@ -223,6 +223,7 @@ export interface WatcherSweepResult {
 	abandonedReports: number;
 	timedOutHitl: number;
 	reconciledAudit: number;
+	abandonedRuns: number;
 }
 
 /**
@@ -235,7 +236,32 @@ export async function sweepWatcherOnStart(): Promise<WatcherSweepResult> {
 	const abandonedReports = await abandonClaimedReports();
 	const timedOutHitl = await expireOverdueHitl();
 	const reconciledAudit = await reconcilePendingDispatchAudit();
-	return { abandonedProposals, abandonedReports, timedOutHitl, reconciledAudit };
+	const abandonedRuns = await abandonClaimedRuns();
+	return { abandonedProposals, abandonedReports, timedOutHitl, reconciledAudit, abandonedRuns };
+}
+
+/**
+ * Single replica: a run still `claimed` or `running` when the runner starts
+ * belonged to the process that died, however fresh its lease. Left open it
+ * would hold the one-open-run slot (and every later wake would be absorbed by
+ * it) until the lease expired. It is cancelled, not requeued: re-running it
+ * could repeat a paid model call, and the next boundary wakes the session anyway.
+ */
+export async function abandonClaimedRuns(): Promise<number> {
+	const now = new Date().toISOString();
+	const rows = await getDb()
+		.update(aiWatcherRuns)
+		.set({
+			status: "cancelled",
+			lastErrorSubType: "abandoned_on_restart",
+			completedAt: now,
+			leaseOwner: null,
+			leaseExpiresAt: null,
+			updatedAt: now,
+		})
+		.where(inArray(aiWatcherRuns.status, ["claimed", "running"]))
+		.returning({ id: aiWatcherRuns.id });
+	return rows.length;
 }
 
 async function abandonClaimedReports(): Promise<number> {

@@ -307,6 +307,12 @@ async function openRequest(
 	const askWhy = escalation?.why || undefined;
 	const hasSuggestion = decision.decision === "continue" && stored !== null;
 
+	const shown = nextPrompt ?? (hasSuggestion ? stored : askProposal) ?? "";
+	// Every request from this release carries a hash of the text it shows, even one that
+	// can't be approved (a question, a too-long suggestion): a null hash is how a request
+	// from before the release is told apart, and it refuses Custom as well as Approve.
+	const shownSha256 = sha256(hasSuggestion ? stored : shown);
+
 	// Any prior open HITL is superseded when a newer one opens.
 	await cancelOpenHitl(sessionId, "superseded");
 
@@ -321,13 +327,11 @@ async function openRequest(
 		expiresAt: new Date(Date.now() + HITL_TTL_MS).toISOString(),
 		turnKey: input.turnKey,
 		triggerEventId: input.trigger.id,
-		promptSha256: hasSuggestion ? sha256(stored) : null,
+		promptSha256: shownSha256,
 		approvable: hasSuggestion ? plan.approvable : false,
 		suggestedPrompt: hasSuggestion ? stored : null,
 		continueKind: decision.decision === "continue" ? decision.continueKind : null,
 	});
-
-	const shown = nextPrompt ?? (hasSuggestion ? stored : askProposal) ?? "";
 
 	if (watchConfig.channelId) {
 		const delivery = await dispatchHitlToChannel({
@@ -342,7 +346,7 @@ async function openRequest(
 				why: askWhy ?? null,
 				deliverable: (await promptDeliverability(sessionId)).deliverable,
 				approvable: hasSuggestion ? plan.approvable : false,
-				promptSha256: hasSuggestion ? sha256(stored) : null,
+				promptSha256: shownSha256,
 				sessionCwd: input.session.cwd,
 			},
 		});

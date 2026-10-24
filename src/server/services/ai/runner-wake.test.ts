@@ -342,4 +342,48 @@ describe("a wake while a run is queued or running", () => {
 		await until(async () => (await runsOf(sessionId)).length === 2);
 		expect(await getOpenRunForSession(sessionId)).toMatchObject({ triggerEventId: stop.id });
 	});
+
+	test("C2: a run that finishes between the wake's read and its note is still followed by a run", async () => {
+		const sessionId = await watched();
+		const filler = await newEvent(sessionId, "AssistantMessage", "assistant_message");
+		await enqueueRun({ sessionId, triggerEventId: filler.id, triggerKind: "idle" });
+		// The wake reads the queued run; before it can move the trigger, the run is claimed
+		// and runs to the end, including its `finally`. The wake then finds nobody to collect it.
+		_setBeforeTriggerMoveHookForTest(async () => {
+			_setBeforeTriggerMoveHookForTest(null);
+			const claimed = await claimNextRun({ leaseOwner: "test", leaseDurationMs: 60_000 });
+			// biome-ignore lint/complexity/useLiteralKeys: the run is finished directly
+			await runner["processRun"](claimed as never);
+		});
+		const stop = await newEvent(sessionId, "Stop");
+		hookWake(sessionId, stop);
+		await flush();
+		clock.advance(BOUNDARY_DEBOUNCE_MS);
+		// The wake collects its own rewake: a timer for the follow-up run appears.
+		await until(async () => clock.pendingTimers() === 1);
+		clock.advance(BOUNDARY_DEBOUNCE_MS);
+		await until(async () => (await getOpenRunForSession(sessionId))?.triggerEventId === stop.id);
+		expect(await runsOf(sessionId)).toHaveLength(2);
+	});
+
+	test("C1: a run left claimed by a dead process does not absorb the next wake after a restart", async () => {
+		const sessionId = await watched();
+		const filler = await newEvent(sessionId, "AssistantMessage", "assistant_message");
+		await enqueueRun({ sessionId, triggerEventId: filler.id, triggerKind: "idle" });
+		// Claimed a moment ago: the lease is fresh, so lease expiry would not reclaim it for a minute.
+		await claimNextRun({ leaseOwner: "dead-process", leaseDurationMs: 60_000 });
+		const { sweepWatcherOnStart } = await import("./watcher-maintenance.js");
+		const swept = await sweepWatcherOnStart();
+		expect(swept.abandonedRuns).toBe(1);
+		expect((await runsOf(sessionId))[0]).toMatchObject({
+			status: "cancelled",
+			lastErrorSubType: "abandoned_on_restart",
+		});
+
+		const stop = await newEvent(sessionId, "Stop");
+		hookWake(sessionId, stop);
+		await flush();
+		clock.advance(BOUNDARY_DEBOUNCE_MS);
+		await until(async () => (await getOpenRunForSession(sessionId))?.triggerEventId === stop.id);
+	});
 });

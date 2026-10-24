@@ -174,3 +174,34 @@ describe("the hook path wakes the watcher only for watched sessions", () => {
 		expect(await runsOf(sessionId)).toHaveLength(1);
 	});
 });
+
+describe("C4: an oversize Codex delivery keeps its turn id", () => {
+	test("the stub stores turn_id, so it keys to the same turn as the small hooks around it", async () => {
+		const sessionId = "iw-oversize";
+		await post({
+			session_id: sessionId,
+			hook_event_name: "UserPromptSubmit",
+			prompt: "go",
+			turn_id: "T9",
+		});
+		const res = await hooksApp.request("/api/v1/hooks", {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-agent-type": "codex_cli" },
+			body: JSON.stringify({
+				session_id: sessionId,
+				hook_event_name: "Stop",
+				turn_id: "T9",
+				cwd: "x".repeat(17 * 1024 * 1024),
+			}),
+		});
+		expect(res.status).toBe(200);
+		await settled();
+		const rows = await getDb().select().from(events).where(eq(events.sessionId, sessionId));
+		const stub = rows.find((r) => r.eventType === "Stop");
+		expect((stub?.rawPayload as { turn_id?: string } | undefined)?.turn_id).toBe("T9");
+		const { computeTurnKey } = await import("../services/ai/turn-identity.js");
+		expect(
+			await computeTurnKey(getDb(), { sessionId, agentType: "codex_cli" }, { id: stub?.id ?? 0 }),
+		).toBe("t:T9");
+	});
+});

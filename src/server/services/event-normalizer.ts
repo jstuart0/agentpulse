@@ -345,6 +345,8 @@ export function normalizeHookEvent(
 				[OVERSIZE_STUB_MARKER]: true,
 				hook_event_name: eventType,
 				tool_use_id: payload.tool_use_id,
+				// A Codex turn is keyed by this: without it the stub and its neighbours get different turn keys.
+				turn_id: payload.turn_id,
 				cwd: payload.cwd,
 				transcript_path: payload.transcript_path,
 			},

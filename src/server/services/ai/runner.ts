@@ -185,8 +185,9 @@ export class WatcherRunner {
 
 		this.attachListeners();
 
-		// A previous process may have died mid-run: fail what it left claimed,
-		// expire overdue HITLs and reconcile half-written audit rows first.
+		// A previous process may have died mid-run (single replica: anything still
+		// claimed or running is dead, however fresh its lease): cancel those runs,
+		// fail claimed reports, expire overdue HITLs and reconcile half-written audit rows.
 		try {
 			const swept = await sweepWatcherOnStart();
 			console.log(JSON.stringify({ kind: "watcher_sweep", ...swept }));
@@ -296,6 +297,10 @@ export class WatcherRunner {
 			// The open run was claimed (or is running): it won't see this boundary, so wake once it is done.
 			const pending = this.rewake.get(sessionId);
 			if (!pending || event.id > pending.id) this.rewake.set(sessionId, event);
+			// The run may have finished between enqueueRun's read and now, after its
+			// `finally` already looked: nobody would collect this. `inFlight` is cleared in
+			// the same synchronous block that reads `rewake`, so one of the two sees it.
+			if (!this.inFlight.has(sessionId)) this.collectRewake(sessionId);
 			return;
 		}
 		emitAiMetric({
@@ -304,6 +309,15 @@ export class WatcherRunner {
 			runId: run.id,
 			attempt: run.attemptCount,
 		});
+	}
+
+	/** Wake for the boundary held while a run was open, if there is one. Synchronous, so it can't interleave. */
+	private collectRewake(sessionId: string): boolean {
+		const again = this.rewake.get(sessionId);
+		if (!again) return false;
+		this.rewake.delete(sessionId);
+		this.scheduleWake(sessionId, again, BOUNDARY_DEBOUNCE_MS);
+		return true;
 	}
 
 	/** Process a single claimed run. */
@@ -361,10 +375,9 @@ export class WatcherRunner {
 		} finally {
 			this.inFlight.delete(sessionId);
 			// A boundary that arrived during the run is woken for now; otherwise a retry asked for by the run.
-			const again = this.rewake.get(sessionId);
-			this.rewake.delete(sessionId);
-			if (again) this.scheduleWake(sessionId, again, BOUNDARY_DEBOUNCE_MS);
-			else if (retry) this.scheduleWake(sessionId, retry.event, retry.afterMs);
+			if (!this.collectRewake(sessionId) && retry) {
+				this.scheduleWake(sessionId, retry.event, retry.afterMs);
+			}
 		}
 	}
 

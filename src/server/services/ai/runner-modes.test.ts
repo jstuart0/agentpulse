@@ -348,7 +348,10 @@ describe("what a suggestion is stored as", () => {
 		const [proposal] = await proposalsOf(sessionId);
 		expect(proposal?.suggestedPrompt).toBeNull();
 		expect(await hitlWhy(sessionId)).toBe("Suggested prompt too long to review.");
-		expect((await hitlsOf(sessionId))[0]).toMatchObject({ approvable: false, promptSha256: null });
+		const [hitl] = await hitlsOf(sessionId);
+		expect(hitl).toMatchObject({ approvable: false });
+		// A request from this release always carries a hash; only a legacy one has none.
+		expect(hitl?.promptSha256).toMatch(/^[0-9a-f]{64}$/);
 	});
 
 	test("M4: a trailing right-to-left override is stripped, hashed as stored, and not approvable", async () => {
@@ -428,6 +431,67 @@ describe("what a suggestion is stored as", () => {
 		expect((await hitlWhy(sessionId)) ?? "").toContain("Blocked by the safety filter");
 		expect((await hitlWhy(sessionId)) ?? "").toContain("edit it to send");
 		expect((await proposalsOf(sessionId))[0]?.suggestedPrompt).toContain("rm -rf");
+	});
+});
+
+describe("C3: a question can be answered with a custom prompt", () => {
+	const approveOrCustom = async (hitlId: string, action: "approve" | "custom", text?: string) => {
+		const { resolveProposal } = await import("./proposal-resolution.js");
+		return resolveProposal({
+			hitlId,
+			action,
+			customPrompt: text,
+			actor: { userId: null, label: "user" },
+			actorKind: "user",
+		});
+	};
+
+	test("an ask decision: Custom sends the person's text, Approve stays refused", async () => {
+		const sessionId = newId();
+		await seedWatchedSession({ sessionId, providerId, managed: true, continue: true });
+		const turn = await seedTurn(sessionId);
+		stub.script("openai", askAnswer());
+		await runOnce(runner, sessionId, turn.stopId);
+		const [hitl] = await hitlsOf(sessionId);
+		expect(hitl?.promptSha256).not.toBeNull();
+		expect(await approveOrCustom(hitl?.id ?? "", "approve")).toMatchObject({
+			ok: false,
+			code: "not_approvable",
+		});
+		const sent = await approveOrCustom(hitl?.id ?? "", "custom", "Yes, run the migration");
+		expect(sent).toMatchObject({ ok: true });
+		expect(await actionsOf(sessionId)).toHaveLength(1);
+	});
+
+	test("a too-long suggestion: Custom works", async () => {
+		const sessionId = newId();
+		await seedWatchedSession({ sessionId, providerId, managed: true, continue: true });
+		const turn = await seedTurn(sessionId);
+		stub.script("openai", continueAnswer(`Run ${"x".repeat(1_497)}`, "run_tests"));
+		await runOnce(runner, sessionId, turn.stopId);
+		const [hitl] = await hitlsOf(sessionId);
+		expect(
+			await approveOrCustom(hitl?.id ?? "", "custom", "Run the tests in src/foo"),
+		).toMatchObject({
+			ok: true,
+		});
+	});
+
+	test("a request from before the release (no hash) still refuses Custom", async () => {
+		const sessionId = newId();
+		await seedWatchedSession({ sessionId, providerId, managed: true, continue: true });
+		const turn = await seedTurn(sessionId);
+		stub.script("openai", askAnswer());
+		await runOnce(runner, sessionId, turn.stopId);
+		const [hitl] = await hitlsOf(sessionId);
+		await getDb()
+			.update(aiHitlRequests)
+			.set({ promptSha256: null })
+			.where(eq(aiHitlRequests.id, hitl?.id ?? ""));
+		expect(await approveOrCustom(hitl?.id ?? "", "custom", "Yes")).toMatchObject({
+			ok: false,
+			code: "stale_proposal",
+		});
 	});
 });
 

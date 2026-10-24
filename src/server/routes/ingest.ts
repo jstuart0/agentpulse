@@ -654,6 +654,7 @@ function handleOversizeHookDelivery(c: Context, prefix: string): Response {
 		hook_event_name: identity.hookEventName,
 		tool_name: identity.toolName,
 		tool_use_id: identity.toolUseId,
+		turn_id: identity.turnId,
 		cwd: identity.cwd,
 		transcript_path: identity.transcriptPath,
 	};
