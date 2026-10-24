@@ -38,7 +38,7 @@ import { getAdminServiceKeyIds } from "../services/service-keys.js";
 import { type Actor, type EffectiveRole, actorFromAuthUser } from "./actor.js";
 import { SCOPE_ALL, SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE } from "./api-key.js";
 import { type AuthUser, authenticate } from "./middleware.js";
-import { isAcceptedOrigin } from "./request-origin.js";
+import { isAcceptedRequestOrigin } from "./request-origin.js";
 
 const READ_METHODS = new Set(["GET", "HEAD"]);
 
@@ -376,13 +376,15 @@ function findPolicyEntry(entries: PolicyEntry[], method: string, path: string): 
 }
 
 /**
- * Refuses a mutating request whose Origin is neither configured (the list the
- * WebSocket upgrade uses) nor the request's own. No Origin header at all
+ * Refuses a mutating request whose Origin is neither configured nor the
+ * request's own, by the same rule as the WebSocket upgrade: with authentication
+ * off, "the request's own" holds only for a loopback or allowlisted Host, so a
+ * page on a name that resolves to this machine (DNS rebinding) is refused. No Origin header at all
  * (curl, scripts, MCP) passes: those are judged by authentication alone.
  */
 export function refuseBadOrigin(c: Context): Response | null {
 	const origin = c.req.header("Origin");
-	if (origin === undefined || isAcceptedOrigin(origin, c.req.header("Host"))) return null;
+	if (origin === undefined || isAcceptedRequestOrigin(origin, c.req.header("Host"))) return null;
 	return c.json({ error: "bad_origin" }, 403);
 }
 

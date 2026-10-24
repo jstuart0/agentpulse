@@ -1455,9 +1455,17 @@ describe("origin, audit, shutdown", () => {
 		expect(await H.readSummaryRow(SID)).toBeUndefined();
 		expect((await get(SID, foreign)).status).toBe(200);
 
+		// With authentication off, "same Origin as the Host" holds only for a loopback or
+		// allowlisted Host (otherwise a page on a rebound name would pass).
+		const rebound = new Headers(base);
+		rebound.set("Host", "summary.example.test");
+		rebound.set("Origin", "http://summary.example.test");
+		const reboundPost = await post(SID, rebound);
+		expect([reboundPost.status, reboundPost.json?.error]).toEqual([403, "bad_origin"]);
+
 		const same = new Headers(base);
-		same.set("Host", "summary.example.test");
-		same.set("Origin", "http://summary.example.test");
+		same.set("Host", "localhost:3000");
+		same.set("Origin", "http://localhost:3000");
 		scriptOk([editId]);
 		expect((await post(SID, same)).status).toBe(202);
 		await waitForGenerations();

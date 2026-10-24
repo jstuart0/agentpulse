@@ -357,11 +357,15 @@ describe("origin", () => {
 		expect(ok.status).toBe(200);
 	});
 
-	test("the decision and inbox decision routes check Origin too", async () => {
+	test("the decision, inbox decision and action-request decision routes check Origin too", async () => {
 		const t = await team();
 		const evil = new Headers(t.aliceCookie);
 		evil.set("Origin", "https://evil.example");
-		for (const url of ["/api/v1/ai/proposals/any/decision", "/api/v1/ai/inbox/hitl/any/decide"]) {
+		for (const url of [
+			"/api/v1/ai/proposals/any/decision",
+			"/api/v1/ai/inbox/hitl/any/decide",
+			"/api/v1/ai/action-requests/any/decide",
+		]) {
 			const res = await app.request(url, jsonRequest("POST", { action: "decline" }, evil));
 			expect({ url, status: res.status, error: await errorOf(res) }).toEqual({
 				url,

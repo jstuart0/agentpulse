@@ -231,6 +231,8 @@ aiInboxRouter.get("/ai/action-requests", async (c) => {
 aiInboxRouter.post("/ai/action-requests/:id/decide", async (c: Context) => {
 	const gate = await requireAiActive(c);
 	if (gate) return gate;
+	const badOrigin = refuseBadOrigin(c);
+	if (badOrigin) return badOrigin;
 	const id = c.req.param("id") ?? "";
 	const body = await c.req.json<{ decision: ActionRequestDecision }>();
 	if (body.decision !== "applied" && body.decision !== "declined") {
