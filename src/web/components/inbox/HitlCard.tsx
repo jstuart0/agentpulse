@@ -13,7 +13,11 @@ export function HitlCard({
 	onDecide,
 }: {
 	item: HitlItem;
-	onDecide: (id: string, action: "approve" | "decline") => Promise<void>;
+	onDecide: (
+		id: string,
+		action: "approve" | "decline",
+		promptSha256: string | null,
+	) => Promise<void>;
 }) {
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
@@ -22,7 +26,7 @@ export function HitlCard({
 		setBusy(true);
 		setErr(null);
 		try {
-			await onDecide(item.id, action);
+			await onDecide(item.id, action, item.promptSha256);
 		} catch (e) {
 			setErr(plainErrorMessage(e));
 		} finally {
@@ -61,7 +65,7 @@ export function HitlCard({
 			<div className="flex items-center gap-2 mt-3">
 				<button
 					type="button"
-					disabled={busy}
+					disabled={busy || item.approvable === false}
 					onClick={() => handleDecide("approve")}
 					className="text-xs px-3 py-1 rounded bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 disabled:opacity-50"
 				>

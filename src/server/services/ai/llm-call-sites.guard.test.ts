@@ -22,11 +22,8 @@ const REQUEST_BUILT_ELSEWHERE: Record<string, string> = {
 		"the request spreads SUMMARY_CALL_OPTIONS (ai/session-summary/prompt-limits.ts), asserted below",
 };
 
-/** Sites that keep the adapter's 60 s default, with why. */
-const TIMEOUT_FROM_ADAPTER_DEFAULT: Record<string, string> = {
-	"src/server/services/ai/runner.ts":
-		"the watcher is dormant for hook-observed sessions (finding 5a); its limits wait for that product decision",
-};
+/** Sites that keep the adapter's 60 s default, with why. None: every call names its own limit. */
+const TIMEOUT_FROM_ADAPTER_DEFAULT: Record<string, string> = {};
 
 /** The calls this guard must find, so an emptied search cannot pass. */
 const EXPECTED_SITES = [
@@ -126,6 +123,17 @@ describe("model call sites", () => {
 			"src/server/services/ai/semantic-enricher.ts",
 			"src/server/services/ask/launch-intent-detector.ts",
 		]);
+	});
+
+	test("the watcher's runner and its send path never touch the fast provider", async () => {
+		for (const rel of [
+			"src/server/services/ai/runner.ts",
+			"src/server/services/ai/proposal-resolution.ts",
+		]) {
+			const source = await readFile(join(ROOT, rel), "utf8");
+			expect(source, rel).not.toMatch(/fast-provider\.js/);
+			expect(source, rel).not.toMatch(/getFastProviderId/);
+		}
 	});
 
 	test("planted negative: a call without the flag is reported", () => {

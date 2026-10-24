@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -11,10 +12,12 @@ import {
 	requireOperatorScope,
 } from "../auth/route-scope-policy.js";
 import { config } from "../config.js";
+import { getDb } from "../db/client.js";
+import { users } from "../db/schema/index.js";
 import { getActionRequest, resolveActionRequest } from "../services/ai/action-requests-service.js";
-import { emitAiEvent } from "../services/ai/ai-events.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
-import { getHitlRequest, resolveHitlRequest } from "../services/ai/hitl-service.js";
+import { getHitlRequest } from "../services/ai/hitl-service.js";
+import { resolveProposal } from "../services/ai/proposal-resolution.js";
 import {
 	ASK_MESSAGE_MAX_CHARS,
 	findOrCreateTelegramThread,
@@ -22,20 +25,28 @@ import {
 } from "../services/ask/ask-service.js";
 import { AskBusyError, acquireAskTurn } from "../services/ask/ask-turn-limiter.js";
 import { logAdminAction } from "../services/audit-log.js";
-import { NotOwnerError, assertCanManageChannel } from "../services/authorization.js";
+import {
+	NotOwnerError,
+	assertCanDecideProposal,
+	assertCanManageChannel,
+} from "../services/authorization.js";
 import {
 	completeEnrollment,
 	createPendingChannel,
 	deleteChannel,
 	findPendingByEnrollmentCode,
 	getChannel,
+	getChannelCredential,
 	getChannelStats,
 	listChannels,
 	relinkChannel,
 	relinkReason,
 	updateChannelConfig,
 } from "../services/channels/channels-service.js";
-import { authorizeTelegramCaller } from "../services/channels/telegram-caller.js";
+import {
+	type TelegramCallerResult,
+	authorizeTelegramCaller,
+} from "../services/channels/telegram-caller.js";
 import {
 	type TelegramDeliveryMode,
 	clearTelegramCredentials,
@@ -160,7 +171,7 @@ async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
 		if (data.startsWith("act:")) {
 			await handleActionCallback(update.callback_query, caller.channel);
 		} else {
-			await handleHitlCallback(update.callback_query, caller.channel);
+			await handleHitlCallback(update.callback_query, caller);
 		}
 		return;
 	}
@@ -357,10 +368,74 @@ async function approvalsRefusedFor(channel: NotificationChannelRecord): Promise<
 	return channel.userId === "local" && (await getMode()) === "team";
 }
 
+/** What the person who tapped is told, per outcome of the decision. */
+function hitlOutcomeReply(
+	action: "approve" | "decline",
+	result: Awaited<ReturnType<typeof resolveProposal>>,
+): string {
+	if (result.ok) return action === "approve" ? "Sent to the session." : "Declined ✗";
+	switch (result.code) {
+		case "prompt_not_deliverable":
+			return "This session can't receive prompts; copy it from the dashboard.";
+		case "dispatch_blocked":
+		case "prompt_unsafe":
+			return "Blocked by the safety filter.";
+		case "stale_proposal":
+		case "prompt_changed":
+			return "This suggestion is out of date.";
+		case "not_approvable":
+			return "Open the dashboard to review this one.";
+		case "expired":
+			return "This request expired.";
+		case "already_resolved":
+			return "Already resolved.";
+		case "ai_paused":
+			return "AI is paused.";
+		default:
+			return "Could not send it.";
+	}
+}
+
+/**
+ * May the person behind this channel decide on this session? The channel's
+ * owner must be allowed to act on it as an owner or an admin would. Solo mode
+ * has no ownership to enforce. Declining sends nothing and is never refused.
+ */
+async function channelOwnerMayApprove(
+	channel: NotificationChannelRecord,
+	sessionId: string,
+): Promise<boolean> {
+	const mode = await getMode();
+	if (mode === "solo") return true;
+	if (channel.userId === "local") return false;
+	const [owner] = await getDb()
+		.select({ role: users.role, disabledAt: users.disabledAt })
+		.from(users)
+		.where(eq(users.id, channel.userId))
+		.limit(1);
+	if (!owner || owner.disabledAt !== null) return false;
+	try {
+		await assertCanDecideProposal(
+			{
+				userId: channel.userId,
+				label: "telegram",
+				role: owner.role === "admin" ? "admin" : "member",
+				mode,
+			},
+			sessionId,
+		);
+		return true;
+	} catch (err) {
+		if (err instanceof NotOwnerError) return false;
+		throw err;
+	}
+}
+
 async function handleHitlCallback(
 	cb: TelegramCallbackQuery,
-	channel: NotificationChannelRecord,
+	caller: Extract<TelegramCallerResult, { ok: true }>,
 ): Promise<void> {
+	const { channel } = caller;
 	const data = parseHitlCallbackData(cb.data ?? "");
 	if (!data) {
 		await answerCallbackQuery(cb.id, "Unknown action.");
@@ -381,43 +456,29 @@ async function handleHitlCallback(
 		await answerCallbackQuery(cb.id, RELINK_TO_APPROVE_REPLY);
 		return;
 	}
-	if (hitl.status !== "awaiting_reply") {
-		await answerCallbackQuery(cb.id, "Already resolved.");
+	if (data.action === "approve" && !(await channelOwnerMayApprove(channel, hitl.sessionId))) {
+		await answerCallbackQuery(cb.id, "Approve this in the dashboard.");
 		return;
 	}
-	const resolved = await resolveHitlRequest({
-		id: hitl.id,
-		status: data.action === "decline" ? "declined" : "applied",
-		replyKind: data.action,
+
+	// The callback names a HITL and an action, nothing else. The prompt, its
+	// hash and the TTL always come from the server's own rows (that is why the
+	// callback needs no signature): nothing from `cb` is passed on below.
+	const result = await resolveProposal({
+		hitlId: hitl.id,
+		action: data.action,
+		promptSha256: hitl.promptSha256 ?? undefined,
+		actor: TELEGRAM_ACTOR,
+		actorKind: "telegram",
+		telegram: { fromId: caller.fromId, chatId: caller.chatId },
 	});
-	if (!resolved) {
-		await answerCallbackQuery(cb.id, "Could not resolve.");
-		return;
+	await answerCallbackQuery(cb.id, hitlOutcomeReply(data.action, result));
+	if (result.ok) {
+		await sendTelegramPlain(
+			hitl.channelId,
+			data.action === "approve" ? "✅ Sent to the session." : "❌ Declined.",
+		);
 	}
-	await answerCallbackQuery(cb.id, data.action === "approve" ? "Approved ✓" : "Declined ✗");
-	// Emit audit events mirroring the in-app approve/decline flow.
-	await emitAiEvent({
-		sessionId: hitl.sessionId,
-		source: "observed_hook",
-		category: "ai_hitl_response",
-		eventType: "AiHitlResponse",
-		content: data.action === "approve" ? "Approved via Telegram." : "Declined via Telegram.",
-		rawPayload: { proposal_id: hitl.proposalId, action: data.action, channel: "telegram" },
-	});
-	if (data.action === "approve") {
-		await emitAiEvent({
-			sessionId: hitl.sessionId,
-			source: "observed_hook",
-			category: "ai_continue_sent",
-			eventType: "AiContinueSent",
-			content: "Approved via Telegram.",
-			rawPayload: { proposal_id: hitl.proposalId, action: "approve", channel: "telegram" },
-		});
-	}
-	await sendTelegramPlain(
-		hitl.channelId,
-		data.action === "approve" ? "✅ Approved. Prompt forwarded." : "❌ Declined.",
-	);
 }
 
 /**
@@ -569,19 +630,36 @@ channelsRouter.delete("/channels/:id", async (c) => {
 });
 
 /**
- * Patch per-channel config flags (currently: askEnabled). Rejects any
+ * Patch per-channel config flags (currently: askEnabled, detail). Rejects any
  * key not on the allow-list so callers can't poke at enrollment codes
  * or status strings through this endpoint.
+ *
+ * `detail` is how much of a watcher's output a message may carry: `minimal`
+ * (the default) holds no prompt text and no Approve button, `full` holds the
+ * redacted text. A channel enrolled in a group (negative chat id) can never be
+ * set to `full`: anyone in the group would read it.
  */
 channelsRouter.patch("/channels/:id/config", async (c) => {
 	const id = c.req.param("id") ?? "";
-	const body = await c.req.json<{ askEnabled?: boolean }>();
+	const body = await c.req.json<{ askEnabled?: boolean; detail?: unknown }>();
 	const patch: Record<string, unknown> = {};
 	if (typeof body.askEnabled === "boolean") patch.askEnabled = body.askEnabled;
+	if (body.detail !== undefined) {
+		if (body.detail !== "minimal" && body.detail !== "full") {
+			return c.json({ error: "detail must be 'minimal' or 'full'" }, 400);
+		}
+		patch.detail = body.detail;
+	}
 	if (Object.keys(patch).length === 0) {
 		return c.json({ error: "No supported fields in body" }, 400);
 	}
 	if (!(await manageableChannel(c, id))) return c.json({ error: "Channel not found" }, 404);
+	if (patch.detail === "full") {
+		const credential = await getChannelCredential(id);
+		if (credential?.chatId.startsWith("-")) {
+			return c.json({ error: "detail_full_needs_private_chat" }, 400);
+		}
+	}
 	const updated = await updateChannelConfig(id, patch);
 	if (!updated) return c.json({ error: "Channel not found" }, 404);
 	return c.json({ channel: updated });

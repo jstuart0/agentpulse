@@ -291,11 +291,31 @@ function normalizeSystemEvent(payload: HookEventPayload, agentType: AgentType): 
  * previous version branched on `payload.agentpulse_oversize`, which came
  * straight from client JSON).
  */
+/** Event names that start with "ai" are the watcher's own (AiContinueSent, AiReport, ...). */
+const RESERVED_EVENT_NAME_RE = /^ai/i;
+
 export function normalizeHookEvent(
 	payload: HookEventPayload,
 	agentType: AgentType,
 	isOversizeStub = false,
 ): NormalizedEvent[] {
+	// First of all, before the oversize stub below: a hook may not be named like one
+	// of the watcher's events. Those rows are written only by the watcher itself, and a
+	// forged AiContinueSent would read as proof that a prompt was sent.
+	for (const claimed of [payload.hook_event_name, payload.provider_event_name]) {
+		const name = typeof claimed === "string" ? claimed.trim() : "";
+		if (RESERVED_EVENT_NAME_RE.test(name)) {
+			console.warn(
+				JSON.stringify({
+					kind: "ingest_reserved_event_type",
+					level: "warn",
+					nameLength: name.length,
+					namePrefix: name.slice(0, 32),
+				}),
+			);
+			return [];
+		}
+	}
 	const eventType = payload.hook_event_name;
 	const toolResponse = stringifyToolResponse(payload.tool_response);
 	const normalized: NormalizedEvent[] = [];

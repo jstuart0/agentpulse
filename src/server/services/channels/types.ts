@@ -35,6 +35,16 @@ export interface SendChannelMessageInput {
 	decision: Extract<DecisionKind, "continue" | "ask">;
 	prompt: string;
 	why: string | null;
+	/** True only when AgentPulse can type a prompt into this session (it launched it, the host is connected). */
+	deliverable: boolean;
+	/** True only when the stored suggestion is exactly what would be sent (the sanitiser changed nothing in it). */
+	approvable: boolean;
+	/** Hash of the prompt a person approves; the button exists only while the text shown still has this hash. */
+	promptSha256: string | null;
+	/** `minimal` carries no prompt text and no Approve button; `full` carries the redacted text. */
+	detail: "minimal" | "full";
+	/** The session's working directory, shown as `<repo>` in the message. */
+	sessionCwd?: string | null;
 }
 
 export interface ChannelDeliveryResult {

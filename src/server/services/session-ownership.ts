@@ -42,8 +42,10 @@ export class SessionOwnershipError extends Error {
  */
 export async function findLaunchRowByCorrelationId(
 	sessionId: string,
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any = getDb(),
 ): Promise<typeof launchRequests.$inferSelect | null> {
-	const [row] = await getDb()
+	const [row] = await db
 		.select()
 		.from(launchRequests)
 		.where(eq(launchRequests.launchCorrelationId, sessionId))
@@ -97,10 +99,12 @@ const ownerSupervisorJoin = eq(supervisors.id, sessionOwnerSql);
 export async function getSessionOwnerConnections(
 	sessionIds: readonly string[],
 	nowMs: number = Date.now(),
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any = getDb(),
 ): Promise<Map<string, boolean>> {
 	if (sessionIds.length === 0) return new Map();
 
-	const rows = await getDb()
+	const rows = await db
 		.select({
 			sessionId: managedSessions.sessionId,
 			lease: supervisors.heartbeatLeaseExpiresAt,
@@ -112,7 +116,11 @@ export async function getSessionOwnerConnections(
 		.where(inArray(managedSessions.sessionId, [...sessionIds]));
 
 	const result = new Map<string, boolean>();
-	for (const row of rows) {
+	for (const row of rows as Array<{
+		sessionId: string;
+		lease: string | null;
+		enrollmentState: string | null;
+	}>) {
 		result.set(row.sessionId, isSupervisorLive(row.lease, row.enrollmentState, nowMs));
 	}
 	return result;
@@ -183,8 +191,12 @@ export async function resolveSessionHost(
  * Resolve the owner of record for a session (D5). Returns null when nobody
  * owns it (no managed row and no claimed launch).
  */
-export async function resolveSessionOwner(sessionId: string): Promise<string | null> {
-	const [managedOwnerRow] = await getDb()
+export async function resolveSessionOwner(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	sessionId: string,
+): Promise<string | null> {
+	const [managedOwnerRow] = await db
 		.select({ owner: sessionOwnerSql })
 		.from(managedSessions)
 		.leftJoin(launchRequests, ownerLaunchJoin)
@@ -194,7 +206,7 @@ export async function resolveSessionOwner(sessionId: string): Promise<string | n
 		return managedOwnerRow.owner ?? null;
 	}
 
-	const launch = await findLaunchRowByCorrelationId(sessionId);
+	const launch = await findLaunchRowByCorrelationId(sessionId, db);
 	return launch?.claimedBySupervisorId ?? null;
 }
 
@@ -210,7 +222,7 @@ export async function assertSupervisorCanWriteSession(
 	sessionId: string,
 	opts?: { launchRequestId?: string | null },
 ): Promise<void> {
-	const owner = await resolveSessionOwner(sessionId);
+	const owner = await resolveSessionOwner(getDb(), sessionId);
 	if (owner === null) {
 		throw new SessionOwnershipError("no_owner", `No owner of record for session ${sessionId}`);
 	}

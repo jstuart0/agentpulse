@@ -19,11 +19,18 @@ export const DEFAULT_RULES: DispatchRule[] = [
 	{ name: "rm_rf_root", pattern: /\brm\s+-[a-z]*r[a-z]*f?[a-z]*\s+\/(?!\w)/i },
 	{ name: "rm_rf_home", pattern: /\brm\s+-[a-z]*r[a-z]*f[a-z]*\s+[~$]/i },
 	{ name: "rm_rf_star", pattern: /\brm\s+-[a-z]*r[a-z]*f?[a-z]*\s+\*/i },
+	// The same removals with the flags split apart (`rm -r -f /`, `rm --recursive --force ~`).
+	{
+		name: "rm_split_flags",
+		pattern: /\brm\s+(?:-[a-z-]+\s+){1,5}(?:\/(?!\w)|~|\$HOME\b|\*)/i,
+	},
 	// Pipe-to-shell from network. Catches curl|sh, wget|sh, any-command|bash.
 	{
 		name: "pipe_to_shell",
 		pattern: /\b(?:curl|wget|fetch)\s[^\n|]+\|\s*(?:sh|bash|zsh|python\d?)\b/i,
 	},
+	// The same with a privilege escalation in between (`curl x | sudo sh`).
+	{ name: "pipe_to_sudo_shell", pattern: /\|\s*sudo\s+(?:-\S+\s+)*(?:sh|bash|zsh)\b/i },
 	// Base64-decode piped to shell.
 	{ name: "base64_to_shell", pattern: /\bbase64\s+-d[^\n|]*\|\s*(?:sh|bash|zsh)\b/i },
 	// Disk destruction (mkfs has subcommands like mkfs.ext4, mkfs.xfs).
@@ -35,6 +42,12 @@ export const DEFAULT_RULES: DispatchRule[] = [
 	{ name: "dump_env", pattern: /\b(?:env|printenv|set)\s*(?:\|\s*(?:curl|wget|nc)|>\s*\/)/i },
 	{ name: "read_ssh", pattern: /\b(?:cat|base64|tar|cp|mv)\s+[^\n]*\.ssh\b/i },
 	{ name: "read_aws", pattern: /\b(?:cat|base64|tar|cp|mv)\s+[^\n]*\.aws\b/i },
+	// A credential file read straight into a network tool.
+	{
+		name: "exfil_credentials_pipe",
+		pattern:
+			/\b(?:cat|base64|tar)\s+[^\n|]*(?:\.npmrc|\.netrc|\.pypirc|\.env\b|id_rsa|\.git-credentials)[^\n]*\|\s*(?:nc|ncat|curl|wget)\b/i,
+	},
 	{ name: "history_delete", pattern: /\bhistory\s+-c\b/i },
 	// Destructive git operations the watcher should never initiate unprompted.
 	{

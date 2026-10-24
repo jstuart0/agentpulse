@@ -2,13 +2,10 @@ import { createHash } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { HitlReplyKind } from "../../shared/types.js";
 import type { AuthUser } from "../auth/middleware.js";
 import { getRequestActor, isHumanCaller, refuseBadOrigin } from "../auth/route-scope-policy.js";
 import { getDb } from "../db/client.js";
 import { llmProviders, sessions, settings } from "../db/schema/index.js";
-import { emitAiEvent } from "../services/ai/ai-events.js";
-import { checkDispatch } from "../services/ai/dispatch-filter.js";
 import {
 	getBackfillProgress,
 	isBackfillRunning,
@@ -23,11 +20,11 @@ import {
 	isVectorSearchBuildEnabled,
 } from "../services/ai/feature.js";
 import { promptDeliverability } from "../services/ai/prompt-deliverability.js";
+import { resolveProposal } from "../services/ai/proposal-resolution.js";
 import {
 	cancelOpenHitl,
 	getProposal,
 	listProposalsForSession,
-	resolveProposalHitl,
 } from "../services/ai/proposals-service.js";
 import {
 	type WatcherConfigRecord,
@@ -303,85 +300,44 @@ aiWatcherRouter.post("/ai/proposals/:id/decision", async (c) => {
 	const badOrigin = refuseBadOrigin(c);
 	if (badOrigin) return badOrigin;
 	const id = c.req.param("id") ?? "";
-	const body = await c.req.json<{
-		action: HitlReplyKind;
-		customPrompt?: string;
-	}>();
+	let body: { action?: unknown; customPrompt?: unknown; promptSha256?: unknown };
+	try {
+		body = await c.req.json();
+	} catch {
+		return c.json({ error: "invalid_body" }, 400);
+	}
 
 	const proposal = await getProposal(id);
 	if (!proposal) return c.json({ error: "Proposal not found" }, 404);
+	const actor = await getRequestActor(c);
 	try {
-		await assertCanDecideProposal(await getRequestActor(c), proposal.sessionId);
+		await assertCanDecideProposal(actor, proposal.sessionId);
 	} catch (err) {
 		if (err instanceof NotOwnerError) return c.json({ error: "not_owner" }, 403);
 		throw err;
 	}
-	if (proposal.state !== "hitl_waiting") {
-		return c.json({ error: `Proposal state is ${proposal.state}, not awaiting a response` }, 409);
-	}
 
-	const nextPrompt =
-		body.action === "custom"
-			? (body.customPrompt ?? "").trim()
-			: body.action === "approve"
-				? (proposal.nextPrompt ?? "")
-				: null;
-
-	if (body.action !== "decline") {
-		if (!nextPrompt) {
-			return c.json({ error: "Empty prompt" }, 400);
-		}
-		const filter = checkDispatch(nextPrompt);
-		if (!filter.allowed) {
-			await emitAiEvent({
-				sessionId: proposal.sessionId,
-				source: "managed_control",
-				category: "ai_continue_blocked",
-				eventType: "AiContinueBlocked",
-				content: `Dispatch filter tripped on human-approved prompt: ${filter.reason}`,
-				rawPayload: { proposal_id: id, rule: filter.rule },
-			});
-			return c.json({ error: `Prompt rejected by safety filter: ${filter.rule}` }, 400);
-		}
-	}
-
-	if (body.action === "decline") {
-		await resolveProposalHitl({ proposalId: id, action: "decline" });
-		await emitAiEvent({
-			sessionId: proposal.sessionId,
-			source: "managed_control",
-			category: "ai_hitl_response",
-			eventType: "AiHitlResponse",
-			content: "Declined by user.",
-			rawPayload: { proposal_id: id, action: "decline" },
-		});
-		return c.json({ ok: true, dispatched: false });
-	}
-
-	// approve / custom — emit ai_continue_sent audit event.
-	// NB: Actual dispatch into a managed session via the control-actions
-	// queue is Phase 3+ scope. Phase 1 surfaces the approved prompt as an
-	// event so the user can see what would have been sent and, for
-	// managed sessions, copy/paste or kick off manually.
-	await resolveProposalHitl({ proposalId: id, action: body.action, replyText: nextPrompt });
-	await emitAiEvent({
-		sessionId: proposal.sessionId,
-		source: "managed_control",
-		category: "ai_hitl_response",
-		eventType: "AiHitlResponse",
-		content: body.action === "custom" ? `Custom: ${nextPrompt}` : "Approved.",
-		rawPayload: { proposal_id: id, action: body.action },
+	const result = await resolveProposal({
+		proposalId: id,
+		action: body.action,
+		customPrompt: typeof body.customPrompt === "string" ? body.customPrompt : undefined,
+		promptSha256: typeof body.promptSha256 === "string" ? body.promptSha256 : undefined,
+		actor,
+		actorKind: "user",
 	});
-	await emitAiEvent({
-		sessionId: proposal.sessionId,
-		source: "managed_control",
-		category: "ai_continue_sent",
-		eventType: "AiContinueSent",
-		content: nextPrompt ?? "",
-		rawPayload: { proposal_id: id, action: body.action },
+	if (!result.ok) {
+		return c.json(
+			{ error: result.code, ...(result.reason ? { reason: result.reason } : {}) },
+			result.status,
+		);
+	}
+	if (result.action === "declined") return c.json({ ok: true, dispatched: false });
+	return c.json({
+		ok: true,
+		dispatched: true,
+		controlActionId: result.controlActionId,
+		prompt: result.prompt,
 	});
-
-	return c.json({ ok: true, dispatched: true, prompt: nextPrompt });
 });
 
 export default aiWatcherRouter;

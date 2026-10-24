@@ -872,7 +872,7 @@ export const api = {
 			source: "db" | "env" | "missing";
 			botTokenHint: string | null;
 		}>("/channels/telegram/credentials", { method: "DELETE" }),
-	updateChannelConfig: (id: string, body: { askEnabled?: boolean }) =>
+	updateChannelConfig: (id: string, body: { askEnabled?: boolean; detail?: "minimal" | "full" }) =>
 		request<{ channel: NotificationChannelRecord }>(`/channels/${id}/config`, {
 			method: "PATCH",
 			body: JSON.stringify(body),
@@ -1030,11 +1030,16 @@ export const api = {
 	deleteAiWatcher: (sessionId: string) =>
 		request<{ ok: true }>(`/ai/sessions/${sessionId}/watcher`, { method: "DELETE" }),
 
-	decideAiProposal: (id: string, body: { action: HitlReplyKind; customPrompt?: string }) =>
-		request<{ ok: true; dispatched: boolean; prompt?: string | null }>(
-			`/ai/proposals/${id}/decision`,
-			{ method: "POST", body: JSON.stringify(body) },
-		),
+	decideAiProposal: (
+		id: string,
+		body: { action: HitlReplyKind; customPrompt?: string; promptSha256?: string | null },
+	) =>
+		request<{
+			ok: true;
+			dispatched: boolean;
+			controlActionId?: string;
+			prompt?: string | null;
+		}>(`/ai/proposals/${id}/decision`, { method: "POST", body: JSON.stringify(body) }),
 
 	aiRedactorDryRun: (sample: string, userRules?: string[]) =>
 		request<{
@@ -1060,11 +1065,17 @@ export const api = {
 		if (params?.limit) qs.set("limit", String(params.limit));
 		return request<Inbox>(`/ai/inbox${qs.toString() ? `?${qs}` : ""}`);
 	},
-	decideInboxHitl: (id: string, body: { action: HitlReplyKind; customPrompt?: string }) =>
-		request<{ hitl: { id: string; status: string } }>(`/ai/inbox/hitl/${id}/decide`, {
-			method: "POST",
-			body: JSON.stringify(body),
-		}),
+	decideInboxHitl: (
+		id: string,
+		body: { action: HitlReplyKind; customPrompt?: string; promptSha256?: string | null },
+	) =>
+		request<{ hitl: { id: string; status: string }; controlActionId?: string }>(
+			`/ai/inbox/hitl/${id}/decide`,
+			{
+				method: "POST",
+				body: JSON.stringify(body),
+			},
+		),
 	batchDeclineInbox: (body: { hitlIds?: string[]; sessionIds?: string[] }) =>
 		request<{ closed: number }>("/ai/inbox/batch-decline", {
 			method: "POST",
@@ -1542,6 +1553,13 @@ export interface AiProposal {
 	usageEstimated: boolean;
 	errorSubType: string | null;
 	errorMessage: string | null;
+	/** The newest request opened for this proposal, if any. */
+	hitlId: string | null;
+	/** Hash of the prompt shown; sent back with Approve so the server can tell it is the same text. */
+	promptSha256: string | null;
+	/** True only when the suggestion can be sent as stored. Null on a request from before this existed. */
+	approvable: boolean | null;
+	hitlExpiresAt: string | null;
 	createdAt: string;
 	updatedAt: string;
 }

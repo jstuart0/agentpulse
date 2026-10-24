@@ -16,7 +16,12 @@ import {
 	textUpdate,
 	withTelegramApi,
 } from "../test-utils/telegram-fixtures.js";
-import { enableAiRuntime, seedSession, setSetting } from "../test-utils/watcher-fixtures.js";
+import {
+	enableAiRuntime,
+	seedProvider,
+	seedSession,
+	setSetting,
+} from "../test-utils/watcher-fixtures.js";
 
 const { getDb, initializeDatabase } = await import("../db/client.js");
 const schema = await import("../db/schema/index.js");
@@ -65,6 +70,16 @@ async function actionRequest(channelId: string | null) {
 async function hitl(channelId: string | null): Promise<string> {
 	await seedSession("gate-hitl");
 	const id = crypto.randomUUID();
+	const providerId = await seedProvider();
+	await getDb()
+		.insert(schema.watcherProposals)
+		.values({
+			id: `p-${id}`,
+			sessionId: "gate-hitl",
+			providerId,
+			state: "complete",
+			decision: "ask",
+		});
 	await getDb()
 		.insert(aiHitlRequests)
 		.values({

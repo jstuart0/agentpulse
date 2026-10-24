@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { ActionRequestDecision, HitlReplyKind } from "../../shared/types.js";
+import type { ActionRequestDecision } from "../../shared/types.js";
 import { getRequestActor, refuseBadOrigin } from "../auth/route-scope-policy.js";
 import {
 	getActionRequest,
@@ -13,11 +13,7 @@ import {
 	invalidateDigestCache,
 } from "../services/ai/digest-service.js";
 import { isAiBuildEnabled } from "../services/ai/feature.js";
-import {
-	getHitlRequest,
-	resolveHitlRequest,
-	supersedeOpenHitl,
-} from "../services/ai/hitl-service.js";
+import { getHitlRequest, supersedeOpenHitl } from "../services/ai/hitl-service.js";
 import { type InboxWorkItem, buildInbox } from "../services/ai/inbox-service.js";
 import {
 	type InboxKind,
@@ -26,6 +22,7 @@ import {
 	unsnooze,
 	unsnoozeTarget,
 } from "../services/ai/inbox-snooze-service.js";
+import { resolveProposal } from "../services/ai/proposal-resolution.js";
 import {
 	NOT_OWNER_MESSAGE,
 	NotOwnerError,
@@ -67,27 +64,41 @@ aiInboxRouter.post("/ai/inbox/hitl/:id/decide", async (c) => {
 	const badOrigin = refuseBadOrigin(c);
 	if (badOrigin) return badOrigin;
 	const id = c.req.param("id") ?? "";
-	const body = await c.req.json<{
-		action: HitlReplyKind;
-		customPrompt?: string;
-	}>();
+	let body: { action?: unknown; customPrompt?: unknown; promptSha256?: unknown };
+	try {
+		body = await c.req.json();
+	} catch {
+		return c.json({ error: "invalid_body" }, 400);
+	}
 	// Authorize on the HITL's own session, never on anything the body names.
 	const existing = await getHitlRequest(id);
 	if (!existing) return c.json({ error: "hitl not found" }, 404);
+	const actor = await getRequestActor(c);
 	try {
-		await assertCanDecideProposal(await getRequestActor(c), existing.sessionId);
+		await assertCanDecideProposal(actor, existing.sessionId);
 	} catch (err) {
 		if (err instanceof NotOwnerError) return c.json({ error: "not_owner" }, 403);
 		throw err;
 	}
-	const resolved = await resolveHitlRequest({
-		id,
-		status: body.action === "decline" ? "declined" : "applied",
-		replyKind: body.action,
-		replyText: body.action === "custom" ? (body.customPrompt ?? null) : null,
+	const result = await resolveProposal({
+		hitlId: id,
+		action: body.action,
+		customPrompt: typeof body.customPrompt === "string" ? body.customPrompt : undefined,
+		promptSha256: typeof body.promptSha256 === "string" ? body.promptSha256 : undefined,
+		actor,
+		actorKind: "user",
 	});
-	if (!resolved) return c.json({ error: "hitl not found" }, 404);
-	return c.json({ hitl: resolved });
+	if (!result.ok) {
+		return c.json(
+			{ error: result.code, ...(result.reason ? { reason: result.reason } : {}) },
+			result.status,
+		);
+	}
+	const hitl = await getHitlRequest(id);
+	return c.json({
+		hitl,
+		...(result.action === "applied" ? { controlActionId: result.controlActionId } : {}),
+	});
 });
 
 aiInboxRouter.get("/ai/inbox/snoozes", async (c) => {
@@ -173,12 +184,13 @@ aiInboxRouter.post("/ai/inbox/batch-decline", async (c) => {
 
 	let closed = 0;
 	for (const hid of body.hitlIds ?? []) {
-		const r = await resolveHitlRequest({
-			id: hid,
-			status: "declined",
-			replyKind: "decline",
+		const declined = await resolveProposal({
+			hitlId: hid,
+			action: "decline",
+			actor,
+			actorKind: "user",
 		});
-		if (r) closed++;
+		if (declined.ok) closed++;
 	}
 	for (const sid of body.sessionIds ?? []) {
 		closed += await supersedeOpenHitl(sid);

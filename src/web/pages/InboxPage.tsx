@@ -69,9 +69,17 @@ export function InboxPage() {
 		void reload();
 	}, [reload]);
 
-	async function handleHitlDecide(id: string, action: "approve" | "decline") {
-		await api.decideInboxHitl(id, { action });
-		reload();
+	async function handleHitlDecide(
+		id: string,
+		action: "approve" | "decline",
+		promptSha256: string | null,
+	) {
+		try {
+			await api.decideInboxHitl(id, { action, promptSha256 });
+		} finally {
+			// A refusal (out of date, expired, already answered) also means the card is stale.
+			reload();
+		}
 	}
 
 	async function handleActionDecide(id: string, decision: ActionRequestDecision) {

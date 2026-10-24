@@ -393,7 +393,8 @@ function HitlCard({
 }) {
 	const [submitting, setSubmitting] = useState(false);
 	const [customOpen, setCustomOpen] = useState(false);
-	const [customPrompt, setCustomPrompt] = useState(proposal.nextPrompt ?? "");
+	const suggested = proposal.suggestedPrompt ?? proposal.nextPrompt ?? "";
+	const [customPrompt, setCustomPrompt] = useState(suggested);
 
 	async function act(action: HitlReplyKind) {
 		setSubmitting(true);
@@ -401,6 +402,7 @@ function HitlCard({
 			await api.decideAiProposal(proposal.id, {
 				action,
 				customPrompt: action === "custom" ? customPrompt : undefined,
+				promptSha256: proposal.promptSha256,
 			});
 			onResolved();
 		} catch (err) {
@@ -422,7 +424,7 @@ function HitlCard({
 			</div>
 			<div className="text-xs text-muted-foreground">Proposed next prompt:</div>
 			<pre className="text-xs font-mono bg-background border border-border rounded p-3 whitespace-pre-wrap break-words">
-				{proposal.nextPrompt || proposal.reportSummary || "(no content)"}
+				{suggested || proposal.reportSummary || "(no content)"}
 			</pre>
 			{typeof why === "string" && why && (
 				<div className="text-xs text-muted-foreground">Why: {why}</div>
@@ -448,7 +450,7 @@ function HitlCard({
 						<button
 							type="button"
 							onClick={() => act("approve")}
-							disabled={submitting || !proposal.nextPrompt}
+							disabled={submitting || !suggested || proposal.approvable === false}
 							className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground disabled:opacity-40"
 						>
 							Approve

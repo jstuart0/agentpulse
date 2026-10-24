@@ -333,6 +333,9 @@ describe("re-link", () => {
 					decision: "continue",
 					prompt: "Run the tests",
 					why: null,
+					deliverable: true,
+					approvable: true,
+					promptSha256: null,
 				},
 			});
 			expect(result.ok).toBe(false);

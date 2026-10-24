@@ -1151,6 +1151,12 @@ export type InboxWorkItem =
 			prompt: string;
 			why: string | null;
 			openedAt: string;
+			/** When the request lapses, or null for one that never expires. */
+			expiresAt: string | null;
+			/** Hash of the prompt shown; sent back with Approve so the server can tell it is the same text. */
+			promptSha256: string | null;
+			/** True only when the stored suggestion can be sent as it is. Null on a request from before this existed. */
+			approvable: boolean | null;
 			severity: InboxSeverity;
 	  }
 	| {

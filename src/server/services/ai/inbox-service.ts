@@ -15,6 +15,7 @@ import { listOpenActionRequests, narrowPayload } from "./action-requests-service
 import { listAllOpenHitl } from "./hitl-service.js";
 import { activeSnoozeSet, listActiveSnoozes } from "./inbox-snooze-service.js";
 import { intelligenceForSession } from "./intelligence-service.js";
+import { proposalPrompt } from "./proposal-resolution.js";
 import { getProposal } from "./proposals-service.js";
 
 /**
@@ -66,7 +67,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		if (!proposal) continue;
 		const decision =
 			proposal.decision === "continue" || proposal.decision === "ask" ? proposal.decision : "ask";
-		const prompt = proposal.nextPrompt ?? proposal.reportSummary ?? "";
+		const prompt = proposalPrompt(proposal) ?? proposal.reportSummary ?? "";
 		const why = (
 			(proposal.rawResponse as Record<string, unknown> | null)?.decision as
 				| Record<string, unknown>
@@ -82,6 +83,9 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 			prompt,
 			why: why ?? null,
 			openedAt: h.createdAt,
+			expiresAt: h.expiresAt,
+			promptSha256: h.promptSha256,
+			approvable: h.approvable,
 			severity: "normal",
 		});
 	}

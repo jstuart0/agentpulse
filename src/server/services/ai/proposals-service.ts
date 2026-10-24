@@ -40,6 +40,16 @@ export interface ProposalRecord {
 	usageEstimated: boolean;
 	errorSubType: string | null;
 	errorMessage: string | null;
+	/**
+	 * The proposal's newest HITL request, as a person decides it: the hash of the
+	 * prompt shown (sent back with Approve so the server can tell it is the same
+	 * text), whether it can be approved as stored, and when the request lapses.
+	 * Null on a proposal that never opened one.
+	 */
+	hitlId: string | null;
+	promptSha256: string | null;
+	approvable: boolean | null;
+	hitlExpiresAt: string | null;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -64,6 +74,10 @@ function toRecordBase(row: typeof watcherProposals.$inferSelect): ProposalRecord
 		usageEstimated: row.usageEstimated,
 		errorSubType: row.errorSubType,
 		errorMessage: row.errorMessage,
+		hitlId: null,
+		promptSha256: null,
+		approvable: null,
+		hitlExpiresAt: null,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
 	};
@@ -74,43 +88,61 @@ function toRecordBase(row: typeof watcherProposals.$inferSelect): ProposalRecord
  * compatibility. Callers that need the canonical HITL record should read
  * from ai_hitl_requests directly.
  */
-function applyHitlOverlay(
-	record: ProposalRecord,
-	hitlStatus: HitlStatus | undefined,
-): ProposalRecord {
-	if (!hitlStatus) return record;
-	if (hitlStatus === "awaiting_reply") return { ...record, state: "hitl_waiting" };
-	if (hitlStatus === "applied") return { ...record, state: "hitl_applied" };
-	if (hitlStatus === "declined") return { ...record, state: "hitl_declined" };
+function applyHitlOverlay(record: ProposalRecord, hitl: HitlOverlay | undefined): ProposalRecord {
+	if (!hitl) return record;
+	const withHitl: ProposalRecord = {
+		...record,
+		hitlId: hitl.id,
+		promptSha256: hitl.promptSha256,
+		approvable: hitl.approvable,
+		hitlExpiresAt: hitl.expiresAt,
+	};
+	if (hitl.status === "awaiting_reply") return { ...withHitl, state: "hitl_waiting" };
+	if (hitl.status === "applied") return { ...withHitl, state: "hitl_applied" };
+	if (hitl.status === "declined") return { ...withHitl, state: "hitl_declined" };
 	// superseded / timed_out leave the proposal's physical state (usually
 	// "complete") visible — UI treats those as closed, which is correct.
-	return record;
+	return withHitl;
 }
 
-async function hitlStatusMapFor(proposalIds: string[]): Promise<Map<string, HitlStatus>> {
+interface HitlOverlay {
+	id: string;
+	status: HitlStatus;
+	promptSha256: string | null;
+	approvable: boolean | null;
+	expiresAt: string | null;
+}
+
+async function hitlStatusMapFor(proposalIds: string[]): Promise<Map<string, HitlOverlay>> {
 	if (proposalIds.length === 0) return new Map();
 	const rows = await getDb()
 		.select({
+			id: aiHitlRequests.id,
 			proposalId: aiHitlRequests.proposalId,
 			status: aiHitlRequests.status,
 			createdAt: aiHitlRequests.createdAt,
+			promptSha256: aiHitlRequests.promptSha256,
+			approvable: aiHitlRequests.approvable,
+			expiresAt: aiHitlRequests.expiresAt,
 		})
 		.from(aiHitlRequests)
 		.where(inArray(aiHitlRequests.proposalId, proposalIds));
 	// Newest-per-proposal wins.
-	const newest = new Map<string, { status: HitlStatus; createdAt: string }>();
+	const newest = new Map<string, HitlOverlay & { createdAt: string }>();
 	for (const row of rows) {
 		const curr = newest.get(row.proposalId);
 		if (!curr || row.createdAt > curr.createdAt) {
 			newest.set(row.proposalId, {
+				id: row.id,
 				status: row.status as HitlStatus,
 				createdAt: row.createdAt,
+				promptSha256: row.promptSha256,
+				approvable: row.approvable,
+				expiresAt: row.expiresAt,
 			});
 		}
 	}
-	const out = new Map<string, HitlStatus>();
-	for (const [pid, v] of newest) out.set(pid, v.status);
-	return out;
+	return newest;
 }
 
 export async function createPendingProposal(input: {
@@ -179,6 +211,11 @@ export async function completeProposalAsHitl(
 	input: Omit<CompleteProposalInput, "state"> & {
 		channelId?: string | null;
 		expiresAt?: string | null;
+		/** What a later decision is bound to: the turn, its trigger, the hash of the shown prompt, and whether it can be approved as stored. */
+		turnKey?: string | null;
+		triggerEventId?: number | null;
+		promptSha256?: string | null;
+		approvable?: boolean | null;
 	},
 ): Promise<{ proposal: ProposalRecord | null; hitlId: string }> {
 	await completeProposal({ ...input, state: "complete" });
@@ -187,6 +224,10 @@ export async function completeProposalAsHitl(
 		sessionId: (await getProposal(input.id))?.sessionId ?? "",
 		channelId: input.channelId ?? null,
 		expiresAt: input.expiresAt ?? null,
+		turnKey: input.turnKey ?? null,
+		triggerEventId: input.triggerEventId ?? null,
+		promptSha256: input.promptSha256 ?? null,
+		approvable: input.approvable ?? null,
 	});
 	const final = await getProposal(input.id);
 	return { proposal: final, hitlId: hitl.id };

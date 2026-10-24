@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import type { Session, SessionEvent } from "../../../shared/types.js";
+import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
 import { sessions } from "../../db/schema/index.js";
 import { SESSION_COLUMNS_SANS_OWNERSHIP } from "../../db/session-columns.js";
@@ -15,6 +16,7 @@ import {
 } from "./alert-rule-evaluator.js";
 import { buildWatcherContext } from "./context.js";
 import { classifyContinuability } from "./continuability.js";
+import { loadWatcherSentPrompts } from "./dispatch-audit-service.js";
 import { checkDispatch } from "./dispatch-filter.js";
 import { loadRecentEvents } from "./event-queries.js";
 import { classifierAffectsRunner, isAiBuildEnabled } from "./feature.js";
@@ -49,7 +51,11 @@ import {
 } from "./watcher-runs-service.js";
 
 const DEBOUNCE_MS = 1_500;
-const MAX_EVENTS_LOOKBACK = 80;
+// Enough events to find the trigger and to cover a turn that ran long.
+const MAX_EVENTS_LOOKBACK = 200;
+// A Continue decision reads the whole current turn, however long ago it began.
+const CONTINUE_TIME_BUDGET_MS = 6 * 60 * 60 * 1000;
+const CONTINUE_MAX_TOKENS = 600;
 const LEASE_DURATION_MS = 60_000;
 const LEASE_POLL_INTERVAL_MS = 500;
 const ALERT_RULE_SWEEP_INTERVAL_MS = 60_000;
@@ -247,11 +253,11 @@ export class WatcherRunner {
 		sessionId: string,
 		run: WatcherRunRecord,
 	): Promise<{ kind: "ok"; proposalId?: string | null } | { kind: "err"; errorSubType: string }> {
-		const config = await getWatcherConfig(sessionId);
-		if (!config || !config.enabled) return { kind: "ok" };
+		const watchConfig = await getWatcherConfig(sessionId);
+		if (!watchConfig || !watchConfig.enabled) return { kind: "ok" };
 
 		// Cap check up front — no point hitting the LLM if we can't act.
-		if (config.continuationsUsed >= config.maxContinuations) {
+		if (watchConfig.continuationsUsed >= watchConfig.maxContinuations) {
 			await stampWatcherState(sessionId, "cooling_down");
 			return { kind: "ok" };
 		}
@@ -279,7 +285,7 @@ export class WatcherRunner {
 		}
 
 		// Budget pre-flight (point-query, cheap).
-		const spend = await checkSpendBudget("local", config.maxDailyCents, 0);
+		const spend = await checkSpendBudget("local", watchConfig.maxDailyCents, 0);
 		if (!spend.allowed) {
 			await stampWatcherState(sessionId, "cooling_down");
 			await emitAiEvent({
@@ -293,14 +299,14 @@ export class WatcherRunner {
 			return { kind: "err", errorSubType: "spend_cap" };
 		}
 
-		const provider = await getProvider(config.providerId);
+		const provider = await getProvider(watchConfig.providerId);
 		if (!provider) {
 			await emitAiEvent({
 				sessionId,
 				source: "managed_control",
 				category: "ai_error",
 				eventType: "ProviderMissing",
-				content: `Configured provider ${config.providerId} no longer exists`,
+				content: `Configured provider ${watchConfig.providerId} no longer exists`,
 				rawPayload: { sub_type: "permanent_validation" },
 			});
 			return { kind: "err", errorSubType: "permanent_validation" };
@@ -349,8 +355,10 @@ export class WatcherRunner {
 			session: session as unknown as Session,
 			events: recent,
 			triggerType: run.triggerKind,
-			customSystemPrompt: config.systemPrompt,
+			customSystemPrompt: watchConfig.systemPrompt,
 			intelligenceHint,
+			transcriptTimeBudgetMs: CONTINUE_TIME_BUDGET_MS,
+			watcherSentPrompts: await loadWatcherSentPrompts(sessionId),
 		});
 
 		const apiKey = await getProviderApiKey(provider.id);
@@ -390,6 +398,8 @@ export class WatcherRunner {
 				model: provider.model,
 				// The decision is a JSON object; reasoning would take the token budget.
 				disableReasoning: true,
+				timeoutMs: config.watcherCallTimeoutSeconds * 1000,
+				maxTokens: CONTINUE_MAX_TOKENS,
 			});
 			responseText = res.text;
 			usageInput = res.usage.inputTokens;
@@ -431,6 +441,8 @@ export class WatcherRunner {
 						transcriptPrompt: `${ctx.transcriptPrompt}\n\nRESPONSE PARSE ERROR: ${parsed.error}. Respond with exactly one JSON object per the schema. No prose.`,
 						model: provider.model,
 						disableReasoning: true,
+						timeoutMs: config.watcherCallTimeoutSeconds * 1000,
+						maxTokens: CONTINUE_MAX_TOKENS,
 					});
 					responseText = retry.text;
 					if (retry.usage && !retry.usage.estimated) {
@@ -574,7 +586,7 @@ export class WatcherRunner {
 				});
 				askProposal = decision.nextPrompt;
 				askWhy = `Auto-dispatch blocked by safety filter (${filter.rule}). Approve explicitly to send.`;
-			} else if (config.policy === "ask_on_risk") {
+			} else if (watchConfig.policy === "ask_on_risk" || watchConfig.policy === "auto") {
 				// Phase 7: evaluate configured risk classes and escalate on any hit.
 				const riskConfig = await getRiskClasses();
 				const hits = evaluateRisk(riskConfig, {
@@ -603,17 +615,6 @@ export class WatcherRunner {
 				} else {
 					nextPrompt = decision.nextPrompt;
 				}
-			} else if (config.policy === "auto") {
-				// Phase 7: auto-dispatch is available only for explicitly-trusted
-				// managed sessions where the supervisor is live. We still record
-				// the ai_continue_sent event for audit; actual prompt delivery
-				// remains the control-actions queue's responsibility.
-				if (managed?.supervisorConnected) {
-					nextPrompt = decision.nextPrompt;
-				} else {
-					askProposal = decision.nextPrompt;
-					askWhy = "auto policy requires a connected supervisor; routing to HITL";
-				}
 			} else {
 				// ask_always — current default.
 				nextPrompt = decision.nextPrompt;
@@ -625,38 +626,6 @@ export class WatcherRunner {
 
 		// Any prior open HITL is superseded when a newer one opens.
 		await cancelOpenHitl(sessionId, "superseded");
-
-		// Phase 7 auto-dispatch path. When the user has explicitly opted
-		// into `auto`, the supervisor is live, no risk class tripped, and
-		// the dispatch filter accepts the prompt, we skip HITL and record
-		// an ai_continue_sent audit event immediately. The actual prompt
-		// delivery into the managed session remains the control-actions
-		// queue's job — this phase only lifts the HITL gate, not adds
-		// new dispatch plumbing.
-		const autoDispatch = config.policy === "auto" && nextPrompt !== null;
-		if (autoDispatch) {
-			await completeProposal({
-				id: pending.id,
-				decision: decision.decision,
-				nextPrompt,
-				reportSummary: null,
-				rawResponse: { raw: responseText, decision, auto: true },
-				tokensIn: usageInput,
-				tokensOut: usageOutput,
-				costCents,
-				usageEstimated,
-			});
-			await emitAiEvent({
-				sessionId,
-				source: "managed_control",
-				category: "ai_continue_sent",
-				eventType: "AiContinueSent",
-				content: nextPrompt ?? "",
-				rawPayload: { proposal_id: pending.id, action: "auto" },
-			});
-			await stampWatcherState(sessionId, "idle");
-			return { kind: "ok", proposalId: pending.id };
-		}
 
 		// Persist the proposal and open a durable HITL request. The
 		// proposal's physical state is "complete" (the LLM work is done);
@@ -672,13 +641,13 @@ export class WatcherRunner {
 			tokensOut: usageOutput,
 			costCents,
 			usageEstimated,
-			channelId: config.channelId ?? null,
+			channelId: watchConfig.channelId ?? null,
 		});
 
 		// If the session's watcher config points at a notification channel,
 		// best-effort dispatch the HITL there (Telegram, etc). Delivery
 		// failures never block the in-app approval path.
-		if (config.channelId && hitlOpen.hitlId) {
+		if (watchConfig.channelId && hitlOpen.hitlId) {
 			const [freshSession] = await getDb()
 				.select({ displayName: sessions.displayName })
 				.from(sessions)
@@ -686,7 +655,7 @@ export class WatcherRunner {
 				.limit(1);
 			const promptForChannel = nextPrompt ?? askProposal ?? "";
 			const delivery = await dispatchHitlToChannel({
-				channelId: config.channelId,
+				channelId: watchConfig.channelId,
 				message: {
 					hitlId: hitlOpen.hitlId,
 					proposalId: pending.id,
@@ -695,9 +664,15 @@ export class WatcherRunner {
 					decision: decision.decision === "continue" ? "continue" : "ask",
 					prompt: promptForChannel,
 					why: askWhy ?? null,
+					// This runner opens requests no one may send from (they carry no trigger), so
+					// the message offers Dismiss only. The restructured runner passes the real values.
+					deliverable: false,
+					approvable: false,
+					promptSha256: null,
+					sessionCwd: null,
 				},
 			});
-			if (!delivery.ok) {
+			if (!delivery.ok && !delivery.skipped) {
 				await emitAiEvent({
 					sessionId,
 					source: "managed_control",
@@ -707,7 +682,7 @@ export class WatcherRunner {
 					rawPayload: {
 						sub_type: "channel_delivery_failed",
 						proposal_id: pending.id,
-						channel_id: config.channelId,
+						channel_id: watchConfig.channelId,
 					},
 				});
 			}

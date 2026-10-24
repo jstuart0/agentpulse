@@ -217,7 +217,9 @@ describe("a chat approval (Telegram)", () => {
 
 	test("the Telegram routes pass the one named chat actor, never an inline one", () => {
 		const channels = readFileSync(join(import.meta.dir, "channels.ts"), "utf8");
-		expect(/label:\s*"telegram"/.test(channels)).toBe(false);
-		expect(channels.match(/actor:\s*TELEGRAM_ACTOR/g)?.length).toBe(2);
+		// The one inline actor is the channel owner's authority check in channelOwnerMayApprove,
+		// which carries the owner's user id; nothing that is *passed to a resolver* is inline.
+		expect(channels.match(/label:\s*"telegram"/g)?.length).toBe(1);
+		expect(channels.match(/actor:\s*TELEGRAM_ACTOR/g)?.length).toBe(3); // ask, action request, HITL decision
 	});
 });
