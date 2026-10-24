@@ -32,6 +32,7 @@ import {
 	getWatcherConfig,
 	upsertWatcherConfig,
 } from "../services/ai/watcher-config-service.js";
+import { listReportsForSession } from "../services/ai/watcher-reports-service.js";
 import { logAdminAction } from "../services/audit-log.js";
 import {
 	NotOwnerError,
@@ -133,8 +134,7 @@ aiWatcherRouter.get("/ai/sessions/:sessionId/watcher", async (c) => {
 	const config = await getWatcherConfig(sessionId);
 	const proposals = await listProposalsForSession(sessionId, 20);
 	const promptDelivery = await promptDeliverability(sessionId);
-	// Notify reports arrive with the Notify pipeline; until then there are none.
-	const reports: unknown[] = [];
+	const reports = await listReportsForSession(sessionId, 10);
 	return c.json({ config, proposals, promptDelivery, reports });
 });
 

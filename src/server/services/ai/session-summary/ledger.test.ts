@@ -426,6 +426,31 @@ describe("TC-3.16 the character budget", () => {
 	});
 });
 
+describe("charBudget", () => {
+	const rows = (): EvidenceRow[] => {
+		const out: EvidenceRow[] = [prompt(1, "first")];
+		for (let i = 0; i < 60; i++)
+			out.push(agent(10 + i, `${String(i).padStart(3, "0")}-${"m".repeat(400)}`));
+		return out;
+	};
+
+	test("left out, the output is byte-identical to passing the default explicitly", () => {
+		const implicit = build(rows());
+		const explicit = build(rows(), { charBudget: LEDGER_CHAR_BUDGET });
+		expect(explicit.text).toBe(implicit.text);
+		expect(explicit.coverage).toEqual(implicit.coverage);
+	});
+
+	test("a smaller budget keeps the text under it, drops entries and says so", () => {
+		const big = build(rows());
+		const small = build(rows(), { charBudget: 12_000 });
+		expect(big.text.length).toBeGreaterThan(12_000);
+		expect(small.text.length).toBeLessThanOrEqual(12_000);
+		expect(small.coverage.droppedByBudget).toBeGreaterThan(big.coverage.droppedByBudget);
+		expect(small.text).toContain("first");
+	});
+});
+
 describe("TC-3.17 the un-droppable set", () => {
 	test("TC-3.17 first prompts plus the last 20 entries at maximum size terminate within the documented bound", () => {
 		const rows: EvidenceRow[] = [

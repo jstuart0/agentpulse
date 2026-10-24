@@ -8,6 +8,7 @@ import {
 	type NotificationChannelKind,
 	SESSION_MUTATION_KINDS,
 	type SessionMutationKind,
+	type WatcherReportVerdict,
 } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
 import { sessions, watcherProposals } from "../../db/schema/index.js";
@@ -17,6 +18,7 @@ import { activeSnoozeSet, listActiveSnoozes } from "./inbox-snooze-service.js";
 import { intelligenceForSession } from "./intelligence-service.js";
 import { proposalPrompt } from "./proposal-resolution.js";
 import { getProposal } from "./proposals-service.js";
+import { listInboxReports } from "./watcher-reports-service.js";
 
 /**
  * Inbox work items. Discriminated union matches the plan's shape so the
@@ -32,6 +34,13 @@ import { getProposal } from "./proposals-service.js";
 export type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem };
 
 const DEFAULT_LIMIT = 100;
+
+/** `needs_you` is the one a person must act on; `finished` is news. */
+const REPORT_SEVERITY: Record<WatcherReportVerdict, InboxSeverity> = {
+	needs_you: "high",
+	stuck: "normal",
+	finished: "info",
+};
 
 /**
  * Compose the operator inbox as a read model over the canonical sources:
@@ -171,6 +180,20 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 			errorMessage: p.errorMessage,
 			at: p.updatedAt,
 			severity: "normal",
+		});
+	}
+
+	// ---- 3b. Delivered watcher reports the person has not acknowledged --------
+	for (const r of await listInboxReports()) {
+		items.push({
+			kind: "watcher_report",
+			id: r.id,
+			sessionId: r.sessionId,
+			sessionName: r.sessionName,
+			verdict: r.verdict,
+			why: r.why,
+			at: r.at,
+			severity: REPORT_SEVERITY[r.verdict],
 		});
 	}
 
@@ -413,6 +436,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		stuck: 0,
 		risky: 0,
 		failed_proposal: 0,
+		watcher_report: 0,
 		action_launch: 0,
 		action_add_project: 0,
 		action_session_stop: 0,
@@ -442,7 +466,7 @@ function timestampFor(item: InboxWorkItem): number {
 	const ts =
 		item.kind === "hitl"
 			? item.openedAt
-			: item.kind === "failed_proposal"
+			: item.kind === "failed_proposal" || item.kind === "watcher_report"
 				? item.at
 				: item.kind === "stuck"
 					? item.since

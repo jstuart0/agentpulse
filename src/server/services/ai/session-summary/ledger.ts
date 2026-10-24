@@ -98,6 +98,11 @@ export interface LedgerInput {
 	agentType?: string | null;
 	/** The operator's own redaction rules, applied after the defaults (as the watcher does). */
 	redactionRules?: RedactionRule[];
+	/**
+	 * The most characters the entry lines may take. Defaults to LEDGER_CHAR_BUDGET, so a
+	 * summary's ledger is unchanged; a smaller caller (the Notify report) passes its own.
+	 */
+	charBudget?: number;
 }
 
 export type FactKind =
@@ -834,7 +839,10 @@ function conclude(input: LedgerInput, state: BuildState): Ledger {
 	const started = performance.now();
 	const built = collapse(state.drafts).map(finish);
 	const counts = countsOf(state.rows, state.drafts, built);
-	const { kept, droppedEvents, overBudget } = applyBudget(built);
+	const { kept, droppedEvents, overBudget } = applyBudget(
+		built,
+		input.charBudget ?? LEDGER_CHAR_BUDGET,
+	);
 
 	const ids = new Map<string, LedgerIdInfo>();
 	for (const entry of kept) {

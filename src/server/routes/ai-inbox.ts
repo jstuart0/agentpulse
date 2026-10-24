@@ -32,7 +32,7 @@ import { requireAiActive, requireAiBuild } from "./ai-gates.js";
 
 const aiInboxRouter = new Hono();
 
-const INBOX_KINDS: InboxKind[] = ["hitl", "stuck", "risky", "failed_proposal"];
+const INBOX_KINDS: InboxKind[] = ["hitl", "stuck", "risky", "failed_proposal", "watcher_report"];
 
 // --------------------------------------------------------------------------
 // Operator inbox (Phase 3)

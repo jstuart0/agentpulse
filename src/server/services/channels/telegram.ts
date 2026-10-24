@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { WATCHER_REPORT_PREFIX, type WatcherReportVerdict } from "../../../shared/types.js";
 import { formatUntrustedInline } from "../ai/untrusted-text.js";
 import { getChannelCredential } from "./channels-service.js";
 import { getTelegramBotToken } from "./telegram-credentials.js";
@@ -8,6 +9,7 @@ import {
 	type NotificationChannelAdapter,
 	type NotificationChannelRecord,
 	type SendChannelMessageInput,
+	type SendChannelReportInput,
 	encodeHitlCallbackData,
 } from "./types.js";
 
@@ -105,7 +107,72 @@ export const telegramAdapter: NotificationChannelAdapter = {
 		if (!res.ok) return { ok: false, error: res.description };
 		return { ok: true, externalMessageId: String(res.result.message_id) };
 	},
+
+	async sendReport(
+		channel: NotificationChannelRecord,
+		input: SendChannelReportInput,
+	): Promise<ChannelDeliveryResult> {
+		if (!this.isConfigured()) {
+			return { ok: false, error: "Telegram bot token not configured" };
+		}
+		if (!channel.verifiedAt) {
+			return { ok: false, error: "Channel is not verified yet" };
+		}
+		const cred = await getChannelCredential(channel.id);
+		if (!cred?.chatId) {
+			return { ok: false, error: "Channel has no stored chat id" };
+		}
+		// Plain text on purpose: a model wrote the note, so no markup is ever interpreted.
+		const detail: "minimal" | "full" = cred.chatId.startsWith("-") ? "minimal" : input.detail;
+		const res = await callTelegram<{ message_id: number }>("sendMessage", {
+			chat_id: cred.chatId,
+			text: formatReportMessage({ ...input, detail }),
+			disable_web_page_preview: true,
+		});
+		if (!res.ok) return { ok: false, error: res.description };
+		return { ok: true, externalMessageId: String(res.result.message_id) };
+	},
 };
+
+const REPORT_HEADLINE: Record<WatcherReportVerdict, string> = {
+	finished: "Finished",
+	stuck: "Looks stuck",
+	needs_you: "Waiting for you",
+};
+
+/** What `minimal` says instead of the model's note: nothing from the session. */
+const REPORT_GENERIC_REASON: Record<WatcherReportVerdict, string> = {
+	finished: "The agent finished its turn.",
+	stuck: "The agent looks stuck.",
+	needs_you: "The agent is waiting for you.",
+};
+
+/** Telegram's message limit. */
+const TELEGRAM_TEXT_LIMIT = 4096;
+
+/**
+ * The report as plain text. It starts with the fixed untrusted-content line;
+ * `minimal` (the default) carries the verdict and a generic reason, `full` adds
+ * the model's note. Everything that came from the session is redacted and
+ * path-normalised first, and the whole message is held to Telegram's limit.
+ */
+export function formatReportMessage(input: SendChannelReportInput): string {
+	const ctx = { cwd: input.sessionCwd };
+	const label = redactForTelegram(
+		formatUntrustedInline(input.sessionLabel ?? input.sessionId.slice(0, 8)),
+		ctx,
+	);
+	const lines = [
+		WATCHER_REPORT_PREFIX,
+		`${REPORT_HEADLINE[input.verdict]}: ${label}`,
+		input.detail === "full"
+			? redactForTelegram(input.why, ctx)
+			: REPORT_GENERIC_REASON[input.verdict],
+	];
+	if (input.dashboardUrl) lines.push(input.dashboardUrl);
+	const text = lines.join("\n");
+	return text.length > TELEGRAM_TEXT_LIMIT ? `${text.slice(0, TELEGRAM_TEXT_LIMIT - 1)}…` : text;
+}
 
 /** Telegram caps a message at 4096 characters; the prompt gets this much of that. */
 const PROMPT_DISPLAY_BUDGET = 3_000;

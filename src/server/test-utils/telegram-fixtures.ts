@@ -112,6 +112,8 @@ export async function withTelegramApi<T>(
 	(config as Record<string, unknown>).telegramBotToken = "test-token";
 	await botStore.refreshTelegramCredentials();
 	globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+		// Only the Bot API is replaced; any other host (a stub model provider) is reached for real.
+		if (!String(url).startsWith("https://api.telegram.org/")) return realFetch(url, init);
 		const method = String(url).split("/").pop() ?? "";
 		calls.push({ method, body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
 		return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });

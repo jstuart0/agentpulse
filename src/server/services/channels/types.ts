@@ -5,7 +5,11 @@
  * underlying transport.
  */
 
-import type { DecisionKind, NotificationChannelKind } from "../../../shared/types.js";
+import type {
+	DecisionKind,
+	NotificationChannelKind,
+	WatcherReportVerdict,
+} from "../../../shared/types.js";
 
 export {
 	KNOWN_NOTIFICATION_CHANNEL_KINDS,
@@ -47,6 +51,19 @@ export interface SendChannelMessageInput {
 	sessionCwd?: string | null;
 }
 
+/** A Notify report on its way to a channel. */
+export interface SendChannelReportInput {
+	sessionId: string;
+	sessionLabel: string | null;
+	verdict: WatcherReportVerdict;
+	/** The model's note. Sent only at `full` detail. */
+	why: string;
+	/** A link to the session, only when the instance has an explicit public address. */
+	dashboardUrl: string | null;
+	detail: "minimal" | "full";
+	sessionCwd?: string | null;
+}
+
 export interface ChannelDeliveryResult {
 	ok: boolean;
 	externalMessageId?: string;
@@ -61,6 +78,11 @@ export interface NotificationChannelAdapter {
 	send(
 		channel: NotificationChannelRecord,
 		input: SendChannelMessageInput,
+	): Promise<ChannelDeliveryResult>;
+	/** Send a Notify report. Optional: an adapter without it can't deliver reports. */
+	sendReport?(
+		channel: NotificationChannelRecord,
+		input: SendChannelReportInput,
 	): Promise<ChannelDeliveryResult>;
 }
 

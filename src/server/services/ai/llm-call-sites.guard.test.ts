@@ -28,6 +28,7 @@ const TIMEOUT_FROM_ADAPTER_DEFAULT: Record<string, string> = {};
 /** The calls this guard must find, so an emptied search cannot pass. */
 const EXPECTED_SITES = [
 	"src/server/services/ai/alert-rule-evaluator.ts",
+	"src/server/services/ai/notify/watcher-notify.ts",
 	"src/server/services/ai/runner.ts",
 	"src/server/services/ai/semantic-enricher.ts",
 	"src/server/services/ask/ask-qa-handler.ts",
@@ -125,10 +126,11 @@ describe("model call sites", () => {
 		]);
 	});
 
-	test("the watcher's runner and its send path never touch the fast provider", async () => {
+	test("the watcher's runner, its send path and Notify never touch the fast provider", async () => {
 		for (const rel of [
 			"src/server/services/ai/runner.ts",
 			"src/server/services/ai/proposal-resolution.ts",
+			"src/server/services/ai/notify/watcher-notify.ts",
 		]) {
 			const source = await readFile(join(ROOT, rel), "utf8");
 			expect(source, rel).not.toMatch(/fast-provider\.js/);

@@ -12,13 +12,13 @@ import { aiInboxSnoozes } from "../../db/schema/index.js";
  * is reversible, idempotent, and non-destructive.
  */
 
-// Snooze applies only to session-scoped inbox items — the four listed
+// Snooze applies only to session-scoped inbox items — the five listed
 // here. The Extract narrows InboxWorkItem["kind"] so removing or
-// renaming any of these four kinds in shared/types.ts immediately
+// renaming any of these kinds in shared/types.ts immediately
 // breaks the snooze service at compile time.
 export type InboxKind = Extract<
 	InboxWorkItem["kind"],
-	"hitl" | "stuck" | "risky" | "failed_proposal"
+	"hitl" | "stuck" | "risky" | "failed_proposal" | "watcher_report"
 >;
 
 export interface SnoozeRecord {

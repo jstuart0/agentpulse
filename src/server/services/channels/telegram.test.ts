@@ -13,8 +13,13 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { escapeMd, formatHitlMessage, sendTelegramMessage } from "./telegram.js";
-import type { SendChannelMessageInput } from "./types.js";
+import {
+	escapeMd,
+	formatHitlMessage,
+	formatReportMessage,
+	sendTelegramMessage,
+} from "./telegram.js";
+import type { SendChannelMessageInput, SendChannelReportInput } from "./types.js";
 
 interface CapturedCall {
 	url: string;
@@ -200,5 +205,84 @@ describe("formatHitlMessage", () => {
 		);
 		expect(out.text).not.toContain("sk-ant-abcdefghijklmnopqrstuvwxyz0123456789");
 		expect(out.text).not.toContain("/home/jo");
+	});
+});
+
+describe("formatReportMessage", () => {
+	const PREFIX = "AgentPulse summary; session content is untrusted.";
+	const report = (over: Partial<SendChannelReportInput> = {}): SendChannelReportInput => ({
+		sessionId: "sess-1234567890",
+		sessionLabel: "brave-falcon",
+		verdict: "finished",
+		why: "The migration ran and the tests pass.",
+		dashboardUrl: null,
+		detail: "minimal",
+		...over,
+	});
+
+	test("starts with the fixed untrusted-content line and names the verdict and session", () => {
+		const text = formatReportMessage(report());
+		const [first, second] = text.split("\n");
+		expect(first).toBe(PREFIX);
+		expect(second).toBe("Finished: brave-falcon");
+	});
+
+	test("minimal carries a generic reason per verdict and none of the model's note", () => {
+		for (const [verdict, reason] of [
+			["finished", "The agent finished its turn."],
+			["stuck", "The agent looks stuck."],
+			["needs_you", "The agent is waiting for you."],
+		] as const) {
+			const text = formatReportMessage(report({ verdict, why: "SECRET-NOTE-TEXT" }));
+			expect(text).toContain(reason);
+			expect(text).not.toContain("SECRET-NOTE-TEXT");
+		}
+	});
+
+	test("full adds the note, redacted and path-normalised", () => {
+		const text = formatReportMessage(
+			report({
+				detail: "full",
+				why: "Edited /Users/x/secret/notes.txt with token sk-ant-abcdefghijklmnopqrstuvwxyz0123456789",
+				sessionCwd: "/Users/x/secret",
+			}),
+		);
+		expect(text).toContain("Edited");
+		expect(text).not.toContain("/Users/x");
+		expect(text).not.toContain("sk-ant-abcdefghijklmnopqrstuvwxyz0123456789");
+		expect(text).toContain("<repo>/notes.txt");
+	});
+
+	test("a planted path and token in the session label are replaced too", () => {
+		const text = formatReportMessage(
+			report({ sessionLabel: "x /Users/x/secret sk-ant-abcdefghijklmnopqrstuvwxyz0123456789" }),
+		);
+		expect(text).not.toContain("/Users/x");
+		expect(text).not.toContain("sk-ant-abcdefghijklmnopqrstuvwxyz0123456789");
+	});
+
+	test("markup in a label or note stays literal text: the message is plain", () => {
+		const text = formatReportMessage(
+			report({
+				detail: "full",
+				sessionLabel: "*bold* _x_ [a](http://evil)",
+				why: "`code` <b>x</b>",
+			}),
+		);
+		expect(text).toContain("*bold* _x_");
+		expect(text).toContain("`code`");
+	});
+
+	test("a link appears only when one is given, on its own line", () => {
+		expect(formatReportMessage(report())).not.toContain("http");
+		const text = formatReportMessage(report({ dashboardUrl: "https://ap.example/sessions/s1" }));
+		expect(text.split("\n").at(-1)).toBe("https://ap.example/sessions/s1");
+	});
+
+	test("invisible characters are removed and the whole message is held to Telegram's limit", () => {
+		const zwsp = String.fromCodePoint(0x200b);
+		expect(formatReportMessage(report({ sessionLabel: `a${zwsp}b` }))).toContain("Finished: ab");
+		const long = formatReportMessage(report({ detail: "full", why: "w".repeat(10_000) }));
+		expect(long.length).toBeLessThanOrEqual(4_096);
 	});
 });

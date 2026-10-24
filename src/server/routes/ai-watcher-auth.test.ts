@@ -416,13 +416,43 @@ describe("audit", () => {
 });
 
 describe("reads", () => {
-	test("GET carries promptDelivery and a literal empty reports list", async () => {
+	test("GET carries promptDelivery and the session's newest reports, newest first", async () => {
 		const t = await team();
+		const empty = await app.request(watcherUrl("alice-session"), { headers: t.aliceCookie });
+		expect(((await empty.json()) as { reports: unknown }).reports).toEqual([]);
+
+		const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+		await getDb()
+			.insert(schema.aiWatcherReports)
+			.values([
+				{
+					sessionId: "alice-session",
+					turnKey: "p:1",
+					status: "delivered",
+					verdict: "finished",
+					why: "old",
+					createdAt: ago(120_000),
+				},
+				{
+					sessionId: "alice-session",
+					turnKey: "p:2",
+					status: "failed",
+					failureCode: "parse",
+					createdAt: ago(60_000),
+				},
+			]);
 		const res = await app.request(watcherUrl("alice-session"), { headers: t.aliceCookie });
 		expect(res.status).toBe(200);
-		const body = (await res.json()) as { promptDelivery: unknown; reports: unknown };
+		const body = (await res.json()) as {
+			promptDelivery: unknown;
+			reports: Array<{ turnKey: string; status: string }>;
+		};
 		expect(body.promptDelivery).toEqual({ deliverable: false, reason: "observed" });
-		expect(body.reports).toEqual([]);
+		expect(body.reports.map((r) => [r.turnKey, r.status])).toEqual([
+			["p:2", "failed"],
+			["p:1", "delivered"],
+		]);
+		await getDb().delete(schema.aiWatcherReports);
 	});
 
 	test("a PUT on a session that does not exist is 404", async () => {
