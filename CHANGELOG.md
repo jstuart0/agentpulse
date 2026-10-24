@@ -7,8 +7,70 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Added
+
+- **Notify mode.** A watcher can now write a two-line status note for you when a turn ends
+  (finished, looks stuck, or waiting for you), from what happened since the last
+  note. It appears in the AI tab, as a new inbox item that clears when you open the
+  session, and, if you assign a channel, in Telegram. It never sends anything to the agent. New
+  watchers start with Notify on and Continue off; change that under Settings, AI
+  watcher ("New watchers start with"), and per session in the AI tab.
+- **Pause automatic prompt sending** (Settings, AI watcher), on by default. While it is on, a
+  session set to `auto` opens a request for you instead of sending.
+- **A dispatch audit trail.** Every prompt the watcher sent, or refused to send, is recorded in
+  an append-only table that is not deleted with the session.
+- **Telegram message detail** per channel: Minimal (the default: session name, verdict and a
+  generic reason) or Full (adds the note and the suggested prompt, redacted). Full is never
+  available for a group chat. Telegram is a third-party service.
+- Telegram channels can be re-linked from Settings without losing the sessions that point at
+  them.
+- `AGENTPULSE_WATCHER_TIMEOUT_SECONDS` (default `90`, range 10 to 1800): the time limit of each
+  watcher model call.
+
+### Changed
+
+- **⚠ breaking: approving a watcher proposal now sends the prompt.** For a session AgentPulse
+  launched, Approve (in the app or in Telegram) types the prompt into the agent. For any other
+  session, Approve is replaced by Copy prompt and Dismiss, and the Telegram message has no
+  Approve button. Approval is refused if the session has moved on, the request expired (20
+  minutes), the text changed after you opened it, or the host is offline.
+- **⚠ breaking: the `auto` policy sends only fixed nudges.** It can send "retry the failed
+  step", "run the tests" or "summarize status" and nothing the model wrote. It must be confirmed
+  from the dashboard (not with an API key), is paused until "Pause automatic prompt sending"
+  is turned off, and is limited to 6 sends an hour per session and 20 overall. Editing the
+  system prompt, provider or limit asks for a new confirmation. **Existing `auto` watchers were
+  switched to `ask_on_risk`.**
+- **⚠ breaking: `auto` never sends while the agent is asking a question or a permission prompt
+  is open**, and a "keep going" nudge (`proceed`) is no longer sent automatically.
+- **⚠ breaking: Telegram taps and messages are accepted only from the enrolled account in a
+  private chat.** Channels enrolled in a group, or before the enrolling account was recorded in a
+  group, must be re-linked to approve or ask from Telegram. In team mode a channel belongs to
+  the person who created it; channels created before this release belong to nobody and refuse
+  approvals until an admin re-links them. Enrollment codes are longer and expire after 15
+  minutes.
+- The watcher now wakes when a turn ends (after a 10 second wait for a follow-up) instead of on
+  every event, for sessions that report through hooks as well as managed ones.
+- "Max continuations" now counts automatic sends only; approving a suggestion yourself never
+  uses it up, and re-enabling a watcher no longer resets it (the AI tab has a Reset button).
+- Changing a session's watcher, deciding a proposal, and the AI pause and kill switches are
+  checked against the session's owner (or an admin) in team mode, validate their input
+  strictly, and are written to the audit log. Turning `auto` on, resetting the counter and
+  switching the pause or kill off need a signed-in person, not an API key.
+- Every Telegram message the watcher sends is redacted of secrets and has home paths shortened.
+
 ### Fixed
 
+- **The watcher never woke for sessions that report through hooks.** It listened for events
+  only managed sessions emit; a hook-observed session was never watched.
+- **The max-continuations cap never applied, and reset when a watcher was re-enabled.**
+- **Inbox approvals skipped the safety filter** that the other approval routes applied.
+- **Telegram approvals, action buttons and Ask messages were not tied to their chat or user**,
+  and the enrollment code was short, never expired and had no failure limit. Any operator could
+  list every Telegram channel and see pending enrollment codes.
+- **Proposals never expired**, a stuck pending proposal stayed pending forever, and a corrupted
+  kill-switch value did not stop AI.
+- The watcher no longer leaves one no-op run row per event: existing rows are removed once at
+  startup (see the upgrade notes).
 - **Ask no longer shows a model's truncated reasoning as its answer.** A model
   that thinks before it answers could spend its whole output budget on
   reasoning and return an empty reply; the OpenAI-compatible adapter then

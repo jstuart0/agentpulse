@@ -155,8 +155,12 @@ When enabled, AgentPulse can use an LLM provider you choose (Anthropic, OpenAI, 
 
 ### Capabilities
 
-- **Session watcher** -- on each handoff (a `Stop` event, idle pause, plan completion, or error), the watcher reads recent events, redacts secrets via a configurable rule list, and asks the configured provider to emit one JSON decision: `continue` (with a next prompt), `ask` (route to HITL), `report` (summarize), `stop`, or `wait`. Proposals land in a durable queue so they survive server restarts.
-- **Per-session config** -- provider, policy (`ask_always` / `ask_on_risk` / `auto`), daily spend cap, max continuations, optional custom system prompt, all from the session detail **AI** tab.
+- **Session watcher** -- wakes when a turn ends (a `Stop`, or a managed session's own turn end) or a session ends, waits ten seconds for a follow-up, and then does up to two things for that session, each with its own switch:
+  - **Notify** writes a two-line status note for you -- finished, looks stuck, or waiting for you -- from what happened since the last note, and puts it in the inbox and (optionally) Telegram. It never sends anything to the agent.
+  - **Continue** asks the provider for the next prompt and opens a request for you to approve. A watcher can *send* it only into a session AgentPulse launched; for any other session it is a suggestion to copy.
+  
+  Secrets are redacted before anything reaches the provider. New watchers start with Notify on and Continue off (Settings → AI watcher changes that). Every note starts with a fixed line saying the text after it came from session content AgentPulse doesn't control.
+- **Per-session config** -- provider, the two modes, policy (`ask_always` / `ask_on_risk` / `auto`), daily spend cap, the most automatic sends, optional custom system prompt, and the notification channel, all from the session detail **AI** tab. `auto` sends only three fixed nudges (retry the failed step, run the tests, summarize status), asks you to confirm it first, and is paused until you turn "Pause automatic prompt sending" off in Settings.
 - **Auto-enable on Ask-initiated sessions** -- when Ask launches a session, a watcher row is attached at correlation time (enabled, `ask_on_risk` policy, default provider). Five silent-skip branches keep this from ever failing a launch: not Ask-initiated, AI inactive, user opt-out, watcher already configured, or no default provider. Settings → AI watcher has a toggle (default on) to disable.
 - **Session intelligence classifier** -- deterministic heuristic flags sessions as `healthy` / `blocked` / `stuck` / `risky` / `complete_candidate` with a one-sentence reason. Shows as a chip on dashboard cards. Optionally feeds back into watcher decisions.
 - **Ask command surface** -- conversational interface (web + Telegram) that turns natural language into approval cards. Every state-mutating intent goes through the same `ai_action_requests` atomic-claim approval pipeline, so concurrent web + Telegram approvals can't double-execute. Examples:
@@ -228,7 +232,9 @@ Direct URLs (`/inbox`, `/digest`, etc.) stay reachable when a flag is off -- tog
 
 ### Telegram HITL (experimental, `labs.telegramChannel`)
 
-When enabled, the watcher can forward HITL requests to a Telegram chat with inline **Approve / Decline** buttons instead of (or in addition to) the in-app inbox. Useful for approving continuations from your phone while an agent is running somewhere else.
+When enabled, the watcher can forward its Notify reports and its HITL requests to a Telegram chat instead of (or in addition to) the in-app inbox. A request gets **Approve** and **Dismiss** buttons, and Approve appears only when the session can take a prompt and the message shows the exact text that would be sent. Useful for approving continuations from your phone while an agent is running somewhere else.
+
+Telegram is a third-party service. By default a message carries only the session name, the verdict or decision, and a generic reason (**minimal**). **Full** detail adds the note and the suggested prompt, redacted of secrets and with home paths shortened; set it per channel in Settings, and it is never available for a group chat.
 
 Enable it:
 
@@ -240,16 +246,19 @@ Enable it:
    ```
 3. Restart AgentPulse. Open **Settings → Labs** and flip `telegramChannel` on.
 4. A new **Telegram HITL channel** section appears in Settings. Click **Set webhook** once — it points Telegram at `PUBLIC_URL/api/v1/channels/telegram/webhook`.
-5. Click **Generate code**. Copy the `/start <code>` shown and DM it to your bot. The bot confirms the link.
+5. Click **Generate code**. Copy the `/start <code>` shown and DM it to your bot **from a private chat** (a group can't be tied to one person). The code is single-use and expires after 15 minutes. The bot confirms the link, and from then on only that Telegram account's taps and messages are accepted. A channel enrolled before this release, or in a group, must be re-linked from its row in Settings to approve or ask from Telegram.
 6. On any session, open the **AI** tab and assign that channel in the watcher config.
 
-From then on, any HITL that watcher opens for that session is sent to Telegram. Tapping **Approve** routes through the same HITL-resolve path as the in-app button: the `ai_hitl_response` and `ai_continue_sent` events fire identically, just annotated with `channel: telegram`.
+From then on, any HITL that watcher opens for that session is sent to Telegram. Tapping **Approve** routes through the same path as the in-app button and really types the prompt into the session: the `ai_hitl_response` and `ai_continue_sent` events fire identically, just naming Telegram as the actor.
+
+Rate limits keep a busy fleet from flooding the chat: one routine report per session per ten minutes, at most three "stuck" or "waiting for you" reports per session per hour, and 30 messages an hour across everything. A message over a limit is skipped in Telegram and still appears in the inbox.
 
 Safety notes:
 - The bot token is instance-wide; every chat that's enrolled via `/start` shares the same bot. The chat id itself is encrypted at rest with `AGENTPULSE_SECRETS_KEY`.
 - The webhook route validates Telegram's `X-Telegram-Bot-Api-Secret-Token` header against `TELEGRAM_WEBHOOK_SECRET` on every request (a constant-time comparison, done before the body is read), so a lucky guesser still can't forge approvals. A body over 1 MiB is refused with `413`.
 - A Telegram question whose turn fails gets a fixed reply; the error detail goes to the server log, not to the chat. Some launch set-up failures (creating or cloning a project from an Ask message) still include the underlying error message in the reply; see the Known limitations in `CHANGELOG.md`.
-- An approval tapped in Telegram is cross-checked against the HITL row's `channel_id` before any resolve happens — a user who learns a HITL id cannot use a different chat to act on it.
+- Every inbound update (taps, Ask messages, action buttons) is checked against the enrolled private chat *and* the enrolled Telegram user before anything runs, and an approval is also cross-checked against the HITL row's `channel_id`. A callback carries only the request id and the action; the prompt and its hash always come from the server.
+- In team mode a channel belongs to the person who created it. Channels that existed before ownership was recorded belong to nobody and refuse approvals until an admin re-links them.
 - Delivery failures never block the in-app HITL path. If Telegram is down or slow, approve/decline still works from the dashboard or `/inbox`.
 
 ### Session summary (experimental, `labs.sessionSummary`)
@@ -284,7 +293,8 @@ The limit sets the other time bounds. A summary that is still `generating` after
 
 ### Safety posture
 
-- **HITL by default** -- a Claude/Codex watcher can propose, but `auto`-dispatch only runs when the session is managed and the supervisor is connected.
+- **HITL by default** -- **Approve really sends**: for a session AgentPulse launched, approving a request (in the app or in Telegram) types the prompt into the agent. Nothing the watcher writes is sent without a person, except the `auto` policy's three fixed nudges. `auto` needs you to confirm it from the dashboard, never fires while the agent is asking a question or a permission prompt is open, is limited to six sends an hour per session and 20 overall, stops at the per-session total you set, and is paused until you turn "Pause automatic prompt sending" off. Every send and every refusal is written to an append-only audit table that is not removed with the session.
+- **Keep manage keys out of agent environments** -- a key that can manage can approve proposals. Give agents ingest-scoped keys only. With `DISABLE_AUTH` on, every control that is normally "signed-in person only" (confirming `auto`, un-pausing, re-linking a channel) is available to any caller.
 - **Dispatch filter** -- every prompt (watcher-proposed or user-approved) is screened against a deny-list of destructive / injection-flavored patterns before dispatch.
 - **Redactor** -- the watcher's transcripts and session summaries are scrubbed of common secret patterns before being sent to your provider, with a dry-run preview available. Ask and Q&A do not redact.
 - **Prompt injection hardening** -- user transcripts are embedded in an explicit `<transcript>` UNTRUSTED block with instructions for the model to treat the contents as data.
@@ -606,6 +616,7 @@ AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). T
 | `AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS` | `180` | Ask: the time limit of the model call that writes the answer (streamed or not), and of a per-session Q&A answer, in seconds. Range 30 to 1800; out-of-range values are clamped. |
 | `AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS` | `20` | The time limit of the short helper calls, in seconds: the Ask intent classifiers, Ask query expansion and the alert-rule yes/no check. Range 5 to 300. Raise it if your model must load before it answers. |
 | `AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS` | `5` | The time limit of the attempt on the provider chosen for quick calls (Settings, AI), in seconds. Range 1 to 60. On failure the call is repeated on the default provider with the full helper limit. |
+| `AGENTPULSE_WATCHER_TIMEOUT_SECONDS` | `90` | The time limit of each watcher model call (the Notify note and the Continue decision), in seconds. Range 10 to 1800; out-of-range values are clamped. |
 | `AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS` | `360` | Session summary: the time limit of one model call, in seconds, per call (the repair call gets the full limit too). Range 30 to 1800; out-of-range values are clamped. The summary lease is 2 × this + 60 seconds (780 at the default), and the failure breaker window scales with it. Set the same value on every replica. On Postgres a stuck summary is recovered only at the lease. |
 | `AGENTPULSE_MANAGED_SESSION_MAX_SILENCE_HOURS` | `72` | Hours of silence after which a supervisor-launched session stops being exempt from the inactivity sweep, even while its host is heartbeating, and completes. The next hook reopens it. Range 1 to 720. |
 | `DATABASE_URL` | `""` (SQLite) | Postgres connection string. When set to a `postgres://...` URL, AgentPulse uses PostgreSQL instead of SQLite. Example: `postgres://agentpulse:password@host:5432/agentpulse?sslmode=require`. Leave unset or empty for SQLite. |
