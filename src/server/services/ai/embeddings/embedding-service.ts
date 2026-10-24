@@ -276,6 +276,14 @@ export interface BackfillPassOptions {
 	maxBatches?: number;
 	/** Sleep this long after each batch, on top of yielding to the event loop. */
 	pauseMs?: number;
+	/** Open the circuit after this many consecutive failed batches (default 5). 1 is a single probe. */
+	failureLimit?: number;
+	/**
+	 * Count the embeddable events for the progress total (default true). The count
+	 * scans the table (`event_type` has no index), so the scheduled pass, which runs
+	 * every minute, skips it; `getBackfillProgress` computes its own total.
+	 */
+	countTotal?: boolean;
 }
 
 export interface BackfillPassResult {
@@ -339,10 +347,12 @@ export async function runBackfillPass(
 	let cursor = options.fromId ?? 0;
 	try {
 		const placeholders = EMBEDDED_EVENT_TYPES.map(() => "?").join(",");
-		const totalRow = getSqlite()
-			.prepare(`SELECT COUNT(*) AS n FROM events WHERE event_type IN (${placeholders})`)
-			.get(...EMBEDDED_EVENT_TYPES) as { n: number };
-		backfillState.total = totalRow.n;
+		if (options.countTotal !== false) {
+			const totalRow = getSqlite()
+				.prepare(`SELECT COUNT(*) AS n FROM events WHERE event_type IN (${placeholders})`)
+				.get(...EMBEDDED_EVENT_TYPES) as { n: number };
+			backfillState.total = totalRow.n;
+		}
 
 		// An id cursor walks the table once. Each pass reads (stage one) the ids
 		// and payload sizes of up to a batch of pending rows inside an id window
@@ -378,6 +388,7 @@ export async function runBackfillPass(
 		);
 		const yieldToLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+		const failureLimit = options.failureLimit ?? BACKFILL_MAX_CONSECUTIVE_FAILURES;
 		let consecutiveFailures = 0;
 		let batches = 0;
 		let maxId = readMaxEventId();
@@ -462,7 +473,7 @@ export async function runBackfillPass(
 					consecutiveFailures++;
 					backfillState.error = err instanceof Error ? err.message : String(err);
 					console.warn("[embeddings] batch embed failed:", err);
-					if (consecutiveFailures >= BACKFILL_MAX_CONSECUTIVE_FAILURES) {
+					if (consecutiveFailures >= failureLimit) {
 						console.warn(
 							JSON.stringify({
 								kind: "embedding_circuit_open",
@@ -515,7 +526,7 @@ export async function runBackfillPass(
 		backfillState.finishedAt = new Date().toISOString();
 		if (circuitOpen) {
 			console.warn(
-				`[embeddings] backfill paused: circuit open after ${BACKFILL_MAX_CONSECUTIVE_FAILURES} consecutive adapter failures — the scheduled backfill tries again later`,
+				`[embeddings] backfill paused: circuit open after ${failureLimit} consecutive adapter failures — the scheduled backfill tries again later`,
 			);
 		} else if (reachedEnd) {
 			console.log(

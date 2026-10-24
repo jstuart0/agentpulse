@@ -124,6 +124,18 @@ describeSqliteOnly(
 			expect(embeddedIds()).toEqual([1, 21_000, 21_001]);
 		});
 
+		test("a scheduled pass does not scan the whole events table to count it", async () => {
+			addEvents(3);
+			const meter = installStatementMeter();
+			try {
+				await schedule.runScheduledBackfillTick(NO_PAUSE);
+				expect(meter.matching(/COUNT\(\*\)[\s\S]*FROM events/i)).toHaveLength(0);
+			} finally {
+				meter.restore();
+			}
+			expect(embeddedIds()).toHaveLength(3);
+		});
+
 		test("an idle tick embeds nothing, asks for the normal wait, and costs one MAX(id) read", async () => {
 			addEvents(2);
 			await schedule.runScheduledBackfillTick(NO_PAUSE);
@@ -195,6 +207,43 @@ describeSqliteOnly("a provider outage heals without a restart", () => {
 		addEvents(1);
 		const f3 = await schedule.runScheduledBackfillTick(NO_PAUSE);
 		expect(f3.nextDelayMs).toBe(schedule.BACKFILL_TICK_MS * 2);
+	});
+
+	test("an embedding host that is down for a long while: one probe per wait, then it resumes on its own (the 2026-10 reboot)", async () => {
+		const ids = addEvents(40);
+		let attempts = 0;
+		service.__setEmbeddingAdapterForTests({
+			kind: "ollama",
+			model: MODEL,
+			dim: 4,
+			embed: async (text: string) => {
+				attempts++;
+				if (failing) throw new Error("host down");
+				embedCalls.push(text);
+				return new Float32Array(4).fill(0.1);
+			},
+		});
+		failing = true;
+
+		// The first pass finds the host down and opens the circuit after its 5 failures.
+		await schedule.runScheduledBackfillTick(NO_PAUSE);
+		// A batch embeds its 32 texts at once: 5 failed batches.
+		expect(attempts).toBe(5 * service.BACKFILL_BATCH_ROWS);
+
+		// While it stays down, every retry is half-open: exactly one probe batch.
+		for (let i = 0; i < 6; i++) {
+			attempts = 0;
+			const outcome = await schedule.runScheduledBackfillTick(NO_PAUSE);
+			expect(attempts).toBe(service.BACKFILL_BATCH_ROWS);
+			expect(outcome.nextDelayMs).toBeLessThanOrEqual(schedule.BACKFILL_MAX_BACKOFF_MS);
+		}
+		expect(embeddedIds()).toEqual([]);
+
+		// The host returns. The next probe succeeds and the same pass embeds everything pending.
+		failing = false;
+		const recovered = await schedule.runScheduledBackfillTick(NO_PAUSE);
+		expect(embeddedIds()).toEqual(ids);
+		expect(recovered.nextDelayMs).toBe(schedule.BACKFILL_TICK_MS);
 	});
 
 	test("the wait never exceeds its ceiling", async () => {

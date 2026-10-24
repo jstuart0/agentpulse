@@ -19,7 +19,10 @@ import {
  * Each tick is a bounded pass of the backfill. A pass handles at most
  * `BACKFILL_BATCHES_PER_PASS` batches, sleeping `BACKFILL_BATCH_PAUSE_MS` after
  * each on top of yielding to the event loop, so a large backlog is worked off
- * a slice at a time and ingest keeps its turn. The id cursor a pass ends on is
+ * a slice at a time and ingest keeps its turn. A pass that ends with the
+ * provider failing (the circuit opens) is retried after a growing wait, and the
+ * retry is a half-open probe: one request first, the full pass only if it
+ * succeeds. Nothing latches; no restart or rebuild is needed. The id cursor a pass ends on is
  * remembered (per model), so a later pass starts there instead of walking the
  * whole table again; an idle tick is one `MAX(id)` read.
  */
@@ -28,8 +31,12 @@ import {
 export const BACKFILL_TICK_MS = 60_000;
 /** Between ticks while a backlog remains (a pass ended on its batch budget). */
 export const BACKFILL_CATCHUP_TICK_MS = 5_000;
-/** The longest wait after repeated failures; the wait doubles from `BACKFILL_TICK_MS` up to this. */
-export const BACKFILL_MAX_BACKOFF_MS = 15 * 60_000;
+/**
+ * The longest wait after repeated failures; the wait doubles from
+ * `BACKFILL_TICK_MS` up to this. An embedding host that reboots is back within
+ * minutes, and a probe costs one request, so the ceiling is short.
+ */
+export const BACKFILL_MAX_BACKOFF_MS = 5 * 60_000;
 /** Batches (32 events each at most) one pass may embed. */
 export const BACKFILL_BATCHES_PER_PASS = 100;
 /** Sleep after each batch of a scheduled pass. */
@@ -107,6 +114,11 @@ export async function runScheduledBackfillTick(options: TickOptions = {}): Promi
 			fromId: from,
 			maxBatches: options.maxBatches ?? BACKFILL_BATCHES_PER_PASS,
 			pauseMs: options.pauseMs ?? BACKFILL_BATCH_PAUSE_MS,
+			// Half-open: after a failed pass the first batch is a single probe. If the
+			// provider is still down that is one failed request, not five with
+			// backoff between them; if it answers, the pass carries on as normal.
+			countTotal: false,
+			failureLimit: consecutiveFailures > 0 ? 1 : undefined,
 		});
 		if (!pass.ran) return { nextDelayMs: BACKFILL_TICK_MS, handled: 0 };
 
