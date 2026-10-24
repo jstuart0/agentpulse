@@ -54,7 +54,7 @@ export const AI_DISPATCH_AUDIT_TRIGGERS_SQLITE: readonly string[] = [
  */
 export const AI_DISPATCH_AUDIT_GUARD_FUNCTION_POSTGRES = `CREATE OR REPLACE FUNCTION ai_dispatch_audit_guard() RETURNS trigger AS $$
 BEGIN
-	IF TG_OP = 'DELETE' THEN
+	IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
 		RAISE EXCEPTION 'ai_dispatch_audit_append_only';
 	END IF;
 	IF ${AUDIT_IMMUTABLE_COLUMNS.map((c) => (c === "config_snapshot" ? "NEW.config_snapshot::text IS DISTINCT FROM OLD.config_snapshot::text" : `NEW.${c} IS DISTINCT FROM OLD.${c}`)).join("\n\t\tOR ")}

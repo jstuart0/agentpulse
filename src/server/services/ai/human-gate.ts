@@ -11,6 +11,7 @@
  */
 import type { SessionEvent } from "../../../shared/types.js";
 import { type RiskClassesConfig, evaluateRisk } from "./risk-classes.js";
+import { boundaryOf } from "./turn-identity.js";
 
 /**
  * Phrases of someone waiting for an answer. Fixed words, word-bounded, no
@@ -29,7 +30,12 @@ export const PERMISSION_WHY = "A permission prompt is open.";
 
 /**
  * The events of the turn that ended at `trigger`: everything after the newest
- * prompt at or before it, up to and including it.
+ * prompt at or before it, up to and including it, plus the agent's final
+ * message when it was stored after the trigger. A hook that carries
+ * `last_assistant_message` is stored as the hook event first and the message
+ * second (`source_event_type` names the hook), so the final message of a turn,
+ * usually the one that asks something, has a higher id than the Stop. It is
+ * included while no later boundary has been seen.
  */
 export function eventsOfTurn(recent: readonly SessionEvent[], triggerId: number): SessionEvent[] {
 	const upTo = recent.filter((e) => e.id <= triggerId);
@@ -40,7 +46,20 @@ export function eventsOfTurn(recent: readonly SessionEvent[], triggerId: number)
 			break;
 		}
 	}
-	return upTo.slice(start + 1);
+	const turn = upTo.slice(start + 1);
+	const trigger = upTo.find((e) => e.id === triggerId);
+	if (!trigger) return turn;
+	for (const later of recent) {
+		if (later.id <= triggerId) continue;
+		if (boundaryOf(later) !== null) break;
+		if (
+			later.category === "assistant_message" &&
+			later.rawPayload?.source_event_type === trigger.eventType
+		) {
+			turn.push(later);
+		}
+	}
+	return turn;
 }
 
 function lastAssistantMessage(turn: readonly SessionEvent[]): string {

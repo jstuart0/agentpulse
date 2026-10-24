@@ -760,6 +760,21 @@ describe("automatic sending", () => {
 		});
 	}
 
+	test("S1: a question in the final message, stored after the Stop as the hook stores it, holds the turn", async () => {
+		const w = await autoWorld();
+		await seedEvent(w.sessionId, {
+			eventType: "AssistantMessage",
+			category: "assistant_message",
+			content: "I've finished. Should I also update the docs?",
+			rawPayload: { source_event_type: "Stop" },
+			createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+		});
+		stub.script("openai", continueAnswer("Run the tests in src/foo", "run_tests"));
+		await runOnce(runner, w.sessionId, w.stopId);
+		expect(await actionsOf(w.sessionId)).toEqual([]);
+		expect((await hitlWhy(w.sessionId)) ?? "").toContain("The agent is asking you something.");
+	});
+
 	test("named member: the same turn with the permission request removed sends exactly one nudge", async () => {
 		const w = await autoWorld();
 		stub.script("openai", continueAnswer("Run the tests in src/foo", "run_tests"));

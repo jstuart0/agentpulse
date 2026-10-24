@@ -105,6 +105,8 @@ const LONG_FORCE_RE = /--force/i;
 const SHORT_FORCE_RE = /\bgit\s+push\b[^\n]*\s-[A-Za-z]*f[A-Za-z]*(?=\s|$)/i;
 const PLUS_REFSPEC_RE = /(?:^|\s)\+[A-Za-z0-9_./-]+:/;
 const PLUS_REFS_RE = /(?:^|\s)\+refs\//i;
+// A bare plus ref (`git push origin +main`, `+HEAD`) forces that ref without a colon.
+const PLUS_BARE_REF_RE = /\bgit\s+push\b[^\n]*\s\+[A-Za-z0-9_./-]+(?=\s|$)/i;
 const HEAD_TO_MAIN_RE = /\bHEAD:(?:main|master)\b/i;
 
 export function sanitizeOutboundPrompt(input: string): SanitiseResult {
@@ -119,7 +121,12 @@ export function sanitizeOutboundPrompt(input: string): SanitiseResult {
 	if (LONG_FORCE_RE.test(text) || SHORT_FORCE_RE.test(text)) {
 		return { ok: false, reason: "force_push" };
 	}
-	if (PLUS_REFSPEC_RE.test(text) || PLUS_REFS_RE.test(text) || HEAD_TO_MAIN_RE.test(text)) {
+	if (
+		PLUS_REFSPEC_RE.test(text) ||
+		PLUS_REFS_RE.test(text) ||
+		PLUS_BARE_REF_RE.test(text) ||
+		HEAD_TO_MAIN_RE.test(text)
+	) {
 		return { ok: false, reason: "refspec_push" };
 	}
 	return { ok: true, text };

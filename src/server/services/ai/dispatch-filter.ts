@@ -24,10 +24,21 @@ export const DEFAULT_RULES: DispatchRule[] = [
 		name: "rm_split_flags",
 		pattern: /\brm\s+(?:-[a-z-]+\s+){1,5}(?:\/(?!\w)|~|\$HOME\b|\*)/i,
 	},
+	// The same removals with the target quoted (`rm -rf "/"`, `rm -rf "$HOME"`, `rm -rf '~'`).
+	{
+		name: "rm_quoted_target",
+		pattern: /\brm\s+(?:-[a-z-]+\s+){1,5}["'](?:\/|~|\$HOME|\$\{HOME\}|\*)["'](?=\s|$|[;&|])/i,
+	},
 	// Pipe-to-shell from network. Catches curl|sh, wget|sh, any-command|bash.
 	{
 		name: "pipe_to_shell",
 		pattern: /\b(?:curl|wget|fetch)\s[^\n|]+\|\s*(?:sh|bash|zsh|python\d?)\b/i,
+	},
+	// Running a download without a pipe: `bash <(curl ...)`, `sh -c "$(curl ...)"`, `eval "$(wget ...)"`.
+	{
+		name: "shell_runs_download",
+		pattern:
+			/(?:<\(\s*(?:curl|wget|fetch)\b|\b(?:sh|bash|zsh|eval|source)\b[^\n]*(?:\$\(|`)\s*(?:curl|wget|fetch)\b)/i,
 	},
 	// The same with a privilege escalation in between (`curl x | sudo sh`).
 	{ name: "pipe_to_sudo_shell", pattern: /\|\s*sudo\s+(?:-\S+\s+)*(?:sh|bash|zsh)\b/i },

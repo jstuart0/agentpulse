@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionEvent } from "../../../shared/types.js";
+import { normalizeHookEvent } from "../event-normalizer.js";
 import { ASKS_HUMAN_RE, eventsOfTurn, needsHuman, pendingAction } from "./human-gate.js";
 import type { RiskClassesConfig } from "./risk-classes.js";
 
@@ -181,5 +182,61 @@ describe("eventsOfTurn", () => {
 		const a = message("x");
 		const stop = ev({ eventType: "Stop", category: "system_event" });
 		expect(eventsOfTurn([a, stop], stop.id).map((e) => e.id)).toEqual([a.id, stop.id]);
+	});
+});
+
+describe("S1: the final message is stored after the Stop", () => {
+	/** The events a real hook delivery stores, in the order the normalizer returns them, with ascending ids. */
+	function stored(hook: Record<string, unknown>): SessionEvent[] {
+		return normalizeHookEvent({ session_id: "s", ...hook } as never, "claude_code").map((n) =>
+			ev({
+				eventType: n.eventType,
+				category: n.category as SessionEvent["category"],
+				content: n.content,
+				rawPayload: n.rawPayload,
+			}),
+		);
+	}
+
+	test("the normalizer really inserts the Stop before the message built from last_assistant_message", () => {
+		const rows = stored({
+			hook_event_name: "Stop",
+			last_assistant_message: "Done. Should I push?",
+		});
+		expect(rows.map((r) => r.eventType)).toEqual(["Stop", "AssistantMessage"]);
+	});
+
+	test("a question in the final message holds the turn, though its id is above the trigger's", () => {
+		const prompt = ev({ category: "prompt", eventType: "UserPromptSubmit" });
+		const rows = stored({
+			hook_event_name: "Stop",
+			last_assistant_message: "Done. Should I push?",
+		});
+		const stop = rows[0] as SessionEvent;
+		const turn = eventsOfTurn([prompt, ...rows], stop.id);
+		expect(turn.map((e) => e.eventType)).toEqual(["Stop", "AssistantMessage"]);
+		expect(needsHuman(turn, NO_RISK)).toMatchObject({
+			hold: true,
+			why: "The agent is asking you something.",
+		});
+	});
+
+	test("a message that belongs to a later turn is not pulled in", () => {
+		const first = stored({ hook_event_name: "Stop", last_assistant_message: "All done." });
+		const next = ev({ category: "prompt", eventType: "UserPromptSubmit" });
+		const second = stored({ hook_event_name: "Stop", last_assistant_message: "Want me to push?" });
+		const turn = eventsOfTurn([...first, next, ...second], (first[0] as SessionEvent).id);
+		expect(needsHuman(turn, NO_RISK).hold).toBe(false);
+	});
+
+	test("a message from a different hook type is not taken for the Stop's", () => {
+		const stop = ev({ eventType: "Stop", category: "system_event" });
+		const other = ev({
+			eventType: "AssistantMessage",
+			category: "assistant_message",
+			content: "Should I push?",
+			rawPayload: { source_event_type: "Notification" },
+		});
+		expect(eventsOfTurn([stop, other], stop.id).map((e) => e.id)).toEqual([stop.id]);
 	});
 });

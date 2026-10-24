@@ -1,3 +1,9 @@
+import { createHash } from "node:crypto";
+import { and, eq } from "drizzle-orm";
+import { getDb } from "../../db/client.js";
+import type { DispatchConfigSnapshot } from "../../db/schema/ai/ai-dispatch-audit.js";
+import { aiDispatchAudit } from "../../db/schema/index.js";
+import { parseDbTimestamp } from "../util/db-time.js";
 /**
  * The append-only trail of every attempt to type a prompt into an agent on a
  * watcher's behalf (table `ai_dispatch_audit`, with no foreign keys so it
@@ -14,12 +20,7 @@
  * transaction, everything else `getDb()`. This module imports only the
  * schema, so the control-actions queue can use it without a cycle.
  */
-import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import { getDb } from "../../db/client.js";
-import type { DispatchConfigSnapshot } from "../../db/schema/ai/ai-dispatch-audit.js";
-import { aiDispatchAudit } from "../../db/schema/index.js";
-import { parseDbTimestamp } from "../util/db-time.js";
+import { redact } from "./redactor.js";
 import type { WatcherConfigRecord } from "./watcher-config-service.js";
 
 export type AuditActorKind = "user" | "telegram" | "auto";
@@ -74,7 +75,8 @@ function toRow(intent: AuditIntent) {
 		telegramFromId: intent.telegramFromId ?? null,
 		telegramChatId: intent.telegramChatId ?? null,
 		promptSha256: intent.promptSha256,
-		promptText: intent.promptText,
+		// Redacted: the hash is of what was sent, the stored copy must not keep a secret a person typed.
+		promptText: intent.promptText === null ? null : redact(intent.promptText).text,
 		continueKind: intent.continueKind ?? null,
 		proposalId: intent.proposalId ?? null,
 		hitlId: intent.hitlId ?? null,

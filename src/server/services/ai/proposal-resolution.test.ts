@@ -202,6 +202,24 @@ describe("a person approves", () => {
 		expect(await hitlStatus(w.hitlId)).toBe("applied");
 	});
 
+	test("S3: a secret in a custom prompt is sent as typed but stored redacted in the audit row", async () => {
+		const w = await world();
+		const key = `sk-ant-api03-${"A1b2C3d4E5".repeat(8)}`;
+		const text = `Use ${key} to log in and run the tests`;
+		const result = await approve(w, {
+			action: "custom",
+			customPrompt: text,
+			promptSha256: undefined,
+		});
+		expect(result.ok).toBe(true);
+		const [action] = await promptActions(w.sessionId);
+		expect((action?.metadata as { prompt: string }).prompt).toBe(text);
+		const [audit] = await auditRows(w.sessionId);
+		expect(audit?.promptText).not.toContain(key);
+		expect(audit?.promptText).toContain("REDACTED");
+		expect(audit?.promptSha256).toBe(sha256(text));
+	});
+
 	test("an observed session can't take a prompt: 409, the request reopens, no action, one refused audit row", async () => {
 		const w = await world({ managed: false });
 		const result = await approve(w);

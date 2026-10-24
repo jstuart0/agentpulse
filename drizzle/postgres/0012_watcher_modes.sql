@@ -66,7 +66,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS "uq_watcher_proposals_session_turn" ON "watche
 --> statement-breakpoint
 CREATE OR REPLACE FUNCTION ai_dispatch_audit_guard() RETURNS trigger AS $$
 BEGIN
-	IF TG_OP = 'DELETE' THEN
+	IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
 		RAISE EXCEPTION 'ai_dispatch_audit_append_only';
 	END IF;
 	IF NEW.id IS DISTINCT FROM OLD.id
@@ -102,3 +102,7 @@ CREATE TRIGGER trg_ai_dispatch_audit_update BEFORE UPDATE ON ai_dispatch_audit F
 DROP TRIGGER IF EXISTS trg_ai_dispatch_audit_delete ON ai_dispatch_audit;
 --> statement-breakpoint
 CREATE TRIGGER trg_ai_dispatch_audit_delete BEFORE DELETE ON ai_dispatch_audit FOR EACH ROW EXECUTE FUNCTION ai_dispatch_audit_guard();
+--> statement-breakpoint
+DROP TRIGGER IF EXISTS trg_ai_dispatch_audit_truncate ON ai_dispatch_audit;
+--> statement-breakpoint
+CREATE TRIGGER trg_ai_dispatch_audit_truncate BEFORE TRUNCATE ON ai_dispatch_audit FOR EACH STATEMENT EXECUTE FUNCTION ai_dispatch_audit_guard();

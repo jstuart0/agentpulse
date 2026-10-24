@@ -571,6 +571,13 @@ describePostgresOnly("ai_dispatch_audit on Postgres is append-only", () => {
 			VALUES (${id}, 'pg-audit', 'user', ${outcome}, 'Run the tests', ${JSON.stringify({ policy: "ask_always" })}::json)`);
 	}
 
+	test("S3: TRUNCATE is refused too, and the rows survive it", async () => {
+		const id = `pg-${crypto.randomUUID()}`;
+		await seed(id);
+		expect(await failureOf(() => run(sql`TRUNCATE ai_dispatch_audit`))).toContain(AUDIT_ERROR);
+		expect(await rows(sql`SELECT id FROM ai_dispatch_audit WHERE id = ${id}`)).toHaveLength(1);
+	});
+
 	test("only the permitted transitions and columns change; nothing is deleted", async () => {
 		const id = `pg-${crypto.randomUUID()}`;
 		await seed(id);
