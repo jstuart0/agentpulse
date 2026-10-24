@@ -39,7 +39,7 @@ the human.
 
 Emit exactly one JSON object, no prose before or after, matching one of:
 
-  {"decision":"continue","nextPrompt":"<follow-up prompt to dispatch>"}
+  {"decision":"continue","nextPrompt":"<follow-up prompt to dispatch>","continueKind":"proceed|retry_failed_step|run_tests|summarize_status"}
   {"decision":"ask","proposal":"<what you'd do>","why":"<reason>"}
   {"decision":"report","summary":"<brief summary>","status":"success|error|partial","highlights":["<bullet>","<bullet>"]}
   {"decision":"stop","why":"<reason>"}
@@ -54,7 +54,12 @@ Emit exactly one JSON object, no prose before or after, matching one of:
   and free of shell metacharacters. NEVER include commands that delete
   files, touch credentials, or network-fetch-and-execute. If the agent is
   waiting on the human (a question, a confirmation, a permission), choose
-  "ask", not "continue".
+  "ask", not "continue". continueKind names what kind of nudge it is:
+  "retry_failed_step" (the last step failed), "run_tests" (the work looks
+  done but was not tested), "summarize_status" (a status is needed), or
+  "proceed" (anything else). Only the first three can ever be sent without a
+  person approving them; "proceed" is always shown to a person first. Leave
+  continueKind out when none fits.
 - "ask": whenever you're not sure. The default choice for risky or ambiguous
   situations. The human will approve or redirect.
 - "report": when the agent finished something noteworthy (passed tests,

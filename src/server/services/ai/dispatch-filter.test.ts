@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { checkDispatch } from "./dispatch-filter.js";
+import { checkDispatch, isConversationalReply } from "./dispatch-filter.js";
 
 describe("dispatch filter: blocks dangerous patterns", () => {
 	const cases: Array<{ name: string; prompt: string; rule: string }> = [
@@ -114,5 +114,60 @@ describe("dispatch filter: length and validity", () => {
 		]);
 		expect(res.allowed).toBe(false);
 		expect(res.rule).toBe("dont_produce_flag");
+	});
+});
+
+describe("isConversationalReply", () => {
+	test("a reply to the person is chatter; an instruction to the agent is not", () => {
+		expect(
+			isConversationalReply("Ready when you are, Mark! Anything else I can assist with?"),
+		).toBe(true);
+		expect(isConversationalReply("Run the failing test in src/foo.test.ts and fix it")).toBe(false);
+	});
+
+	test("greetings, thanks, offers and 'let me know' are chatter", () => {
+		for (const text of [
+			"Hello!",
+			"Hi there, how can I help?",
+			"Thanks, that works.",
+			"Happy to help with anything else.",
+			"Let me know if you want me to push",
+			"Is there anything else you need?",
+			"What would you like to do next?",
+		]) {
+			expect(isConversationalReply(text), text).toBe(true);
+		}
+	});
+
+	test("a short bare acknowledgement is chatter, but 'Great, now run the suite' is an instruction", () => {
+		expect(isConversationalReply("Sure.")).toBe(true);
+		expect(isConversationalReply("Got it, thanks")).toBe(true);
+		expect(
+			isConversationalReply("Great, now run the full test suite and fix any failures in src/api"),
+		).toBe(false);
+		expect(
+			isConversationalReply(
+				"Sure, run the migration tests in packages/db and then report back to me",
+			),
+		).toBe(false);
+	});
+
+	test("an instruction that mentions 'let me know' later in a long line is not chatter", () => {
+		expect(
+			isConversationalReply("Fix the lint errors under src/server, then let me know it passes"),
+		).toBe(false);
+	});
+
+	test("empty and non-string input are not chatter", () => {
+		expect(isConversationalReply("")).toBe(false);
+		expect(isConversationalReply(undefined as unknown as string)).toBe(false);
+	});
+
+	test("a 100 KB input returns within 50 ms, whatever it holds", () => {
+		for (const text of ["a".repeat(100_000), "hello ".repeat(20_000), `${" ".repeat(100_000)}x`]) {
+			const started = performance.now();
+			isConversationalReply(text);
+			expect(performance.now() - started).toBeLessThan(50);
+		}
 	});
 });

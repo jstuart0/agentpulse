@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { extractJsonObject, parseDecision, stripCodeFence, stripThinkTag } from "./parser.js";
 
+function kindOf(res: ReturnType<typeof parseDecision>): string | null | undefined {
+	return res.ok && res.decision.decision === "continue" ? res.decision.continueKind : undefined;
+}
+
 describe("parser: happy path", () => {
 	test("parses continue", () => {
 		const res = parseDecision('{"decision":"continue","nextPrompt":"run the tests"}');
@@ -10,6 +14,28 @@ describe("parser: happy path", () => {
 		if (res.decision.decision === "continue") {
 			expect(res.decision.nextPrompt).toBe("run the tests");
 		}
+	});
+
+	test("parses the kind of nudge, and drops one that doesn't exist", () => {
+		for (const kind of ["proceed", "retry_failed_step", "run_tests", "summarize_status"]) {
+			const res = parseDecision(
+				JSON.stringify({ decision: "continue", nextPrompt: "run the tests", continueKind: kind }),
+			);
+			expect(kindOf(res)).toBe(kind);
+		}
+		for (const bad of ["deploy", "", 7, null, {}, "__proto__", "toString"]) {
+			const res = parseDecision(
+				JSON.stringify({ decision: "continue", nextPrompt: "run the tests", continueKind: bad }),
+			);
+			expect(res.ok).toBe(true);
+			expect(
+				res.ok && res.decision.decision === "continue" && res.decision.continueKind,
+			).toBeNull();
+		}
+		const none = parseDecision('{"decision":"continue","nextPrompt":"run the tests"}');
+		expect(
+			none.ok && none.decision.decision === "continue" && none.decision.continueKind,
+		).toBeNull();
 	});
 
 	test("parses ask", () => {

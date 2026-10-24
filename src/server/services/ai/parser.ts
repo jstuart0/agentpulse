@@ -1,3 +1,5 @@
+import { type ContinueKind, parseContinueKind } from "./continue-kinds.js";
+
 // Canonical const + type live in src/shared/types.ts. Re-exported so
 // existing server consumers don't need to update their import path.
 export type { DecisionKind } from "../../../shared/types.js";
@@ -5,6 +7,8 @@ export type { DecisionKind } from "../../../shared/types.js";
 export interface ContinueDecision {
 	decision: "continue";
 	nextPrompt: string;
+	/** The kind of nudge the model chose, or null when it named none (or one that doesn't exist). */
+	continueKind: ContinueKind | null;
 }
 
 export interface AskDecision {
@@ -126,7 +130,14 @@ export function parseDecision(raw: string): ParseResult {
 					schemaViolation: true,
 				};
 			}
-			return { ok: true, decision: { decision: "continue", nextPrompt } };
+			return {
+				ok: true,
+				decision: {
+					decision: "continue",
+					nextPrompt,
+					continueKind: parseContinueKind(parsed.continueKind),
+				},
+			};
 		}
 		case "ask": {
 			const proposal = parsed.proposal;

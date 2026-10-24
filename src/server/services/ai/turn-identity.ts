@@ -235,3 +235,27 @@ export async function isTurnStale(
 	}
 	return false;
 }
+
+/**
+ * Has anyone started a newer turn since `afterEventId`? One indexed lookup for a
+ * prompt after it. The wake path asks it just before queueing a run, so a turn
+ * that began while the debounce was running costs nothing.
+ */
+export async function hasPromptAfter(
+	db: Db,
+	sessionId: string,
+	afterEventId: number,
+): Promise<boolean> {
+	const [row] = await db
+		.select({ id: events.id })
+		.from(events)
+		.where(
+			and(
+				eq(events.sessionId, sessionId),
+				eq(events.category, "prompt"),
+				gt(events.id, afterEventId),
+			),
+		)
+		.limit(1);
+	return row !== undefined;
+}

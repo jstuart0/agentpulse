@@ -44,6 +44,12 @@ import { getMode } from "../instance-mode.js";
 import { getSessionOwnerConnections } from "../session-ownership.js";
 import { emitAiEvent } from "./ai-events.js";
 import {
+	AUTO_CONTINUE_KINDS,
+	type AutoContinueKind,
+	CONTINUE_KINDS,
+	type ContinueKind,
+} from "./continue-kinds.js";
+import {
 	type AuditActorKind,
 	type AuditIntent,
 	configSnapshotOf,
@@ -73,18 +79,8 @@ import { getWatcherConfig, incrementContinuations } from "./watcher-config-servi
 
 // ── Auto: the fixed nudges ────────────────────────────────────────────────────
 
-/** The kinds of next step the watcher can name. `proceed` is a suggestion for a person only. */
-export const CONTINUE_KINDS = [
-	"proceed",
-	"retry_failed_step",
-	"run_tests",
-	"summarize_status",
-] as const;
-export type ContinueKind = (typeof CONTINUE_KINDS)[number];
-
-/** The kinds the auto policy may send. `proceed` is not one: an unattended "keep going" approves whatever the agent was about to do. */
-export const AUTO_CONTINUE_KINDS = ["retry_failed_step", "run_tests", "summarize_status"] as const;
-export type AutoContinueKind = (typeof AUTO_CONTINUE_KINDS)[number];
+export { AUTO_CONTINUE_KINDS, CONTINUE_KINDS };
+export type { AutoContinueKind, ContinueKind };
 
 /**
  * A read-only view of the nudge table. The map is private to the instance, so

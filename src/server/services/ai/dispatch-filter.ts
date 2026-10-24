@@ -91,3 +91,44 @@ export function checkDispatch(nextPrompt: string, extraRules: DispatchRule[] = [
 	}
 	return { allowed: true };
 }
+
+/** Only the start of a reply says whether it is chatter, so nothing past this is read. */
+const CONVERSATIONAL_SCAN_CHARS = 200;
+
+/** A bare acknowledgement ("Sure.", "Got it, thanks") is chatter only when it is this short. */
+const ACKNOWLEDGEMENT_MAX_CHARS = 60;
+
+const LEAD = String.raw`^[\s"'(*>-]*`;
+
+/**
+ * Openers that address a person: greetings, thanks, offers of help. Anchored at
+ * the start, with alternations of fixed words only, so it runs in time linear
+ * in the 200 characters it reads.
+ */
+const GREETING_OR_OFFER_RE = new RegExp(
+	`${LEAD}(?:hi|hello|hey|howdy|thanks|thank you|thx|cheers|you'?re welcome|my pleasure|happy to (?:help|assist)|glad to help|ready when you are|i'?m ready|i am ready|i'?m here|let me know|is there anything|anything else|what would you like|how can i (?:help|assist)|can i help|do you need)\\b`,
+	"i",
+);
+
+/** "Sure", "Got it": an acknowledgement, which is a prompt to nobody unless something follows. */
+const ACKNOWLEDGEMENT_RE = new RegExp(
+	`${LEAD}(?:sure|certainly|of course|absolutely|okay|ok|great|awesome|perfect|nice|sounds good|got it|understood|no problem)\\b`,
+	"i",
+);
+
+/** "Anything else I can help with?" is chatter wherever it appears in the opening. */
+const OFFER_ANYWHERE_RE =
+	/\b(?:anything else|anything more|something else)(?: (?:i|we) can)?\b|\bhappy to (?:help|assist)\b|\bready when you are\b/i;
+
+/**
+ * Is this the model talking to the person ("Ready when you are! Anything else I
+ * can assist with?") instead of telling the agent what to do? Such a reply as a
+ * "next prompt" would be typed into the agent as noise. This is noise reduction,
+ * not a safety control: a miss costs a useless suggestion, never an unsafe one.
+ */
+export function isConversationalReply(text: string): boolean {
+	if (typeof text !== "string") return false;
+	const head = text.slice(0, CONVERSATIONAL_SCAN_CHARS);
+	if (GREETING_OR_OFFER_RE.test(head) || OFFER_ANYWHERE_RE.test(head)) return true;
+	return text.trim().length <= ACKNOWLEDGEMENT_MAX_CHARS && ACKNOWLEDGEMENT_RE.test(head);
+}
