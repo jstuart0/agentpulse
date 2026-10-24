@@ -378,6 +378,8 @@ export class WatcherRunner {
 				systemPrompt: ctx.systemPrompt,
 				transcriptPrompt: ctx.transcriptPrompt,
 				model: provider.model,
+				// The decision is a JSON object; reasoning would take the token budget.
+				disableReasoning: true,
 			});
 			responseText = res.text;
 			usageInput = res.usage.inputTokens;
@@ -387,6 +389,11 @@ export class WatcherRunner {
 		} catch (err) {
 			const subType = err instanceof LlmError ? err.subType : "unknown";
 			const message = err instanceof Error ? err.message : String(err);
+			// An empty reply was still billed.
+			if (err instanceof LlmError && err.usage) {
+				const failedCost = priceCompletion(provider.kind, provider.model, err.usage);
+				if (failedCost > 0) await addSpendCents(sessionId, failedCost);
+			}
 			await failProposal({ id: pending.id, errorSubType: subType, errorMessage: message });
 			await emitAiEvent({
 				sessionId,
@@ -413,6 +420,7 @@ export class WatcherRunner {
 						systemPrompt: ctx.systemPrompt,
 						transcriptPrompt: `${ctx.transcriptPrompt}\n\nRESPONSE PARSE ERROR: ${parsed.error}. Respond with exactly one JSON object per the schema. No prose.`,
 						model: provider.model,
+						disableReasoning: true,
 					});
 					responseText = retry.text;
 					if (retry.usage && !retry.usage.estimated) {
@@ -425,6 +433,10 @@ export class WatcherRunner {
 					parsed = parseDecision(responseText);
 				} catch (err) {
 					// Fall through to downgrade below.
+					if (err instanceof LlmError && err.usage) {
+						const failedCost = priceCompletion(provider.kind, provider.model, err.usage);
+						if (failedCost > 0) await addSpendCents(sessionId, failedCost);
+					}
 					console.warn(`[ai-watcher] ${sessionId} retry failed:`, err);
 				}
 			}

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { AI_FAST_PROVIDER_ID_KEY, getFastProviderId } from "../services/ai/feature.js";
 import { listAvailableModels } from "../services/ai/llm/list-models.js";
 import { KNOWN_PROVIDER_KINDS, type ProviderKind } from "../services/ai/llm/types.js";
 import {
@@ -8,6 +9,7 @@ import {
 	listProviders,
 	updateProvider,
 } from "../services/ai/providers-service.js";
+import { upsertSetting } from "../services/settings-service.js";
 import { requireAiActive, requireAiBuild } from "./ai-gates.js";
 
 const aiProvidersRouter = new Hono();
@@ -21,7 +23,12 @@ aiProvidersRouter.get("/ai/providers", async (c) => {
 	if (gate) return gate;
 	const providers = await listProviders();
 	const defaultProvider = await getDefaultProvider();
-	return c.json({ providers, defaultProviderId: defaultProvider?.id ?? null });
+	const fastProviderId = await getFastProviderId();
+	return c.json({
+		providers,
+		defaultProviderId: defaultProvider?.id ?? null,
+		fastProviderId: providers.some((p) => p.id === fastProviderId) ? fastProviderId : null,
+	});
 });
 
 aiProvidersRouter.post("/ai/providers", async (c) => {
@@ -100,9 +107,21 @@ aiProvidersRouter.put("/ai/providers/:id", async (c) => {
 		baseUrl?: string;
 		apiKey?: string;
 		isDefault?: boolean;
+		isFast?: boolean;
 	}>();
-	const provider = await updateProvider(id, body);
+	if (body.isFast !== undefined && typeof body.isFast !== "boolean") {
+		return c.json({ error: "isFast must be a boolean" }, 400);
+	}
+	const { isFast, ...update } = body;
+	const provider = await updateProvider(id, update);
 	if (!provider) return c.json({ error: "Provider not found" }, 404);
+	// Marking a provider fast moves the setting to it; unmarking clears it only
+	// if this provider is the fast one.
+	if (isFast === true) {
+		await upsertSetting(AI_FAST_PROVIDER_ID_KEY, id, { allowProtected: true });
+	} else if (isFast === false && (await getFastProviderId()) === id) {
+		await upsertSetting(AI_FAST_PROVIDER_ID_KEY, "", { allowProtected: true });
+	}
 	return c.json({ provider });
 });
 
@@ -112,6 +131,9 @@ aiProvidersRouter.delete("/ai/providers/:id", async (c) => {
 	const id = c.req.param("id") ?? "";
 	const deleted = await deleteProvider(id);
 	if (!deleted) return c.json({ error: "Provider not found" }, 404);
+	if ((await getFastProviderId()) === id) {
+		await upsertSetting(AI_FAST_PROVIDER_ID_KEY, "", { allowProtected: true });
+	}
 	return c.json({ ok: true });
 });
 

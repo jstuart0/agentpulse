@@ -135,7 +135,7 @@ describe("a successful run", () => {
 		expect(cost()).toBeGreaterThan(0);
 	});
 
-	test("TC-5.8 the recorded wire body carries the provider's model, 4,000 tokens, 0.2, no reasoning, system and user", async () => {
+	test("TC-5.8 the recorded wire body carries the provider's model, 4,000 tokens, 0.2, the lowest reasoning effort, system and user", async () => {
 		const { editId } = await H.seedActiveSession(SID);
 		script(ok([editId]));
 		await H.runGeneration(SID);
@@ -145,7 +145,8 @@ describe("a successful run", () => {
 		expect(body.model).toBe("gpt-5-mini");
 		expect(body.max_tokens).toBe(4000);
 		expect(body.temperature).toBe(0.2);
-		expect(body.reasoning_effort).toBe("none");
+		// gpt-5-mini is an OpenAI reasoning model; its lowest accepted effort is "minimal".
+		expect(body.reasoning_effort).toBe("minimal");
 		expect(body.messages[0]).toEqual({ role: "system", content: SESSION_SUMMARY_SYSTEM_PROMPT });
 		expect(body.messages[1].role).toBe("user");
 		expect(body.messages[1].content).toContain("Add retry to the uploader.");

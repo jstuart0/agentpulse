@@ -7,6 +7,66 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ask no longer shows a model's truncated reasoning as its answer.** A model
+  that thinks before it answers could spend its whole output budget on
+  reasoning and return an empty reply; the OpenAI-compatible adapter then
+  passed the reasoning text on as the answer. An empty reply is now an error
+  (with the finish reason in the message) for every caller, streamed or not.
+  Every call that produces an answer or a decision (the Ask answer, per-session
+  Q&A, query expansion, the alert-rule yes/no check, the watcher) now asks the
+  provider to skip its reasoning phase, as the session summary and the intent
+  classifiers already did.
+- **A failed query expansion no longer costs every Ask question its timeout.**
+  The optional expansion step now asks with reasoning off and a small token
+  budget, and after a failure it is skipped for two minutes.
+- **"What sessions are going?" answers from the Working state.** It was
+  searched as the text "are going" and listed any session whose events
+  contained the word. Phrasings that mean the state (going, running, working,
+  in progress, right now, "what's running") now list the sessions the
+  dashboard shows as Working, filler words no longer become a search, and a
+  classifier failure note no longer repeats the classifier's internal error.
+- **Ask follow-ups keep their subject.** A message that points
+  back ("what did it change?", "and the other one?") starts from the sessions
+  the previous answer was built from instead of resolving on its own. A new
+  subject the message names outranks them.
+- **The "stuck" badge no longer fires on sessions that merely mention errors.**
+  The repeated-failure rule counted any tool output containing "error",
+  "failed" or "exception". It now counts failed tool calls (a failure hook the
+  user did not interrupt, or a non-zero exit code), which also catches real
+  failures the old rule missed. Inbox and digest entries that came from the old
+  rule clear on their own as sessions are re-evaluated.
+- **Vector search no longer stops indexing new events while the server runs.**
+  Events delivered by hooks were only embedded by a backfill at startup, so the
+  index fell behind until the next restart, and a provider outage during that
+  backfill left a backlog. A background pass now runs every minute in small
+  batches (100 batches of up to 32 events at most, a short pause after each),
+  and works off any backlog on its own. While the embedding provider is down
+  it retries after a growing wait (up to 5 minutes), each time with a single
+  probe request first, and resumes by itself when the provider returns; no
+  restart or rebuild is needed.
+
+### Added
+
+- **A provider for quick calls.** Settings, AI: "Use for quick calls" on a
+  provider sends the short helper calls (Ask intent checks, query expansion,
+  alert-rule checks) to it first, so they no longer queue behind a long call
+  such as a session summary on a single model server. Answers and summaries stay
+  on the default provider. If the quick provider fails or times out, the call is
+  repeated once on the default provider and the quick provider is skipped for a
+  minute. The quick provider gets its own short limit. Unset keeps today's behaviour.
+
+- `AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS` (default `180`, range 30 to 1800): the
+  time limit of the model call that writes an Ask answer and of a per-session
+  Q&A answer. The Q&A limit was 60 seconds.
+- `AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS` (default `5`, range 1 to 60): the
+  time limit of the attempt on the quick-calls provider, before the call is
+  repeated on the default provider.
+- `AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS` (default `20`, range 5 to 300): the
+  time limit of the short helper calls (Ask intent classifiers, query expansion,
+  alert-rule yes/no check). They were 8 and 15 seconds.
+
 ## [0.8.1] — 2026-10-20
 
 ### Upgrade notes

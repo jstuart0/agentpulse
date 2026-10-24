@@ -30,6 +30,7 @@ export function AiSettingsPanel() {
 	const [statusLoaded, setStatusLoaded] = useState(false);
 	const [providers, setProviders] = useState<AiProvider[]>([]);
 	const [defaultProviderId, setDefaultProviderId] = useState<string | null>(null);
+	const [fastProviderId, setFastProviderId] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [banner, setBanner] = useState<{ kind: "info" | "error"; text: string } | null>(null);
 	const [spendCents, setSpendCents] = useState(0);
@@ -42,6 +43,7 @@ export function AiSettingsPanel() {
 				const [p, spend] = await Promise.all([api.getAiProviders(), api.getAiSpend()]);
 				setProviders(p.providers);
 				setDefaultProviderId(p.defaultProviderId);
+				setFastProviderId(p.fastProviderId);
 				setSpendCents(spend.spendCents);
 			}
 		} catch (err) {
@@ -93,6 +95,15 @@ export function AiSettingsPanel() {
 	async function makeDefault(id: string) {
 		try {
 			await api.updateAiProvider(id, { isDefault: true });
+			await reload();
+		} catch (err) {
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
+		}
+	}
+
+	async function setFast(id: string, isFast: boolean) {
+		try {
+			await api.updateAiProvider(id, { isFast });
 			await reload();
 		} catch (err) {
 			setBanner({ kind: "error", text: plainErrorMessage(err) });
@@ -227,6 +238,11 @@ export function AiSettingsPanel() {
 												default
 											</span>
 										)}
+										{p.id === fastProviderId && (
+											<span className="text-[10px] bg-muted text-muted-foreground border border-border rounded px-1.5 py-0.5">
+												quick calls
+											</span>
+										)}
 									</div>
 									<div className="text-xs text-muted-foreground font-mono mt-0.5">
 										{p.kind} / {p.model} / key {p.credentialHint}
@@ -240,6 +256,16 @@ export function AiSettingsPanel() {
 										className="text-xs text-primary hover:underline"
 									>
 										Make default
+									</button>
+								)}
+								{p.id !== defaultProviderId && (
+									<button
+										type="button"
+										onClick={() => setFast(p.id, p.id !== fastProviderId)}
+										title="Ask routing, query expansion and alert checks go to this provider first, so they stay quick while the default provider is busy with a long call. Answers and summaries stay on the default. If it fails, the default answers instead."
+										className="text-xs text-primary hover:underline"
+									>
+										{p.id === fastProviderId ? "Stop using for quick calls" : "Use for quick calls"}
 									</button>
 								)}
 								<button

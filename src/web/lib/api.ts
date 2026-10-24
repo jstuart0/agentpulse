@@ -964,7 +964,11 @@ export const api = {
 		}),
 
 	getAiProviders: () =>
-		request<{ providers: AiProvider[]; defaultProviderId: string | null }>("/ai/providers"),
+		request<{
+			providers: AiProvider[];
+			defaultProviderId: string | null;
+			fastProviderId: string | null;
+		}>("/ai/providers"),
 	createAiProvider: (body: AiProviderCreate) =>
 		request<{ provider: AiProvider }>("/ai/providers", {
 			method: "POST",
@@ -1372,6 +1376,8 @@ export interface AiProviderUpdate {
 	baseUrl?: string;
 	apiKey?: string;
 	isDefault?: boolean;
+	/** Use this provider for the small, quick calls (Ask routing, query expansion). false clears it. */
+	isFast?: boolean;
 }
 
 export interface AiWatcherConfig {

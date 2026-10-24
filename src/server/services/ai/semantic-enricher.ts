@@ -14,9 +14,11 @@
  * into the same resolver seam so the integration point doesn't churn.
  */
 
+import { config } from "../../config.js";
+import { withFastProvider } from "./fast-provider.js";
 import { isAiActive } from "./feature.js";
 import { getAdapter } from "./llm/registry.js";
-import type { LlmAdapter } from "./llm/types.js";
+import { type LlmAdapter, LlmError } from "./llm/types.js";
 import { getDefaultProvider, getProvider, getProviderApiKey } from "./providers-service.js";
 
 export interface EnrichmentResult {
@@ -46,6 +48,25 @@ export const EMPTY_ENRICHMENT: EnrichmentResult = {
 };
 
 /**
+ * After a failed expansion (a timeout, a server error, an empty reply) the
+ * expander stays out of the way for this long. Expansion is an optional extra
+ * on top of the lexical and vector paths, so a provider that cannot do it
+ * right now must cost the Ask turn one failed call per window, not one per
+ * turn. The first turn after the window tries again, which is how a model
+ * that was only cold or busy comes back without anyone doing anything.
+ */
+export const EXPANDER_COOLDOWN_MS = 120_000;
+
+let expanderOpenUntilMs = 0;
+let expanderClock: () => number = Date.now;
+
+/** Test-only: forget a failure so the next call goes out, and optionally swap the clock. */
+export function __resetQueryExpanderForTests(clock: () => number = Date.now): void {
+	expanderOpenUntilMs = 0;
+	expanderClock = clock;
+}
+
+/**
  * LLM-driven query expansion. Given a user question, asks the default
  * LLM to emit ~5-10 comma-separated search terms covering synonyms and
  * related concepts. Fails closed — if the provider is unavailable, the
@@ -63,28 +84,35 @@ export class LlmQueryExpander implements SemanticEnricher {
 	async enrich(query: string): Promise<EnrichmentResult> {
 		const trimmed = query.trim();
 		if (!trimmed) return EMPTY_ENRICHMENT;
+		if (expanderClock() < expanderOpenUntilMs) return EMPTY_ENRICHMENT;
 		try {
 			const res = await this.adapter.complete({
 				systemPrompt: SYSTEM_PROMPT,
-				// `/no_think` is a Qwen3 directive — it suppresses the default
-				// `<think>…</think>` reasoning block that otherwise consumes
-				// the entire output window (we observed maxTokens getting
-				// swallowed by CoT with nothing left for the actual list).
-				// Other providers harmlessly ignore the directive.
+				// `/no_think` is a Qwen3 directive that also asks the model to skip
+				// its reasoning block; `disableReasoning` below is what servers
+				// actually honour. Other providers harmlessly ignore the directive.
 				transcriptPrompt: `/no_think\nQuestion: ${trimmed}\nTerms:`,
 				model: this.model,
-				// Generous ceiling so that even models that can't be talked
-				// out of thinking still have room for the real answer after
-				// the CoT block; parseExpansion strips any leading <think>.
-				maxTokens: 400,
+				// 5 to 10 terms of one to three words is well under 100 tokens.
+				maxTokens: 120,
 				// Low but non-zero: we want some variation in synonym choice
 				// without the model going off the rails.
 				temperature: 0.3,
-				timeoutMs: 15_000,
+				disableReasoning: true,
+				timeoutMs: config.aiHelperTimeoutSeconds * 1000,
 			});
 			const extraTerms = parseExpansion(res.text);
 			return { extraTerms, directHits: new Map() };
-		} catch {
+		} catch (err) {
+			expanderOpenUntilMs = expanderClock() + EXPANDER_COOLDOWN_MS;
+			console.warn(
+				JSON.stringify({
+					kind: "ask_expander_failed",
+					level: "warn",
+					subType: err instanceof LlmError ? err.subType : "unknown",
+					cooldownMs: EXPANDER_COOLDOWN_MS,
+				}),
+			);
 			return EMPTY_ENRICHMENT;
 		}
 	}
@@ -199,7 +227,9 @@ export async function getSemanticEnricher(): Promise<SemanticEnricher | null> {
 		apiKey,
 		baseUrl: full.baseUrl ?? undefined,
 	});
-	const llmExpander = new LlmQueryExpander(adapter, full.model);
+	// The expander is a small call: it goes to the fast provider when one is set.
+	const small = await withFastProvider({ providerId: provider.id, adapter, model: full.model });
+	const llmExpander = new LlmQueryExpander(small.adapter, small.model);
 
 	// Lazy import keeps the embeddings module out of the no-flag path.
 	const { getVectorEnricher } = await import("./embeddings/vector-enricher.js");

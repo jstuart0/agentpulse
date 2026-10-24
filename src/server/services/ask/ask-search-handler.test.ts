@@ -427,3 +427,124 @@ describe("when the scan queue is full", () => {
 		});
 	});
 });
+
+// ---- "What sessions are going" (AGEN-79) -----------------------------------
+//
+// The question was claimed by the search gate and then searched as the text
+// "are going", which matched any event containing "going" (a session named
+// "Keep going" headed the reply). It asks for the Working state.
+
+describe("running / going questions ask for the Working state", () => {
+	test("the phrasings that mean the state set the filter and leave no text query", () => {
+		for (const message of [
+			"What sessions are going?",
+			"which sessions are running",
+			"what's running right now",
+			"what is running",
+			"show running sessions",
+			"sessions working right now",
+			"which sessions are currently working",
+			"what sessions are in progress",
+		]) {
+			const filters = buildSearchFilters(message, []);
+			expect({ message, operational: filters.operational, q: filters.q }).toEqual({
+				message,
+				operational: ["working"],
+				q: "",
+			});
+		}
+	});
+
+	test("a status word wins over a time word; time words alone mean Working", () => {
+		const table: Array<[string, Partial<ReturnType<typeof buildSearchFilters>>]> = [
+			["which sessions are currently stuck?", { sessionStatus: "idle" }],
+			["what's active right now?", { sessionStatus: "active" }],
+			["which sessions completed in progress reports", { sessionStatus: "completed" }],
+			["sessions that are currently failing", { sessionStatus: "failed" }],
+			["what is waiting right now", { operational: ["waiting"] }],
+			["what needs attention right now", { operational: ["waiting", "error"] }],
+			["sessions currently blocked", { sessionStatus: "idle" }],
+			["which sessions are currently running", { operational: ["working"] }],
+			["what is going on right now with billing sessions", { operational: ["working"] }],
+		];
+		for (const [message, expected] of table) {
+			const f = buildSearchFilters(message, []);
+			const actual = { sessionStatus: f.sessionStatus, operational: f.operational };
+			expect({ message, ...actual }).toEqual({
+				message,
+				sessionStatus: expected.sessionStatus,
+				operational: expected.operational,
+			});
+		}
+	});
+
+	test("the search gate lets the new phrasings through", () => {
+		for (const message of [
+			"what sessions are going?",
+			"what's running",
+			"show running sessions",
+			"which sessions are running",
+		]) {
+			expect({ message, passes: searchGatePasses(message) }).toEqual({ message, passes: true });
+		}
+	});
+
+	test("a topic that uses the same verb is not read as the state", () => {
+		const topic = buildSearchFilters("which sessions are running tests", []);
+		expect(topic.operational).toBeUndefined();
+		expect(topic.q).toBe("tests");
+		const onAuth = buildSearchFilters("sessions working on auth", []);
+		expect(onAuth.operational).toBeUndefined();
+		expect(onAuth.q).toBe("auth");
+	});
+
+	test("filler words never reach the text query, content words still do", () => {
+		expect(buildSearchFilters("what sessions are there about billing", []).q).toBe("billing");
+		expect(buildSearchFilters("which sessions did we have for the oauth flow", []).q).toBe(
+			"oauth flow",
+		);
+		// Only filler: no text query, and no filter either, so the question goes to the model.
+		const empty = buildSearchFilters("what sessions are there", []);
+		expect(empty.q).toBe("");
+		expect(empty.operational).toBeUndefined();
+	});
+
+	describe("answers", () => {
+		beforeEach(async () => {
+			await insertSession({
+				id: "g-working",
+				displayName: "teal-otter",
+				status: "active",
+				agentType: "claude_code",
+				isWorking: true,
+			});
+			await insertSession({
+				id: "g-done",
+				displayName: "Keep going",
+				status: "completed",
+				agentType: "claude_code",
+				endedAt: new Date().toISOString(),
+			});
+			// A completed session whose event text says "going", the old FTS hit.
+			await getDb()
+				.insert(events)
+				.values({
+					sessionId: "g-done",
+					eventType: "UserPromptSubmit",
+					rawPayload: { prompt: "this is going well, keep going" },
+				});
+		});
+
+		test("lists the working session and not the completed one that merely says 'going'", async () => {
+			const reply = await handleNlSearch("What sessions are going?", []);
+			expect(reply).toContain("teal-otter");
+			expect(reply).toContain("(working, claude_code)");
+			expect(reply).not.toContain("Keep going");
+		});
+
+		test("nothing working is a null reply, so Ask falls through to the model", async () => {
+			await getDb().delete(sessions).execute();
+			expect(await handleNlSearch("What sessions are going?", [])).toBeNull();
+		});
+	});
+});

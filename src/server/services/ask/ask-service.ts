@@ -5,7 +5,7 @@ import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
 import { askMessages, askThreads, sessionTemplates } from "../../db/schema/index.js";
 import { getAdapter } from "../ai/llm/registry.js";
-import type { LlmAdapter } from "../ai/llm/types.js";
+import { type LlmAdapter, LlmError } from "../ai/llm/types.js";
 import {
 	type ProviderRecord,
 	getDefaultProvider,
@@ -323,6 +323,41 @@ export class AskMessageTooLongError extends AskRequestError {
 // session context, and local models (Qwen 8B) can choke on giant prompts.
 const MAX_HISTORY_TURNS = 6;
 
+/**
+ * The sessions the newest answer that was built from sessions used, best first.
+ * A reply from a gate (search, digest, a launch) records none, so a follow-up
+ * to "what's running?" inherits from the last free-form answer before it, if
+ * that is still in the bounded history.
+ */
+function lastAnswerSessionIds(history: AskMessageRecord[]): string[] {
+	for (let i = history.length - 1; i >= 0; i--) {
+		const message = history[i];
+		if (message?.role === "assistant" && message.contextSessionIds?.length) {
+			return message.contextSessionIds;
+		}
+	}
+	return [];
+}
+
+/**
+ * What the user reads when the answering call failed. An empty reply (the model
+ * spent its output on reasoning, say) is not an unreachable provider and must
+ * not read like one. The error's own text goes to `errorMessage`, never here.
+ */
+function answerFailureText(err: unknown, message: string, retry: string, other: string): string {
+	if (err instanceof LlmError && err.subType === "empty_output") {
+		return "The model returned no answer. Try again, or ask a narrower question.";
+	}
+	return /timed out|timeout/i.test(message) ? retry : other;
+}
+
+/** The note shown when the launch-intent check failed and the question was answered as a normal one. */
+function launchCheckFailedNote(subType: string | undefined): string {
+	const why =
+		subType === "empty_output" ? "the model returned no answer" : "the AI provider didn't respond";
+	return `_(Heads up: I tried to check whether this was a session-launch request but ${why} — answering as a normal question.)_\n\n`;
+}
+
 function renderHistory(history: AskMessageRecord[]): string {
 	const tail = history.slice(-MAX_HISTORY_TURNS * 2);
 	if (tail.length === 0) return "";
@@ -467,6 +502,10 @@ async function buildTurnContext(
 		path: "free_form",
 		enrichment: pinned ? "skipped_pinned" : "semantic",
 	});
+	// The history is read first: a follow-up inherits the sessions the last
+	// answer was built from. It is the same bounded read as before (the newest
+	// 12), only earlier.
+	const history = await listRecentMessages(thread.id, MAX_HISTORY_TURNS * 2);
 	// Build the semantic enricher once per turn. Returns null when AI
 	// isn't active or no default provider — the resolver then falls back
 	// to lexical-only search automatically. Pinned sessions need no resolving.
@@ -477,6 +516,7 @@ async function buildTurnContext(
 				limit: wantsBreadth ? 20 : 5,
 				fallbackToActive: true,
 				enricher: await getSemanticEnricher(),
+				carriedSessionIds: lastAnswerSessionIds(history),
 			});
 	// Hand the FTS query to the context builder so per-session snapshots
 	// include the events that *matched* — not just the most-recent 12.
@@ -485,7 +525,6 @@ async function buildTurnContext(
 	const ftsQuery = pinned ? undefined : text;
 	const context = await buildAskContext({ resolved, ftsQuery });
 
-	const history = await listRecentMessages(thread.id, MAX_HISTORY_TURNS * 2);
 	const transcript = [renderHistory(history), context.block, `USER: ${text}`]
 		.filter(Boolean)
 		.join("\n\n");
@@ -534,7 +573,7 @@ interface AskGateCtx {
 type ClassifierOutcome<I> =
 	| { kind: "matched"; intent: I }
 	| { kind: "none" }
-	| { kind: "classifier_failed"; error: string };
+	| { kind: "classifier_failed"; error: string; subType?: string };
 
 // One gate's specification, fully typed over its intent payload type `I`.
 // The runner erases `I` via the `defineGate` helper so the array is uniform.
@@ -597,8 +636,16 @@ async function runAskGates(text: string, ctx: AskGateCtx): Promise<GateRunResult
 				// with no results). Fall through to the next gate.
 				continue;
 			}
+			if (outcome.kind === "classifier_failed") {
+				// Sub-type only: the classifier's text can carry the user's message or a provider body.
+				logTurn("ask_gate_classifier_failed", {
+					gate: gate.label ?? "silent",
+					subType: outcome.subType ?? "unknown",
+				});
+			}
 			if (outcome.kind === "classifier_failed" && !preamble && gate.label !== null) {
-				preamble = `_(Heads up: I tried to detect ${article(gate.label)} ${gate.label} request but the classifier failed: ${outcome.error}. Answering as a general question.)_\n\n`;
+				// The classifier's own error text is for the log, not the chat.
+				preamble = `_(Heads up: I couldn't check whether this was ${article(gate.label)} ${gate.label} request, so I answered it as a general question.)_\n\n`;
 			}
 			// kind: "none" — fall through silently.
 			continue;
@@ -1003,9 +1050,9 @@ async function runAskTurnBody(input: AskTurnInput, trace: TurnTrace): Promise<As
 		return { thread, userMessage, assistantMessage, includedSessionIds: [] };
 	}
 
-	if (intent.kind === "classifier_failed" && !preamble) {
-		preamble =
-			"_(Heads up: I tried to check whether this was a session-launch request but the AI provider didn't respond — answering as a normal question.)_\n\n";
+	if (intent.kind === "classifier_failed") {
+		logTurn("ask_gate_classifier_failed", { gate: "launch", subType: intent.subType ?? "unknown" });
+		if (!preamble) preamble = launchCheckFailedNote(intent.subType);
 	}
 
 	const { context, transcript } = await buildTurnContext(input, thread, text, trace);
@@ -1033,10 +1080,10 @@ async function runAskTurnBody(input: AskTurnInput, trace: TurnTrace): Promise<As
 			model: llm.provider.model,
 			maxTokens: 800,
 			temperature: 0.3,
-			// 180s accommodates cold-load on local 20B+ models served via
-			// Ollama/vLLM where the first request after model eviction can
-			// take 60-90s before any tokens flow.
-			timeoutMs: 180_000,
+			// The answer is the text, never the model's chain of thought: a
+			// reasoning model that thinks first spends the 800 tokens on it.
+			disableReasoning: true,
+			timeoutMs: config.askAnswerTimeoutSeconds * 1000,
 		});
 		const reply = preamble + (res.text.trim() || "(no response)");
 		const assistantMessage = await appendMessage({
@@ -1055,15 +1102,15 @@ async function runAskTurnBody(input: AskTurnInput, trace: TurnTrace): Promise<As
 		};
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		const isTimeout = /timed out|timeout/i.test(message);
 		const assistantMessage = await appendMessage({
 			threadId: thread.id,
 			role: "assistant",
-			content: `${preamble}${
-				isTimeout
-					? "The LLM provider didn't respond in time — usually a cold model load. Try the same question again in a few seconds."
-					: "I couldn't reach the LLM provider just now. See the inline error and check Settings → AI."
-			}`,
+			content: `${preamble}${answerFailureText(
+				err,
+				message,
+				"The LLM provider didn't respond in time — usually a cold model load. Try the same question again in a few seconds.",
+				"I couldn't reach the LLM provider just now. See the inline error and check Settings → AI.",
+			)}`,
 			contextSessionIds: context.includedSessionIds,
 			errorMessage: message,
 		});
@@ -1285,9 +1332,9 @@ async function* runAskTurnStreamBody(
 	};
 
 	// For classifier_failed: emit preamble as first delta, then continue normally.
-	if (!preamble && intent.kind === "classifier_failed") {
-		preamble =
-			"_(Heads up: I tried to check whether this was a session-launch request but the AI provider didn't respond — answering as a normal question.)_\n\n";
+	if (intent.kind === "classifier_failed") {
+		logTurn("ask_gate_classifier_failed", { gate: "launch", subType: intent.subType ?? "unknown" });
+		if (!preamble) preamble = launchCheckFailedNote(intent.subType);
 	}
 	if (preamble) {
 		yield { kind: "delta", delta: preamble };
@@ -1321,9 +1368,10 @@ async function* runAskTurnStreamBody(
 			model: llm.provider.model,
 			maxTokens: 800,
 			temperature: 0.3,
-			// Mirrors runAskTurn's 180s — a cold 20B+ model can take 60-90s
+			disableReasoning: true,
+			// The same limit as runAskTurn's: a cold model can take a minute
 			// to emit its first streamed token.
-			timeoutMs: 180_000,
+			timeoutMs: config.askAnswerTimeoutSeconds * 1000,
 		})) {
 			if (evt.kind === "delta") {
 				collected += evt.text;
@@ -1335,7 +1383,6 @@ async function* runAskTurnStreamBody(
 		}
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		const isTimeout = /timed out|timeout/i.test(message);
 		const errMsg = await appendMessage({
 			threadId: thread.id,
 			role: "assistant",
@@ -1343,9 +1390,12 @@ async function* runAskTurnStreamBody(
 				preamble +
 				// ASYMMETRY 2: streaming catch uses (collected.trim() || fallback) — DO NOT use sync's fixed string.
 				(collected.trim() ||
-					(isTimeout
-						? "The LLM provider didn't respond in time — usually a cold model load. Try again in a few seconds."
-						: "I couldn't reach the LLM provider just now. Check Settings → AI.")),
+					answerFailureText(
+						err,
+						message,
+						"The LLM provider didn't respond in time — usually a cold model load. Try again in a few seconds.",
+						"I couldn't reach the LLM provider just now. Check Settings → AI.",
+					)),
 			contextSessionIds: context.includedSessionIds,
 			errorMessage: message,
 		});

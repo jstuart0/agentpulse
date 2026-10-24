@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
+import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
 import {
 	events,
@@ -282,6 +283,7 @@ async function classifyFreeformCondition(
 		"./providers-service.js"
 	);
 	const { getAdapter } = await import("./llm/registry.js");
+	const { withFastProvider } = await import("./fast-provider.js");
 
 	const provider = await getDefaultProvider();
 	if (!provider) {
@@ -296,17 +298,23 @@ async function classifyFreeformCondition(
 		return { matched: false, error: "LLM provider credentials unreadable" };
 	}
 
-	const adapter = getAdapter({ kind: full.kind, apiKey, baseUrl: full.baseUrl ?? undefined });
+	const { adapter, model } = await withFastProvider({
+		providerId: provider.id,
+		adapter: getAdapter({ kind: full.kind, apiKey, baseUrl: full.baseUrl ?? undefined }),
+		model: full.model,
+	});
 	const truncatedContent = eventContent.slice(0, 500);
 
 	try {
 		const res = await adapter.complete({
 			systemPrompt: 'You are a yes/no event classifier. Answer only "yes" or "no".',
 			transcriptPrompt: `Condition: ${condition}\nEvent text: ${truncatedContent}\n\nDoes the event text match the condition? Reply with "yes" or "no" only.`,
-			model: full.model,
+			model,
 			maxTokens: 10,
 			temperature: 0.0,
-			timeoutMs: 8_000,
+			// A thinking model spends all 10 tokens on reasoning and can never say yes or no.
+			disableReasoning: true,
+			timeoutMs: config.aiHelperTimeoutSeconds * 1000,
 		});
 		const answer = res.text.trim().toLowerCase();
 		if (answer === "yes") return { matched: true };

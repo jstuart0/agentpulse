@@ -41,6 +41,89 @@ const ARCHIVED_RE = /\barchived?\b/i;
 // Waiting card; "needs attention" is what the inbox treats as needing a person:
 // waiting or error.
 const WAITING_RE = /\bwaiting\b/i;
+// "What is happening right now": the dashboard's Working state. These are the
+// phrasings that mean the state, not a topic: "sessions are going", "what's
+// running", "running sessions", "right now". A bare "running" or "working"
+// followed by an object ("running tests", "working on auth") is a topic and
+// stays in the text query.
+const WORKING_NOW_RE =
+	/\b(?:right\s+now|at\s+the\s+moment|currently|in\s+progress)\b|\b(?:are|is|that's)\s+(?:going|running|working|doing)\s*(?=$|[?.!,])|\b(?:running|working)\s+(?:sessions|agents)\b|\b(?:sessions|agents)\s+(?:running|working|going|doing)\s*(?=$|[?.!,]|\s+now\b)|\bwhat(?:'s|\s+is)\s+running\b/i;
+// Words that carry no search meaning. Left in the text query they match any
+// event that happens to contain them ("are going" matched a session named
+// "Keep going"), so a question made only of them has no text query at all.
+const SEARCH_FILLER = new Set([
+	"a",
+	"an",
+	"and",
+	"any",
+	"all",
+	"also",
+	"are",
+	"as",
+	"at",
+	"be",
+	"been",
+	"but",
+	"by",
+	"can",
+	"could",
+	"currently",
+	"did",
+	"do",
+	"does",
+	"doing",
+	"from",
+	"give",
+	"going",
+	"had",
+	"has",
+	"have",
+	"how",
+	"i",
+	"into",
+	"is",
+	"it",
+	"its",
+	"just",
+	"many",
+	"me",
+	"much",
+	"my",
+	"now",
+	"of",
+	"or",
+	"our",
+	"please",
+	"running",
+	"should",
+	"show",
+	"so",
+	"some",
+	"still",
+	"tell",
+	"than",
+	"then",
+	"there",
+	"they",
+	"them",
+	"this",
+	"those",
+	"these",
+	"to",
+	"was",
+	"we",
+	"were",
+	"when",
+	"where",
+	"which",
+	"who",
+	"why",
+	"will",
+	"would",
+	"working",
+	"you",
+	"your",
+]);
 const NEEDS_ATTENTION_RE = /\bneed(?:s|ing)?\s+(?:my\s+|your\s+)?attention\b/i;
 
 // ---- Time helpers --------------------------------------------------------
@@ -91,6 +174,11 @@ export function buildSearchFilters(
 		// status='archived' filter. Until then, this sets a filter that returns
 		// zero rows (no sessions have status='archived' post-Slice G).
 		filters.sessionStatus = "archived";
+	} else if (WORKING_NOW_RE.test(message)) {
+		// Last on purpose: "currently", "right now" and "in progress" are time
+		// words that qualify any status ("which sessions are currently stuck"),
+		// so they mean the Working state only when no status word is present.
+		filters.operational = ["working"];
 	}
 
 	// Time filter.
@@ -130,6 +218,7 @@ export function buildSearchFilters(
 		.replace(/\blast\s+\d+\s+(hour|day)s?\b/gi, "")
 		.replace(/\b(yesterday|today)\b/gi, "")
 		.replace(/['’]s\b/g, "")
+		.replace(new RegExp(WORKING_NOW_RE.source, "gi"), "")
 		.replace(/\b(find|search|show|list|get|what|which|any|me)\b/gi, "")
 		.replace(/\b(sessions?|about|with|that|for|on|in|the)\b/gi, "");
 
@@ -142,8 +231,14 @@ export function buildSearchFilters(
 		}
 	}
 
-	q = q.replace(/\s+/g, " ").trim();
-	filters.q = q;
+	q = q
+		.split(/\s+/)
+		.filter(
+			(word) =>
+				/[a-z0-9]/i.test(word) && !SEARCH_FILLER.has(word.toLowerCase().replace(/[^a-z']/g, "")),
+		)
+		.join(" ");
+	filters.q = q.replace(/\s+/g, " ").trim();
 
 	return filters;
 }

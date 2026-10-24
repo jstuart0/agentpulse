@@ -6,10 +6,14 @@ import {
 	SESSION_MUTATION_KINDS,
 	type SessionMutationKind,
 } from "../../../shared/types.js";
+import { config } from "../../config.js";
 import type { ProjectDraftFields } from "../../db/schema/index.js";
+import { withFastProvider } from "../ai/fast-provider.js";
 import { getAdapter } from "../ai/llm/registry.js";
+import { LlmError } from "../ai/llm/types.js";
 import { getDefaultProvider, getProvider, getProviderApiKey } from "../ai/providers-service.js";
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";
+import { chargeFailedCall, globalCentsForUsage } from "../ai/usage-cost.js";
 import type { CachedProject } from "../projects/cache.js";
 import { matchProjectByName, normalizeProjectName } from "../projects/project-name-match.js";
 import { launchRefusalCopy, resumeRefusalCopy } from "./agent-refusal-copy.js";
@@ -32,7 +36,7 @@ export interface CloneSpec {
 
 export type LaunchIntent =
 	| { kind: "none" }
-	| { kind: "classifier_failed"; error: string }
+	| { kind: "classifier_failed"; error: string; subType?: string }
 	// A recognized agentType that isn't launchable (D5 Pattern A'). Carries
 	// its own reply so the caller can short-circuit without building a
 	// template or touching the launch pipeline at all.
@@ -133,7 +137,7 @@ async function classifyJson<T>(opts: {
 	label: string; // appears in "cannot classify ${label}." error messages
 	parse: (parsed: Record<string, unknown>) => T | { kind: "none" };
 	maxTokens?: number; // default 200; QA passes 150, CRUD passes 300
-}): Promise<T | { kind: "none" } | { kind: "classifier_failed"; error: string }> {
+}): Promise<T | { kind: "none" } | { kind: "classifier_failed"; error: string; subType?: string }> {
 	const provider = await getDefaultProvider();
 	if (!provider) {
 		return {
@@ -163,31 +167,30 @@ async function classifyJson<T>(opts: {
 		return { kind: "none" };
 	}
 
-	const adapter = getAdapter({
-		kind: full.kind,
-		apiKey,
-		baseUrl: full.baseUrl ?? undefined,
+	const { adapter, model } = await withFastProvider({
+		providerId: provider.id,
+		adapter: getAdapter({
+			kind: full.kind,
+			apiKey,
+			baseUrl: full.baseUrl ?? undefined,
+		}),
+		model: full.model,
 	});
 
 	try {
 		const res = await adapter.complete({
 			systemPrompt: opts.systemPrompt,
 			transcriptPrompt: `User message: ${opts.message}`,
-			model: full.model,
+			model,
 			maxTokens: opts.maxTokens ?? 200,
 			temperature: 0.0,
-			timeoutMs: 8_000,
+			timeoutMs: config.aiHelperTimeoutSeconds * 1000,
 			disableReasoning: true,
 		});
 
 		// Postflight spend recording. Classifier cost isn't attributable to a
 		// specific session so we use the global (non-session) spend function.
-		const actualCents = res.usage.estimated
-			? ESTIMATED_COST_CENTS
-			: Math.max(
-					1,
-					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
-				);
+		const actualCents = globalCentsForUsage(res.usage, ESTIMATED_COST_CENTS);
 		void addGlobalSpendCents(actualCents).catch(() => {
 			// spend tracking is best-effort; don't block the intent result
 		});
@@ -205,9 +208,11 @@ async function classifyJson<T>(opts: {
 
 		return opts.parse(parsed);
 	} catch (err) {
+		chargeFailedCall(err, ESTIMATED_COST_CENTS);
 		return {
 			kind: "classifier_failed",
 			error: err instanceof Error ? err.message : String(err),
+			subType: err instanceof LlmError ? err.subType : "unknown",
 		};
 	}
 }
@@ -489,6 +494,12 @@ const SEARCH_TRIGGERS = [
 	"sessions on",
 	"sessions for",
 	"stuck sessions",
+	"running sessions",
+	"working sessions",
+	"what's running",
+	"what is running",
+	"sessions are going",
+	"sessions are running",
 	"waiting sessions",
 	"what's waiting",
 	"what is waiting",
@@ -580,7 +591,7 @@ export function sessionActionGatePasses(message: string): boolean {
 export type SessionActionKind =
 	| { kind: "session_action" }
 	| { kind: "none" }
-	| { kind: "classifier_failed"; error: string };
+	| { kind: "classifier_failed"; error: string; subType?: string };
 
 export interface SessionActionIntent {
 	action: "pin" | "unpin" | "rename" | "add_note" | "archive" | "stop" | "delete";
@@ -684,7 +695,7 @@ export interface ResumeIntent {
 
 export type ResumeDetectResult =
 	| { kind: "none" }
-	| { kind: "classifier_failed"; error: string }
+	| { kind: "classifier_failed"; error: string; subType?: string }
 	// A recognized-but-non-launchable agentType (D5 Pattern A'), refused
 	// before a ResumeIntent is built at all. See agent-refusal-copy.ts.
 	| { kind: "agent_refused"; replyText: string }
@@ -832,7 +843,7 @@ export function projectTemplateCrudGatePasses(message: string): boolean {
 
 export type ProjectTemplateCrudIntent =
 	| { kind: "none" }
-	| { kind: "classifier_failed"; error: string }
+	| { kind: "classifier_failed"; error: string; subType?: string }
 	| {
 			kind: "edit_project";
 			targetName: string;
@@ -1010,7 +1021,7 @@ export function alertRuleGatePasses(message: string): boolean {
 
 export type AlertRuleIntent =
 	| { kind: "none" }
-	| { kind: "classifier_failed"; error: string }
+	| { kind: "classifier_failed"; error: string; subType?: string }
 	| {
 			kind: "create_alert_rule";
 			projectHint: string | null;
@@ -1172,7 +1183,7 @@ export interface BulkActionIntent {
 
 export type BulkActionDetectResult =
 	| { kind: "none" }
-	| { kind: "classifier_failed"; error: string }
+	| { kind: "classifier_failed"; error: string; subType?: string }
 	| BulkActionIntent;
 
 const BULK_ACTION_CLASSIFIER_PROMPT = `You are a bulk-session-action classifier for AgentPulse, a tool that manages AI coding sessions.
@@ -1311,7 +1322,7 @@ export interface QaIntent {
 
 export type QaDetectResult =
 	| { kind: "none" }
-	| { kind: "classifier_failed"; error: string }
+	| { kind: "classifier_failed"; error: string; subType?: string }
 	| QaIntent;
 
 const QA_CLASSIFIER_PROMPT = `You are a session-Q&A classifier for AgentPulse.

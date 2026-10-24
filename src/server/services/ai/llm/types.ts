@@ -85,6 +85,8 @@ export type LlmErrorSubType =
 	| "transient_timeout"
 	| "permanent_auth"
 	| "permanent_validation"
+	/** The provider answered, but with no answer text (e.g. all output went to reasoning). */
+	| "empty_output"
 	| "unknown";
 
 export class LlmError extends Error {
@@ -95,6 +97,8 @@ export class LlmError extends Error {
 		readonly cause?: unknown,
 		/** True only when the call's own total deadline fired. */
 		readonly deadline: boolean = false,
+		/** What the provider reported for a call it answered but that yielded no usable text; it was billed. */
+		readonly usage?: LlmUsage,
 	) {
 		super(message);
 		this.name = "LlmError";
