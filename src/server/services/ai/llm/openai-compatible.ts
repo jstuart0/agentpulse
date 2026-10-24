@@ -4,7 +4,9 @@ import {
 	LlmError,
 	type LlmRequest,
 	type LlmResponse,
+	type LlmStopReason,
 	type LlmStreamEvent,
+	type LlmUsage,
 	type ProviderKind,
 	classifyHttpError,
 	estimateTokens,
@@ -27,15 +29,28 @@ interface OpenAICompatibleParams {
  *
  * Thinking-mode opt-outs. Qwen3 and similar reasoning models spend the whole
  * output window on chain of thought by default and leave `content` empty.
- * Three flags exist and servers honour different ones, so all are sent:
- *   - `think: false`: Ollama-native /api/chat (NOT honoured on /v1)
- *   - `chat_template_kwargs.enable_thinking: false`: vLLM / SGLang style servers
- *   - `reasoning_effort: "none"`: the OpenAI-spec parameter, and the only one
- *     Ollama's /v1 endpoint honours. Sent only when the caller asks for it
- *     (`disableReasoning`), so a call that wants the model's own default is
- *     not changed. Every call that produces an answer or a JSON decision sets it.
+ * Servers honour different flags, and a hosted API may reject one it does not
+ * know, so which are sent depends on the provider kind:
+ *   - `think: false` (Ollama-native /api/chat, NOT honoured on /v1) and
+ *     `chat_template_kwargs.enable_thinking: false` (vLLM / SGLang style) are
+ *     sent only to `openai_compatible`, the kind for self-hosted servers.
+ *     OpenAI, Google and OpenRouter get neither.
+ *   - `reasoning_effort: "none"` is sent, when the caller asks for it
+ *     (`disableReasoning`), to `openai_compatible` (the only flag Ollama's /v1
+ *     honours) and `openrouter` (which ignores what an upstream model does not
+ *     take; checked against one non-reasoning model). It is not sent to
+ *     `openai`, because "none" is not valid for every OpenAI reasoning model
+ *     and a non-reasoning model has no use for it, nor to `google`, where some
+ *     models cannot turn thinking off. A reasoning model there that spends its
+ *     budget thinking now ends in an `empty_output` error, not a bad answer.
  */
-function buildRequestBody(request: LlmRequest): Record<string, unknown> {
+const THINKING_FLAGS_KINDS: ReadonlySet<ProviderKind> = new Set(["openai_compatible"]);
+const REASONING_EFFORT_KINDS: ReadonlySet<ProviderKind> = new Set([
+	"openai_compatible",
+	"openrouter",
+]);
+
+function buildRequestBody(request: LlmRequest, kind: ProviderKind): Record<string, unknown> {
 	const body: Record<string, unknown> = {
 		model: request.model,
 		temperature: request.temperature ?? 0.2,
@@ -47,10 +62,14 @@ function buildRequestBody(request: LlmRequest): Record<string, unknown> {
 			{ role: "system", content: request.systemPrompt },
 			{ role: "user", content: request.transcriptPrompt },
 		],
-		think: false,
-		chat_template_kwargs: { enable_thinking: false },
 	};
-	if (request.disableReasoning) body.reasoning_effort = "none";
+	if (THINKING_FLAGS_KINDS.has(kind)) {
+		body.think = false;
+		body.chat_template_kwargs = { enable_thinking: false };
+	}
+	if (request.disableReasoning && REASONING_EFFORT_KINDS.has(kind)) {
+		body.reasoning_effort = "none";
+	}
 	return body;
 }
 
@@ -64,6 +83,7 @@ function emptyOutputError(
 	kind: string,
 	finishReason: string | null | undefined,
 	hadReasoning: boolean,
+	usage: LlmUsage,
 ): LlmError {
 	const why =
 		finishReason === "length"
@@ -76,6 +96,10 @@ function emptyOutputError(
 	return new LlmError(
 		"empty_output",
 		`${kind} returned no answer text (the model ${why}; finish_reason=${finishReason ?? "none"})`,
+		undefined,
+		undefined,
+		false,
+		usage,
 	);
 }
 
@@ -98,7 +122,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 		kind,
 		async complete(request: LlmRequest): Promise<LlmResponse> {
 			const timeoutMs = request.timeoutMs ?? 60_000;
-			const body = buildRequestBody(request);
+			const body = buildRequestBody(request, kind);
 
 			const response = await llmFetch(
 				`${baseUrl}/chat/completions`,
@@ -121,7 +145,11 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 
 			const json = (await readJsonCapped(response)) as {
 				choices?: Array<{
-					message?: { content?: string | null; reasoning?: string | null };
+					message?: {
+						content?: string | null;
+						reasoning?: string | null;
+						refusal?: string | null;
+					};
 					finish_reason?: string | null;
 				}>;
 				usage?: {
@@ -134,31 +162,44 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 			// output budget mid-thought returns an empty `content` and its chain
 			// of thought here; passing that on as the reply shows the user a
 			// truncated monologue as if it were the answer. A refusal is the one
-			// empty reply the caller handles itself, by its stop reason.
+			// empty reply the caller handles itself: it arrives as a
+			// `content_filter` stop or in `message.refusal` with null content.
 			const choice = json.choices?.[0]?.message;
-			const text = choice?.content ?? "";
-			const stopReason = mapStopReason(json.choices?.[0]?.finish_reason, OPENAI_STOP_REASONS);
-			if (!text.trim() && stopReason !== "refusal") {
-				throw emptyOutputError(kind, json.choices?.[0]?.finish_reason, Boolean(choice?.reasoning));
-			}
+			const content = choice?.content ?? "";
+			const refusal = choice?.refusal?.trim() ? choice.refusal : "";
+			const text = content.trim() ? content : refusal;
 			const usage = json.usage ?? {};
+			const reported: LlmUsage = {
+				inputTokens:
+					usage.prompt_tokens ?? estimateTokens(request.systemPrompt + request.transcriptPrompt),
+				outputTokens: usage.completion_tokens ?? estimateTokens(text),
+				estimated: usage.prompt_tokens === undefined,
+			};
+			const stopReason: LlmStopReason = content.trim()
+				? mapStopReason(json.choices?.[0]?.finish_reason, OPENAI_STOP_REASONS)
+				: refusal
+					? "refusal"
+					: mapStopReason(json.choices?.[0]?.finish_reason, OPENAI_STOP_REASONS);
+			if (!text.trim() && stopReason !== "refusal") {
+				throw emptyOutputError(
+					kind,
+					json.choices?.[0]?.finish_reason,
+					Boolean(choice?.reasoning),
+					reported,
+				);
+			}
 
 			return {
 				text,
 				stopReason,
-				usage: {
-					inputTokens:
-						usage.prompt_tokens ?? estimateTokens(request.systemPrompt + request.transcriptPrompt),
-					outputTokens: usage.completion_tokens ?? estimateTokens(text),
-					estimated: usage.prompt_tokens === undefined,
-				},
+				usage: reported,
 				rawResponse: json,
 			};
 		},
 		async *completeStream(request: LlmRequest): AsyncIterable<LlmStreamEvent> {
 			const timeoutMs = request.timeoutMs ?? 60_000;
 			const body = {
-				...buildRequestBody(request),
+				...buildRequestBody(request, kind),
 				stream: true,
 				// Ollama + OpenAI both support usage in the final SSE chunk
 				// when stream_options.include_usage = true. Harmless on the
@@ -194,6 +235,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 			let finalRaw: unknown = null;
 			let finishReason: string | null | undefined;
 			let sawReasoning = false;
+			let refusalText = "";
 			for await (const value of readStreamCapped(response)) {
 				buffer += decoder.decode(value, { stream: true });
 				// SSE frames are separated by blank lines. Keep any partial
@@ -210,7 +252,11 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 						if (!payload || payload === "[DONE]") continue;
 						let parsed: {
 							choices?: Array<{
-								delta?: { content?: string | null; reasoning?: string | null };
+								delta?: {
+									content?: string | null;
+									reasoning?: string | null;
+									refusal?: string | null;
+								};
 								finish_reason?: string | null;
 							}>;
 							usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -224,6 +270,8 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 						finalRaw = parsed;
 						finishReason = parsed.choices?.[0]?.finish_reason ?? finishReason;
 						if (parsed.choices?.[0]?.delta?.reasoning) sawReasoning = true;
+						const refusalDelta = parsed.choices?.[0]?.delta?.refusal;
+						if (typeof refusalDelta === "string") refusalText += refusalDelta;
 						const delta = parsed.choices?.[0]?.delta?.content;
 						if (typeof delta === "string" && delta.length > 0) {
 							fullText += delta;
@@ -237,21 +285,26 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 				}
 			}
 
-			const stopReason = mapStopReason(finishReason, OPENAI_STOP_REASONS);
-			if (!fullText.trim() && stopReason !== "refusal") {
-				throw emptyOutputError(kind, finishReason, sawReasoning);
+			const answer = fullText.trim() ? fullText : refusalText;
+			const streamUsage: LlmUsage = {
+				inputTokens:
+					promptTokens ?? estimateTokens(request.systemPrompt + request.transcriptPrompt),
+				outputTokens: completionTokens ?? estimateTokens(answer),
+				estimated: promptTokens === undefined,
+			};
+			const stopReason: LlmStopReason =
+				!fullText.trim() && refusalText.trim()
+					? "refusal"
+					: mapStopReason(finishReason, OPENAI_STOP_REASONS);
+			if (!answer.trim() && stopReason !== "refusal") {
+				throw emptyOutputError(kind, finishReason, sawReasoning, streamUsage);
 			}
 			yield {
 				kind: "done",
 				response: {
-					text: fullText,
+					text: answer,
 					stopReason,
-					usage: {
-						inputTokens:
-							promptTokens ?? estimateTokens(request.systemPrompt + request.transcriptPrompt),
-						outputTokens: completionTokens ?? estimateTokens(fullText),
-						estimated: promptTokens === undefined,
-					},
+					usage: streamUsage,
 					rawResponse: finalRaw,
 				},
 			};

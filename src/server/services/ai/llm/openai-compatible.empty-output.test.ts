@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createOpenAICompatibleAdapter } from "./openai-compatible.js";
-import { LlmError, type LlmRequest, type LlmStreamEvent } from "./types.js";
+import { LlmError, type LlmRequest, type LlmStreamEvent, type ProviderKind } from "./types.js";
 
 const originalFetch = globalThis.fetch;
 let bodies: Array<Record<string, unknown>> = [];
@@ -34,8 +34,8 @@ const REQUEST: LlmRequest = {
 	model: "test-model",
 };
 
-function adapter() {
-	return createOpenAICompatibleAdapter({ apiKey: "", baseUrl: "http://llm.example.test/v1" });
+function adapter(kind: ProviderKind = "openai_compatible") {
+	return createOpenAICompatibleAdapter({ apiKey: "", baseUrl: "http://llm.example.test/v1", kind });
 }
 
 async function rejection(promise: Promise<unknown>): Promise<LlmError> {
@@ -167,5 +167,100 @@ describe("request body", () => {
 		// The server-specific opt-outs go out on every call.
 		expect(bodies[0]?.think).toBe(false);
 		expect(bodies[0]?.chat_template_kwargs).toEqual({ enable_thinking: false });
+	});
+});
+
+describe("an empty reply carries the usage the provider billed (AGEN-79)", () => {
+	test("complete(): reported tokens are on the error", async () => {
+		mockJson({
+			choices: [{ message: { content: "", reasoning: "hmm" }, finish_reason: "length" }],
+			usage: { prompt_tokens: 1200, completion_tokens: 800 },
+		});
+		const err = await rejection(adapter().complete(REQUEST));
+		expect(err.usage).toEqual({ inputTokens: 1200, outputTokens: 800, estimated: false });
+	});
+
+	test("complete(): with no usage reported it is estimated, not dropped", async () => {
+		mockJson({ choices: [{ message: { content: "" }, finish_reason: "stop" }] });
+		const err = await rejection(adapter().complete(REQUEST));
+		expect(err.usage?.estimated).toBe(true);
+	});
+
+	test("completeStream(): the final usage chunk is on the error", async () => {
+		mockSse([
+			{ choices: [{ delta: { reasoning: "think" }, finish_reason: "length" }] },
+			{ choices: [], usage: { prompt_tokens: 50, completion_tokens: 800 } },
+		]);
+		const err = await rejection(drain(streamOf(REQUEST)));
+		expect(err.usage).toEqual({ inputTokens: 50, outputTokens: 800, estimated: false });
+	});
+});
+
+describe("a refusal in message.refusal is a refusal, not an empty output (AGEN-79)", () => {
+	test("complete(): null content with a refusal string", async () => {
+		mockJson({
+			choices: [
+				{ message: { content: null, refusal: "I can't help with that." }, finish_reason: "stop" },
+			],
+			usage: { prompt_tokens: 5, completion_tokens: 6 },
+		});
+		const res = await adapter().complete(REQUEST);
+		expect(res.stopReason).toBe("refusal");
+		expect(res.text).toBe("I can't help with that.");
+		expect(res.usage.outputTokens).toBe(6);
+	});
+
+	test("completeStream(): refusal deltas with no content", async () => {
+		mockSse([
+			{ choices: [{ delta: { refusal: "I can't " } }] },
+			{ choices: [{ delta: { refusal: "help." }, finish_reason: "stop" }] },
+		]);
+		const events: LlmStreamEvent[] = [];
+		for await (const evt of streamOf(REQUEST)) events.push(evt);
+		const done = events.find((e) => e.kind === "done");
+		expect(done?.kind === "done" && done.response.stopReason).toBe("refusal");
+		expect(done?.kind === "done" && done.response.text).toBe("I can't help.");
+	});
+
+	test("real content wins over a refusal field, and an empty refusal is still empty output", async () => {
+		mockJson({
+			choices: [{ message: { content: "Answer", refusal: "ignored" }, finish_reason: "stop" }],
+		});
+		expect((await adapter().complete(REQUEST)).stopReason).toBe("end");
+		mockJson({ choices: [{ message: { content: null, refusal: "  " }, finish_reason: "stop" }] });
+		expect((await rejection(adapter().complete(REQUEST))).subType).toBe("empty_output");
+	});
+});
+
+describe("request fields follow what each provider kind accepts (AGEN-79)", () => {
+	async function bodyFor(kind: ProviderKind, disableReasoning: boolean) {
+		mockJson({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] });
+		bodies = [];
+		await adapter(kind).complete({ ...REQUEST, disableReasoning });
+		return bodies[0] ?? {};
+	}
+
+	test("think and chat_template_kwargs go only to self-hosted servers", async () => {
+		const selfHosted = await bodyFor("openai_compatible", true);
+		expect(selfHosted.think).toBe(false);
+		expect(selfHosted.chat_template_kwargs).toEqual({ enable_thinking: false });
+		for (const kind of ["openai", "google", "openrouter"] as const) {
+			const body = await bodyFor(kind, true);
+			expect("think" in body).toBe(false);
+			expect("chat_template_kwargs" in body).toBe(false);
+		}
+	});
+
+	test("reasoning_effort none goes to self-hosted servers and OpenRouter, not to OpenAI or Google", async () => {
+		expect((await bodyFor("openai_compatible", true)).reasoning_effort).toBe("none");
+		expect((await bodyFor("openrouter", true)).reasoning_effort).toBe("none");
+		expect("reasoning_effort" in (await bodyFor("openai", true))).toBe(false);
+		expect("reasoning_effort" in (await bodyFor("google", true))).toBe(false);
+	});
+
+	test("without disableReasoning no kind gets reasoning_effort", async () => {
+		for (const kind of ["openai_compatible", "openrouter", "openai", "google"] as const) {
+			expect("reasoning_effort" in (await bodyFor(kind, false))).toBe(false);
+		}
 	});
 });

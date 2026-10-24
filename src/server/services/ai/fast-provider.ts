@@ -2,6 +2,7 @@ import { getFastProviderId } from "./feature.js";
 import { getAdapter } from "./llm/registry.js";
 import { type LlmAdapter, LlmError } from "./llm/types.js";
 import { getProvider, getProviderApiKey } from "./providers-service.js";
+import { chargeFailedCall } from "./usage-cost.js";
 
 /**
  * The "fast provider" (AGEN-79): an optional second provider for the small,
@@ -18,6 +19,8 @@ import { getProvider, getProviderApiKey } from "./providers-service.js";
  */
 
 export const FAST_PROVIDER_COOLDOWN_MS = 60_000;
+/** The flat charge for a failed fast attempt whose usage was only estimated. */
+const FAST_FAILED_CALL_ESTIMATE_CENTS = 1;
 
 let fastOpenUntilMs = 0;
 let clock: () => number = Date.now;
@@ -65,6 +68,8 @@ export async function withFastProvider(
 					} catch (err) {
 						// The caller giving up is not the fast provider failing.
 						if (request.signal?.aborted) throw err;
+						// An empty reply was still billed; the retry is charged by the caller.
+						chargeFailedCall(err, FAST_FAILED_CALL_ESTIMATE_CENTS);
 						fastOpenUntilMs = clock() + FAST_PROVIDER_COOLDOWN_MS;
 						console.warn(
 							JSON.stringify({

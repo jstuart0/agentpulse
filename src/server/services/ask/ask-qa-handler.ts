@@ -6,6 +6,7 @@ import { getAdapter } from "../ai/llm/registry.js";
 import { LlmError } from "../ai/llm/types.js";
 import { getDefaultProvider, getProviderApiKey } from "../ai/providers-service.js";
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";
+import { chargeFailedCall, globalCentsForUsage } from "../ai/usage-cost.js";
 import { resolveSession } from "./ask-resolver.js";
 import type { QaIntent } from "./launch-intent-detector.js";
 
@@ -206,13 +207,9 @@ export async function handleSessionQa(
 		});
 
 		replyText = res.text.trim() || "(no response)";
-		actualCents = res.usage.estimated
-			? ESTIMATED_QA_COST_CENTS
-			: Math.max(
-					1,
-					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
-				);
+		actualCents = globalCentsForUsage(res.usage, ESTIMATED_QA_COST_CENTS);
 	} catch (err) {
+		chargeFailedCall(err, ESTIMATED_QA_COST_CENTS);
 		return { replyText: qaFailureReply(err) };
 	}
 

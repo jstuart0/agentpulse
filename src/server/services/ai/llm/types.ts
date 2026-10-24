@@ -97,6 +97,8 @@ export class LlmError extends Error {
 		readonly cause?: unknown,
 		/** True only when the call's own total deadline fired. */
 		readonly deadline: boolean = false,
+		/** What the provider reported for a call it answered but that yielded no usable text; it was billed. */
+		readonly usage?: LlmUsage,
 	) {
 		super(message);
 		this.name = "LlmError";

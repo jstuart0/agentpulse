@@ -554,7 +554,7 @@ interface AskGateCtx {
 type ClassifierOutcome<I> =
 	| { kind: "matched"; intent: I }
 	| { kind: "none" }
-	| { kind: "classifier_failed"; error: string };
+	| { kind: "classifier_failed"; error: string; subType?: string };
 
 // One gate's specification, fully typed over its intent payload type `I`.
 // The runner erases `I` via the `defineGate` helper so the array is uniform.

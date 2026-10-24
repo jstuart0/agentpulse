@@ -389,6 +389,11 @@ export class WatcherRunner {
 		} catch (err) {
 			const subType = err instanceof LlmError ? err.subType : "unknown";
 			const message = err instanceof Error ? err.message : String(err);
+			// An empty reply was still billed.
+			if (err instanceof LlmError && err.usage) {
+				const failedCost = priceCompletion(provider.kind, provider.model, err.usage);
+				if (failedCost > 0) await addSpendCents(sessionId, failedCost);
+			}
 			await failProposal({ id: pending.id, errorSubType: subType, errorMessage: message });
 			await emitAiEvent({
 				sessionId,
@@ -428,6 +433,10 @@ export class WatcherRunner {
 					parsed = parseDecision(responseText);
 				} catch (err) {
 					// Fall through to downgrade below.
+					if (err instanceof LlmError && err.usage) {
+						const failedCost = priceCompletion(provider.kind, provider.model, err.usage);
+						if (failedCost > 0) await addSpendCents(sessionId, failedCost);
+					}
 					console.warn(`[ai-watcher] ${sessionId} retry failed:`, err);
 				}
 			}
