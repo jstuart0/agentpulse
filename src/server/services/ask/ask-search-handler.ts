@@ -162,8 +162,6 @@ export function buildSearchFilters(
 		filters.operational = ["waiting", "error"];
 	} else if (WAITING_RE.test(message)) {
 		filters.operational = ["waiting"];
-	} else if (WORKING_NOW_RE.test(message)) {
-		filters.operational = ["working"];
 	} else if (STUCK_SYNONYMS.test(message)) {
 		filters.sessionStatus = "idle";
 	} else if (COMPLETED_RE.test(message)) {
@@ -176,6 +174,11 @@ export function buildSearchFilters(
 		// status='archived' filter. Until then, this sets a filter that returns
 		// zero rows (no sessions have status='archived' post-Slice G).
 		filters.sessionStatus = "archived";
+	} else if (WORKING_NOW_RE.test(message)) {
+		// Last on purpose: "currently", "right now" and "in progress" are time
+		// words that qualify any status ("which sessions are currently stuck"),
+		// so they mean the Working state only when no status word is present.
+		filters.operational = ["working"];
 	}
 
 	// Time filter.

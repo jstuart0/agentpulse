@@ -455,6 +455,29 @@ describe("running / going questions ask for the Working state", () => {
 		}
 	});
 
+	test("a status word wins over a time word; time words alone mean Working", () => {
+		const table: Array<[string, Partial<ReturnType<typeof buildSearchFilters>>]> = [
+			["which sessions are currently stuck?", { sessionStatus: "idle" }],
+			["what's active right now?", { sessionStatus: "active" }],
+			["which sessions completed in progress reports", { sessionStatus: "completed" }],
+			["sessions that are currently failing", { sessionStatus: "failed" }],
+			["what is waiting right now", { operational: ["waiting"] }],
+			["what needs attention right now", { operational: ["waiting", "error"] }],
+			["sessions currently blocked", { sessionStatus: "idle" }],
+			["which sessions are currently running", { operational: ["working"] }],
+			["what is going on right now with billing sessions", { operational: ["working"] }],
+		];
+		for (const [message, expected] of table) {
+			const f = buildSearchFilters(message, []);
+			const actual = { sessionStatus: f.sessionStatus, operational: f.operational };
+			expect({ message, ...actual }).toEqual({
+				message,
+				sessionStatus: expected.sessionStatus,
+				operational: expected.operational,
+			});
+		}
+	});
+
 	test("the search gate lets the new phrasings through", () => {
 		for (const message of [
 			"what sessions are going?",
