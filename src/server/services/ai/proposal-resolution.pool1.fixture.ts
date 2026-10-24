@@ -84,7 +84,10 @@ const stopped = await world();
 await queueStopAction(stopped.sessionId, USER);
 result.humanQueue = true;
 
-result.poolMax = process.env.AGENTPULSE_PG_POOL_MAX;
+// What the client really opened, not what the environment asked for.
+result.poolMax = (
+	getDb() as unknown as { $client?: { options?: { max?: number } } }
+).$client?.options?.max;
 console.log(`RESULT ${JSON.stringify(result)}`);
 
 for (const table of [

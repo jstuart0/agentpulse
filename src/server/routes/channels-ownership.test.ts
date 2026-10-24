@@ -298,23 +298,45 @@ describe("re-link", () => {
 		expect(await channelsService.getChannelCredential(id)).not.toBeNull();
 	});
 
-	test("another admin may re-link a channel owned by someone else but a member may not", async () => {
+	test("V1: in team mode only the owner may re-link; another admin and a member both get 404", async () => {
 		const t = await team();
 		const id = await seedVerifiedChannel({ chatId: "811", userId: t.admin.id });
+		for (const cookie of [t.memberCookie, t.adminBCookie]) {
+			const res = await app.request(
+				`/api/v1/channels/${id}/relink`,
+				jsonRequest("POST", {}, cookie),
+			);
+			expect(res.status).toBe(404);
+		}
+		// Nothing changed: the owner's binding is intact.
+		expect(await channelsService.getChannelCredential(id)).not.toBeNull();
+		await withTelegramApi(async () => {
+			const owner = await app.request(
+				`/api/v1/channels/${id}/relink`,
+				jsonRequest("POST", {}, t.adminCookie),
+			);
+			expect(owner.status).toBe(200);
+		});
+		// Re-linking never changes an owned channel's owner.
+		expect((await channelsService.getChannel(id))?.userId).toBe(t.admin.id);
+	});
+
+	test("V1: an admin may re-link a channel owned by local, and claims it", async () => {
+		const t = await team();
+		const id = await seedVerifiedChannel({ chatId: "813", userId: "local" });
 		const member = await app.request(
 			`/api/v1/channels/${id}/relink`,
 			jsonRequest("POST", {}, t.memberCookie),
 		);
 		expect(member.status).toBe(404);
 		await withTelegramApi(async () => {
-			const other = await app.request(
+			const admin = await app.request(
 				`/api/v1/channels/${id}/relink`,
 				jsonRequest("POST", {}, t.adminBCookie),
 			);
-			expect(other.status).toBe(200);
+			expect(admin.status).toBe(200);
 		});
-		// Re-linking never changes an owned channel's owner.
-		expect((await channelsService.getChannel(id))?.userId).toBe(t.admin.id);
+		expect((await channelsService.getChannel(id))?.userId).toBe(t.adminB.id);
 	});
 
 	test("while pending, sending to the channel is skipped", async () => {

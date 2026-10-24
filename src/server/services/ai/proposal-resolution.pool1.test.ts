@@ -37,7 +37,7 @@ describe("the send paths on a pool of one connection", () => {
 				refusalCommits: true,
 				humanQueue: true,
 				// The pool really was one connection in the child.
-				poolMax: "1",
+				poolMax: 1,
 			});
 		},
 		DEADLINE_MS + 7_000,

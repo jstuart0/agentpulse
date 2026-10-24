@@ -246,7 +246,7 @@ Enable it:
    ```
 3. Restart AgentPulse. Open **Settings → Labs** and flip `telegramChannel` on.
 4. A new **Telegram HITL channel** section appears in Settings. Click **Set webhook** once — it points Telegram at `PUBLIC_URL/api/v1/channels/telegram/webhook`.
-5. Click **Generate code**. Copy the `/start <code>` shown and DM it to your bot **from a private chat** (a group can't be tied to one person). The code is single-use and expires after 15 minutes. The bot confirms the link, and from then on only that Telegram account's taps and messages are accepted. A channel enrolled before this release, or in a group, must be re-linked from its row in Settings to approve or ask from Telegram.
+5. Click **Generate code**. Copy the `/start <code>` shown and DM it to your bot **from a private chat** (a group can't be tied to one person). The code is single-use and expires after 15 minutes. The bot confirms the link, and from then on only that Telegram account's taps and messages are accepted. Only a channel enrolled in a group needs re-linking (from its row in Settings) to approve or ask from Telegram; one enrolled in a private chat keeps working. In team mode, channels that belong to nobody (created before ownership was recorded) also refuse approvals until an admin re-links them.
 6. On any session, open the **AI** tab and assign that channel in the watcher config.
 
 From then on, any HITL that watcher opens for that session is sent to Telegram. Tapping **Approve** routes through the same path as the in-app button and really types the prompt into the session: the `ai_hitl_response` and `ai_continue_sent` events fire identically, just naming Telegram as the actor.

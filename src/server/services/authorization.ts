@@ -166,6 +166,21 @@ export async function mayManageChannel(
 	return actor.userId !== null && actor.userId === channel.userId;
 }
 
+/**
+ * Re-linking is narrower than managing: it hands the channel's inbound rights
+ * to whoever redeems the next code, so in team mode only its owner may do it. An
+ * admin may only for a channel owned by "local", which belongs to nobody and is
+ * claimed by the re-link. Solo mode has one operator.
+ */
+export async function mayRelinkChannel(
+	actor: Actor,
+	channel: { userId: string },
+): Promise<boolean> {
+	if ((await modeOf(actor)) === "solo") return true;
+	if (channel.userId === "local") return actor.role === "admin";
+	return actor.userId !== null && actor.userId === channel.userId;
+}
+
 export async function assertCanManageChannel(
 	actor: Actor,
 	channel: { userId: string },

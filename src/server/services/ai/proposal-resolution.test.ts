@@ -931,6 +931,18 @@ describe("drift guards", () => {
 				"/**\n * Has the turn moved on?",
 			],
 			["services/ai/turn-identity.ts", "export async function isTurnStale(", "\n}\n"],
+			["services/session-ownership.ts", "export async function resolveSessionOwner(", "\n}\n"],
+			[
+				"services/session-ownership.ts",
+				"export async function getSessionOwnerConnections(",
+				"\n}\n",
+			],
+			[
+				"services/session-ownership.ts",
+				"export async function findLaunchRowByCorrelationId(",
+				"\n}\n",
+			],
+			["services/control-actions.ts", "export async function takeControlLock(", "\n}\n"],
 			[
 				"services/ai/watcher-config-service.ts",
 				"export async function incrementContinuations(",
@@ -943,8 +955,8 @@ describe("drift guards", () => {
 			expect(a, `${file}: ${from}`).toBeGreaterThan(-1);
 			const b = source.indexOf(to, a + from.length);
 			const body = source.slice(a, b === -1 ? undefined : b);
-			// A default parameter (`db = getDb()`) is the one place the ordinary handle may appear.
-			expect(body.replace(/tx: any = getDb\(\)/g, "")).not.toMatch(/\bgetDb\(/);
+			// A default parameter (`db: any = getDb()`) is the one place the ordinary handle may appear.
+			expect(body.replace(/\b\w+: any = getDb\(\)/g, "")).not.toMatch(/\bgetDb\(/);
 		}
 	});
 });

@@ -33,7 +33,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   launched, Approve (in the app or in Telegram) types the prompt into the agent. For any other
   session, Approve is replaced by Copy prompt and Dismiss, and the Telegram message has no
   Approve button. Approval is refused if the session has moved on, the request expired (20
-  minutes), the text changed after you opened it, or the host is offline.
+  minutes), or the text changed after you opened it. An approval is queued for the host
+  even if it is offline at that moment; only `auto` requires a live host.
 - **⚠ breaking: the `auto` policy sends only fixed nudges.** It can send "retry the failed
   step", "run the tests" or "summarize status" and nothing the model wrote. It must be confirmed
   from the dashboard (not with an API key), is paused until "Pause automatic prompt sending"
@@ -43,19 +44,20 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 - **⚠ breaking: `auto` never sends while the agent is asking a question or a permission prompt
   is open**, and a "keep going" nudge (`proceed`) is no longer sent automatically.
 - **⚠ breaking: Telegram taps and messages are accepted only from the enrolled account in a
-  private chat.** Channels enrolled in a group, or before the enrolling account was recorded in a
-  group, must be re-linked to approve or ask from Telegram. In team mode a channel belongs to
-  the person who created it; channels created before this release belong to nobody and refuse
-  approvals until an admin re-links them. Enrollment codes are longer and expire after 15
-  minutes.
+  private chat.** Channels enrolled in a group must be re-linked to approve or ask from
+  Telegram; channels enrolled in a private chat keep working. In team mode a channel belongs to
+  the person who created it, and only that person can re-link it; channels created before this
+  release belong to nobody, refuse approvals until an admin re-links them, and the admin who
+  does becomes the owner. Enrollment codes are longer and expire after 15 minutes.
 - The watcher now wakes when a turn ends (after a 10 second wait for a follow-up) instead of on
   every event, for sessions that report through hooks as well as managed ones.
 - "Max continuations" now counts automatic sends only; approving a suggestion yourself never
   uses it up, and re-enabling a watcher no longer resets it (the AI tab has a Reset button).
-- Changing a session's watcher, deciding a proposal, and the AI pause and kill switches are
-  checked against the session's owner (or an admin) in team mode, validate their input
-  strictly, and are written to the audit log. Turning `auto` on, resetting the counter and
-  switching the pause or kill off need a signed-in person, not an API key.
+- Changing a session's watcher and deciding a proposal are checked against the session's owner
+  (or an admin) in team mode, validate their input strictly, and are written to the audit log.
+  The AI pause and kill switches stay global settings that only a team admin can change.
+  Turning `auto` on, resetting the counter and switching the pause or kill off need a signed-in
+  person, not an API key.
 - Every Telegram message the watcher sends is redacted of secrets and has home paths shortened.
 
 ### Fixed

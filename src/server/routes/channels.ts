@@ -29,6 +29,7 @@ import {
 	NotOwnerError,
 	assertCanDecideProposal,
 	assertCanManageChannel,
+	mayRelinkChannel,
 } from "../services/authorization.js";
 import {
 	completeEnrollment,
@@ -678,8 +679,8 @@ channelsRouter.get("/channels/:id", async (c) => {
  * inbound right at once (the stored chat and Telegram user are cleared) and the
  * new code binds the next private chat that redeems it. The channel id stays,
  * so watcher configs and HITLs keep pointing at it. A person's action: an API
- * key can't do it. In team mode an admin re-linking a channel owned by "local"
- * claims it for themselves.
+ * key can't do it. In team mode only the owner may, except that an admin may re-link
+ * a channel owned by "local", which claims it for themselves.
  */
 channelsRouter.post("/channels/:id/relink", async (c) => {
 	const badOrigin = refuseBadOrigin(c);
@@ -688,7 +689,9 @@ channelsRouter.post("/channels/:id/relink", async (c) => {
 	if (!(authUser && isHumanCaller(authUser))) return c.json({ error: "human_required" }, 403);
 	const id = c.req.param("id") ?? "";
 	const found = await manageableChannel(c, id);
-	if (!found) return c.json({ error: "Channel not found" }, 404);
+	if (!found || !(await mayRelinkChannel(found.actor, found.channel))) {
+		return c.json({ error: "Channel not found" }, 404);
+	}
 	if (!getTelegramBotToken()) return c.json({ error: "Telegram bot token not configured" }, 400);
 
 	const claimForUserId =
