@@ -1,12 +1,11 @@
 import { eq } from "drizzle-orm";
-import type { ManagedState, Session, SessionEvent } from "../../../shared/types.js";
+import type { Session, SessionEvent } from "../../../shared/types.js";
+import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
-import { managedSessions, sessions } from "../../db/schema/index.js";
+import { sessions } from "../../db/schema/index.js";
 import { SESSION_COLUMNS_SANS_OWNERSHIP } from "../../db/session-columns.js";
-import { dispatchHitlToChannel } from "../channels/dispatch.js";
 import { stampUserPrompt, stampWatcherState } from "../managed-session-state.js";
 import { sessionBus } from "../notifier.js";
-import { getSessionOwnerConnections } from "../session-ownership.js";
 import { emitAiEvent } from "./ai-events.js";
 import {
 	evaluateFreeformRules,
@@ -16,27 +15,35 @@ import {
 } from "./alert-rule-evaluator.js";
 import { buildWatcherContext } from "./context.js";
 import { classifyContinuability } from "./continuability.js";
-import { checkDispatch } from "./dispatch-filter.js";
-import { loadRecentEvents } from "./event-queries.js";
-import { classifierAffectsRunner, isAiBuildEnabled } from "./feature.js";
+import { routeContinueOrAsk } from "./continue-decision.js";
+import { loadWatcherSentPrompts } from "./dispatch-audit-service.js";
+import { getEventById, loadRecentEvents } from "./event-queries.js";
+import { classifierAffectsRunner, isAiActive, isAiBuildEnabled } from "./feature.js";
+import { expireOverdueHitl } from "./hitl-service.js";
 import { intelligenceForSession } from "./intelligence-service.js";
 import { priceCompletion } from "./llm/pricing.js";
 import { getAdapter } from "./llm/registry.js";
 import { LlmError } from "./llm/types.js";
 import { emitAiMetric } from "./metrics.js";
+import { runNotify } from "./notify/watcher-notify.js";
 import { parseDecision } from "./parser.js";
+import { loadManagedContext } from "./prompt-deliverability.js";
 import {
+	ProposalAlreadyExistsError,
 	cancelOpenHitl,
 	completeProposal,
-	completeProposalAsHitl,
 	createPendingProposal,
 	failProposal,
+	hasProposalForTurn,
+	proposalActivity,
 } from "./proposals-service.js";
 import { getProvider, getProviderApiKey } from "./providers-service.js";
-import { evaluateRisk, getRiskClasses } from "./risk-classes.js";
 import { RunLeaser } from "./run-leaser.js";
 import { addSpendCents, checkSpendBudget } from "./spend-service.js";
+import { type Boundary, boundaryOf, computeTurnKey, hasPromptAfter } from "./turn-identity.js";
+import { isWatched } from "./watched-sessions.js";
 import { getWatcherConfig } from "./watcher-config-service.js";
+import { sweepWatcherOnStart } from "./watcher-maintenance.js";
 import {
 	type WatcherRunRecord,
 	type WatcherRunTriggerKind,
@@ -47,34 +54,75 @@ import {
 	markSucceeded,
 } from "./watcher-runs-service.js";
 
-const DEBOUNCE_MS = 1_500;
-const MAX_EVENTS_LOOKBACK = 80;
+/** How long a turn boundary waits for a follow-up (a SessionEnd after a Stop, the managed and hook copy of one turn end) before the watcher wakes. */
+export const BOUNDARY_DEBOUNCE_MS = 10_000;
+/** At most one Continue model call per session in this window, measured from the newest proposal. */
+export const CONTINUE_MIN_CALL_INTERVAL_MS = 60_000;
+/** At most this many Continue proposals per session per rolling hour. */
+export const CONTINUE_PROPOSALS_PER_SESSION_PER_HOUR = 6;
+// Enough events to find the trigger and to cover a turn that ran long.
+const MAX_EVENTS_LOOKBACK = 200;
+// A Continue decision reads the whole current turn, however long ago it began.
+const CONTINUE_TIME_BUDGET_MS = 6 * 60 * 60 * 1000;
+const CONTINUE_MAX_TOKENS = 600;
+const HOUR_MS = 60 * 60 * 1000;
 const LEASE_DURATION_MS = 60_000;
 const LEASE_POLL_INTERVAL_MS = 500;
 const ALERT_RULE_SWEEP_INTERVAL_MS = 60_000;
 
-interface ScheduledRun {
-	timer: ReturnType<typeof setTimeout>;
-	lastTriggerId?: number;
-	lastTriggerKind: WatcherRunTriggerKind;
+/** The timers the runner uses, so a test can drive them with a manual clock. */
+export interface RunnerClock {
+	setTimer(fn: () => void, ms: number): unknown;
+	clearTimer(handle: unknown): void;
 }
 
+const realClock: RunnerClock = {
+	setTimer: (fn, ms) => setTimeout(fn, ms),
+	clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+interface ScheduledWake {
+	handle: unknown;
+	/** The newest boundary event that asked for this wake: it becomes the run's trigger. */
+	event: SessionEvent;
+}
+
+/** A wake to schedule once the run that returned it has finished. */
+interface Retry {
+	afterMs: number;
+	event: SessionEvent;
+}
+
+type EvalResult =
+	| { kind: "ok"; proposalId?: string | null; retry?: Retry }
+	| { kind: "cancelled"; reason: string; retry?: Retry }
+	| { kind: "err"; errorSubType: string; retry?: Retry };
+
+type ContinueOutcome =
+	| { did: "proposal"; proposalId: string }
+	| { did: "skip"; retryAfterMs?: number }
+	| { did: "err"; errorSubType: string };
+
 /**
- * AI watcher runner. Subscribes to the in-process session bus, debounces
- * per-session wake-ups, and orchestrates the LLM call → parse → route
- * pipeline per the plan.
+ * AI watcher runner. It wakes on turn boundaries only (a turn ended, the
+ * session ended, a turn began), waits `BOUNDARY_DEBOUNCE_MS` for a follow-up,
+ * and then queues one durable run per session. A run does up to two things, each
+ * gated on its own mode: Notify (a status note for the person) and Continue (a
+ * suggestion for the next prompt).
  *
- * Phase 1 AI control-plane: wakes are persisted to `ai_watcher_runs` and
- * picked up by a lease-based poller so work survives process restart. The
- * in-process debounce still coalesces rapid-fire events; once the debounce
- * fires we enqueue a durable row and let the leaser drive execution.
+ * Wakes are persisted to `ai_watcher_runs` and picked up by a lease-based poller
+ * so work survives process restart. The in-process debounce coalesces the
+ * boundaries; once it fires we enqueue a durable row and let the leaser drive it.
  */
 export class WatcherRunner {
-	private readonly scheduled = new Map<string, ScheduledRun>();
+	private readonly scheduled = new Map<string, ScheduledWake>();
+	/** The newest boundary that arrived while a run was claimed or running: it is woken for once that run finishes. */
+	private readonly rewake = new Map<string, SessionEvent>();
 	// NOTE: inFlight is per-process. Multi-instance deployment is unsupported
 	// until SQLite → Postgres migration; see thoughts/2026-04-24-postgres-backend-plan.md (A-M2).
 	private readonly inFlight = new Set<string>();
 	private started = false;
+	private listening = false;
 	private alertRuleSweepInterval: ReturnType<typeof setInterval> | null = null;
 	// Re-entry guard: if a sweep takes >60s the next tick returns immediately
 	// rather than running a second concurrent sweep that could double-fire alerts.
@@ -87,27 +135,65 @@ export class WatcherRunner {
 		processRun: (run) => this.processRun(run),
 	});
 
+	constructor(private readonly clock: RunnerClock = realClock) {}
+
+	private readonly onSessionEvent = ({
+		sessionId,
+		event,
+	}: { sessionId: string; event: SessionEvent }) => {
+		// Stamp user prompts immediately so race-control can see them even
+		// if the watcher was mid-call when the prompt landed.
+		if (event.category === "prompt") {
+			void stampUserPrompt(sessionId);
+		}
+		// Only turn boundaries wake the watcher; the watcher's own events never do.
+		const boundary = boundaryOf(event);
+		if (boundary === null) return;
+		void this.onBoundary(sessionId, event, boundary, false);
+	};
+
+	private readonly onWatcherWake = ({
+		sessionId,
+		event,
+		boundary,
+	}: { sessionId: string; event: SessionEvent; boundary: Boundary }) => {
+		// Ingest already checked that the session is watched.
+		void this.onBoundary(sessionId, event, boundary, true);
+	};
+
+	/** Hear about turn boundaries. Idempotent. Separate from `start` so a test can drive the wake path alone. */
+	attachListeners(): void {
+		if (this.listening) return;
+		this.listening = true;
+		sessionBus.on("session_event", this.onSessionEvent);
+		sessionBus.on("watcher_wake", this.onWatcherWake);
+		// Intentionally no `session_updated` listener: every hook ingest,
+		// every supervisor heartbeat, and the 60-second stale-session tick
+		// all emit that. Wiring it up here would schedule a trigger-less run each
+		// time and churn the queue.
+	}
+
+	detachListeners(): void {
+		sessionBus.off("session_event", this.onSessionEvent);
+		sessionBus.off("watcher_wake", this.onWatcherWake);
+		this.listening = false;
+	}
+
 	async start(): Promise<void> {
 		if (this.started) return;
 		this.started = true;
 
-		sessionBus.on("session_event", ({ sessionId, event }) => {
-			// Stamp user prompts immediately so race-control can see them even
-			// if the watcher was mid-call when the prompt landed.
-			if (event.category === "prompt") {
-				void stampUserPrompt(sessionId);
-			}
-			this.scheduleWake(sessionId, event);
-		});
-		// Intentionally no `session_updated` listener: every hook ingest,
-		// every supervisor heartbeat, and the 60-second stale-session tick
-		// all emit that. Wiring it up here schedules a trigger-less
-		// "manual" run each time, which churns the queue (hundreds of
-		// no-op rows per active session per hour) even though dedupe
-		// short-circuits the LLM call. The `session_event` stream above
-		// already covers every trigger the watcher actually wants to
-		// respond to (UserPromptSubmit, Stop, TaskCompleted, ai_error,
-		// plan_update, etc.).
+		this.attachListeners();
+
+		// A previous process may have died mid-run (single replica: anything still
+		// claimed or running is dead, however fresh its lease): cancel those runs,
+		// fail claimed reports, expire overdue HITLs and reconcile half-written audit rows.
+		try {
+			const swept = await sweepWatcherOnStart();
+			console.log(JSON.stringify({ kind: "watcher_sweep", ...swept }));
+		} catch (err) {
+			console.error("[ai-watcher] startup sweep failed:", err);
+		}
 
 		await this.leaser.start();
 
@@ -122,12 +208,14 @@ export class WatcherRunner {
 
 	stop(): void {
 		this.leaser.stop();
+		this.detachListeners();
 		if (this.alertRuleSweepInterval !== null) {
 			clearInterval(this.alertRuleSweepInterval);
 			this.alertRuleSweepInterval = null;
 		}
-		for (const entry of this.scheduled.values()) clearTimeout(entry.timer);
+		for (const entry of this.scheduled.values()) this.clock.clearTimer(entry.handle);
 		this.scheduled.clear();
+		this.rewake.clear();
 		this.started = false;
 	}
 
@@ -140,44 +228,96 @@ export class WatcherRunner {
 			await evaluateNoActivityRules(now);
 			await evaluateFreeformRules(now);
 			await purgeExpiredQaCache(now);
+			// Requests nobody answered in time lapse here, so a stale one can't sit open for days.
+			await expireOverdueHitl();
 		} finally {
 			this.alertSweepBusy = false;
 		}
 	}
 
-	/** Schedule or reset the per-session debounce timer. */
-	private scheduleWake(sessionId: string, trigger?: SessionEvent): void {
+	/**
+	 * A turn boundary in a session. `turn_start` means the person (or a sent
+	 * prompt) began the next turn: it cancels a pending wake and closes the open
+	 * request, which was about the turn that is over. The other boundaries start
+	 * the debounce.
+	 */
+	private async onBoundary(
+		sessionId: string,
+		event: SessionEvent,
+		boundary: Boundary,
+		alreadyWatched: boolean,
+	): Promise<void> {
+		try {
+			if (!alreadyWatched && !(await isWatched(sessionId))) return;
+			if (boundary === "turn_start") {
+				this.cancelWake(sessionId);
+				await cancelOpenHitl(sessionId, "superseded");
+				return;
+			}
+			this.scheduleWake(sessionId, event, BOUNDARY_DEBOUNCE_MS);
+		} catch (err) {
+			console.error(`[ai-watcher] boundary handling failed for ${sessionId}:`, err);
+		}
+	}
+
+	private cancelWake(sessionId: string): void {
 		const existing = this.scheduled.get(sessionId);
-		if (existing) clearTimeout(existing.timer);
+		if (!existing) return;
+		this.clock.clearTimer(existing.handle);
+		this.scheduled.delete(sessionId);
+	}
 
-		const triggerKind = derivedTrigger(trigger);
-		const triggerEventId = trigger?.id ?? null;
-
-		const timer = setTimeout(() => {
+	/**
+	 * Schedule or reset the per-session wake. The newest boundary event (by id)
+	 * is the one the run is woken for, so a SessionEnd after a Stop wakes once.
+	 */
+	private scheduleWake(sessionId: string, event: SessionEvent, delayMs: number): void {
+		const existing = this.scheduled.get(sessionId);
+		if (existing) this.clock.clearTimer(existing.handle);
+		const trigger = existing && existing.event.id > event.id ? existing.event : event;
+		const handle = this.clock.setTimer(() => {
 			this.scheduled.delete(sessionId);
-			// Enqueue is fire-and-forget; the leaser will pick it up.
-			void enqueueRun({
-				sessionId,
-				triggerEventId,
-				triggerKind,
-			})
-				.then((run) => {
-					emitAiMetric({
-						name: "watcher_run_queued",
-						sessionId,
-						runId: run.id,
-						attempt: run.attemptCount,
-					});
-				})
-				.catch((err) => {
-					console.error(`[ai-watcher] enqueue failed for ${sessionId}:`, err);
-				});
-		}, DEBOUNCE_MS);
-		this.scheduled.set(sessionId, {
-			timer,
-			lastTriggerId: trigger?.id,
-			lastTriggerKind: triggerKind,
+			void this.fire(sessionId, trigger).catch((err) => {
+				console.error(`[ai-watcher] wake failed for ${sessionId}:`, err);
+			});
+		}, delayMs);
+		this.scheduled.set(sessionId, { handle, event: trigger });
+	}
+
+	/** The debounce is over: queue a run, unless the AI is off, the session is no longer watched, or a new turn began. */
+	private async fire(sessionId: string, event: SessionEvent): Promise<void> {
+		if (!(await isAiActive()) || !(await isWatched(sessionId))) return;
+		if (await hasPromptAfter(getDb(), sessionId, event.id)) return;
+		const { run, triggerMoved } = await enqueueRun({
+			sessionId,
+			triggerEventId: event.id,
+			triggerKind: derivedTrigger(event),
 		});
+		if (!triggerMoved) {
+			// The open run was claimed (or is running): it won't see this boundary, so wake once it is done.
+			const pending = this.rewake.get(sessionId);
+			if (!pending || event.id > pending.id) this.rewake.set(sessionId, event);
+			// The run may have finished between enqueueRun's read and now, after its
+			// `finally` already looked: nobody would collect this. `inFlight` is cleared in
+			// the same synchronous block that reads `rewake`, so one of the two sees it.
+			if (!this.inFlight.has(sessionId)) this.collectRewake(sessionId);
+			return;
+		}
+		emitAiMetric({
+			name: "watcher_run_queued",
+			sessionId,
+			runId: run.id,
+			attempt: run.attemptCount,
+		});
+	}
+
+	/** Wake for the boundary held while a run was open, if there is one. Synchronous, so it can't interleave. */
+	private collectRewake(sessionId: string): boolean {
+		const again = this.rewake.get(sessionId);
+		if (!again) return false;
+		this.rewake.delete(sessionId);
+		this.scheduleWake(sessionId, again, BOUNDARY_DEBOUNCE_MS);
+		return true;
 	}
 
 	/** Process a single claimed run. */
@@ -194,8 +334,10 @@ export class WatcherRunner {
 		await markRunning(run.id);
 
 		const startedAt = Date.now();
+		let retry: Retry | undefined;
 		try {
 			const result = await this.evaluateInner(sessionId, run);
+			retry = result.retry;
 			if (result.kind === "ok") {
 				await markSucceeded({ id: run.id, proposalId: result.proposalId ?? null });
 				emitAiMetric({
@@ -205,6 +347,8 @@ export class WatcherRunner {
 					outcome: "succeeded",
 					durationMs: Date.now() - startedAt,
 				});
+			} else if (result.kind === "cancelled") {
+				await markCancelled(run.id, result.reason);
 			} else {
 				await markFailed({ id: run.id, errorSubType: result.errorSubType });
 				emitAiMetric({
@@ -230,20 +374,26 @@ export class WatcherRunner {
 			});
 		} finally {
 			this.inFlight.delete(sessionId);
+			// A boundary that arrived during the run is woken for now; otherwise a retry asked for by the run.
+			if (!this.collectRewake(sessionId) && retry) {
+				this.scheduleWake(sessionId, retry.event, retry.afterMs);
+			}
 		}
 	}
 
-	private async evaluateInner(
-		sessionId: string,
-		run: WatcherRunRecord,
-	): Promise<{ kind: "ok"; proposalId?: string | null } | { kind: "err"; errorSubType: string }> {
-		const config = await getWatcherConfig(sessionId);
-		if (!config || !config.enabled) return { kind: "ok" };
-
-		// Cap check up front — no point hitting the LLM if we can't act.
-		if (config.continuationsUsed >= config.maxContinuations) {
-			await stampWatcherState(sessionId, "cooling_down");
-			return { kind: "ok" };
+	/**
+	 * One run, in three steps: is this session watched, then Notify (a status
+	 * note) if it is on, then Continue (a suggestion) if it is on and a turn just
+	 * ended. Each mode has its own gates; neither depends on the other's cap.
+	 */
+	private async evaluateInner(sessionId: string, run: WatcherRunRecord): Promise<EvalResult> {
+		const watchConfig = await getWatcherConfig(sessionId);
+		if (
+			!watchConfig ||
+			!watchConfig.enabled ||
+			(!watchConfig.notifyEnabled && !watchConfig.continueEnabled)
+		) {
+			return { kind: "cancelled", reason: "not_watched" };
 		}
 
 		const [session] = await getDb()
@@ -251,8 +401,143 @@ export class WatcherRunner {
 			.from(sessions)
 			.where(eq(sessions.sessionId, sessionId))
 			.limit(1);
-		if (!session) return { kind: "ok" };
+		if (!session) return { kind: "cancelled", reason: "no_session" };
+
+		// By id, however old: a run's trigger is never searched for in a window.
+		const trigger = run.triggerEventId ? await getEventById(run.triggerEventId) : null;
+		if (!trigger || trigger.sessionId !== sessionId) {
+			return { kind: "cancelled", reason: "no_trigger" };
+		}
+		const boundary = boundaryOf(trigger);
+		if (boundary === null || boundary === "turn_start") {
+			return { kind: "cancelled", reason: "not_a_boundary" };
+		}
+
+		const provider = await getProvider(watchConfig.providerId);
+		if (!provider) {
+			await emitAiEvent({
+				sessionId,
+				source: "managed_control",
+				category: "ai_error",
+				eventType: "ProviderMissing",
+				content: `Configured provider ${watchConfig.providerId} no longer exists`,
+				rawPayload: { sub_type: "permanent_validation" },
+			});
+			return { kind: "err", errorSubType: "permanent_validation" };
+		}
+		const apiKey = await getProviderApiKey(provider.id);
+		if (!apiKey) {
+			await emitAiEvent({
+				sessionId,
+				source: "managed_control",
+				category: "ai_error",
+				eventType: "CredentialFailure",
+				content: "Provider credential could not be decrypted",
+				rawPayload: { sub_type: "permanent_validation" },
+			});
+			await stampWatcherState(sessionId, "disabled_due_to_error");
+			return { kind: "err", errorSubType: "permanent_validation" };
+		}
+
+		let worked = false;
+		let proposalId: string | null = null;
+		let failure: string | null = null;
+		let retryAfterMs: number | null = null;
+		const wantRetry = (ms: number | undefined) => {
+			if (ms !== undefined) retryAfterMs = Math.max(retryAfterMs ?? 0, ms);
+		};
+
+		if (watchConfig.notifyEnabled) {
+			try {
+				const out = await runNotify(
+					{
+						sessionId,
+						agentType: session.agentType,
+						displayName: session.displayName,
+						cwd: session.cwd,
+						gitBranch: session.gitBranch,
+						currentTask: session.currentTask,
+					},
+					watchConfig,
+					run,
+					trigger,
+					provider,
+					apiKey,
+				);
+				if (out.did === "report") worked = true;
+				wantRetry(out.retryAfterMs);
+			} catch (err) {
+				console.error(`[ai-watcher] ${sessionId} notify threw:`, err);
+				failure = "notify_failed";
+			}
+		}
+
+		if (watchConfig.continueEnabled && boundary === "turn_end") {
+			const out = await this.runContinue({
+				sessionId,
+				run,
+				watchConfig,
+				session,
+				trigger,
+				provider,
+				apiKey,
+			});
+			if (out.did === "proposal") {
+				worked = true;
+				proposalId = out.proposalId;
+			} else if (out.did === "skip") {
+				wantRetry(out.retryAfterMs);
+			} else {
+				failure = out.errorSubType;
+			}
+		}
+
+		const retry: Retry | undefined =
+			retryAfterMs === null ? undefined : { afterMs: retryAfterMs, event: trigger };
+		if (worked) return { kind: "ok", proposalId, retry };
+		if (failure) return { kind: "err", errorSubType: failure, retry };
+		return { kind: "cancelled", reason: "no_work", retry };
+	}
+
+	/**
+	 * Continue: ask the model for the next step and route its answer. Gated on
+	 * the turn (one proposal per turn), the flood limits, the session's
+	 * continuability and spend. `maxContinuations` is not checked here: it limits
+	 * automatic sends, inside the send path, and a capped auto config still opens
+	 * a request for a person.
+	 */
+	private async runContinue(input: {
+		sessionId: string;
+		run: WatcherRunRecord;
+		watchConfig: NonNullable<Awaited<ReturnType<typeof getWatcherConfig>>>;
+		session: Record<string, unknown> & { agentType: string };
+		trigger: SessionEvent;
+		provider: NonNullable<Awaited<ReturnType<typeof getProvider>>>;
+		apiKey: string;
+	}): Promise<ContinueOutcome> {
+		const { sessionId, run, watchConfig, session, trigger, provider, apiKey } = input;
+
+		const turnKey = await computeTurnKey(
+			getDb(),
+			session as { sessionId: string; agentType: string },
+			trigger,
+		);
+		if (await hasProposalForTurn(sessionId, turnKey)) return { did: "skip" };
+
+		// Flood limits, counted from the table so a restart can't reset them.
+		const now = Date.now();
+		const activity = await proposalActivity(sessionId, new Date(now - HOUR_MS).toISOString());
+		if (activity.newestAt !== null && now - activity.newestAt < CONTINUE_MIN_CALL_INTERVAL_MS) {
+			return {
+				did: "skip",
+				retryAfterMs: CONTINUE_MIN_CALL_INTERVAL_MS - (now - activity.newestAt),
+			};
+		}
+		if (activity.inWindow >= CONTINUE_PROPOSALS_PER_SESSION_PER_HOUR) return { did: "skip" };
+
 		const recent = await loadRecentEvents(sessionId, MAX_EVENTS_LOOKBACK);
+		// A trigger older than the window the watcher reads is a turn that is long over.
+		if (!recent.some((e) => e.id === trigger.id)) return { did: "skip" };
 
 		// Continuability — deliberately generous about "report". Even when
 		// we can't dispatch, we often want to summarize for the user.
@@ -263,13 +548,10 @@ export class WatcherRunner {
 			managedSession: managed?.managedSession,
 			supervisorConnected: managed?.supervisorConnected ?? true,
 		});
-
-		if (!elig.eligibleToContinue && !elig.eligibleToReport) {
-			return { kind: "ok" };
-		}
+		if (!elig.eligibleToContinue && !elig.eligibleToReport) return { did: "skip" };
 
 		// Budget pre-flight (point-query, cheap).
-		const spend = await checkSpendBudget("local", config.maxDailyCents, 0);
+		const spend = await checkSpendBudget("local", watchConfig.maxDailyCents, 0);
 		if (!spend.allowed) {
 			await stampWatcherState(sessionId, "cooling_down");
 			await emitAiEvent({
@@ -280,32 +562,25 @@ export class WatcherRunner {
 				content: spend.reason ?? "Daily spend cap reached",
 				rawPayload: { sub_type: "spend_cap", cap: spend.cap, spent: spend.spent },
 			});
-			return { kind: "err", errorSubType: "spend_cap" };
-		}
-
-		const provider = await getProvider(config.providerId);
-		if (!provider) {
-			await emitAiEvent({
-				sessionId,
-				source: "managed_control",
-				category: "ai_error",
-				eventType: "ProviderMissing",
-				content: `Configured provider ${config.providerId} no longer exists`,
-				rawPayload: { sub_type: "permanent_validation" },
-			});
-			return { kind: "err", errorSubType: "permanent_validation" };
+			return { did: "err", errorSubType: "spend_cap" };
 		}
 
 		await stampWatcherState(sessionId, "thinking");
 
 		// Phase 1 of two-phase recording: a pending row lands BEFORE the LLM
-		// call so a crash mid-request is visible.
-		const triggerForContext = triggerEventFromRun(run, recent);
-		const pending = await createPendingProposal({
-			sessionId,
-			providerId: provider.id,
-			triggerEventId: triggerForContext ? String(triggerForContext.id) : null,
-		});
+		// call so a crash mid-request is visible. One per turn, kept by the database.
+		let pending: Awaited<ReturnType<typeof createPendingProposal>>;
+		try {
+			pending = await createPendingProposal({
+				sessionId,
+				providerId: provider.id,
+				triggerEventId: String(trigger.id),
+				turnKey,
+			});
+		} catch (err) {
+			if (err instanceof ProposalAlreadyExistsError) return { did: "skip" };
+			throw err;
+		}
 		await emitAiEvent({
 			sessionId,
 			source: "managed_control",
@@ -339,28 +614,11 @@ export class WatcherRunner {
 			session: session as unknown as Session,
 			events: recent,
 			triggerType: run.triggerKind,
-			customSystemPrompt: config.systemPrompt,
+			customSystemPrompt: watchConfig.systemPrompt,
 			intelligenceHint,
+			transcriptTimeBudgetMs: CONTINUE_TIME_BUDGET_MS,
+			watcherSentPrompts: await loadWatcherSentPrompts(sessionId),
 		});
-
-		const apiKey = await getProviderApiKey(provider.id);
-		if (!apiKey) {
-			await failProposal({
-				id: pending.id,
-				errorSubType: "permanent_validation",
-				errorMessage: "Provider credential decryption failed",
-			});
-			await emitAiEvent({
-				sessionId,
-				source: "managed_control",
-				category: "ai_error",
-				eventType: "CredentialFailure",
-				content: "Provider credential could not be decrypted",
-				rawPayload: { sub_type: "permanent_validation" },
-			});
-			await stampWatcherState(sessionId, "disabled_due_to_error");
-			return { kind: "err", errorSubType: "permanent_validation" };
-		}
 
 		const adapter = getAdapter({
 			kind: provider.kind,
@@ -380,6 +638,8 @@ export class WatcherRunner {
 				model: provider.model,
 				// The decision is a JSON object; reasoning would take the token budget.
 				disableReasoning: true,
+				timeoutMs: config.watcherCallTimeoutSeconds * 1000,
+				maxTokens: CONTINUE_MAX_TOKENS,
 			});
 			responseText = res.text;
 			usageInput = res.usage.inputTokens;
@@ -404,7 +664,7 @@ export class WatcherRunner {
 				rawPayload: { sub_type: subType, proposal_id: pending.id },
 			});
 			await stampWatcherState(sessionId, "cooling_down");
-			return { kind: "err", errorSubType: subType };
+			return { did: "err", errorSubType: subType };
 		}
 
 		// Charge the spend cap against the actual usage.
@@ -421,6 +681,8 @@ export class WatcherRunner {
 						transcriptPrompt: `${ctx.transcriptPrompt}\n\nRESPONSE PARSE ERROR: ${parsed.error}. Respond with exactly one JSON object per the schema. No prose.`,
 						model: provider.model,
 						disableReasoning: true,
+						timeoutMs: config.watcherCallTimeoutSeconds * 1000,
+						maxTokens: CONTINUE_MAX_TOKENS,
 					});
 					responseText = retry.text;
 					if (retry.usage && !retry.usage.estimated) {
@@ -464,7 +726,7 @@ export class WatcherRunner {
 				rawPayload: { sub_type: "parse_failure", proposal_id: pending.id },
 			});
 			await stampWatcherState(sessionId, "cooling_down");
-			return { kind: "err", errorSubType: "parse_failure" };
+			return { did: "err", errorSubType: "parse_failure" };
 		}
 
 		const decision = parsed.decision;
@@ -481,7 +743,7 @@ export class WatcherRunner {
 				usageEstimated,
 			});
 			await stampWatcherState(sessionId, "cooling_down");
-			return { kind: "ok", proposalId: pending.id };
+			return { did: "proposal", proposalId: pending.id };
 		}
 
 		if (decision.decision === "stop") {
@@ -504,7 +766,7 @@ export class WatcherRunner {
 				rawPayload: { proposal_id: pending.id, decision: "stop" },
 			});
 			await stampWatcherState(sessionId, "idle");
-			return { kind: "ok", proposalId: pending.id };
+			return { did: "proposal", proposalId: pending.id };
 		}
 
 		if (decision.decision === "report") {
@@ -535,238 +797,42 @@ export class WatcherRunner {
 				},
 			});
 			await stampWatcherState(sessionId, "idle");
-			return { kind: "ok", proposalId: pending.id };
+			return { did: "proposal", proposalId: pending.id };
 		}
 
-		// continue or ask → filter, downgrade continue to ask if needed or if filter trips
-		let nextPrompt: string | null = null;
-		let askProposal: string | null = null;
-		let askWhy: string | undefined;
-
-		if (decision.decision === "continue") {
-			// Observed / policy demands approval / filter tripped → ask
-			const filter = checkDispatch(decision.nextPrompt);
-			if (!elig.eligibleToContinue) {
-				askProposal = decision.nextPrompt;
-				askWhy = `Session is ${elig.reason}; proposed prompt shown for manual paste.`;
-			} else if (!filter.allowed) {
-				await emitAiEvent({
-					sessionId,
-					source: "managed_control",
-					category: "ai_continue_blocked",
-					eventType: "AiContinueBlocked",
-					content: `Dispatch filter tripped: ${filter.reason}`,
-					rawPayload: {
-						proposal_id: pending.id,
-						rule: filter.rule,
-						proposed_prompt: decision.nextPrompt,
-					},
-				});
-				askProposal = decision.nextPrompt;
-				askWhy = `Auto-dispatch blocked by safety filter (${filter.rule}). Approve explicitly to send.`;
-			} else if (config.policy === "ask_on_risk") {
-				// Phase 7: evaluate configured risk classes and escalate on any hit.
-				const riskConfig = await getRiskClasses();
-				const hits = evaluateRisk(riskConfig, {
-					proposedPrompt: decision.nextPrompt,
-					recentToolEvents: recent.map((e) => ({
-						category: e.category,
-						toolResponse: e.toolResponse,
-						source: e.source,
-						eventType: e.eventType,
-					})),
-				});
-				if (hits.length > 0) {
-					askProposal = decision.nextPrompt;
-					askWhy = `Risk class(es) matched: ${hits.map((h) => h.label).join(", ")}`;
-					await emitAiEvent({
-						sessionId,
-						source: "managed_control",
-						category: "ai_continue_blocked",
-						eventType: "AiRiskBlocked",
-						content: askWhy,
-						rawPayload: {
-							proposal_id: pending.id,
-							risk_hits: hits,
-						},
-					});
-				} else {
-					nextPrompt = decision.nextPrompt;
-				}
-			} else if (config.policy === "auto") {
-				// Phase 7: auto-dispatch is available only for explicitly-trusted
-				// managed sessions where the supervisor is live. We still record
-				// the ai_continue_sent event for audit; actual prompt delivery
-				// remains the control-actions queue's responsibility.
-				if (managed?.supervisorConnected) {
-					nextPrompt = decision.nextPrompt;
-				} else {
-					askProposal = decision.nextPrompt;
-					askWhy = "auto policy requires a connected supervisor; routing to HITL";
-				}
-			} else {
-				// ask_always — current default.
-				nextPrompt = decision.nextPrompt;
-			}
-		} else {
-			askProposal = decision.proposal;
-			askWhy = decision.why;
-		}
-
-		// Any prior open HITL is superseded when a newer one opens.
-		await cancelOpenHitl(sessionId, "superseded");
-
-		// Phase 7 auto-dispatch path. When the user has explicitly opted
-		// into `auto`, the supervisor is live, no risk class tripped, and
-		// the dispatch filter accepts the prompt, we skip HITL and record
-		// an ai_continue_sent audit event immediately. The actual prompt
-		// delivery into the managed session remains the control-actions
-		// queue's job — this phase only lifts the HITL gate, not adds
-		// new dispatch plumbing.
-		const autoDispatch = config.policy === "auto" && nextPrompt !== null;
-		if (autoDispatch) {
-			await completeProposal({
-				id: pending.id,
-				decision: decision.decision,
-				nextPrompt,
-				reportSummary: null,
-				rawResponse: { raw: responseText, decision, auto: true },
-				tokensIn: usageInput,
-				tokensOut: usageOutput,
-				costCents,
-				usageEstimated,
-			});
-			await emitAiEvent({
-				sessionId,
-				source: "managed_control",
-				category: "ai_continue_sent",
-				eventType: "AiContinueSent",
-				content: nextPrompt ?? "",
-				rawPayload: { proposal_id: pending.id, action: "auto" },
-			});
-			await stampWatcherState(sessionId, "idle");
-			return { kind: "ok", proposalId: pending.id };
-		}
-
-		// Persist the proposal and open a durable HITL request. The
-		// proposal's physical state is "complete" (the LLM work is done);
-		// the HITL workflow lives in ai_hitl_requests and is surfaced as
-		// "hitl_waiting" via derivation for UI compatibility.
-		const hitlOpen = await completeProposalAsHitl({
-			id: pending.id,
-			decision: decision.decision,
-			nextPrompt,
-			reportSummary: null,
-			rawResponse: { raw: responseText, decision },
+		const completion = {
 			tokensIn: usageInput,
 			tokensOut: usageOutput,
 			costCents,
 			usageEstimated,
-			channelId: config.channelId ?? null,
-		});
-
-		// If the session's watcher config points at a notification channel,
-		// best-effort dispatch the HITL there (Telegram, etc). Delivery
-		// failures never block the in-app approval path.
-		if (config.channelId && hitlOpen.hitlId) {
-			const [freshSession] = await getDb()
-				.select({ displayName: sessions.displayName })
-				.from(sessions)
-				.where(eq(sessions.sessionId, sessionId))
-				.limit(1);
-			const promptForChannel = nextPrompt ?? askProposal ?? "";
-			const delivery = await dispatchHitlToChannel({
-				channelId: config.channelId,
-				message: {
-					hitlId: hitlOpen.hitlId,
-					proposalId: pending.id,
-					sessionId,
-					sessionDisplayName: freshSession?.displayName ?? null,
-					decision: decision.decision === "continue" ? "continue" : "ask",
-					prompt: promptForChannel,
-					why: askWhy ?? null,
-				},
-			});
-			if (!delivery.ok) {
-				await emitAiEvent({
-					sessionId,
-					source: "managed_control",
-					category: "ai_error",
-					eventType: "ChannelDeliveryFailed",
-					content: `Channel delivery failed: ${delivery.error ?? "unknown"}`,
-					rawPayload: {
-						sub_type: "channel_delivery_failed",
-						proposal_id: pending.id,
-						channel_id: config.channelId,
-					},
-				});
-			}
-		}
-
-		await emitAiEvent({
+		};
+		await routeContinueOrAsk({
 			sessionId,
-			source: "managed_control",
-			category: "ai_proposal",
-			eventType: "AiProposal",
-			content: decision.decision === "continue" ? decision.nextPrompt : (askProposal ?? ""),
-			rawPayload: {
-				proposal_id: pending.id,
-				decision: decision.decision,
-				why: askWhy ?? null,
+			proposalId: pending.id,
+			decision,
+			responseText,
+			completion,
+			watchConfig,
+			session: {
+				displayName: (session.displayName as string | null) ?? null,
+				cwd: (session.cwd as string | null) ?? null,
 			},
+			trigger,
+			turnKey,
+			recent,
+			eligibility: elig,
 		});
-
-		await emitAiEvent({
-			sessionId,
-			source: "managed_control",
-			category: "ai_hitl_request",
-			eventType: "AiHitlRequest",
-			content: nextPrompt ?? askProposal ?? "",
-			rawPayload: {
-				proposal_id: pending.id,
-				why: askWhy ?? null,
-				can_dispatch: nextPrompt !== null,
-			},
-		});
-
-		await stampWatcherState(sessionId, "awaiting_human");
-		return { kind: "ok", proposalId: pending.id };
+		return { did: "proposal", proposalId: pending.id };
 	}
 }
 
 function derivedTrigger(trigger?: SessionEvent): WatcherRunTriggerKind {
 	if (!trigger) return "manual";
-	if (trigger.eventType === "Stop" || trigger.eventType === "SessionEnd") return "stop";
+	// A turn that ended (a hook Stop, or a managed turn's own end) and a session that ended.
+	if (boundaryOf(trigger) === "turn_end" || trigger.eventType === "SessionEnd") return "stop";
 	if (trigger.category === "plan_update") return "plan_completed";
 	if (trigger.category === "ai_error") return "error";
 	return "idle";
-}
-
-function triggerEventFromRun(
-	run: WatcherRunRecord,
-	recent: SessionEvent[],
-): SessionEvent | undefined {
-	if (!run.triggerEventId) return undefined;
-	return recent.find((e) => e.id === run.triggerEventId);
-}
-
-async function loadManagedContext(sessionId: string): Promise<{
-	managedSession: { managedState: ManagedState };
-	supervisorConnected: boolean;
-} | null> {
-	const [managedRow] = await getDb()
-		.select()
-		.from(managedSessions)
-		.where(eq(managedSessions.sessionId, sessionId))
-		.limit(1);
-	if (!managedRow) return null;
-	const connected = (await getSessionOwnerConnections([sessionId])).get(sessionId) ?? false;
-	return {
-		// Drizzle column is `text`, but every producer only writes
-		// ManagedState members — narrow at the boundary.
-		managedSession: { managedState: managedRow.managedState as ManagedState },
-		supervisorConnected: connected,
-	};
 }
 
 // Single instance used by server bootstrap.
@@ -797,7 +863,7 @@ export async function maybeStartWatcherRunner(): Promise<void> {
 export function clearAllScheduled(): void {
 	// biome-ignore lint/complexity/useLiteralKeys: private field escape hatch
 	for (const entry of watcherRunner["scheduled"].values()) {
-		clearTimeout(entry.timer);
+		clearTimeout(entry.handle as ReturnType<typeof setTimeout>);
 	}
 	// biome-ignore lint/complexity/useLiteralKeys: private field escape hatch
 	watcherRunner["scheduled"].clear();

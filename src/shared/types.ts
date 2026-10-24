@@ -1138,6 +1138,34 @@ export interface LaunchRequestInput {
 
 export type InboxSeverity = "normal" | "high" | "info";
 
+/** What a Notify report says about a session: it is done, it is not getting anywhere, or it is waiting for a person. */
+export type WatcherReportVerdict = "finished" | "stuck" | "needs_you";
+
+export type WatcherReportStatus = "claimed" | "delivered" | "failed" | "suppressed";
+
+export type WatcherReportTelegramStatus =
+	| "sent"
+	| "skipped_rate_limit"
+	| "skipped_no_channel"
+	| "failed";
+
+/** One Notify report, as the AI panel lists it. */
+export interface WatcherReport {
+	id: string;
+	sessionId: string;
+	turnKey: string;
+	verdict: WatcherReportVerdict | null;
+	why: string | null;
+	status: WatcherReportStatus;
+	/** Why a failed or suppressed report is not a delivered one. */
+	failureCode: string | null;
+	telegramStatus: WatcherReportTelegramStatus | null;
+	createdAt: string;
+}
+
+/** Every report starts with this line, wherever it is shown: the text after it came from a session AgentPulse does not control. */
+export const WATCHER_REPORT_PREFIX = "AgentPulse summary; session content is untrusted.";
+
 export type InboxWorkItem =
 	| {
 			kind: "hitl";
@@ -1151,6 +1179,22 @@ export type InboxWorkItem =
 			prompt: string;
 			why: string | null;
 			openedAt: string;
+			/** When the request lapses, or null for one that never expires. */
+			expiresAt: string | null;
+			/** Hash of the prompt shown; sent back with Approve so the server can tell it is the same text. */
+			promptSha256: string | null;
+			/** True only when the stored suggestion can be sent as it is. Null on a request from before this existed. */
+			approvable: boolean | null;
+			severity: InboxSeverity;
+	  }
+	| {
+			kind: "watcher_report";
+			id: string; // watcher report id
+			sessionId: string;
+			sessionName: string | null;
+			verdict: WatcherReportVerdict;
+			why: string;
+			at: string;
 			severity: InboxSeverity;
 	  }
 	| {
@@ -1351,7 +1395,7 @@ export type InboxWorkItem =
  * Action-only subset of InboxWorkItem — every variant whose kind starts with
  * `action_`. Used by the unified ActionRequestCard component, which handles
  * Approve/Decline cards. Non-action variants (hitl, stuck, risky,
- * failed_proposal) have their own bespoke render paths.
+ * failed_proposal, watcher_report) have their own bespoke render paths.
  */
 export type ActionInboxItem = Extract<InboxWorkItem, { kind: `action_${string}` }>;
 

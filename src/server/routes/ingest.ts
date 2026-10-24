@@ -2,19 +2,31 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { DELIVERY_ID_HEADER, HOST_HEADER, ORIGIN_HEADER } from "../../shared/hook-headers.js";
 import { parseReportedHostHeader } from "../../shared/reported-host.js";
-import type { HookEventPayload, HookEventType, SemanticStatusUpdate } from "../../shared/types.js";
+import type {
+	HookEventPayload,
+	HookEventType,
+	SemanticStatusUpdate,
+	SessionEvent,
+} from "../../shared/types.js";
 import type { AuthUser } from "../auth/middleware.js";
 import { requireApiKey } from "../auth/middleware.js";
 import { hookRateLimit } from "../middleware/hook-rate-limit.js";
 import { skipHeaderDrop } from "../middleware/skip-header-drop.js";
 import { canonicalizeHookPayload } from "../services/agents/canonicalize.js";
+import { boundaryOf } from "../services/ai/turn-identity.js";
+import { isWatched } from "../services/ai/watched-sessions.js";
 import { type HookDeliveryContext, parseDeliveryId, parseOrigin } from "../services/event-dedup.js";
 import {
 	detectAgentType,
 	processHookEvent,
 	processStatusUpdate,
 } from "../services/event-processor.js";
-import { notifyChannel, notifySessionCreated, notifySessionUpdated } from "../services/notifier.js";
+import {
+	notifyChannel,
+	notifySessionCreated,
+	notifySessionUpdated,
+	notifyWatcherWake,
+} from "../services/notifier.js";
 import { getSession } from "../services/session-tracker.js";
 import {
 	decrementInFlightCount,
@@ -538,6 +550,36 @@ function enqueueHookProcessing(
 	(_enqueueHookProcessingOverride ?? enqueueHookProcessingReal)(payload, agentType, hookCtx);
 }
 
+/**
+ * Tell the AI watcher about a turn boundary (a turn ended, the session ended, a
+ * turn began), but only for a session someone watches and only for those
+ * events: a hook delivery is mostly tool events, and none of them wake it. Runs
+ * in the background task, after the response and the broadcasts, so it adds
+ * nothing to the 200 path. A failure here is logged and never touches the ingest
+ * error count: the event is stored either way.
+ */
+async function wakeWatcherForBoundaries(
+	sessionId: string,
+	storedEvents: readonly SessionEvent[],
+): Promise<void> {
+	try {
+		for (const event of storedEvents) {
+			const boundary = boundaryOf(event);
+			if (boundary === null) continue;
+			if (await isWatched(sessionId)) notifyWatcherWake(sessionId, event, boundary);
+		}
+	} catch (err) {
+		console.error(
+			JSON.stringify({
+				kind: "watcher_wake_error",
+				level: "error",
+				session_id: sanitizeLogField(sessionId),
+				error: err instanceof Error ? err.message : String(err),
+			}),
+		);
+	}
+}
+
 function enqueueHookProcessingReal(
 	payload: HookEventPayload,
 	agentType: ReturnType<typeof detectAgentType>,
@@ -570,6 +612,8 @@ function enqueueHookProcessingReal(
 			for (const event of storedEvents) {
 				notifyChannel("new_event", event);
 			}
+
+			await wakeWatcherForBoundaries(session.sessionId, storedEvents);
 		} catch (err) {
 			incrementBgErrorCount();
 			console.error(
@@ -610,6 +654,7 @@ function handleOversizeHookDelivery(c: Context, prefix: string): Response {
 		hook_event_name: identity.hookEventName,
 		tool_name: identity.toolName,
 		tool_use_id: identity.toolUseId,
+		turn_id: identity.turnId,
 		cwd: identity.cwd,
 		transcript_path: identity.transcriptPath,
 	};

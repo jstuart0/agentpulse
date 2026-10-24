@@ -107,6 +107,18 @@ describe("applyAskInitiatedWatcher", () => {
 		expect(cfg?.policy).toBe("ask_on_risk");
 	});
 
+	test("an Ask-launched watcher follows the shipped defaults: Notify on, Continue off", async () => {
+		await mkSession("s-defaults");
+		await mkDefaultProvider();
+		await setRuntimeEnabled(true);
+
+		await applyAskInitiatedWatcher("s-defaults", { aiInitiated: true });
+
+		const cfg = await getWatcherConfig("s-defaults");
+		expect(cfg?.notifyEnabled).toBe(true);
+		expect(cfg?.continueEnabled).toBe(false);
+	});
+
 	test("no-op when aiInitiated is not true", async () => {
 		await mkSession("s-manual");
 		await mkDefaultProvider();
@@ -160,6 +172,7 @@ describe("applyAskInitiatedWatcher", () => {
 			providerId,
 			enabled: false,
 			policy: "auto",
+			autoConfirmedBy: "local",
 		});
 
 		await applyAskInitiatedWatcher("s-existing", { aiInitiated: true });

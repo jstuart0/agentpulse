@@ -1271,7 +1271,7 @@ describe("both mounts", () => {
 // ── TC-6.8: classification ───────────────────────────────────────────────────
 
 describe("classification", () => {
-	test("TC-6.8 the GET is in INTENTIONALLY_MANAGE_ONLY once and in no other set; the POST is in none; both are registered on both mounts; OWNER_CHECKED_ROUTES stays 16", () => {
+	test("TC-6.8 the GET is in INTENTIONALLY_MANAGE_ONLY once and in no other set; the POST is in none; both are registered on both mounts; neither summary route is owner-checked", () => {
 		expect(INTENTIONALLY_MANAGE_ONLY.has(GET_ROUTE)).toBe(true);
 		expect(OBSERVE_READ_PATHS.has(GET_ROUTE)).toBe(false);
 		for (const set of [TEAM_ADMIN_ROUTES, OWNER_CHECKED_ROUTES, INGEST_WRITABLE_ROUTES]) {
@@ -1280,7 +1280,6 @@ describe("classification", () => {
 		}
 		expect(ALWAYS_ADMIN_ROUTES.has(POST_ROUTE)).toBe(false);
 		expect(ALWAYS_ADMIN_ROUTES.has(`GET ${GET_ROUTE}`)).toBe(false);
-		expect(OWNER_CHECKED_ROUTES.size).toBe(16);
 
 		const registered = new Set(app.routes.map((r) => `${r.method} ${r.path}`));
 		for (const mount of MOUNTS) {
@@ -1456,9 +1455,17 @@ describe("origin, audit, shutdown", () => {
 		expect(await H.readSummaryRow(SID)).toBeUndefined();
 		expect((await get(SID, foreign)).status).toBe(200);
 
+		// With authentication off, "same Origin as the Host" holds only for a loopback or
+		// allowlisted Host (otherwise a page on a rebound name would pass).
+		const rebound = new Headers(base);
+		rebound.set("Host", "summary.example.test");
+		rebound.set("Origin", "http://summary.example.test");
+		const reboundPost = await post(SID, rebound);
+		expect([reboundPost.status, reboundPost.json?.error]).toEqual([403, "bad_origin"]);
+
 		const same = new Headers(base);
-		same.set("Host", "summary.example.test");
-		same.set("Origin", "http://summary.example.test");
+		same.set("Host", "localhost:3000");
+		same.set("Origin", "http://localhost:3000");
 		scriptOk([editId]);
 		expect((await post(SID, same)).status).toBe(202);
 		await waitForGenerations();

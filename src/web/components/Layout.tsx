@@ -518,6 +518,7 @@ function timestampForInboxItem(item: InboxWorkItem): number {
 		case "stuck":
 			return Date.parse(item.since);
 		case "failed_proposal":
+		case "watcher_report":
 			return Date.parse(item.at);
 		case "risky":
 			return 0;

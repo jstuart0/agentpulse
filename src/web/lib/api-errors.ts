@@ -28,6 +28,15 @@ const MESSAGES: Record<string, string> = {
 	key_not_user_settable: "That setting can't be changed here.",
 };
 
+/**
+ * Sentences a feature adds for its own refusals when its code loads, so the
+ * main bundle doesn't carry text only one screen can show.
+ */
+const registered: Record<string, string> = {};
+export function registerApiErrorMessages(messages: Record<string, string>): void {
+	Object.assign(registered, messages);
+}
+
 const RATE_LIMITED = "Too many requests. Wait a moment and try again.";
 const PASSWORD_REFUSED = "password_complexity_failed";
 
@@ -51,6 +60,7 @@ export function describeApiError(err: unknown, fallback: string): string {
 		if (typeof reason === "string" && reason) return reason;
 	}
 	if (err.code && Object.hasOwn(MESSAGES, err.code)) return MESSAGES[err.code];
+	if (err.code && Object.hasOwn(registered, err.code)) return registered[err.code];
 	if (err.status === 429) return RATE_LIMITED;
 	return fallback;
 }

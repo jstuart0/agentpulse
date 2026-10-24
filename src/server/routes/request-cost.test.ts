@@ -108,7 +108,14 @@ describe("a plain read, from the first router and from the last", () => {
 
 		test(`${mode}: channels (identity resolved once, however many routers it crossed)`, async () => {
 			if (mode === "team") await setStoredMode("team");
-			expect(await costs(CHANNELS)).toEqual({ cookie: 4, sso: 4, ownedKey: 3, ownerlessKey: 3 });
+			// Identity is still resolved once. The list now depends on the instance mode (one
+			// read), and in team mode on an ownerless key's role (the kept-admin list, one more).
+			expect(await costs(CHANNELS)).toEqual({
+				cookie: 5,
+				sso: 5,
+				ownedKey: 4,
+				ownerlessKey: mode === "team" ? 5 : 4,
+			});
 		});
 	}
 });

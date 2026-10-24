@@ -1,3 +1,4 @@
+import "../lib/watcher-api-errors.js";
 import { useCallback, useEffect, useState } from "react";
 import { LabsBadge } from "../components/LabsBadge.js";
 import { SkeletonCardList } from "../components/SkeletonCard.js";
@@ -6,6 +7,7 @@ import { FailedProposalCard } from "../components/inbox/FailedProposalCard.js";
 import { HitlCard } from "../components/inbox/HitlCard.js";
 import { RiskyCard } from "../components/inbox/RiskyCard.js";
 import { StuckCard } from "../components/inbox/StuckCard.js";
+import { WatcherReportCard } from "../components/inbox/WatcherReportCard.js";
 import { plainErrorMessage } from "../lib/api-errors.js";
 import { type ActionRequestDecision, type Inbox, type InboxWorkItem, api } from "../lib/api.js";
 
@@ -22,6 +24,7 @@ const KIND_META: Record<InboxWorkItem["kind"], { shortLabel: string; longLabel: 
 	stuck: { shortLabel: "stuck", longLabel: "Stuck" },
 	risky: { shortLabel: "risky", longLabel: "Risky" },
 	failed_proposal: { shortLabel: "failed", longLabel: "Failed" },
+	watcher_report: { shortLabel: "reports", longLabel: "Watcher reports" },
 	action_launch: { shortLabel: "launches", longLabel: "Launch requests" },
 	action_add_project: { shortLabel: "projects", longLabel: "Project requests" },
 	action_session_stop: { shortLabel: "stops", longLabel: "Session stop" },
@@ -69,9 +72,17 @@ export function InboxPage() {
 		void reload();
 	}, [reload]);
 
-	async function handleHitlDecide(id: string, action: "approve" | "decline") {
-		await api.decideInboxHitl(id, { action });
-		reload();
+	async function handleHitlDecide(
+		id: string,
+		action: "approve" | "decline",
+		promptSha256: string | null,
+	) {
+		try {
+			await api.decideInboxHitl(id, { action, promptSha256 });
+		} finally {
+			// A refusal (out of date, expired, already answered) also means the card is stale.
+			reload();
+		}
 	}
 
 	async function handleActionDecide(id: string, decision: ActionRequestDecision) {
@@ -95,6 +106,10 @@ export function InboxPage() {
 			case "failed_proposal":
 				return (
 					<FailedProposalCard key={`${item.kind}:${item.id}`} item={item} onSnooze={handleSnooze} />
+				);
+			case "watcher_report":
+				return (
+					<WatcherReportCard key={`${item.kind}:${item.id}`} item={item} onSnooze={handleSnooze} />
 				);
 			case "action_session_stop":
 			case "action_session_archive":

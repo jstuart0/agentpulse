@@ -87,7 +87,7 @@ describe("SummaryLabsPointer", () => {
 
 describe("AiPanel carries the pointer above its own content", () => {
 	test("the pointer comes first, then the tab's own content (here still loading)", () => {
-		const html = withRouter(createElement(AiPanel, { sessionId: "s-1", sessionIsManaged: false }));
+		const html = withRouter(createElement(AiPanel, { sessionId: "s-1" }));
 		const pointerAt = html.indexOf("Session summaries are a Labs feature");
 		const bodyAt = html.indexOf("Loading watcher");
 		expect(pointerAt).toBeGreaterThanOrEqual(0);
@@ -96,7 +96,7 @@ describe("AiPanel carries the pointer above its own content", () => {
 
 	test("with the flag on there is no pointer and the tab is unchanged", () => {
 		useLabsStore.setState({ flags: flags(true) });
-		const html = withRouter(createElement(AiPanel, { sessionId: "s-1", sessionIsManaged: false }));
+		const html = withRouter(createElement(AiPanel, { sessionId: "s-1" }));
 		expect(html).not.toContain("Labs feature");
 		expect(html).toContain("Loading watcher");
 	});

@@ -28,7 +28,7 @@ const DEFAULT_AI_CONTINUE_LOCKOUT_MS = 30_000;
 // Subset of ManagedState in which the watcher is allowed to dispatch a
 // `continue` action. Hand-maintained, but the element type forces every
 // member to be a ManagedState — adding a typo'd value will fail to compile.
-const CONTINUABLE_MANAGED_STATES = new Set<ManagedState>([
+export const CONTINUABLE_MANAGED_STATES: ReadonlySet<ManagedState> = new Set<ManagedState>([
 	"interactive_terminal",
 	"headless",
 	"managed",

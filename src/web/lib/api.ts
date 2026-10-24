@@ -799,6 +799,13 @@ export const api = {
 			instructions: string;
 		}>("/channels", { method: "POST", body: JSON.stringify(body) }),
 	getChannel: (id: string) => request<{ channel: NotificationChannelRecord }>(`/channels/${id}`),
+	/** Unlink a channel and get a fresh one-time enrollment code (shown once). */
+	relinkChannel: (id: string) =>
+		request<{
+			channel: NotificationChannelRecord;
+			enrollmentCode: string;
+			instructions: string;
+		}>(`/channels/${id}/relink`, { method: "POST", body: JSON.stringify({}) }),
 	deleteChannel: (id: string) => request<{ ok: true }>(`/channels/${id}`, { method: "DELETE" }),
 	setupTelegramWebhook: (publicUrl?: string) =>
 		request<{ ok: true; webhookUrl: string }>("/channels/telegram/setup-webhook", {
@@ -865,7 +872,7 @@ export const api = {
 			source: "db" | "env" | "missing";
 			botTokenHint: string | null;
 		}>("/channels/telegram/credentials", { method: "DELETE" }),
-	updateChannelConfig: (id: string, body: { askEnabled?: boolean }) =>
+	updateChannelConfig: (id: string, body: { askEnabled?: boolean; detail?: "minimal" | "full" }) =>
 		request<{ channel: NotificationChannelRecord }>(`/channels/${id}/config`, {
 			method: "PATCH",
 			body: JSON.stringify(body),
@@ -893,6 +900,8 @@ export const api = {
 		classifierEnabled?: boolean;
 		classifierAffectsRunner?: boolean;
 		autoEnableWatcherForAsk?: boolean;
+		watcherDefaults?: { notify: boolean; continue: boolean };
+		watcherAutoSendPaused?: boolean;
 	}) =>
 		request<AiStatusResponse>("/ai/status", {
 			method: "PUT",
@@ -1007,9 +1016,12 @@ export const api = {
 		}),
 
 	getAiWatcher: (sessionId: string) =>
-		request<{ config: AiWatcherConfig | null; proposals: AiProposal[] }>(
-			`/ai/sessions/${sessionId}/watcher`,
-		),
+		request<{
+			config: AiWatcherConfig | null;
+			proposals: AiProposal[];
+			promptDelivery: PromptDelivery;
+			reports: AiWatcherReport[];
+		}>(`/ai/sessions/${sessionId}/watcher`),
 	updateAiWatcher: (sessionId: string, body: AiWatcherConfigUpdate) =>
 		request<{ config: AiWatcherConfig }>(`/ai/sessions/${sessionId}/watcher`, {
 			method: "PUT",
@@ -1018,11 +1030,16 @@ export const api = {
 	deleteAiWatcher: (sessionId: string) =>
 		request<{ ok: true }>(`/ai/sessions/${sessionId}/watcher`, { method: "DELETE" }),
 
-	decideAiProposal: (id: string, body: { action: HitlReplyKind; customPrompt?: string }) =>
-		request<{ ok: true; dispatched: boolean; prompt?: string | null }>(
-			`/ai/proposals/${id}/decision`,
-			{ method: "POST", body: JSON.stringify(body) },
-		),
+	decideAiProposal: (
+		id: string,
+		body: { action: HitlReplyKind; customPrompt?: string; promptSha256?: string | null },
+	) =>
+		request<{
+			ok: true;
+			dispatched: boolean;
+			controlActionId?: string;
+			prompt?: string | null;
+		}>(`/ai/proposals/${id}/decision`, { method: "POST", body: JSON.stringify(body) }),
 
 	aiRedactorDryRun: (sample: string, userRules?: string[]) =>
 		request<{
@@ -1048,11 +1065,17 @@ export const api = {
 		if (params?.limit) qs.set("limit", String(params.limit));
 		return request<Inbox>(`/ai/inbox${qs.toString() ? `?${qs}` : ""}`);
 	},
-	decideInboxHitl: (id: string, body: { action: HitlReplyKind; customPrompt?: string }) =>
-		request<{ hitl: { id: string; status: string } }>(`/ai/inbox/hitl/${id}/decide`, {
-			method: "POST",
-			body: JSON.stringify(body),
-		}),
+	decideInboxHitl: (
+		id: string,
+		body: { action: HitlReplyKind; customPrompt?: string; promptSha256?: string | null },
+	) =>
+		request<{ hitl: { id: string; status: string }; controlActionId?: string }>(
+			`/ai/inbox/hitl/${id}/decide`,
+			{
+				method: "POST",
+				body: JSON.stringify(body),
+			},
+		),
 	batchDeclineInbox: (body: { hitlIds?: string[]; sessionIds?: string[] }) =>
 		request<{ closed: number }>("/ai/inbox/batch-decline", {
 			method: "POST",
@@ -1227,6 +1250,11 @@ export interface ChannelStats {
 export interface NotificationChannelRecord {
 	id: string;
 	userId: string;
+	/**
+	 * Set when Telegram can't act through this channel until it is re-linked from a private chat:
+	 * `group_chat` (enrolled in a group) or `unowned_channel` (team mode, owned by nobody).
+	 */
+	needsRelink?: "group_chat" | "unowned_channel" | null;
 	kind: NotificationChannelKind;
 	label: string;
 	config: Record<string, unknown> | null;
@@ -1383,6 +1411,10 @@ export interface AiProviderUpdate {
 export interface AiWatcherConfig {
 	sessionId: string;
 	enabled: boolean;
+	/** Report to the inbox and Telegram when a turn ends. */
+	notifyEnabled: boolean;
+	/** Suggest the next prompt; sends on approval for sessions AgentPulse launched. */
+	continueEnabled: boolean;
 	providerId: string;
 	policy: AiWatcherPolicy;
 	channelId: string | null;
@@ -1390,8 +1422,35 @@ export interface AiWatcherConfig {
 	continuationsUsed: number;
 	maxDailyCents: number | null;
 	systemPrompt: string | null;
+	/** Set when a person confirmed the `auto` policy; auto is honoured only while this is set. */
+	autoConfirmedAt: string | null;
 	createdAt: string;
 	updatedAt: string;
+}
+
+/** Why AgentPulse can't type a prompt into a session right now. */
+export type PromptNotDeliverableReason =
+	| "observed"
+	| "supervisor_offline"
+	| "managed_state"
+	| "control_busy";
+
+export type PromptDelivery =
+	| { deliverable: true }
+	| { deliverable: false; reason: PromptNotDeliverableReason };
+
+export type AiReportVerdict = "finished" | "stuck" | "needs_you";
+
+/** One Notify report for a turn. */
+export interface AiWatcherReport {
+	id: string;
+	turnKey: string;
+	verdict: AiReportVerdict | null;
+	why: string | null;
+	status: "claimed" | "delivered" | "failed" | "suppressed";
+	failureCode: string | null;
+	telegramStatus: "sent" | "skipped_rate_limit" | "skipped_no_channel" | "failed" | null;
+	createdAt: string;
 }
 
 /** A refused `POST /ai/sessions/:id/summary` as the web sees it (AGEN-69). `code` is null for a body the contract doesn't list. */
@@ -1434,6 +1493,10 @@ export interface AiStatusResponse {
 	classifierEnabled?: boolean;
 	classifierAffectsRunner?: boolean;
 	autoEnableWatcherForAsk?: boolean;
+	/** What a newly created watcher starts with. */
+	watcherDefaults?: { notify: boolean; continue: boolean };
+	/** While true, the `auto` policy opens a request instead of sending. */
+	watcherAutoSendPaused?: boolean;
 }
 
 export type SessionHealthState = "healthy" | "blocked" | "stuck" | "risky" | "complete_candidate";
@@ -1449,6 +1512,10 @@ export interface SessionIntelligence {
 
 export interface AiWatcherConfigUpdate {
 	enabled?: boolean;
+	notifyEnabled?: boolean;
+	continueEnabled?: boolean;
+	/** Zero the automatic-send counter. Needs a signed-in person, never an API key. */
+	resetContinuations?: boolean;
 	providerId?: string;
 	policy?: AiWatcherPolicy;
 	channelId?: string | null;
@@ -1456,6 +1523,8 @@ export interface AiWatcherConfigUpdate {
 	maxDailyCents?: number | null;
 	systemPrompt?: string | null;
 }
+
+export type AiContinueKind = "proceed" | "retry_failed_step" | "run_tests" | "summarize_status";
 
 export interface AiProposal {
 	id: string;
@@ -1471,6 +1540,10 @@ export interface AiProposal {
 		| "failed";
 	decision: DecisionKind | null;
 	nextPrompt: string | null;
+	/** The watcher's suggested text, kept even when it can't be sent from here. */
+	suggestedPrompt: string | null;
+	/** The kind of nudge the watcher chose, when it chose one. */
+	continueKind: AiContinueKind | null;
 	reportSummary: string | null;
 	rawResponse: Record<string, unknown> | null;
 	triggerEventId: string | null;
@@ -1480,6 +1553,13 @@ export interface AiProposal {
 	usageEstimated: boolean;
 	errorSubType: string | null;
 	errorMessage: string | null;
+	/** The newest request opened for this proposal, if any. */
+	hitlId: string | null;
+	/** Hash of the prompt shown; sent back with Approve so the server can tell it is the same text. */
+	promptSha256: string | null;
+	/** True only when the suggestion can be sent as stored. Null on a request from before this existed. */
+	approvable: boolean | null;
+	hitlExpiresAt: string | null;
 	createdAt: string;
 	updatedAt: string;
 }

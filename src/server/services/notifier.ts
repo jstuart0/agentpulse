@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { Session, SessionEvent, WsMessageType } from "../../shared/types.js";
 import { broadcast } from "../ws/handler.js";
+import type { Boundary } from "./ai/turn-identity.js";
 import { mapSessionDto } from "./session-dto.js";
 
 // A raw sessions row (or a row-shaped object with the extra fields a
@@ -28,6 +29,10 @@ type SessionBusEvents = {
 	session_created: [Session];
 	session_updated: [Session];
 	session_event: [{ sessionId: string; event: SessionEvent }];
+	// A turn boundary (a turn ended, the session ended, a turn began) in a session
+	// someone is watching. Emitted by ingest for hook events, so the watcher hears
+	// about them without every hook event being broadcast on `session_event`.
+	watcher_wake: [{ sessionId: string; event: SessionEvent; boundary: Boundary }];
 };
 
 class SessionBus extends EventEmitter<SessionBusEvents> {}
@@ -60,4 +65,8 @@ export function notifySessionEvents(sessionId: string, events: SessionEvent[]) {
 		// Bus-only. initWsBroadcaster handles the broadcastToSession call.
 		sessionBus.emit("session_event", { sessionId, event });
 	}
+}
+
+export function notifyWatcherWake(sessionId: string, event: SessionEvent, boundary: Boundary) {
+	sessionBus.emit("watcher_wake", { sessionId, event, boundary });
 }

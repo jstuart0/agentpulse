@@ -6,6 +6,7 @@ import type {
 	LaunchRequest,
 } from "../../shared/types.js";
 import type { Actor } from "../auth/actor.js";
+import { withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
 import {
 	events,
@@ -17,9 +18,11 @@ import {
 } from "../db/schema/index.js";
 import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
+import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { bumpVersionAndReload } from "./projects/cache.js";
 import { ownerLaunchJoin, resolveSessionOwner, sessionOwnedBy } from "./session-ownership.js";
+import { parseDbTimestamp } from "./util/db-time.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -39,20 +42,25 @@ function lockExpiryIso() {
  * id, fall back to resolving by launchCorrelationId = sessionId instead —
  * the same launch the fallback shape is standing in for.
  */
-async function resolveManagedLaunch(sessionId: string, launchRequestId: string) {
-	const [byId] = await getDb()
+async function resolveManagedLaunch(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	sessionId: string,
+	launchRequestId: string,
+) {
+	const [byId] = await db
 		.select()
 		.from(launchRequests)
 		.where(eq(launchRequests.id, launchRequestId))
 		.limit(1);
-	if (byId) return byId;
+	if (byId) return byId as typeof launchRequests.$inferSelect;
 	if (launchRequestId !== sessionId) return null;
-	const [byCorrelation] = await getDb()
+	const [byCorrelation] = await db
 		.select()
 		.from(launchRequests)
 		.where(eq(launchRequests.launchCorrelationId, sessionId))
 		.limit(1);
-	return byCorrelation ?? null;
+	return (byCorrelation ?? null) as typeof launchRequests.$inferSelect | null;
 }
 
 /**
@@ -63,23 +71,45 @@ async function resolveManagedLaunch(sessionId: string, launchRequestId: string) 
  * launchRequestId=sessionId fallback branch above looks the launch up BY
  * that same correlation id. That equality proves the launch spawned (or
  * claims to have spawned) this session; it proves nothing about who the
- * launch belongs to. Assert the resolved launch's claimant (or requested
+ * launch belongs to. Check the resolved launch's claimant (or requested
  * supervisor, pre-claim) matches the session's actual owner of record
  * before trusting launch.env or routing a new control action to it.
  */
+async function launchOwnedBySessionOwner(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	sessionId: string,
+	launch: typeof launchRequests.$inferSelect,
+): Promise<boolean> {
+	const owner = await resolveSessionOwner(db, sessionId);
+	const launchOwner = launch.claimedBySupervisorId ?? launch.requestedSupervisorId ?? null;
+	return !(owner !== null && launchOwner !== null && owner !== launchOwner);
+}
+
+/** The throwing form of launchOwnedBySessionOwner, for callers outside a locked transaction. */
 async function assertLaunchOwnedBySessionOwner(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
 	sessionId: string,
 	launch: typeof launchRequests.$inferSelect,
 ): Promise<void> {
-	const owner = await resolveSessionOwner(sessionId);
-	const launchOwner = launch.claimedBySupervisorId ?? launch.requestedSupervisorId ?? null;
-	if (owner !== null && launchOwner !== null && owner !== launchOwner) {
+	if (!(await launchOwnedBySessionOwner(db, sessionId, launch))) {
 		throw new Error("Launch request does not match session.");
 	}
 }
 
-async function expireStaleControlLock(sessionId: string) {
-	const [managed] = await getDb()
+/**
+ * Fails a managed session's active control action once its lock has expired,
+ * and clears the lock. Takes the handle to write through: a request passes
+ * `getDb()`, a dispatch transaction passes its own `tx` (every statement of a
+ * locked body must go through it).
+ */
+export async function expireStaleControlLock(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	sessionId: string,
+) {
+	const [managed] = await db
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
@@ -87,8 +117,14 @@ async function expireStaleControlLock(sessionId: string) {
 	if (!managed?.activeControlActionId || !managed.controlLockExpiresAt) return;
 	if (new Date(managed.controlLockExpiresAt).getTime() > Date.now()) return;
 
+	const [action] = await db
+		.select()
+		.from(controlActions)
+		.where(eq(controlActions.id, managed.activeControlActionId))
+		.limit(1);
+
 	const timestamp = nowIso();
-	await getDb()
+	await db
 		.update(controlActions)
 		.set({
 			status: "failed",
@@ -98,7 +134,13 @@ async function expireStaleControlLock(sessionId: string) {
 		})
 		.where(eq(controlActions.id, managed.activeControlActionId));
 
-	await getDb()
+	// An AI prompt no supervisor ever claimed was never delivered: its audit row
+	// says so (the one transition out of `sent` the database allows).
+	if (action && isUnclaimedAiPrompt(action)) {
+		await markAuditExpiredUnclaimed(db, action.id);
+	}
+
+	await db
 		.update(managedSessions)
 		.set({
 			activeControlActionId: null,
@@ -106,6 +148,12 @@ async function expireStaleControlLock(sessionId: string) {
 			updatedAt: timestamp,
 		})
 		.where(eq(managedSessions.sessionId, sessionId));
+}
+
+function isUnclaimedAiPrompt(action: typeof controlActions.$inferSelect): boolean {
+	return (
+		action.actionType === "prompt" && action.requestedBy === "ai" && action.status === "queued"
+	);
 }
 
 async function expireStaleControlLocksForSupervisor(supervisorId: string) {
@@ -124,7 +172,7 @@ async function expireStaleControlLocksForSupervisor(supervisorId: string) {
 		);
 
 	for (const row of stale) {
-		await expireStaleControlLock(row.sessionId);
+		await expireStaleControlLock(getDb(), row.sessionId);
 	}
 }
 
@@ -156,27 +204,95 @@ export async function listControlActionsForSession(sessionId: string) {
 	return rows.map(mapControlAction);
 }
 
-export async function queueStopAction(sessionId: string, actor: Actor) {
-	await expireStaleControlLock(sessionId);
-	const [managed] = await getDb()
+/** Another control action holds the session's lock. Thrown only by the human-facing queue functions. */
+export class ControlBusyError extends Error {
+	constructor() {
+		super("Another control action is already in progress for this session.");
+		this.name = "ControlBusyError";
+	}
+}
+
+export type EnqueueRefusal =
+	| "not_managed"
+	| "session_missing"
+	| "launch_missing"
+	| "launch_mismatch"
+	| "control_busy";
+
+const ENQUEUE_REFUSAL_MESSAGES: Record<EnqueueRefusal, string> = {
+	not_managed: "Session is not managed.",
+	session_missing: "Session not found.",
+	launch_missing: "Launch request not found.",
+	launch_mismatch: "Launch request does not match session.",
+	control_busy: "Another control action is already in progress for this session.",
+};
+
+function refusalToError(reason: EnqueueRefusal): Error {
+	return reason === "control_busy"
+		? new ControlBusyError()
+		: new Error(ENQUEUE_REFUSAL_MESSAGES[reason]);
+}
+
+/**
+ * Takes the session's control lock for `controlActionId`, but only if nobody
+ * holds it. One conditional statement, so two callers that both saw the lock
+ * free can't both take it: the loser updates no row and must not insert an
+ * action.
+ */
+export async function takeControlLock(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	sessionId: string,
+	controlActionId: string,
+	timestamp: string,
+): Promise<boolean> {
+	const taken = await tx
+		.update(managedSessions)
+		.set({
+			activeControlActionId: controlActionId,
+			controlLockExpiresAt: lockExpiryIso(),
+			updatedAt: timestamp,
+		})
+		.where(
+			and(eq(managedSessions.sessionId, sessionId), isNull(managedSessions.activeControlActionId)),
+		)
+		.returning({ sessionId: managedSessions.sessionId });
+	return taken.length > 0;
+}
+
+/**
+ * Queue a stop on `tx`: every read and write goes through it, no expected
+ * outcome throws, and the lock is taken (conditionally) before the action row
+ * is written.
+ */
+export async function enqueueStopInTx(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	input: { sessionId: string; actor: Actor; controlActionId: string },
+): Promise<{ ok: true; action: ControlAction } | { ok: false; reason: EnqueueRefusal }> {
+	const { sessionId, actor, controlActionId } = input;
+	await expireStaleControlLock(tx, sessionId);
+	const [managed] = await tx
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
-	if (!managed) throw new Error("Session is not managed.");
-	if (managed.activeControlActionId) {
-		throw new Error("Another control action is already in progress for this session.");
-	}
+	if (!managed) return { ok: false, reason: "not_managed" };
+	if (managed.activeControlActionId) return { ok: false, reason: "control_busy" };
 
-	const stopLaunch = await resolveManagedLaunch(sessionId, managed.launchRequestId);
-	if (stopLaunch) {
-		await assertLaunchOwnedBySessionOwner(sessionId, stopLaunch);
+	const stopLaunch = await resolveManagedLaunch(tx, sessionId, managed.launchRequestId);
+	if (stopLaunch && !(await launchOwnedBySessionOwner(tx, sessionId, stopLaunch))) {
+		return { ok: false, reason: "launch_mismatch" };
 	}
 
 	const timestamp = nowIso();
-	const [action] = await getDb()
+	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp))) {
+		return { ok: false, reason: "control_busy" };
+	}
+	const [action] = await tx
 		.insert(controlActions)
 		.values({
+			id: controlActionId,
 			sessionId,
 			launchRequestId: managed.launchRequestId,
 			actionType: "stop",
@@ -188,61 +304,71 @@ export async function queueStopAction(sessionId: string, actor: Actor) {
 			updatedAt: timestamp,
 		})
 		.returning();
-
-	await getDb()
-		.update(managedSessions)
-		.set({
-			activeControlActionId: action.id,
-			controlLockExpiresAt: lockExpiryIso(),
-			updatedAt: timestamp,
-		})
-		.where(eq(managedSessions.sessionId, sessionId));
-
-	return mapControlAction(action);
+	return { ok: true, action: mapControlAction(action) };
 }
 
-export async function queuePromptAction(sessionId: string, prompt: string, actor: Actor) {
-	const cleanPrompt = prompt.trim();
-	if (!cleanPrompt) throw new Error("Prompt is required.");
-	await expireStaleControlLock(sessionId);
+export async function queueStopAction(sessionId: string, actor: Actor) {
+	const result = await withAdminLock((tx) =>
+		enqueueStopInTx(tx, { sessionId, actor, controlActionId: crypto.randomUUID() }),
+	);
+	if (!result.ok) throw refusalToError(result.reason);
+	return result.action;
+}
 
-	const [managed] = await getDb()
+/**
+ * Queue a prompt for a managed session on `tx`. Every read and write goes
+ * through it and no expected outcome throws (a refusal is returned), so a
+ * caller can commit its own bookkeeping after one. The lock is taken
+ * conditionally with the caller's pre-generated id, and the action row is
+ * inserted only if that update took a row.
+ */
+export async function enqueuePromptInTx(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	input: { sessionId: string; prompt: string; actor: Actor; controlActionId: string },
+): Promise<{ ok: true; action: ControlAction } | { ok: false; reason: EnqueueRefusal }> {
+	const { sessionId, prompt, actor, controlActionId } = input;
+	await expireStaleControlLock(tx, sessionId);
+
+	const [managed] = await tx
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
-	if (!managed) throw new Error("Session is not managed.");
-	if (managed.activeControlActionId) {
-		throw new Error("Another control action is already in progress for this session.");
-	}
+	if (!managed) return { ok: false, reason: "not_managed" };
+	if (managed.activeControlActionId) return { ok: false, reason: "control_busy" };
 
-	const [session] = await getDb()
+	const [session] = await tx
 		.select()
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
 		.limit(1);
-	if (!session) throw new Error("Session not found.");
+	if (!session) return { ok: false, reason: "session_missing" };
 	const sessionMetadata =
 		session.metadata && typeof session.metadata === "object" && !Array.isArray(session.metadata)
 			? (session.metadata as Record<string, unknown>)
 			: {};
 
-	const launch = await resolveManagedLaunch(sessionId, managed.launchRequestId);
-	if (!launch) throw new Error("Launch request not found.");
+	const launch = await resolveManagedLaunch(tx, sessionId, managed.launchRequestId);
+	if (!launch) return { ok: false, reason: "launch_missing" };
 	// D12: refuse to embed another host's launch.env in a prompt when the
 	// managed row's launchRequestId points at a launch for a *different*
 	// session — the last open vector once the write and read sides are
 	// owner-gated. The legacy launch_request_id = session_id fallback always
 	// satisfies this (a launch's own launchCorrelationId equals sessionId).
-	if (launch.launchCorrelationId !== sessionId) {
-		throw new Error("Launch request does not match session.");
+	if (launch.launchCorrelationId !== sessionId) return { ok: false, reason: "launch_mismatch" };
+	if (!(await launchOwnedBySessionOwner(tx, sessionId, launch))) {
+		return { ok: false, reason: "launch_mismatch" };
 	}
-	await assertLaunchOwnedBySessionOwner(sessionId, launch);
 
 	const timestamp = nowIso();
-	const [action] = await getDb()
+	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp))) {
+		return { ok: false, reason: "control_busy" };
+	}
+	const [action] = await tx
 		.insert(controlActions)
 		.values({
+			id: controlActionId,
 			sessionId,
 			// The real launch id (F44) — managed.launchRequestId may be the
 			// legacy sessionId fallback, which resolveManagedLaunch already
@@ -253,7 +379,7 @@ export async function queuePromptAction(sessionId: string, prompt: string, actor
 			requestedByUserId: actor.userId,
 			status: "queued",
 			metadata: {
-				prompt: cleanPrompt,
+				prompt,
 				agentType: session.agentType,
 				cwd: session.cwd,
 				model: session.model,
@@ -277,17 +403,22 @@ export async function queuePromptAction(sessionId: string, prompt: string, actor
 			updatedAt: timestamp,
 		})
 		.returning();
+	return { ok: true, action: mapControlAction(action) };
+}
 
-	await getDb()
-		.update(managedSessions)
-		.set({
-			activeControlActionId: action.id,
-			controlLockExpiresAt: lockExpiryIso(),
-			updatedAt: timestamp,
-		})
-		.where(eq(managedSessions.sessionId, sessionId));
-
-	return mapControlAction(action);
+export async function queuePromptAction(sessionId: string, prompt: string, actor: Actor) {
+	const cleanPrompt = prompt.trim();
+	if (!cleanPrompt) throw new Error("Prompt is required.");
+	const result = await withAdminLock((tx) =>
+		enqueuePromptInTx(tx, {
+			sessionId,
+			prompt: cleanPrompt,
+			actor,
+			controlActionId: crypto.randomUUID(),
+		}),
+	);
+	if (!result.ok) throw refusalToError(result.reason);
+	return result.action;
 }
 
 export async function retryLaunchForSession(sessionId: string, actor: Actor) {
@@ -298,7 +429,7 @@ export async function retryLaunchForSession(sessionId: string, actor: Actor) {
 		.limit(1);
 	if (!managed) throw new Error("Session is not managed.");
 
-	const original = await resolveManagedLaunch(sessionId, managed.launchRequestId);
+	const original = await resolveManagedLaunch(getDb(), sessionId, managed.launchRequestId);
 	if (!original) throw new Error("Original launch request not found.");
 	// F47/D12: same cross-host guard queuePromptAction applies — refuse to
 	// clone another host's launch.env into a fresh launch_requests row when
@@ -309,7 +440,7 @@ export async function retryLaunchForSession(sessionId: string, actor: Actor) {
 	if (original.launchCorrelationId !== sessionId) {
 		throw new Error("Launch request does not match session.");
 	}
-	await assertLaunchOwnedBySessionOwner(sessionId, original);
+	await assertLaunchOwnedBySessionOwner(getDb(), sessionId, original);
 
 	const timestamp = nowIso();
 	const newCorrelationId = crypto.randomUUID();
@@ -434,60 +565,112 @@ async function finalizeCleanupWorkArea(projectId: string): Promise<void> {
 	await bumpVersionAndReload();
 }
 
+/**
+ * An AI prompt a supervisor hasn't claimed within this long is failed at claim
+ * time instead of being delivered late: the moment it was judged safe to send
+ * has passed (the user or the agent has moved on). Measured against the
+ * server's own created_at, so supervisor clock skew can't stretch or shrink it,
+ * and kept below the 90 s control-lock expiry. Human prompts are unaffected.
+ */
+export const AI_PROMPT_CLAIM_TTL_MS = 60_000;
+
+/** How many expired AI prompts one claim call will clear before it gives up and answers null. */
+const MAX_EXPIRED_PER_CLAIM = 10;
+
+function isExpiredAiPrompt(action: typeof controlActions.$inferSelect): boolean {
+	if (action.actionType !== "prompt" || action.requestedBy !== "ai") return false;
+	const createdMs = parseDbTimestamp(action.createdAt);
+	return createdMs !== null && Date.now() - createdMs > AI_PROMPT_CLAIM_TTL_MS;
+}
+
+/** Fail an unclaimed AI prompt that outlived its TTL, release its lock and close its audit row. */
+async function expireUnclaimedAiPrompt(action: typeof controlActions.$inferSelect) {
+	const timestamp = nowIso();
+	await getDb()
+		.update(controlActions)
+		.set({
+			status: "failed",
+			error: "Expired before a supervisor claimed it.",
+			finishedAt: timestamp,
+			updatedAt: timestamp,
+		})
+		.where(and(eq(controlActions.id, action.id), eq(controlActions.status, "queued")));
+	if (action.sessionId) {
+		await getDb()
+			.update(managedSessions)
+			.set({ activeControlActionId: null, controlLockExpiresAt: null, updatedAt: timestamp })
+			.where(
+				and(
+					eq(managedSessions.sessionId, action.sessionId),
+					eq(managedSessions.activeControlActionId, action.id),
+				),
+			);
+	}
+	await markAuditExpiredUnclaimed(getDb(), action.id);
+}
+
 export async function claimNextControlAction(supervisorId: string) {
 	await expireStaleControlLocksForSupervisor(supervisorId);
 
-	// Two routing channels share controlActions:
-	// 1. Session-bearing actions (stop/prompt/retry/etc.) — routed by owner
-	//    of record (sessionOwnedBy, session-ownership.ts).
-	// 2. Session-less actions (cleanup_workarea) — pre-assigned to a host by
-	//    storing supervisorId in metadata.targetSupervisorId at queue time.
-	// Pick the oldest queued action across both channels.
-	const sessionRow = await getDb()
-		.select({ action: controlActions })
-		.from(controlActions)
-		.innerJoin(managedSessions, eq(managedSessions.sessionId, controlActions.sessionId))
-		.leftJoin(launchRequests, ownerLaunchJoin)
-		.where(and(eq(controlActions.status, "queued"), sessionOwnedBy(supervisorId)))
-		.orderBy(asc(controlActions.createdAt))
-		.limit(1);
+	for (let expired = 0; expired <= MAX_EXPIRED_PER_CLAIM; expired += 1) {
+		// Two routing channels share controlActions:
+		// 1. Session-bearing actions (stop/prompt/retry/etc.) — routed by owner
+		//    of record (sessionOwnedBy, session-ownership.ts).
+		// 2. Session-less actions (cleanup_workarea) — pre-assigned to a host by
+		//    storing supervisorId in metadata.targetSupervisorId at queue time.
+		// Pick the oldest queued action across both channels.
+		const sessionRow = await getDb()
+			.select({ action: controlActions })
+			.from(controlActions)
+			.innerJoin(managedSessions, eq(managedSessions.sessionId, controlActions.sessionId))
+			.leftJoin(launchRequests, ownerLaunchJoin)
+			.where(and(eq(controlActions.status, "queued"), sessionOwnedBy(supervisorId)))
+			.orderBy(asc(controlActions.createdAt))
+			.limit(1);
 
-	const sessionlessRow = await getDb()
-		.select()
-		.from(controlActions)
-		.where(
-			and(
-				eq(controlActions.status, "queued"),
-				isNull(controlActions.sessionId),
-				eq(jsonExtractText(controlActions.metadata, "$.targetSupervisorId"), supervisorId),
-			),
-		)
-		.orderBy(asc(controlActions.createdAt))
-		.limit(1);
+		const sessionlessRow = await getDb()
+			.select()
+			.from(controlActions)
+			.where(
+				and(
+					eq(controlActions.status, "queued"),
+					isNull(controlActions.sessionId),
+					eq(jsonExtractText(controlActions.metadata, "$.targetSupervisorId"), supervisorId),
+				),
+			)
+			.orderBy(asc(controlActions.createdAt))
+			.limit(1);
 
-	const sessionAction = sessionRow[0]?.action ?? null;
-	const sessionlessAction = sessionlessRow[0] ?? null;
+		const sessionAction = sessionRow[0]?.action ?? null;
+		const sessionlessAction = sessionlessRow[0] ?? null;
 
-	let candidate = null;
-	if (sessionAction && sessionlessAction) {
-		candidate =
-			sessionAction.createdAt <= sessionlessAction.createdAt ? sessionAction : sessionlessAction;
-	} else {
-		candidate = sessionAction ?? sessionlessAction;
+		let candidate = null;
+		if (sessionAction && sessionlessAction) {
+			candidate =
+				sessionAction.createdAt <= sessionlessAction.createdAt ? sessionAction : sessionlessAction;
+		} else {
+			candidate = sessionAction ?? sessionlessAction;
+		}
+		if (!candidate) return null;
+
+		if (isExpiredAiPrompt(candidate)) {
+			await expireUnclaimedAiPrompt(candidate);
+			continue;
+		}
+
+		const timestamp = nowIso();
+		const [updated] = await getDb()
+			.update(controlActions)
+			.set({
+				status: "running",
+				claimedBySupervisorId: supervisorId,
+				updatedAt: timestamp,
+			})
+			.where(eq(controlActions.id, candidate.id))
+			.returning();
+		return updated ? mapControlAction(updated) : null;
 	}
-	if (!candidate) return null;
-
-	const timestamp = nowIso();
-	const [updated] = await getDb()
-		.update(controlActions)
-		.set({
-			status: "running",
-			claimedBySupervisorId: supervisorId,
-			updatedAt: timestamp,
-		})
-		.where(eq(controlActions.id, candidate.id))
-		.returning();
-	return updated ? mapControlAction(updated) : null;
+	return null;
 }
 
 export async function updateControlAction(input: {

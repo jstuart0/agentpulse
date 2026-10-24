@@ -17,6 +17,10 @@ import {
 	FTS_INDEXED_EVENT_TYPES_SQL_LIST,
 } from "./fts-ddl.js";
 import * as schema from "./schema/index.js";
+import { AI_DISPATCH_AUDIT_TRIGGERS_SQLITE, DEDUPE_OPEN_RUNS_SQL } from "./watcher-modes-ddl.js";
+
+// Hand-written DDL shared with drizzle/sqlite/0012 (see watcher-modes-ddl.ts).
+export { AI_DISPATCH_AUDIT_TRIGGERS_SQLITE, DEDUPE_OPEN_RUNS_SQL };
 
 // ── getSqlite() boot-failure registry (Decision 28) ──────────────────────────
 //
@@ -473,6 +477,14 @@ export async function initializeDatabase(handle?: Database): Promise<void> {
  * Decision 13: kept alive for one release. Phase 8 (dexter L-2) removes it.
  */
 async function runLegacySqliteInit(sqlite: Database): Promise<void> {
+	// A DB born through Drizzle collects duplicate open watcher runs until its
+	// first restart (the unique index only exists on this path). Resolve them
+	// before the base DDL below creates that index, or boot would fail on it.
+	const hasWatcherRuns = sqlite
+		.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ai_watcher_runs'")
+		.get();
+	if (hasWatcherRuns) sqlite.exec(DEDUPE_OPEN_RUNS_SQL);
+
 	sqlite.exec(`
 		CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY,
@@ -1076,6 +1088,75 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 			summary TEXT,
 			provenance TEXT
 		)`,
+		// Watcher modes (Notify and Continue). Mirrors drizzle/sqlite/0012 for
+		// installs on the legacy init path; column order matches the Drizzle
+		// schema, and watcher-modes-migration.test.ts pins both.
+		"ALTER TABLE watcher_configs ADD COLUMN notify_enabled INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE watcher_configs ADD COLUMN continue_enabled INTEGER NOT NULL DEFAULT 1",
+		"ALTER TABLE watcher_configs ADD COLUMN auto_confirmed_at TEXT",
+		"ALTER TABLE watcher_configs ADD COLUMN auto_confirmed_by TEXT",
+		"ALTER TABLE watcher_proposals ADD COLUMN turn_key TEXT",
+		"ALTER TABLE watcher_proposals ADD COLUMN suggested_prompt TEXT",
+		"ALTER TABLE watcher_proposals ADD COLUMN continue_kind TEXT",
+		"ALTER TABLE ai_hitl_requests ADD COLUMN turn_key TEXT",
+		"ALTER TABLE ai_hitl_requests ADD COLUMN trigger_event_id INTEGER",
+		"ALTER TABLE ai_hitl_requests ADD COLUMN prompt_sha256 TEXT",
+		"ALTER TABLE ai_hitl_requests ADD COLUMN approvable INTEGER",
+		"ALTER TABLE ai_hitl_requests ADD COLUMN telegram_sent_at TEXT",
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_watcher_proposals_session_turn ON watcher_proposals(session_id, turn_key) WHERE turn_key IS NOT NULL",
+		// One Notify report per (session, turn). Born with its cascade FK.
+		`CREATE TABLE IF NOT EXISTS ai_watcher_reports (
+			id TEXT PRIMARY KEY NOT NULL,
+			session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+			turn_key TEXT NOT NULL,
+			trigger_event_id INTEGER,
+			through_event_id INTEGER,
+			verdict TEXT,
+			why TEXT,
+			evidence_ids TEXT,
+			status TEXT NOT NULL DEFAULT 'claimed',
+			failure_code TEXT,
+			attempt_count INTEGER NOT NULL DEFAULT 1,
+			claimed_at TEXT,
+			provider_id TEXT,
+			tokens_in INTEGER NOT NULL DEFAULT 0,
+			tokens_out INTEGER NOT NULL DEFAULT 0,
+			cost_cents INTEGER NOT NULL DEFAULT 0,
+			telegram_status TEXT,
+			telegram_sent_at TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_watcher_reports_session_turn ON ai_watcher_reports(session_id, turn_key)",
+		"CREATE INDEX IF NOT EXISTS idx_ai_watcher_reports_session_created ON ai_watcher_reports(session_id, created_at)",
+		"CREATE INDEX IF NOT EXISTS idx_ai_watcher_reports_telegram_sent ON ai_watcher_reports(telegram_sent_at)",
+		// Append-only dispatch audit. No foreign keys, so it outlives its session.
+		`CREATE TABLE IF NOT EXISTS ai_dispatch_audit (
+			id TEXT PRIMARY KEY NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			completed_at TEXT,
+			outcome TEXT NOT NULL DEFAULT 'pending',
+			refusal_code TEXT,
+			session_id TEXT NOT NULL,
+			session_name TEXT,
+			actor_kind TEXT NOT NULL,
+			actor_user_id TEXT,
+			actor_label TEXT,
+			telegram_from_id TEXT,
+			telegram_chat_id TEXT,
+			prompt_sha256 TEXT,
+			prompt_text TEXT,
+			continue_kind TEXT,
+			proposal_id TEXT,
+			hitl_id TEXT,
+			turn_key TEXT,
+			provider_id TEXT,
+			model TEXT,
+			control_action_id TEXT,
+			config_snapshot TEXT
+		)`,
+		"CREATE INDEX IF NOT EXISTS idx_ai_dispatch_audit_session_created ON ai_dispatch_audit(session_id, created_at)",
+		"CREATE INDEX IF NOT EXISTS idx_ai_dispatch_audit_outcome_created ON ai_dispatch_audit(outcome, created_at)",
+		...AI_DISPATCH_AUDIT_TRIGGERS_SQLITE,
 		// Slice D: freeform_match rule columns. Idempotent — SQLite ignores duplicate columns silently.
 		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_cents INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_date TEXT",

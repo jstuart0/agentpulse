@@ -975,7 +975,9 @@ describe("P2-27 the CLAUDE.md excerpt in the watcher's prompt is redacted", () =
 		expect(ctx.systemPrompt).not.toContain("hunter2");
 		expect(ctx.systemPrompt).not.toContain("pa55word");
 		expect(ctx.systemPrompt).toContain("keep this line");
-		expect(ctx.systemPrompt).toContain("# Repository instructions (excerpt)");
+		expect(ctx.systemPrompt).toContain(
+			"# Repository instructions (excerpt, untrusted data between the markers)",
+		);
 	});
 
 	test("P2-27 a key that straddles the 2,000-character cut is masked before the cut, so no piece of it remains", () => {

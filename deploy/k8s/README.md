@@ -1024,3 +1024,28 @@ pins the image to a specific commit SHA (`image: ghcr.io/jstuart0/agentpulse:<sh
 This SHA is a placeholder showing the convention. Before applying, run
 `./scripts/build-and-push.sh` and update the `image:` field to the printed SHA,
 or apply via the homelab overlay which overrides this field per deployment.
+
+## Upgrading to migration 0012 (SQLite and Postgres): watcher modes
+
+`drizzle/sqlite/0012_watcher_modes.sql` and `drizzle/postgres/0012_watcher_modes.sql`
+add columns to `watcher_configs`, `watcher_proposals` and `ai_hitl_requests`, create
+`ai_watcher_reports` and `ai_dispatch_audit` (the audit table has no foreign keys and
+triggers that make it append-only), and add the missing watcher-run indexes on SQLite.
+Everything is `IF NOT EXISTS` and the new columns are nullable or defaulted. Existing
+`watcher_configs` rows get Continue on and Notify off through the column defaults.
+
+**A one-shot cleanup runs at the first boot** (guarded by the `ai.maintenance.watcherCleanupV1`
+setting, and logged as one `watcher_maintenance` line). It is **irreversible**:
+
+- it deletes the no-op `ai_watcher_runs` rows the old every-event listener left behind
+  (succeeded, with no trigger event and no proposal; batched, so a large table takes a
+  while), keeping any run during which its session made a proposal;
+- it switches every `auto` watcher to `ask_on_risk` and clears its confirmation;
+- it closes every open HITL request (nothing created before the release can be sent).
+
+**Take a database backup before deploying.** Before the first boot with this version,
+`SELECT count(*) FROM ai_watcher_runs WHERE trigger_kind = 'manual' AND trigger_event_id IS NULL AND proposal_id IS NULL AND status = 'succeeded'`
+tells you roughly how many rows to expect to be removed.
+
+The watcher keeps its wake timers, its queue of boundaries and its in-flight set in
+process memory, so the Deployment must stay at **one replica**.

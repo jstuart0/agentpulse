@@ -35,9 +35,13 @@ function isSameOrigin(origin: string, hostHeader: string | undefined): boolean {
 	return hostAndPort(url.host, url.protocol) === hostAndPort(hostHeader, url.protocol);
 }
 
-/** Is this Origin on the configured allowlist, or the request's own? */
-export function isAcceptedOrigin(origin: string, hostHeader: string | undefined): boolean {
-	return config.allowedOrigins.includes(origin) || isSameOrigin(origin, hostHeader);
+/**
+ * An HTTP request's Origin: the configured allowlist always passes (a request
+ * with no Host included), anything else by the socket rule, so the same-origin
+ * shortcut is closed to DNS rebinding when authentication is off.
+ */
+export function isAcceptedRequestOrigin(origin: string, hostHeader: string | undefined): boolean {
+	return config.allowedOrigins.includes(origin) || isAcceptedSocketOrigin(origin, hostHeader);
 }
 
 /** The hostname of a Host header: lower-cased, without the port, IPv6 brackets kept. */

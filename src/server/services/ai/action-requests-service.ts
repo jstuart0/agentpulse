@@ -792,6 +792,7 @@ async function executeDeleteTemplateAction(
 async function executeAddChannelAction(
 	request: ActionRequest,
 	resolvedBy: string,
+	actor: Actor,
 ): Promise<ResolveResult> {
 	const payload = narrowPayload(request, "add_channel");
 
@@ -815,17 +816,21 @@ async function executeAddChannelAction(
 
 	try {
 		const { createPendingChannel } = await import("../channels/channels-service.js");
-		const { channel, enrollmentCode } = await createPendingChannel({ kind, label });
+		// The channel belongs to whoever approved it (an actor with no user id, such
+		// as a chat approval, leaves it with "local": nobody's, in team mode).
+		const { channel } = await createPendingChannel({
+			kind,
+			label,
+			userId: actor.userId ?? "local",
+		});
 		// isActive = true, verifiedAt = null — intentional: channel is visible but
 		// unverified. dispatch.ts checks verifiedAt before sending real messages.
 
 		let notifyText: string;
 		if (kind === "telegram") {
-			// The bot DMs the user the enrollment code; the user DMs it back as
-			// `/start <code>`. This self-DM pattern is required because Telegram's
-			// Bot API cannot initiate a conversation with a user who has not
-			// first messaged the bot — the enrollment code flow works around this.
-			notifyText = `Telegram channel **${label}** created. Your enrollment code is: ${enrollmentCode}\n\nDM this to your AgentPulse Telegram bot:\n  /start ${enrollmentCode}\n\nOnce sent, the bot will confirm and the channel will be active.`;
+			// The enrollment code is shown once, to a signed-in person in Settings, and
+			// never in a message: this text lands in a chat thread or a notification.
+			notifyText = `Telegram channel **${label}** created. Open Settings → Telegram and choose Re-link on it to get a one-time code, then send \`/start <code>\` to your AgentPulse bot from a private chat.`;
 		} else if (kind === "webhook") {
 			const { config } = await import("../../config.js");
 			const webhookUrl = `${config.publicUrl}/api/v1/channels/webhook/${channel.id}`;

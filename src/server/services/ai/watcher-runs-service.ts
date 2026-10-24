@@ -65,24 +65,40 @@ export function dedupeKeyFor(input: {
 		.digest("hex");
 }
 
+export interface EnqueueResult {
+	run: WatcherRunRecord;
+	/**
+	 * True when a run that has not started yet will evaluate this wake: it was just created, or it
+	 * was queued and now points at this wake's trigger. False when the open run was already claimed
+	 * (or was claimed between the read and the update): the wake needs another run after it.
+	 */
+	triggerMoved: boolean;
+}
+
 /**
  * Enqueue a durable wake for a session. If an open run (queued | claimed |
- * running) already exists for the session, this is a no-op and returns the
- * existing row — the unique partial index enforces "one open run per
- * session" as an invariant, so we don't need to coordinate across callers.
+ * running) already exists for the session, no second row is made — the unique
+ * partial index enforces "one open run per session" as an invariant, so we
+ * don't need to coordinate across callers.
+ *
+ * A *queued* open run is moved to the newer wake's trigger with a conditional
+ * update, so it evaluates the newest boundary. A 0-row update means the run was
+ * claimed between the read and the update: it is reported as not moved, and the
+ * caller schedules a wake for after it.
  *
  * Race window: two concurrent callers may both observe no open run and then
  * race to INSERT. Only one INSERT wins; the loser catches the unique-violation
  * error (Postgres SQLSTATE 23505 / SQLite SQLITE_CONSTRAINT_UNIQUE), re-reads
- * the row the winner inserted, and returns it. Any other error is re-thrown.
+ * the row the winner inserted, and treats it as an existing open run. Any other
+ * error is re-thrown.
  */
 export async function enqueueRun(input: {
 	sessionId: string;
 	triggerEventId?: number | null;
 	triggerKind: WatcherRunTriggerKind;
-}): Promise<WatcherRunRecord> {
+}): Promise<EnqueueResult> {
 	const existing = await getOpenRunForSession(input.sessionId);
-	if (existing) return existing;
+	if (existing) return coverWithOpenRun(existing, input);
 	const now = new Date().toISOString();
 	try {
 		const [row] = await getDb()
@@ -100,11 +116,11 @@ export async function enqueueRun(input: {
 				updatedAt: now,
 			})
 			.returning();
-		return toRecord(row);
+		return { run: toRecord(row), triggerMoved: true };
 	} catch (err) {
 		if (isUniqueViolationError(err)) {
 			// Race: another writer enqueued the same session between our SELECT and
-			// INSERT. Re-read the existing open run and return it.
+			// INSERT. Re-read the existing open run and treat it as the open run.
 			//
 			// M2: log the constraint name so operators can distinguish the expected
 			// idx_ai_watcher_runs_open_per_session violation from any other unique
@@ -118,10 +134,39 @@ export async function enqueueRun(input: {
 				`[enqueueRun] unique-violation caught (constraint=${constraintName}), re-reading winning row`,
 			);
 			const raceWinner = await getOpenRunForSession(input.sessionId);
-			if (raceWinner) return raceWinner;
+			if (raceWinner) return coverWithOpenRun(raceWinner, input);
 		}
 		throw err;
 	}
+}
+
+let beforeTriggerMoveHook: (() => Promise<void>) | null = null;
+
+/** Test seam: runs between reading the open run and moving its trigger, so a test can claim the run in that window. */
+export function _setBeforeTriggerMoveHookForTest(hook: (() => Promise<void>) | null): void {
+	beforeTriggerMoveHook = hook;
+}
+
+async function coverWithOpenRun(
+	open: WatcherRunRecord,
+	input: { triggerEventId?: number | null; triggerKind: WatcherRunTriggerKind },
+): Promise<EnqueueResult> {
+	if (open.status !== "queued") return { run: open, triggerMoved: false };
+	// A wake with no trigger of its own (a manual one) is covered by whatever is queued.
+	if (input.triggerEventId == null) return { run: open, triggerMoved: true };
+	await beforeTriggerMoveHook?.();
+	const [moved] = await getDb()
+		.update(aiWatcherRuns)
+		.set({
+			triggerEventId: input.triggerEventId,
+			triggerKind: input.triggerKind,
+			updatedAt: new Date().toISOString(),
+		})
+		.where(and(eq(aiWatcherRuns.id, open.id), eq(aiWatcherRuns.status, "queued")))
+		.returning();
+	if (moved) return { run: toRecord(moved), triggerMoved: true };
+	// Claimed between the read and the update.
+	return { run: (await getOpenRunForSession(open.sessionId)) ?? open, triggerMoved: false };
 }
 
 /** Find the single open (non-terminal) run for a session, if any. */

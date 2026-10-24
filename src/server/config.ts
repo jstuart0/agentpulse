@@ -149,6 +149,14 @@ export const config = {
 		),
 	),
 
+	// Time limit of one watcher model call, per call: the Continue decision and
+	// the Notify status note. Each is a short JSON answer, but a reasoning-off
+	// call on a cold local model can still need a while to load first. Read on
+	// every call.
+	watcherCallTimeoutSeconds: Math.floor(
+		clampedEnvNumber("AGENTPULSE_WATCHER_TIMEOUT_SECONDS", 90, 10, MAX_LLM_CALL_TIMEOUT_SECONDS),
+	),
+
 	// Telegram HITL channel — instance-wide bot token serves every
 	// per-user channel enrollment. When unset, Telegram features stay
 	// dark regardless of the labs flag.

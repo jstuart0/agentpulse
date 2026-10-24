@@ -18,23 +18,29 @@ export async function loadRecentEvents(sessionId: string, limit = 60): Promise<S
 		.orderBy(desc(events.id))
 		.limit(limit);
 	// Drizzle returned newest-first; flip for chronological iteration.
-	return rows
-		.map(
-			(row): SessionEvent => ({
-				id: row.id,
-				sessionId: row.sessionId,
-				eventType: row.eventType,
-				category: (row.category as EventCategory) ?? null,
-				source: row.source as SessionEvent["source"],
-				content: row.content,
-				isNoise: row.isNoise,
-				providerEventType: row.providerEventType,
-				toolName: row.toolName,
-				toolInput: row.toolInput as Record<string, unknown> | null,
-				toolResponse: row.toolResponse,
-				rawPayload: (row.rawPayload as Record<string, unknown>) ?? {},
-				createdAt: row.createdAt,
-			}),
-		)
-		.reverse();
+	return rows.map(toSessionEvent).reverse();
+}
+
+/** One event by id, however old it is, or null. A run's trigger is looked up by id, never searched for in a window. */
+export async function getEventById(id: number): Promise<SessionEvent | null> {
+	const [row] = await getDb().select().from(events).where(eq(events.id, id)).limit(1);
+	return row ? toSessionEvent(row) : null;
+}
+
+function toSessionEvent(row: typeof events.$inferSelect): SessionEvent {
+	return {
+		id: row.id,
+		sessionId: row.sessionId,
+		eventType: row.eventType,
+		category: (row.category as EventCategory) ?? null,
+		source: row.source as SessionEvent["source"],
+		content: row.content,
+		isNoise: row.isNoise,
+		providerEventType: row.providerEventType,
+		toolName: row.toolName,
+		toolInput: row.toolInput as Record<string, unknown> | null,
+		toolResponse: row.toolResponse,
+		rawPayload: (row.rawPayload as Record<string, unknown>) ?? {},
+		createdAt: row.createdAt,
+	};
 }
