@@ -55,11 +55,14 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   such as a session summary on a single model server. Answers and summaries stay
   on the default provider. If the quick provider fails or times out, the call is
   repeated once on the default provider and the quick provider is skipped for a
-  minute. Unset keeps today's behaviour.
+  minute. The quick provider gets its own short limit. Unset keeps today's behaviour.
 
 - `AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS` (default `180`, range 30 to 1800): the
   time limit of the model call that writes an Ask answer and of a per-session
   Q&A answer. The Q&A limit was 60 seconds.
+- `AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS` (default `5`, range 1 to 60): the
+  time limit of the attempt on the quick-calls provider, before the call is
+  repeated on the default provider.
 - `AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS` (default `20`, range 5 to 300): the
   time limit of the short helper calls (Ask intent classifiers, query expansion,
   alert-rule yes/no check). They were 8 and 15 seconds.

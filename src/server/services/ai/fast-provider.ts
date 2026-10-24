@@ -1,3 +1,4 @@
+import { config } from "../../config.js";
 import { getFastProviderId } from "./feature.js";
 import { getAdapter } from "./llm/registry.js";
 import { type LlmAdapter, LlmError } from "./llm/types.js";
@@ -12,8 +13,9 @@ import { chargeFailedCall } from "./usage-cost.js";
  * calls queue behind it and time out. Pointing them at a small model on its
  * own server keeps them quick. Answers and summaries never use it.
  *
- * Unset means the default provider, as before. If the fast provider fails or
- * times out, the call is made again, once, on the default provider, and the
+ * Unset means the default provider, as before. The fast attempt has its own
+ * short limit (`aiFastProviderTimeoutSeconds`), so a stuck fast host costs that
+ * and not the full helper limit. If the fast provider fails or times out, the call is made again, once, on the default provider, and the
  * fast provider is left alone for `FAST_PROVIDER_COOLDOWN_MS` so a fast host
  * that is down costs one failed call per window, not one per call.
  */
@@ -29,6 +31,12 @@ let clock: () => number = Date.now;
 export function __resetFastProviderForTests(now: () => number = Date.now): void {
 	fastOpenUntilMs = 0;
 	clock = now;
+}
+
+/** The fast attempt's limit: its own short one, never longer than the call's. */
+export function fastAttemptTimeoutMs(callTimeoutMs: number | undefined): number {
+	const own = config.aiFastProviderTimeoutSeconds * 1000;
+	return callTimeoutMs === undefined ? own : Math.min(own, callTimeoutMs);
 }
 
 export interface SmallCallTarget {
@@ -64,7 +72,11 @@ export async function withFastProvider(
 			async complete(request) {
 				if (clock() >= fastOpenUntilMs) {
 					try {
-						return await fastAdapter.complete({ ...request, model: fast.model });
+						return await fastAdapter.complete({
+							...request,
+							model: fast.model,
+							timeoutMs: fastAttemptTimeoutMs(request.timeoutMs),
+						});
 					} catch (err) {
 						// The caller giving up is not the fast provider failing.
 						if (request.signal?.aborted) throw err;

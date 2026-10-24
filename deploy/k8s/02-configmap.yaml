@@ -80,3 +80,7 @@ data:
   # Short helper calls (Ask intent classifiers, Ask query expansion, alert-rule
   # yes/no check): time limit in seconds (5 to 300, default 20).
   # AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS: "20"
+  #
+  # Time limit of the attempt on the "quick calls" provider, in seconds (1 to 60,
+  # default 5); on failure the call is repeated on the default provider.
+  # AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS: "5"

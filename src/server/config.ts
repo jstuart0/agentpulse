@@ -127,6 +127,15 @@ export const config = {
 		clampedEnvNumber("AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS", 20, 5, 300),
 	),
 
+	// Time limit of the attempt on the fast provider (Settings, AI: "Use for quick
+	// calls"), capped at the call's own limit. A fast provider that is down or
+	// stuck should cost a few seconds, not the whole helper limit, before the call
+	// is repeated on the default provider: the worst case is this plus
+	// `aiHelperTimeoutSeconds`. Read on every call.
+	aiFastProviderTimeoutSeconds: Math.floor(
+		clampedEnvNumber("AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS", 5, 1, 60),
+	),
+
 	// The session-summary model call's time limit, per call (the repair call
 	// gets it too). The lease, the watchdog, the stuck-row judgement,
 	// retention's spare window and the breaker window all derive from it.

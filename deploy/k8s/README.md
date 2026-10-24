@@ -607,6 +607,7 @@ numbers are clamped; a non-number falls back to the default.
 | `AGENTPULSE_ASK_MAX_CONCURRENT` | `2` | 1 to 8 | Ask turns that run at once, web and Telegram together. Per process: with N replicas the real limit is N times this. |
 | `AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS` | `180` | 30 to 1800 | Ask: time limit of the model call that writes the answer, and of a per-session Q&A answer. The streamed answer gets the same limit. |
 | `AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS` | `20` | 5 to 300 | Time limit of the short helper calls: the Ask intent classifiers, Ask query expansion and the alert-rule yes/no check. They produce a few tokens, so this mostly covers a model that has to load first. |
+| `AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS` | `5` | 1 to 60 | Time limit of the attempt on the provider chosen for quick calls (Settings, AI). If it fails or times out the call is repeated on the default provider with the full helper limit, so the worst case is the two added. |
 | `AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS` | `360` | 30 to 1800 | Session summary: time limit of one model call, per call (the repair call gets it too). The summary lease is 2 × this + 60 s (780 s at the default) and the breaker window follows it. Use the same value on every replica. On Postgres a stuck `generating` row is recovered only when the lease lapses (13 minutes at the default, 61 at the maximum); SQLite also recovers it at boot. |
 
 **Checking a scan after deploy.** Ask a free-form question (one that isn't a

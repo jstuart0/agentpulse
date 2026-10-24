@@ -143,6 +143,40 @@ describe("which provider answers a small call", () => {
 	});
 });
 
+describe("the fast attempt has its own short limit", () => {
+	test("its limit is the shorter of its setting and the call's own", () => {
+		const own = config.aiFastProviderTimeoutSeconds * 1000;
+		expect(fast.fastAttemptTimeoutMs(20_000)).toBe(own);
+		expect(fast.fastAttemptTimeoutMs(2_000)).toBe(Math.min(own, 2_000));
+		expect(fast.fastAttemptTimeoutMs(undefined)).toBe(own);
+	});
+
+	test("a stuck fast provider costs its short limit, then the default answers with the full limit", async () => {
+		const saved = config.aiFastProviderTimeoutSeconds;
+		(config as Record<string, unknown>).aiFastProviderTimeoutSeconds = 1;
+		const gate = fastStub.createGate();
+		fastStub.script("openai", { text: NONE, stop: "stop", gate });
+		defaultStub.script("anthropic", { text: QA, stop: "end_turn" });
+		const log = warnings();
+		const started = Date.now();
+		try {
+			const r = await detectQaIntent("summarize session alpha");
+			const elapsed = Date.now() - started;
+			expect(r.kind).toBe("qa");
+			// 1 s for the fast attempt, nowhere near the 20 s helper limit.
+			expect(elapsed).toBeGreaterThanOrEqual(900);
+			expect(elapsed).toBeLessThan(5_000);
+			expect(log.lines.find((l) => l.kind === "ai_fast_provider_fallback")).toMatchObject({
+				subType: "transient_timeout",
+			});
+		} finally {
+			log.restore();
+			gate.release();
+			(config as Record<string, unknown>).aiFastProviderTimeoutSeconds = saved;
+		}
+	});
+});
+
 describe("when the fast provider fails", () => {
 	test("the call is made again, once, on the default provider, and the caller gets that answer", async () => {
 		fastStub.script("openai", { text: "", status: 500, errorBody: "overloaded" });

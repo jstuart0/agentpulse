@@ -296,26 +296,31 @@ describe("AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS (AGEN-77)", () => {
 describe("AI call timeouts (AGEN-79)", () => {
 	const ANSWER = "AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS";
 	const HELPER = "AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS";
+	const FAST = "AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS";
 	const saved: Record<string, string | undefined> = {};
 	let fresh = 0;
 	beforeEach(() => {
-		for (const key of [ANSWER, HELPER]) saved[key] = process.env[key];
+		for (const key of [ANSWER, HELPER, FAST]) saved[key] = process.env[key];
 	});
 	afterEach(() => {
-		for (const key of [ANSWER, HELPER]) {
+		for (const key of [ANSWER, HELPER, FAST]) {
 			if (saved[key] === undefined) delete process.env[key];
 			else process.env[key] = saved[key];
 		}
 	});
 
 	async function load(env: Record<string, string | undefined> = {}) {
-		for (const key of [ANSWER, HELPER]) {
+		for (const key of [ANSWER, HELPER, FAST]) {
 			const value = env[key];
 			if (value === undefined) delete process.env[key];
 			else process.env[key] = value;
 		}
 		const mod = (await import(`./config.js?ai-timeouts-${++fresh}`)) as {
-			config: { askAnswerTimeoutSeconds: number; aiHelperTimeoutSeconds: number };
+			config: {
+				askAnswerTimeoutSeconds: number;
+				aiHelperTimeoutSeconds: number;
+				aiFastProviderTimeoutSeconds: number;
+			};
 		};
 		return mod.config;
 	}
@@ -335,6 +340,15 @@ describe("AI call timeouts (AGEN-79)", () => {
 		expect((await load({ [HELPER]: "5" })).aiHelperTimeoutSeconds).toBe(5);
 		expect((await load({ [HELPER]: "300" })).aiHelperTimeoutSeconds).toBe(300);
 		expect((await load({ [HELPER]: "301" })).aiHelperTimeoutSeconds).toBe(300);
+	});
+
+	test("the fast provider attempt gets 5 s, clamped to 1..60", async () => {
+		expect((await load()).aiFastProviderTimeoutSeconds).toBe(5);
+		expect((await load({ [FAST]: "0" })).aiFastProviderTimeoutSeconds).toBe(1);
+		expect((await load({ [FAST]: "1" })).aiFastProviderTimeoutSeconds).toBe(1);
+		expect((await load({ [FAST]: "60" })).aiFastProviderTimeoutSeconds).toBe(60);
+		expect((await load({ [FAST]: "61" })).aiFastProviderTimeoutSeconds).toBe(60);
+		expect((await load({ [FAST]: "x" })).aiFastProviderTimeoutSeconds).toBe(5);
 	});
 
 	test("a fraction is floored and junk falls back to the default", async () => {
