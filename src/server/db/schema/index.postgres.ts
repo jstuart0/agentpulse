@@ -47,6 +47,8 @@ export { aiActionRequestsPg as aiActionRequests } from "./ai/ai-action-requests.
 export { aiPendingProjectDraftsPg as aiPendingProjectDrafts } from "./ai/ai-pending-project-drafts.js";
 export { aiQaCachePg as aiQaCache } from "./ai/ai-qa-cache.js";
 export { aiSessionSummariesPg as aiSessionSummaries } from "./ai/ai-session-summaries.js";
+export { aiWatcherReportsPg as aiWatcherReports } from "./ai/ai-watcher-reports.js";
+export { aiDispatchAuditPg as aiDispatchAudit } from "./ai/ai-dispatch-audit.js";
 // eventEmbeddings intentionally omitted — SQLite-only (Decision 3).
 
 // ── ask-projects/ ─────────────────────────────────────────────────────────────

@@ -37,6 +37,7 @@ import { evaluateRisk, getRiskClasses } from "./risk-classes.js";
 import { RunLeaser } from "./run-leaser.js";
 import { addSpendCents, checkSpendBudget } from "./spend-service.js";
 import { getWatcherConfig } from "./watcher-config-service.js";
+import { sweepWatcherOnStart } from "./watcher-maintenance.js";
 import {
 	type WatcherRunRecord,
 	type WatcherRunTriggerKind,
@@ -108,6 +109,15 @@ export class WatcherRunner {
 		// already covers every trigger the watcher actually wants to
 		// respond to (UserPromptSubmit, Stop, TaskCompleted, ai_error,
 		// plan_update, etc.).
+
+		// A previous process may have died mid-run: fail what it left claimed,
+		// expire overdue HITLs and reconcile half-written audit rows first.
+		try {
+			const swept = await sweepWatcherOnStart();
+			console.log(JSON.stringify({ kind: "watcher_sweep", ...swept }));
+		} catch (err) {
+			console.error("[ai-watcher] startup sweep failed:", err);
+		}
 
 		await this.leaser.start();
 
