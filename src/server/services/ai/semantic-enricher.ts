@@ -15,6 +15,7 @@
  */
 
 import { config } from "../../config.js";
+import { withFastProvider } from "./fast-provider.js";
 import { isAiActive } from "./feature.js";
 import { getAdapter } from "./llm/registry.js";
 import { type LlmAdapter, LlmError } from "./llm/types.js";
@@ -226,7 +227,9 @@ export async function getSemanticEnricher(): Promise<SemanticEnricher | null> {
 		apiKey,
 		baseUrl: full.baseUrl ?? undefined,
 	});
-	const llmExpander = new LlmQueryExpander(adapter, full.model);
+	// The expander is a small call: it goes to the fast provider when one is set.
+	const small = await withFastProvider({ providerId: provider.id, adapter, model: full.model });
+	const llmExpander = new LlmQueryExpander(small.adapter, small.model);
 
 	// Lazy import keeps the embeddings module out of the no-flag path.
 	const { getVectorEnricher } = await import("./embeddings/vector-enricher.js");

@@ -70,6 +70,8 @@ async function productionCallSites(): Promise<Map<string, string[]>> {
 		const rel = relative(ROOT, file);
 		if (/\.test\.ts$/.test(rel) || rel.includes("/test-utils/")) continue;
 		if (rel.startsWith("src/server/services/ai/llm/")) continue;
+		// Forwards the caller's own request to a provider; sets nothing itself.
+		if (rel === "src/server/services/ai/fast-provider.ts") continue;
 		const literals = requestLiterals(await readFile(file, "utf8"));
 		if (literals.length > 0) sites.set(rel, literals);
 	}
@@ -104,6 +106,26 @@ describe("model call sites", () => {
 	test("the summary request carries both through its limits", async () => {
 		const { SUMMARY_CALL_OPTIONS } = await import("./session-summary/prompt-limits.js");
 		expect(SUMMARY_CALL_OPTIONS.disableReasoning).toBe(true);
+	});
+
+	test("only the small helper calls can use the fast provider; answers and summaries never do", async () => {
+		const importers: string[] = [];
+		for await (const file of walk(SERVER)) {
+			const rel = relative(ROOT, file);
+			if (/\.test\.ts$/.test(rel) || rel === "src/server/services/ai/fast-provider.ts") continue;
+			if (
+				/from\s+"[^"]*fast-provider\.js"|import\("[^"]*fast-provider\.js"\)/.test(
+					await readFile(file, "utf8"),
+				)
+			) {
+				importers.push(rel);
+			}
+		}
+		expect(importers.sort()).toEqual([
+			"src/server/services/ai/alert-rule-evaluator.ts",
+			"src/server/services/ai/semantic-enricher.ts",
+			"src/server/services/ask/launch-intent-detector.ts",
+		]);
 	});
 
 	test("planted negative: a call without the flag is reported", () => {

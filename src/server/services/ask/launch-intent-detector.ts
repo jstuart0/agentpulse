@@ -8,6 +8,7 @@ import {
 } from "../../../shared/types.js";
 import { config } from "../../config.js";
 import type { ProjectDraftFields } from "../../db/schema/index.js";
+import { withFastProvider } from "../ai/fast-provider.js";
 import { getAdapter } from "../ai/llm/registry.js";
 import { getDefaultProvider, getProvider, getProviderApiKey } from "../ai/providers-service.js";
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";
@@ -164,17 +165,21 @@ async function classifyJson<T>(opts: {
 		return { kind: "none" };
 	}
 
-	const adapter = getAdapter({
-		kind: full.kind,
-		apiKey,
-		baseUrl: full.baseUrl ?? undefined,
+	const { adapter, model } = await withFastProvider({
+		providerId: provider.id,
+		adapter: getAdapter({
+			kind: full.kind,
+			apiKey,
+			baseUrl: full.baseUrl ?? undefined,
+		}),
+		model: full.model,
 	});
 
 	try {
 		const res = await adapter.complete({
 			systemPrompt: opts.systemPrompt,
 			transcriptPrompt: `User message: ${opts.message}`,
-			model: full.model,
+			model,
 			maxTokens: opts.maxTokens ?? 200,
 			temperature: 0.0,
 			timeoutMs: config.aiHelperTimeoutSeconds * 1000,

@@ -16,6 +16,9 @@ export const AI_CLASSIFIER_AFFECTS_RUNNER_KEY = "ai.classifierAffectsRunner";
 // at correlation time (enabled, ask_on_risk policy, default provider).
 // Default true: if Ask launched the session, AI was already in the loop.
 export const AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY = "ai.autoEnableWatcherForAsk";
+// Optional provider id for the small, latency-sensitive calls (see
+// fast-provider.ts). Unset or empty means the default provider.
+export const AI_FAST_PROVIDER_ID_KEY = "ai.fastProviderId";
 
 // All AI feature-flag reads share one cache. Keying by settings-row key keeps
 // the helper generic and lets `invalidateAiFlagsCache(key)` target a single
@@ -50,6 +53,12 @@ export function invalidateAiFlagsCache(key?: string): void {
 	} else {
 		aiFlagsCache.invalidate(key);
 	}
+}
+
+/** The provider chosen for small calls, or null for "use the default". */
+export async function getFastProviderId(): Promise<string | null> {
+	const value = await getCachedFlag(AI_FAST_PROVIDER_ID_KEY);
+	return typeof value === "string" && value !== "" ? value : null;
 }
 
 /** Is the AI feature compiled into this build (and secrets configured)? */

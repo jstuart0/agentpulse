@@ -41,9 +41,20 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   index fell behind until the next restart, and a provider outage during that
   backfill left a backlog. A background pass now runs every minute in small
   batches (100 batches of up to 32 events at most, a short pause after each),
-  backs off while the provider is down, and works off any backlog on its own.
+  and works off any backlog on its own. While the embedding provider is down
+  it retries after a growing wait (up to 5 minutes), each time with a single
+  probe request first, and resumes by itself when the provider returns; no
+  restart or rebuild is needed.
 
 ### Added
+
+- **A provider for quick calls.** Settings, AI: "Use for quick calls" on a
+  provider sends the short helper calls (Ask intent checks, query expansion,
+  alert-rule checks) to it first, so they no longer queue behind a long call
+  such as a session summary on a single model server. Answers and summaries stay
+  on the default provider. If the quick provider fails or times out, the call is
+  repeated once on the default provider and the quick provider is skipped for a
+  minute. Unset keeps today's behaviour.
 
 - `AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS` (default `180`, range 30 to 1800): the
   time limit of the model call that writes an Ask answer and of a per-session
