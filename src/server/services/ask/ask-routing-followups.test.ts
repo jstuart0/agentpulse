@@ -79,35 +79,65 @@ describeSqliteOnly("Ask follow-ups keep the conversation's sessions (AGEN-79)", 
 		return runAskTurn({ message, actor: ASK_ACTOR, threadId });
 	}
 
-	test("a short follow-up is answered from the sessions of the previous answer", async () => {
+	test("a follow-up that points back is answered from the sessions of the previous answer", async () => {
 		const first = await turn("tell me about the Alpha caching work");
 		expect(first.includedSessionIds[0]).toBe("sess-alpha");
 
-		const second = await turn("how many stages are there in total?", first.thread.id);
-		expect(second.includedSessionIds).toContain("sess-alpha");
+		const second = await turn("how many stages did it have in total?", first.thread.id);
 		expect(second.includedSessionIds[0]).toBe("sess-alpha");
 	});
 
-	test("the same short question with no conversation behind it carries nothing", async () => {
-		const alone = await turn("how many stages are there in total?");
+	test("the same question with no conversation behind it carries nothing", async () => {
+		const alone = await turn("how many stages did it have in total?");
 		expect(alone.includedSessionIds).not.toContain("sess-alpha");
 	});
 
-	test("a message that names its own subject is resolved on its own words, not the previous session", async () => {
+	test("being short is not enough: a new question with no back-reference starts fresh", async () => {
+		const first = await turn("tell me about the Alpha caching work");
+		const second = await turn("how many stages total?", first.thread.id);
+		expect(second.includedSessionIds).not.toContain("sess-alpha");
+	});
+
+	test("a new subject that the message names outranks the carried session, which is dropped", async () => {
 		const first = await turn("tell me about the Alpha caching work");
 		expect(first.includedSessionIds).toContain("sess-alpha");
 
 		const second = await turn(
-			"please give me a detailed explanation of the invoice reconciliation that happened in the Beta project",
+			"does it relate to the invoices handled in the Beta project?",
 			first.thread.id,
 		);
-		expect(second.includedSessionIds).toContain("sess-beta");
+		expect(second.includedSessionIds[0]).toBe("sess-beta");
 		expect(second.includedSessionIds).not.toContain("sess-alpha");
+	});
+
+	test("after the topic moved, the next back-reference follows the new answer, not the old one", async () => {
+		const first = await turn("tell me about the Alpha caching work");
+		const second = await turn(
+			"does it relate to the invoices handled in the Beta project?",
+			first.thread.id,
+		);
+		expect(second.includedSessionIds[0]).toBe("sess-beta");
+		const third = await turn("what did it change?", first.thread.id);
+		expect(third.includedSessionIds[0]).toBe("sess-beta");
+		expect(third.includedSessionIds).not.toContain("sess-alpha");
+	});
+
+	test("at most two sessions are inherited", async () => {
+		const first = await turn("tell me about the Alpha caching work and the Beta billing work");
+		expect(first.includedSessionIds).toEqual(expect.arrayContaining(["sess-alpha", "sess-beta"]));
+		getSqlite().exec(
+			"INSERT INTO sessions (id, session_id, agent_type, status, display_name, cwd, last_activity_at, started_at) VALUES ('row-g', 'sess-gamma', 'claude_code', 'completed', 'Gamma', '/w/g', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+		);
+		getSqlite().exec(
+			'UPDATE ask_messages SET context_session_ids = \'["sess-alpha","sess-beta","sess-gamma"]\' WHERE role = \'assistant\'',
+		);
+		const second = await turn("what did they change?", first.thread.id);
+		expect(second.includedSessionIds).not.toContain("sess-gamma");
 	});
 
 	test("replies from a gate record no sessions, so the carry reaches back to the last real answer", async () => {
 		const first = await turn("tell me about the Alpha caching work");
-		await turn("what's waiting", first.thread.id); // search gate: records none
+		await turn("what happened today", first.thread.id); // digest gate: records none
 		const third = await turn("and how many are done?", first.thread.id);
 		expect(third.includedSessionIds[0]).toBe("sess-alpha");
 	});
@@ -123,23 +153,29 @@ describeSqliteOnly("Ask follow-ups keep the conversation's sessions (AGEN-79)", 
 });
 
 describe("looksLikeFollowUp", () => {
-	test("short messages and back-references are follow-ups", () => {
+	test("pronoun-like words, ordinals and connectives point back", () => {
 		for (const m of [
-			"how many stages total?",
+			"what did it change?",
+			"and why did that fail?",
 			"what about the other one",
-			"and why did it fail?",
-			"Can you explain it in more detail, including what happened to the tests in the run",
+			"which of them is slower",
+			"tell me more about the first one",
+			"what else did it touch",
+			"so how many are done",
 		]) {
 			expect({ m, v: looksLikeFollowUp(m) }).toEqual({ m, v: true });
 		}
 	});
 
-	test("a long message with its own subject is not", () => {
-		expect(
-			looksLikeFollowUp(
-				"please give me a detailed explanation of the invoice reconciliation in the Beta project",
-			),
-		).toBe(false);
-		expect(looksLikeFollowUp("   ")).toBe(false);
+	test("short questions and new subjects do not", () => {
+		for (const m of [
+			"how many stages total?",
+			"how is billing going",
+			"summarize the auth work",
+			"please give me a detailed explanation of the invoice reconciliation in the Beta project",
+			"   ",
+		]) {
+			expect({ m, v: looksLikeFollowUp(m) }).toEqual({ m, v: false });
+		}
 	});
 });

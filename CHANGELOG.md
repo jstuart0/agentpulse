@@ -27,9 +27,10 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   in progress, right now, "what's running") now list the sessions the
   dashboard shows as Working, filler words no longer become a search, and a
   classifier failure note no longer repeats the classifier's internal error.
-- **Ask follow-ups keep their subject.** A short follow-up or one that points
-  back ("how many stages in total?", "what did it change?") starts from the
-  sessions the previous answer was built from instead of resolving on its own.
+- **Ask follow-ups keep their subject.** A message that points
+  back ("what did it change?", "and the other one?") starts from the sessions
+  the previous answer was built from instead of resolving on its own. A new
+  subject the message names outranks them.
 - **The "stuck" badge no longer fires on sessions that merely mention errors.**
   The repeated-failure rule counted any tool output containing "error",
   "failed" or "exception". It now counts failed tool calls (a failure hook the

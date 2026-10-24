@@ -75,22 +75,36 @@ const STOPWORDS = new Set([
 ]);
 
 /**
- * A message that leans on the conversation: a pronoun or "same / also / again"
- * pointing back, or a short question that cannot stand alone ("how many stages
- * total?"). Only these inherit the previous turn's sessions; a long message
- * that names its own subject is resolved on its own words.
+ * A message that points back at the conversation: a pronoun-like word ("what
+ * did it change", "and them?"), "the same / the other / the first one", "what
+ * else", "tell me more", or one that opens with a connective ("and ...", "so
+ * ..."). Only these inherit the previous turn's sessions. Being short is not
+ * enough: "how is billing going" is a new question.
  */
-const FOLLOW_UP_WORDS =
-	/\b(it|its|those|these|they|them|same|also|again|more|else|further|above|previous|earlier|other|another|first|second|third|last|next)\b|^\s*(and|so|but|then|what about|how about)\b/i;
-const FOLLOW_UP_MAX_WORDS = 8;
+const FOLLOW_UP_WORDS = new RegExp(
+	[
+		String.raw`\b(it|its|they|them|their|those|these|same|again|earlier|previous|above)\b`,
+		String.raw`\b(that|this) (one|session)\b`,
+		String.raw`\bthe (other|first|second|third|last|previous|same) (one|ones|session|sessions)\b`,
+		String.raw`\b(what|anything|anyone|anywhere) else\b`,
+		String.raw`\bmore (detail|about|on)\b`,
+		String.raw`^\s*(and|so|but|then|also|what about|how about)\b`,
+	].join("|"),
+	"i",
+);
 
-/** The most sessions a follow-up inherits; the rest of the slots stay for the message's own matches. */
-export const CARRIED_SESSIONS_MAX = 3;
+/** The most sessions a follow-up inherits. */
+export const CARRIED_SESSIONS_MAX = 2;
+/**
+ * Added to a carried session's own score, so it ranks above a weak match and
+ * below a strong one. A carried session that matched nothing in the new
+ * message is dropped altogether when some other session scores at least this
+ * much: the user moved on.
+ */
+export const CARRY_BOOST = 4;
 
 export function looksLikeFollowUp(message: string): boolean {
-	const words = message.trim().split(/\s+/).filter(Boolean);
-	if (words.length === 0) return false;
-	return words.length <= FOLLOW_UP_MAX_WORDS || FOLLOW_UP_WORDS.test(message);
+	return FOLLOW_UP_WORDS.test(message);
 }
 
 function tokenize(message: string): string[] {
@@ -158,9 +172,10 @@ export interface ResolveInput {
 	enricher?: SemanticEnricher | null;
 	/**
 	 * The sessions the conversation's last answer was built from, best first.
-	 * When the message looks like a follow-up they come first (at most
-	 * CARRIED_SESSIONS_MAX), whatever the message itself matched, so "how many
-	 * stages are there?" asked about a session stays about that session.
+	 * When the message points back at the conversation (`looksLikeFollowUp`) at
+	 * most CARRIED_SESSIONS_MAX of them get CARRY_BOOST added to their own
+	 * score, so "what did it change?" stays about the session just discussed
+	 * while a new subject the message names outranks them.
 	 */
 	carriedSessionIds?: string[];
 }
@@ -327,21 +342,21 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 	// sessions so the LLM has something to answer with instead of an
 	// empty block.
 	const useFallback = input.fallbackToActive && (!hasAnyMatch || tokens.length === 0);
-	const ranked = scoredAll
+	// Carried sessions are merged by score. The fallback decision above used the
+	// message's own scores, so a boost never turns "nothing matched" into "matched".
+	const carriedSet = new Set(carriedIds);
+	const strongNewMatch = scoredAll.some((r) => r.score >= CARRY_BOOST);
+	const adjusted = scoredAll.flatMap((r) => {
+		if (!carriedSet.has(r.row.sessionId)) return [r];
+		if (r.score === 0 && strongNewMatch) return [];
+		return [{ ...r, score: r.score + CARRY_BOOST }];
+	});
+	const scored = adjusted
 		.filter((r) => (useFallback ? true : r.score > 0))
 		.sort(
 			(a, b) => b.score - a.score || a.row.lastActivityAt.localeCompare(b.row.lastActivityAt) * -1,
-		);
-	const byId = new Map(scoredAll.map((r) => [r.row.sessionId, r]));
-	const carried = carriedIds
-		.map((id) => byId.get(id))
-		.filter((r): r is NonNullable<typeof r> => r !== undefined)
-		.slice(0, Math.max(0, limit - 2));
-	const carriedSet = new Set(carried.map((r) => r.row.sessionId));
-	const scored = [...carried, ...ranked.filter((r) => !carriedSet.has(r.row.sessionId))].slice(
-		0,
-		limit,
-	);
+		)
+		.slice(0, limit);
 
 	return scored.map((r) => ({
 		sessionId: r.row.sessionId,
