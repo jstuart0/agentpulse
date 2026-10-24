@@ -336,6 +336,64 @@ describeSqliteOnly("what makes a pass start over", () => {
 	});
 });
 
+describeSqliteOnly("concurrent starts run one pass (the guard is taken before any await)", () => {
+	test("two passes started in the same tick: one runs, the other reports it did not", async () => {
+		addEvents(40);
+		const [a, b] = await Promise.all([service.runBackfillPass(), service.runBackfillPass()]);
+		expect([a.ran, b.ran].sort()).toEqual([false, true]);
+		// Every event embedded exactly once: no second pass raced the first.
+		expect(embedCalls).toHaveLength(40);
+		expect(embeddedIds()).toHaveLength(40);
+		expect(service.isBackfillRunning()).toBe(false);
+	});
+
+	test("the manual button and a scheduled tick started together do not duplicate work", async () => {
+		addEvents(40);
+		const [progress, tick] = await Promise.all([
+			service.runBackfill(),
+			schedule.runScheduledBackfillTick(NO_PAUSE),
+		]);
+		expect(progress).toBeDefined();
+		expect(embedCalls).toHaveLength(40);
+		// The one that lost the race handled nothing and waits its normal interval.
+		expect([tick.handled, 40 - tick.handled].includes(0)).toBe(true);
+	});
+
+	test("the guard is released when a pass ends, however it ends", async () => {
+		addEvents(2);
+		failing = true;
+		await service.runBackfillPass({ failureLimit: 1 });
+		expect(service.isBackfillRunning()).toBe(false);
+		failing = false;
+		const again = await service.runBackfillPass();
+		expect(again.ran).toBe(true);
+		expect(embeddedIds()).toHaveLength(2);
+	});
+
+	test("isBackfillRunning is true for exactly the life of a pass (the rebuild route reads it)", async () => {
+		addEvents(2);
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		service.__setEmbeddingAdapterForTests({
+			kind: "ollama",
+			model: MODEL,
+			dim: 4,
+			embed: async () => {
+				await gate;
+				return new Float32Array(4).fill(0.1);
+			},
+		});
+		const running = service.runBackfill();
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(service.isBackfillRunning()).toBe(true);
+		release();
+		await running;
+		expect(service.isBackfillRunning()).toBe(false);
+	});
+});
+
 describe("startEmbeddingBackfillSchedule", () => {
 	function manualTimers(ticks: Array<{ nextDelayMs: number; handled: number }>) {
 		const armed: Array<{ run: () => void; delayMs: number }> = [];

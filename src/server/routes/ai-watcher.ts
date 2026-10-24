@@ -5,7 +5,11 @@ import { getDb } from "../db/client.js";
 import { settings } from "../db/schema/index.js";
 import { emitAiEvent } from "../services/ai/ai-events.js";
 import { checkDispatch } from "../services/ai/dispatch-filter.js";
-import { getBackfillProgress, runBackfill } from "../services/ai/embeddings/embedding-service.js";
+import {
+	getBackfillProgress,
+	isBackfillRunning,
+	runBackfill,
+} from "../services/ai/embeddings/embedding-service.js";
 import {
 	DEFAULT_EMBEDDING_MODEL,
 	VECTOR_SEARCH_ENABLED_KEY,
@@ -101,6 +105,9 @@ aiWatcherRouter.post("/ai/vector-search/rebuild", async (c) => {
 	}
 	// Fire-and-forget so the request returns fast; clients poll
 	// /ai/vector-search/status for progress.
+	// One pass at a time, shared with the schedule: a press while one is running
+	// starts nothing and says so.
+	if (isBackfillRunning()) return c.json({ ok: true, started: false, running: true });
 	void runBackfill();
 	return c.json({ ok: true, started: true });
 });

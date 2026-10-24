@@ -303,9 +303,38 @@ export interface BackfillPassResult {
 	handled: number;
 }
 
+/** Set synchronously by the first caller, before any await, and cleared in `finally`. */
+let passInFlight = false;
+
+/** True while a pass is running: the manual button, the schedule and the boot path share this one guard. */
+export function isBackfillRunning(): boolean {
+	return passInFlight;
+}
+
 export async function runBackfillPass(
 	options: BackfillPassOptions = {},
 ): Promise<BackfillPassResult> {
+	if (passInFlight) {
+		return {
+			progress: backfillState,
+			ran: false,
+			endCursor: options.fromId ?? 0,
+			model: null,
+			reachedEnd: false,
+			circuitOpen: false,
+			failed: false,
+			handled: 0,
+		};
+	}
+	passInFlight = true;
+	try {
+		return await runBackfillPassLocked(options);
+	} finally {
+		passInFlight = false;
+	}
+}
+
+async function runBackfillPassLocked(options: BackfillPassOptions): Promise<BackfillPassResult> {
 	const idle = (ran: boolean, model: string | null = null): BackfillPassResult => ({
 		progress: backfillState,
 		ran,
@@ -317,7 +346,6 @@ export async function runBackfillPass(
 		handled: 0,
 	});
 	if (config.dialect !== "sqlite" || !isVectorSearchBuildEnabled()) return idle(false);
-	if (backfillState.running) return idle(false);
 
 	const adapter = await resolveEmbeddingAdapter();
 	if (!adapter) {
