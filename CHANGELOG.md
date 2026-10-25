@@ -7,6 +7,30 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-10-24
+
+### Upgrade notes
+
+- Schema migration 0012 runs at startup on SQLite and Postgres. It adds two
+  watcher columns, a report table and an append-only dispatch audit table.
+  **Take a backup first:** on the first start the watcher's old no-op run rows
+  (trigger-less `manual` runs with no proposal) are deleted, and that can't be
+  undone. The startup log line `watcher_maintenance` reports what was removed.
+- Existing watchers keep Continue on and Notify off. Existing `auto` watchers
+  become `ask_on_risk`, and requests that were waiting for an answer are
+  superseded. To use `auto` again, confirm it from the dashboard and turn off
+  "Pause automatic prompt sending".
+- Approving a watcher proposal now sends the prompt to sessions AgentPulse
+  launched (see Changed).
+- Telegram channels enrolled in a group chat must be re-linked before they can
+  approve or ask; private-chat channels keep working. In team mode, channels
+  created before this release refuse approvals until an admin re-links them.
+- With authentication disabled, the same-origin check for state-changing
+  routes accepts a request only on a loopback or allowlisted host.
+- The session-summary call limit rises from 120 to 360 seconds
+  (`AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS`); set the same value on every
+  replica.
+
 ### Added
 
 - **Notify mode.** A watcher can now write a two-line status note for you when a turn ends
@@ -26,6 +50,27 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   them.
 - `AGENTPULSE_WATCHER_TIMEOUT_SECONDS` (default `90`, range 10 to 1800): the time limit of each
   watcher model call.
+- **A provider for quick calls.** Settings, AI: "Use for quick calls" on a
+  provider sends the short helper calls (Ask intent checks, query expansion,
+  alert-rule checks) to it first, so they no longer queue behind a long call
+  such as a session summary on a single model server. Answers and summaries stay
+  on the default provider. If the quick provider fails or times out, the call is
+  repeated once on the default provider and the quick provider is skipped for a
+  minute. The quick provider gets its own short limit. Unset keeps today's behaviour.
+
+- `AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS` (default `180`, range 30 to 1800): the
+  time limit of the model call that writes an Ask answer and of a per-session
+  Q&A answer. The Q&A limit was 60 seconds.
+- `AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS` (default `5`, range 1 to 60): the
+  time limit of the attempt on the quick-calls provider, before the call is
+  repeated on the default provider.
+- `AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS` (default `20`, range 5 to 300): the
+  time limit of the short helper calls (Ask intent classifiers, query expansion,
+  alert-rule yes/no check). They were 8 and 15 seconds.
+- `AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS` (default `360`, range 30 to 1800):
+  the time limit of one session-summary model call, per call (the repair call
+  gets it in full). Use the same value on every replica. See the README's
+  "Session summary" section.
 
 ### Changed
 
@@ -59,6 +104,17 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   Turning `auto` on, resetting the counter and switching the pause or kill off need a signed-in
   person, not an API key.
 - Every Telegram message the watcher sends is redacted of secrets and has home paths shortened.
+- **Session summary time bounds follow the new call limit, for every install.**
+  The per-call limit rises from 120 to 360 seconds, the lease on a running
+  summary from 300 to 780 seconds (2 x the limit + 60), and the watchdog from
+  5 to 13 minutes. A hung call now holds a generation slot for 13 minutes, and on
+  Postgres a stuck `generating` row is recovered only at the lease. The failure
+  breaker window is the longer of 10 minutes and two leases and a minute (27
+  minutes at the default), and a forgotten subject is dropped after the longer
+  of 60 minutes and that window. A running generation is aborted when it is
+  released (watchdog, lease or shutdown), so its connection closes.
+- **LLM responses are capped**: a success body or stream at 8 MiB, an error body
+  at 4 KiB. Over the cap is a provider error.
 
 ### Fixed
 
@@ -110,26 +166,16 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   it retries after a growing wait (up to 5 minutes), each time with a single
   probe request first, and resumes by itself when the provider returns; no
   restart or rebuild is needed.
-
-### Added
-
-- **A provider for quick calls.** Settings, AI: "Use for quick calls" on a
-  provider sends the short helper calls (Ask intent checks, query expansion,
-  alert-rule checks) to it first, so they no longer queue behind a long call
-  such as a session summary on a single model server. Answers and summaries stay
-  on the default provider. If the quick provider fails or times out, the call is
-  repeated once on the default provider and the quick provider is skipped for a
-  minute. The quick provider gets its own short limit. Unset keeps today's behaviour.
-
-- `AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS` (default `180`, range 30 to 1800): the
-  time limit of the model call that writes an Ask answer and of a per-session
-  Q&A answer. The Q&A limit was 60 seconds.
-- `AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS` (default `5`, range 1 to 60): the
-  time limit of the attempt on the quick-calls provider, before the call is
-  repeated on the default provider.
-- `AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS` (default `20`, range 5 to 300): the
-  time limit of the short helper calls (Ask intent classifiers, query expansion,
-  alert-rule yes/no check). They were 8 and 15 seconds.
+- **Session summaries on slow local models no longer always time out**.
+  A summary call longer than 300 seconds was cut by Bun's own fetch limit
+  whatever the configured timeout; that limit is now lifted, so the configured
+  limit is the real one. A provider that stops sending in the middle of an
+  answer is now a timeout (the Summary tab says so) rather than an internal
+  error, and the same applies to the AI watcher, Ask and the classifier. An
+  immediate provider 5xx (including 502, 504 and 524) is reported as a provider
+  error, no longer as a timeout. The failed-summary message now names the
+  current model and limit and the setting that raises it. The unknown-outcome
+  daily ceiling is charged to the day the call started, not the day it ended.
 
 ## [0.8.1] — 2026-10-20
 
@@ -152,16 +198,6 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   vanished kept protecting its managed sessions indefinitely. Sessions already
   stuck this way complete on the first sweep after upgrade, and open dashboards
   are told.
-- **Session summaries on slow local models no longer always time out**.
-  A summary call longer than 300 seconds was cut by Bun's own fetch limit
-  whatever the configured timeout; that limit is now lifted, so the configured
-  limit is the real one. A provider that stops sending in the middle of an
-  answer is now a timeout (the Summary tab says so) rather than an internal
-  error, and the same applies to the AI watcher, Ask and the classifier. An
-  immediate provider 5xx (including 502, 504 and 524) is reported as a provider
-  error, no longer as a timeout. The failed-summary message now names the
-  current model and limit and the setting that raises it. The unknown-outcome
-  daily ceiling is charged to the day the call started, not the day it ended.
 
 ### Added
 
@@ -169,24 +205,9 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   a managed session silent longer than this stops being exempt from the sweep
   and completes, even while its host is heartbeating (for example a terminal
   bridge that died). 72 hours outlasts a weekend.
-- `AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS` (default `360`, range 30 to 1800):
-  the time limit of one session-summary model call, per call (the repair call
-  gets it in full). Use the same value on every replica. See the README's
-  "Session summary" section.
 
 ### Changed
 
-- **Session summary time bounds follow the new call limit, for every install.**
-  The per-call limit rises from 120 to 360 seconds, the lease on a running
-  summary from 300 to 780 seconds (2 x the limit + 60), and the watchdog from
-  5 to 13 minutes. A hung call now holds a generation slot for 13 minutes, and on
-  Postgres a stuck `generating` row is recovered only at the lease. The failure
-  breaker window is the longer of 10 minutes and two leases and a minute (27
-  minutes at the default), and a forgotten subject is dropped after the longer
-  of 60 minutes and that window. A running generation is aborted when it is
-  released (watchdog, lease or shutdown), so its connection closes.
-- **LLM responses are capped**: a success body or stream at 8 MiB, an error body
-  at 4 KiB. Over the cap is a provider error.
 - **The watcher routes to a human for hosts whose lease has expired.** Such a
   host now reads offline to the AI watcher and the session classifier, even if
   its stored status says connected: no continue or report is attempted, auto
