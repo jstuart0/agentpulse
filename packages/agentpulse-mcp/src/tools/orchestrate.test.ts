@@ -487,6 +487,20 @@ describe("list_hosts — manage-only RO tool (D2, L3)", () => {
 	});
 });
 
+describe("list_hosts passes the REST status through unchanged", () => {
+	test("an offline host (lease expired) is reported offline", async () => {
+		const hosts: SupervisorRecord[] = [{ ...FAKE_SUPERVISOR, id: "h-dead", status: "offline" }];
+		const ctx = newContext(
+			fakeClient({ listHosts: async () => ({ supervisors: hosts, total: 1 }) }),
+		);
+		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "list_hosts", arguments: {} });
+		const parsed = JSON.parse(textOf(result)) as { supervisors: { id: string; status: string }[] };
+		expect(parsed.supervisors[0]?.status).toBe("offline");
+	});
+});
+
 describe("list_hosts passes a host's exclude-file state through unchanged", () => {
 	test("with excludeRulesState (invalid, null) and without it", async () => {
 		const hosts: SupervisorRecord[] = [

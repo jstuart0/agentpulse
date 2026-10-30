@@ -43,7 +43,7 @@ describe("trigger sites", () => {
 			"services/ai/action-requests-service.ts": 1,
 			"services/ai/alert-rule-evaluator.ts": 1,
 			"routes/ask.ts": 1,
-			"services/ai/runner.ts": 1,
+			"services/ai/continue-decision.ts": 1,
 			"services/event-processor.ts": 4,
 			"services/launch-dispatch.ts": 1,
 		});

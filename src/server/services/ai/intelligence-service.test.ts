@@ -10,6 +10,9 @@ const { intelligenceForSession, intelligenceForSessions } = await import(
 	"./intelligence-service.js"
 );
 const { completeProposalAsHitl, createPendingProposal } = await import("./proposals-service.js");
+const { seedManagedSession, seedSupervisor } = await import(
+	"../../test-utils/supervisor-fixture.js"
+);
 
 beforeAll(() => {
 	return initializeDatabase();
@@ -60,19 +63,13 @@ async function mkEvent(
 		.execute();
 }
 
-async function mkSupervisor(id: string, status: "connected" | "disconnected") {
-	await getDb()
-		.insert(supervisors)
-		.values({
-			id,
-			hostName: `h-${id}`,
-			platform: "darwin",
-			arch: "arm64",
-			version: "0.0.0-test",
-			status,
-		})
-		.execute();
-}
+const mkSupervisor = (id: string, status: "connected" | "disconnected") =>
+	seedSupervisor(id, {
+		storedStatus: status,
+		hostName: `h-${id}`,
+		leaseOffsetMs: status === "connected" ? 60_000 : -200_000,
+		leaseBaseMs: Date.now(),
+	});
 
 async function mkManaged(sessionId: string, supervisorId: string) {
 	await getDb()
@@ -214,5 +211,86 @@ describe("intelligence-service.intelligenceForSessions", () => {
 		const out = await intelligenceForSessions(["real", "ghost"]);
 		expect(out.has("real")).toBe(true);
 		expect(out.has("ghost")).toBe(false);
+	});
+});
+
+describe("intelligence-service.intelligenceForSession — host lease", () => {
+	const seedHost = (id: string, leaseOffsetMs: number) =>
+		seedSupervisor(id, { storedStatus: "connected", leaseOffsetMs, leaseBaseMs: Date.now() });
+
+	test("a stored-connected host with an expired lease reads supervisor_offline / blocked; a live lease does not", async () => {
+		await seedHost("dead-host", -100 * 24 * 3600 * 1000);
+		await seedHost("live-host", 60_000);
+		await seedManagedSession({
+			sessionId: "lease-dead",
+			supervisorId: "dead-host",
+			managedState: "interactive_terminal",
+		});
+		await seedManagedSession({
+			sessionId: "lease-live",
+			supervisorId: "live-host",
+			managedState: "interactive_terminal",
+		});
+		const dead = await intelligenceForSession("lease-dead");
+		expect(dead?.reasonCode).toBe("supervisor_offline");
+		expect(dead?.health).toBe("blocked");
+		const live = await intelligenceForSession("lease-live");
+		expect(live?.reasonCode).not.toBe("supervisor_offline");
+		expect(live?.health).not.toBe("blocked");
+	});
+
+	test("a supplied `now` decides the lease on both the single and bulk paths", async () => {
+		await seedHost("soon-expired", 60_000);
+		await seedManagedSession({
+			sessionId: "lease-now",
+			supervisorId: "soon-expired",
+			managedState: "interactive_terminal",
+		});
+		const later = new Date(Date.now() + 10 * 60_000);
+		expect((await intelligenceForSession("lease-now"))?.reasonCode).not.toBe("supervisor_offline");
+		expect((await intelligenceForSession("lease-now", later))?.reasonCode).toBe(
+			"supervisor_offline",
+		);
+		const bulk = await intelligenceForSessions(["lease-now"], later);
+		expect(bulk.get("lease-now")?.reasonCode).toBe("supervisor_offline");
+	});
+});
+
+describe("the stuck rule gives the same verdict in the single-session and bulk paths (AGEN-79)", () => {
+	async function failures(sessionId: string, rawPayload: Record<string, unknown>, count = 3) {
+		await mkSession(sessionId);
+		for (let i = 0; i < count; i++) {
+			await mkEvent(sessionId, { eventType: "PostToolUseFailure", toolName: "Bash", rawPayload });
+		}
+	}
+	async function verdicts(sessionId: string) {
+		const single = await intelligenceForSession(sessionId, new Date("2026-04-20T00:30:00Z"));
+		const bulk = (await intelligenceForSessions([sessionId], new Date("2026-04-20T00:30:00Z"))).get(
+			sessionId,
+		);
+		return { single: single?.reasonCode, bulk: bulk?.reasonCode };
+	}
+
+	test("three real failures are stuck in both", async () => {
+		await failures("real", { tool_name: "Bash", is_interrupt: false });
+		expect(await verdicts("real")).toEqual({
+			single: "repeated_tool_failure",
+			bulk: "repeated_tool_failure",
+		});
+	});
+
+	test("three calls the user interrupted are stuck in neither", async () => {
+		await failures("interrupted", { tool_name: "Bash", is_interrupt: true });
+		const v = await verdicts("interrupted");
+		expect(v.single).not.toBe("repeated_tool_failure");
+		expect(v.bulk).toBe(v.single);
+	});
+
+	test("a failure with no flag at all counts in both", async () => {
+		await failures("noflag", { tool_name: "Bash" });
+		expect(await verdicts("noflag")).toEqual({
+			single: "repeated_tool_failure",
+			bulk: "repeated_tool_failure",
+		});
 	});
 });

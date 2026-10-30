@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { ActionRequestDecision, HitlReplyKind } from "../../shared/types.js";
-import { getRequestActor } from "../auth/route-scope-policy.js";
+import type { ActionRequestDecision } from "../../shared/types.js";
+import { getRequestActor, refuseBadOrigin } from "../auth/route-scope-policy.js";
 import {
 	getActionRequest,
 	listOpenActionRequests,
@@ -28,7 +28,7 @@ import {
 import { NOT_OWNER_MESSAGE } from "../services/authorization.js";
 import { notifyInboxChanged } from "../services/notifier.js";
 import { requireAiActive, requireAiBuild } from "./ai-gates.js";
-import { decisionContextFor } from "./decision-context.js";
+import { decisionContextFor, readDecisionBody } from "./decision-context.js";
 
 const aiInboxRouter = new Hono();
 
@@ -36,9 +36,7 @@ const aiInboxRouter = new Hono();
 export const NO_IDENTITY_INBOX_NOTICE =
 	"This key has no owner, and in team mode a key with no owner sees no inbox items. Use a key owned by a person, or keep it as an admin service key.";
 
-const INBOX_KINDS: InboxKind[] = ["hitl", "stuck", "risky", "failed_proposal"];
-const HITL_ACTIONS: readonly HitlReplyKind[] = ["approve", "decline", "custom"];
-const PROMPT_HASH_PATTERN = /^[0-9a-f]{64}$/;
+const INBOX_KINDS: InboxKind[] = ["hitl", "stuck", "risky", "failed_proposal", "watcher_report"];
 /** Most ids one batch names, in either list. */
 const BATCH_MAX_IDS = 200;
 
@@ -86,24 +84,12 @@ aiInboxRouter.get("/ai/inbox", async (c) => {
 aiInboxRouter.post("/ai/inbox/hitl/:id/decide", async (c) => {
 	const gate = await requireAiActive(c);
 	if (gate) return gate;
+	const badOrigin = refuseBadOrigin(c);
+	if (badOrigin) return badOrigin;
 	const id = c.req.param("id") ?? "";
-	const body = await c.req.json<{
-		action: HitlReplyKind;
-		customPrompt?: string;
-		promptHash?: string;
-	}>();
-	if (!HITL_ACTIONS.includes(body?.action)) {
-		return c.json(
-			{ error: "invalid_action", message: "action must be approve, decline or custom" },
-			400,
-		);
-	}
-	if (body.promptHash !== undefined && !PROMPT_HASH_PATTERN.test(body.promptHash)) {
-		return c.json(
-			{ error: "invalid_prompt_hash", message: "promptHash must be 64 lowercase hex characters" },
-			400,
-		);
-	}
+	const parsed = await readDecisionBody(c);
+	if (!parsed.ok) return parsed.response;
+	const { body } = parsed;
 	const outcome = await decideHitl(
 		{ kind: "hitl", hitlId: id },
 		body.action,
@@ -113,6 +99,7 @@ aiInboxRouter.post("/ai/inbox/hitl/:id/decide", async (c) => {
 	if (!outcome.ok) return c.json(outcome.refusal.body, outcome.refusal.status);
 	return c.json({
 		hitl: outcome.hitl,
+		...(outcome.controlActionId ? { controlActionId: outcome.controlActionId } : {}),
 		...(outcome.delivery ? { delivery: outcome.delivery } : {}),
 	});
 });
@@ -246,6 +233,8 @@ aiInboxRouter.get("/ai/action-requests", async (c) => {
 aiInboxRouter.post("/ai/action-requests/:id/decide", async (c: Context) => {
 	const gate = await requireAiActive(c);
 	if (gate) return gate;
+	const badOrigin = refuseBadOrigin(c);
+	if (badOrigin) return badOrigin;
 	const id = c.req.param("id") ?? "";
 	// The approving human (or key) runs the owner-or-admin rules for whatever
 	// the action does; it is not recorded as "the AI".

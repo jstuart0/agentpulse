@@ -1,35 +1,53 @@
 import { timingSafeEqual } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { TELEGRAM_ACTOR } from "../auth/actor.js";
-import { requireAuth } from "../auth/middleware.js";
-import { requireOperatorScope } from "../auth/route-scope-policy.js";
+import { type AuthUser, requireAuth } from "../auth/middleware.js";
+import {
+	getRequestActor,
+	isHumanCaller,
+	refuseBadOrigin,
+	requireOperatorScope,
+} from "../auth/route-scope-policy.js";
 import { config } from "../config.js";
+import { getDb } from "../db/client.js";
+import { users } from "../db/schema/index.js";
 import { getActionRequest, resolveActionRequest } from "../services/ai/action-requests-service.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
-import {
-	TELEGRAM_APPROVE_UNSUPPORTED_MESSAGE,
-	TELEGRAM_DECISION_CONTEXT,
-	decideHitl,
-} from "../services/ai/hitl-decision-service.js";
 import { getHitlRequest } from "../services/ai/hitl-service.js";
+import { resolveProposal } from "../services/ai/proposal-resolution.js";
 import {
 	ASK_MESSAGE_MAX_CHARS,
 	findOrCreateTelegramThread,
 	runAskTurn,
 } from "../services/ask/ask-service.js";
 import { AskBusyError, acquireAskTurn } from "../services/ask/ask-turn-limiter.js";
+import { logAdminAction } from "../services/audit-log.js";
+import {
+	NotOwnerError,
+	assertCanDecideProposal,
+	assertCanManageChannel,
+	mayRelinkChannel,
+} from "../services/authorization.js";
 import {
 	completeEnrollment,
 	createPendingChannel,
 	deleteChannel,
-	findActiveChannelByChatId,
 	findPendingByEnrollmentCode,
 	getChannel,
+	getChannelCredential,
 	getChannelStats,
 	listChannels,
+	relinkChannel,
+	relinkReason,
 	updateChannelConfig,
 } from "../services/channels/channels-service.js";
+import {
+	type TelegramCallerResult,
+	authorizeTelegramCaller,
+} from "../services/channels/telegram-caller.js";
 import {
 	type TelegramDeliveryMode,
 	clearTelegramCredentials,
@@ -65,8 +83,14 @@ import {
 	sendTelegramTest,
 	setTelegramWebhook,
 } from "../services/channels/telegram.js";
-import { parseActionCallbackData, parseHitlCallbackData } from "../services/channels/types.js";
+import {
+	type NotificationChannelRecord,
+	parseActionCallbackData,
+	parseHitlCallbackData,
+} from "../services/channels/types.js";
+import { getMode } from "../services/instance-mode.js";
 import { isLabsFlagEnabled } from "../services/labs-service.js";
+import { FixedWindowCounter } from "../services/util/fixed-window-counter.js";
 
 /**
  * Public Telegram webhook lives on its own router so the
@@ -126,27 +150,67 @@ telegramWebhookRouter.post(
  * care about: `/start <code>` enrollment, `callback_query` HITL taps,
  * and plain-text messages from enrolled chats (routed into the Ask
  * assistant when that labs feature is enabled and the channel opts in).
+ *
+ * Everything but `/start <code>` is authorized by one gate first (a private
+ * chat, a linked channel, the enrolled Telegram user); the handlers receive the
+ * channel it resolved and never look one up by chat id themselves.
  */
 async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
 	if (update.message?.text?.startsWith("/start ")) {
 		await handleEnrollmentStart(update.message);
 		return;
 	}
+	if (!update.callback_query && !update.message?.text) return;
+
+	const caller = await authorizeTelegramCaller(update);
+	if (!caller.ok) {
+		await replyToRefusedCaller(update, caller.reply);
+		return;
+	}
 	if (update.callback_query) {
 		const data = update.callback_query.data ?? "";
 		if (data.startsWith("act:")) {
-			await handleActionCallback(update.callback_query);
+			await handleActionCallback(update.callback_query, caller.channel);
 		} else {
-			await handleHitlCallback(update.callback_query);
+			await handleHitlCallback(update.callback_query, caller);
 		}
 		return;
 	}
 	if (update.message?.text) {
-		await handleTelegramAskMessage(update.message);
+		await handleTelegramAskMessage(update.message, caller.channel);
 	}
 }
 
-async function handleTelegramAskMessage(message: TelegramMessage): Promise<void> {
+/** What a refused caller hears: a tapped button is told so, a private chat nobody linked gets one hint, the rest nothing. */
+async function replyToRefusedCaller(
+	update: TelegramUpdate,
+	reply: "not_authorized" | "not_linked" | "silent",
+): Promise<void> {
+	if (reply === "silent") return;
+	if (reply === "not_authorized") {
+		if (update.callback_query)
+			await answerCallbackQuery(update.callback_query.id, "Not authorized.");
+		return;
+	}
+	const message = update.message;
+	if (!message?.text) return;
+	// Same conditions the Ask path always had: only when the assistant is on,
+	// and not for a bare command with nothing to ask.
+	const text = message.text.trim();
+	const normalized = text.startsWith("/") ? text.replace(/^\/\S+\s*/, "") : text;
+	if (!normalized) return;
+	if (!isAiBuildEnabled() || !(await isAiActive())) return;
+	if (!(await isLabsFlagEnabled("askAssistant"))) return;
+	await telegramSendMessage(
+		String(message.chat.id),
+		"This chat isn't linked to AgentPulse yet. Open Settings → Telegram to enroll.",
+	);
+}
+
+async function handleTelegramAskMessage(
+	message: TelegramMessage,
+	channel: NotificationChannelRecord,
+): Promise<void> {
 	const text = message.text?.trim();
 	if (!text) return;
 	// Bot commands that aren't `/start <code>` fall through to the ask
@@ -160,16 +224,6 @@ async function handleTelegramAskMessage(message: TelegramMessage): Promise<void>
 	if (!isAiBuildEnabled() || !(await isAiActive())) return;
 	if (!(await isLabsFlagEnabled("askAssistant"))) return;
 
-	const channel = await findActiveChannelByChatId(chatId);
-	if (!channel) {
-		// Not an enrolled chat. Reply once so the user understands why
-		// we're not answering — avoid ignore-loops with no explanation.
-		await telegramSendMessage(
-			chatId,
-			"👋 This chat isn't linked to AgentPulse yet. Open Settings → Telegram to enroll.",
-		);
-		return;
-	}
 	// Per-channel opt-out: admins can flip `askEnabled: false` in the
 	// channel config to silence the assistant for a chat even if labs
 	// is on globally.
@@ -254,20 +308,48 @@ async function telegramChatAction(chatId: string, action: "typing"): Promise<voi
 	await sendTelegramRaw(token, "sendChatAction", { chat_id: chatId, action });
 }
 
+/** Failed enrollment attempts per chat: five in a window, then the chat is ignored for the rest of it. */
+const ENROLLMENT_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+const ENROLLMENT_FAILURE_LIMIT = 5;
+const enrollmentFailures = new FixedWindowCounter(ENROLLMENT_FAILURE_WINDOW_MS);
+
+const ENROLLMENT_REFUSED_REPLY = "This code isn't valid.";
+const ENROLLMENT_PRIVATE_ONLY_REPLY =
+	"Link the bot from a private chat: open a direct message with it and send the code there.";
+
 async function handleEnrollmentStart(message: TelegramMessage): Promise<void> {
 	const code = (message.text ?? "").slice("/start ".length).trim();
 	if (!code) return;
-	const pending = await findPendingByEnrollmentCode(code);
-	if (!pending) {
-		await sendEnrollmentReply(
-			String(message.chat.id),
-			"That enrollment code is invalid or has already been used.",
-		);
+	const chatId = String(message.chat.id);
+	if (enrollmentFailures.isAtLimit(chatId, ENROLLMENT_FAILURE_LIMIT)) return;
+
+	const reject = async (reply: string) => {
+		enrollmentFailures.tryConsume(chatId, ENROLLMENT_FAILURE_LIMIT);
+		await sendEnrollmentReply(chatId, reply);
+	};
+
+	// Only a private chat can enroll: a group can't bind one person.
+	if (message.chat.type !== "private" || !message.from) {
+		await reject(ENROLLMENT_PRIVATE_ONLY_REPLY);
 		return;
 	}
-	await completeEnrollment({ channelId: pending.id, chatId: String(message.chat.id) });
+	const pending = await findPendingByEnrollmentCode(code);
+	if (!pending) {
+		await reject(ENROLLMENT_REFUSED_REPLY);
+		return;
+	}
+	const bound = await completeEnrollment({
+		channelId: pending.id,
+		chatId,
+		fromUserId: String(message.from.id),
+		code,
+	});
+	if (!bound) {
+		await reject(ENROLLMENT_REFUSED_REPLY);
+		return;
+	}
 	await sendEnrollmentReply(
-		String(message.chat.id),
+		chatId,
 		`✅ Linked to AgentPulse channel "${pending.label}". You'll get HITL requests here.`,
 	);
 }
@@ -276,7 +358,85 @@ async function sendEnrollmentReply(chatId: string, text: string): Promise<void> 
 	await sendTelegramMessage(getTelegramBotToken(), chatId, text);
 }
 
-async function handleHitlCallback(cb: TelegramCallbackQuery): Promise<void> {
+const RELINK_TO_APPROVE_REPLY = "Re-link this channel to approve from Telegram.";
+
+/**
+ * In team mode a channel owned by "local" belongs to nobody, so it may not
+ * approve anything until a person re-links it (which gives it an owner).
+ * Declining sends nothing and stays available.
+ */
+async function approvalsRefusedFor(channel: NotificationChannelRecord): Promise<boolean> {
+	return channel.userId === "local" && (await getMode()) === "team";
+}
+
+/** What the person who tapped is told, per outcome of the decision. */
+function hitlOutcomeReply(
+	action: "approve" | "decline",
+	result: Awaited<ReturnType<typeof resolveProposal>>,
+): string {
+	if (result.ok) return action === "approve" ? "Sent to the session." : "Declined ✗";
+	switch (result.code) {
+		case "prompt_not_deliverable":
+			return "This session can't receive prompts; copy it from the dashboard.";
+		case "dispatch_blocked":
+		case "prompt_unsafe":
+			return "Blocked by the safety filter.";
+		case "stale_proposal":
+		case "prompt_changed":
+			return "This suggestion is out of date.";
+		case "not_approvable":
+			return "Open the dashboard to review this one.";
+		case "expired":
+			return "This request expired.";
+		case "already_resolved":
+			return "Already resolved.";
+		case "ai_paused":
+			return "AI is paused.";
+		default:
+			return "Could not send it.";
+	}
+}
+
+/**
+ * May the person behind this channel decide on this session? The channel's
+ * owner must be allowed to act on it as an owner or an admin would. Solo mode
+ * has no ownership to enforce. Declining sends nothing and is never refused.
+ */
+async function channelOwnerMayApprove(
+	channel: NotificationChannelRecord,
+	sessionId: string,
+): Promise<boolean> {
+	const mode = await getMode();
+	if (mode === "solo") return true;
+	if (channel.userId === "local") return false;
+	const [owner] = await getDb()
+		.select({ role: users.role, disabledAt: users.disabledAt })
+		.from(users)
+		.where(eq(users.id, channel.userId))
+		.limit(1);
+	if (!owner || owner.disabledAt !== null) return false;
+	try {
+		await assertCanDecideProposal(
+			{
+				userId: channel.userId,
+				label: "telegram",
+				role: owner.role === "admin" ? "admin" : "member",
+				mode,
+			},
+			sessionId,
+		);
+		return true;
+	} catch (err) {
+		if (err instanceof NotOwnerError) return false;
+		throw err;
+	}
+}
+
+async function handleHitlCallback(
+	cb: TelegramCallbackQuery,
+	caller: Extract<TelegramCallerResult, { ok: true }>,
+): Promise<void> {
+	const { channel } = caller;
 	const data = parseHitlCallbackData(cb.data ?? "");
 	if (!data) {
 		await answerCallbackQuery(cb.id, "Unknown action.");
@@ -287,44 +447,39 @@ async function handleHitlCallback(cb: TelegramCallbackQuery): Promise<void> {
 		await answerCallbackQuery(cb.id, "HITL not found.");
 		return;
 	}
-	// Verify the callback's chat belongs to the channel tied to this HITL —
-	// prevents a malicious user who learns a hitl id from acting on it.
-	// A request with no channel was never sent to a chat, so no chat is entitled to answer it.
-	const hitlChannel = hitl.channelId
-		? await findActiveChannelByChatId(String(cb.message?.chat.id ?? ""))
-		: null;
-	if (!hitl.channelId || !hitlChannel || hitlChannel.id !== hitl.channelId) {
+	// The HITL must belong to the channel this update arrived through; one
+	// that was never tied to a channel can't be acted on from Telegram at all.
+	if (!hitl.channelId || hitl.channelId !== channel.id) {
 		await answerCallbackQuery(cb.id, "Not authorized.");
 		return;
 	}
-	if (hitl.status !== "awaiting_reply") {
-		await answerCallbackQuery(cb.id, "Already resolved.");
+	if (data.action === "approve" && (await approvalsRefusedFor(channel))) {
+		await answerCallbackQuery(cb.id, RELINK_TO_APPROVE_REPLY);
 		return;
 	}
-	// Approving from a chat is no longer supported (D41): the request stays open for the app. A decline
-	// closes it audit-only, and the audit event names the Telegram user.
-	const outcome = await decideHitl(
-		{ kind: "hitl", hitlId: hitl.id },
-		data.action,
-		{ auditNote: `telegram:${cb.from.id}` },
-		TELEGRAM_DECISION_CONTEXT,
-	);
-	if (!outcome.ok) {
-		const { code } = outcome.refusal;
-		await answerCallbackQuery(
-			cb.id,
-			code === "telegram_approve_unsupported"
-				? TELEGRAM_APPROVE_UNSUPPORTED_MESSAGE
-				: code === "already_resolved"
-					? "Already resolved."
-					: code === "expired"
-						? "This request has expired."
-						: "Could not resolve.",
+	if (data.action === "approve" && !(await channelOwnerMayApprove(channel, hitl.sessionId))) {
+		await answerCallbackQuery(cb.id, "Approve this in the dashboard.");
+		return;
+	}
+
+	// The callback names a HITL and an action, nothing else. The prompt, its
+	// hash and the TTL always come from the server's own rows (that is why the
+	// callback needs no signature): nothing from `cb` is passed on below.
+	const result = await resolveProposal({
+		hitlId: hitl.id,
+		action: data.action,
+		promptSha256: hitl.promptSha256 ?? undefined,
+		actor: TELEGRAM_ACTOR,
+		actorKind: "telegram",
+		telegram: { fromId: caller.fromId, chatId: caller.chatId },
+	});
+	await answerCallbackQuery(cb.id, hitlOutcomeReply(data.action, result));
+	if (result.ok) {
+		await sendTelegramPlain(
+			hitl.channelId,
+			data.action === "approve" ? "✅ Sent to the session." : "❌ Declined.",
 		);
-		return;
 	}
-	await answerCallbackQuery(cb.id, "Declined ✗");
-	if (hitl.channelId) await sendTelegramPlain(hitl.channelId, "❌ Declined.");
 }
 
 /**
@@ -332,7 +487,10 @@ async function handleHitlCallback(cb: TelegramCallbackQuery): Promise<void> {
  * handleHitlCallback but routes to the separate action-requests table.
  * Callback data prefix: `act:approve:<id>` / `act:decline:<id>`.
  */
-async function handleActionCallback(cb: TelegramCallbackQuery): Promise<void> {
+async function handleActionCallback(
+	cb: TelegramCallbackQuery,
+	channel: NotificationChannelRecord,
+): Promise<void> {
 	const data = parseActionCallbackData(cb.data ?? "");
 	if (!data) {
 		await answerCallbackQuery(cb.id, "Unknown action.");
@@ -343,13 +501,14 @@ async function handleActionCallback(cb: TelegramCallbackQuery): Promise<void> {
 		await answerCallbackQuery(cb.id, "Action request not found.");
 		return;
 	}
-	// Verify the callback's chat belongs to the channel tied to this action request —
-	// same auth pattern as handleHitlCallback (channels.ts:243-250).
-	const requestChannel = request.channelId
-		? await findActiveChannelByChatId(String(cb.message?.chat.id ?? ""))
-		: null;
-	if (!request.channelId || !requestChannel || requestChannel.id !== request.channelId) {
+	// An action request must be tied to the channel this update arrived
+	// through. One with no channel can't be approved from Telegram.
+	if (!request.channelId || request.channelId !== channel.id) {
 		await answerCallbackQuery(cb.id, "Not authorized.");
+		return;
+	}
+	if (data.action === "approve" && (await approvalsRefusedFor(channel))) {
+		await answerCallbackQuery(cb.id, RELINK_TO_APPROVE_REPLY);
 		return;
 	}
 	if (request.status !== "awaiting_reply") {
@@ -394,8 +553,39 @@ const channelsRouter = new Hono();
 channelsRouter.use("*", requireAuth());
 channelsRouter.use("*", requireOperatorScope());
 
+function authUserOf(c: Context): AuthUser | undefined {
+	return c.get("authUser") as AuthUser | undefined;
+}
+
+/**
+ * The channel, when the caller may manage it; null otherwise. A channel the
+ * caller can't see answers exactly like one that doesn't exist, so ids can't
+ * be probed.
+ */
+async function manageableChannel(c: Context, id: string) {
+	const actor = await getRequestActor(c);
+	const channel = await getChannel(id);
+	if (!channel) return null;
+	try {
+		await assertCanManageChannel(actor, channel);
+	} catch (err) {
+		if (err instanceof NotOwnerError) return null;
+		throw err;
+	}
+	return { channel, actor };
+}
+
+/** A channel as the API returns it: with whether it needs re-linking before Telegram can act through it. */
+async function withRelinkHint(channel: NotificationChannelRecord, mode: "solo" | "team") {
+	return { ...channel, needsRelink: await relinkReason(channel, mode) };
+}
+
 channelsRouter.get("/channels", async (c) => {
-	const channels = await listChannels();
+	const actor = await getRequestActor(c);
+	const mode = actor.mode ?? (await getMode());
+	const channels = await Promise.all(
+		(await listChannels(actor)).map((channel) => withRelinkHint(channel, mode)),
+	);
 	return c.json({
 		channels,
 		bot: {
@@ -414,9 +604,13 @@ channelsRouter.post("/channels", async (c) => {
 		label?: string;
 	}>();
 	if (body.kind !== "telegram") return c.json({ error: "Unsupported kind" }, 400);
+	const actor = await getRequestActor(c);
 	const result = await createPendingChannel({
 		kind: "telegram",
 		label: (body.label ?? "Telegram").slice(0, 80),
+		// "local" is the single operator in solo mode (and an actor with no user
+		// id, such as DISABLE_AUTH); in team mode it belongs to nobody.
+		userId: actor.userId ?? "local",
 	});
 	return c.json(
 		{
@@ -430,23 +624,42 @@ channelsRouter.post("/channels", async (c) => {
 
 channelsRouter.delete("/channels/:id", async (c) => {
 	const id = c.req.param("id") ?? "";
+	if (!(await manageableChannel(c, id))) return c.json({ error: "Channel not found" }, 404);
 	const ok = await deleteChannel(id);
 	if (!ok) return c.json({ error: "Channel not found" }, 404);
 	return c.json({ ok: true });
 });
 
 /**
- * Patch per-channel config flags (currently: askEnabled). Rejects any
+ * Patch per-channel config flags (currently: askEnabled, detail). Rejects any
  * key not on the allow-list so callers can't poke at enrollment codes
  * or status strings through this endpoint.
+ *
+ * `detail` is how much of a watcher's output a message may carry: `minimal`
+ * (the default) holds no prompt text and no Approve button, `full` holds the
+ * redacted text. A channel enrolled in a group (negative chat id) can never be
+ * set to `full`: anyone in the group would read it.
  */
 channelsRouter.patch("/channels/:id/config", async (c) => {
 	const id = c.req.param("id") ?? "";
-	const body = await c.req.json<{ askEnabled?: boolean }>();
+	const body = await c.req.json<{ askEnabled?: boolean; detail?: unknown }>();
 	const patch: Record<string, unknown> = {};
 	if (typeof body.askEnabled === "boolean") patch.askEnabled = body.askEnabled;
+	if (body.detail !== undefined) {
+		if (body.detail !== "minimal" && body.detail !== "full") {
+			return c.json({ error: "detail must be 'minimal' or 'full'" }, 400);
+		}
+		patch.detail = body.detail;
+	}
 	if (Object.keys(patch).length === 0) {
 		return c.json({ error: "No supported fields in body" }, 400);
+	}
+	if (!(await manageableChannel(c, id))) return c.json({ error: "Channel not found" }, 404);
+	if (patch.detail === "full") {
+		const credential = await getChannelCredential(id);
+		if (credential?.chatId.startsWith("-")) {
+			return c.json({ error: "detail_full_needs_private_chat" }, 400);
+		}
 	}
 	const updated = await updateChannelConfig(id, patch);
 	if (!updated) return c.json({ error: "Channel not found" }, 404);
@@ -455,9 +668,44 @@ channelsRouter.patch("/channels/:id/config", async (c) => {
 
 channelsRouter.get("/channels/:id", async (c) => {
 	const id = c.req.param("id") ?? "";
-	const ch = await getChannel(id);
-	if (!ch) return c.json({ error: "Channel not found" }, 404);
-	return c.json({ channel: ch });
+	const found = await manageableChannel(c, id);
+	if (!found) return c.json({ error: "Channel not found" }, 404);
+	const mode = found.actor.mode ?? (await getMode());
+	return c.json({ channel: await withRelinkHint(found.channel, mode) });
+});
+
+/**
+ * Put a channel back to pending with a fresh code. Whoever held it loses every
+ * inbound right at once (the stored chat and Telegram user are cleared) and the
+ * new code binds the next private chat that redeems it. The channel id stays,
+ * so watcher configs and HITLs keep pointing at it. A person's action: an API
+ * key can't do it. In team mode only the owner may, except that an admin may re-link
+ * a channel owned by "local", which claims it for themselves.
+ */
+channelsRouter.post("/channels/:id/relink", async (c) => {
+	const badOrigin = refuseBadOrigin(c);
+	if (badOrigin) return badOrigin;
+	const authUser = authUserOf(c);
+	if (!(authUser && isHumanCaller(authUser))) return c.json({ error: "human_required" }, 403);
+	const id = c.req.param("id") ?? "";
+	const found = await manageableChannel(c, id);
+	if (!found || !(await mayRelinkChannel(found.actor, found.channel))) {
+		return c.json({ error: "Channel not found" }, 404);
+	}
+	if (!getTelegramBotToken()) return c.json({ error: "Telegram bot token not configured" }, 400);
+
+	const claimForUserId =
+		found.channel.userId === "local" && found.actor.userId !== null
+			? found.actor.userId
+			: undefined;
+	const result = await relinkChannel(id, { claimForUserId });
+	if (!result) return c.json({ error: "Channel not found" }, 404);
+	logAdminAction("channel_relinked", found.actor, { channelId: id });
+	return c.json({
+		channel: result.channel,
+		enrollmentCode: result.enrollmentCode,
+		instructions: `Open Telegram and send \`/start ${result.enrollmentCode}\` to the bot from a private chat.`,
+	});
 });
 
 function resolvePublicUrl(candidate: unknown): string | null {
@@ -687,8 +935,9 @@ channelsRouter.get("/channels/telegram/webhook-info", async (c) => {
 
 channelsRouter.post("/channels/:id/test", async (c) => {
 	const id = c.req.param("id") ?? "";
-	const ch = await getChannel(id);
-	if (!ch) return c.json({ error: "Channel not found" }, 404);
+	const found = await manageableChannel(c, id);
+	if (!found) return c.json({ error: "Channel not found" }, 404);
+	const ch = found.channel;
 	if (ch.kind !== "telegram") return c.json({ error: "Test only supported for telegram" }, 400);
 	if (!ch.verifiedAt) return c.json({ error: "Channel is not verified" }, 400);
 	const res = await sendTelegramTest(id);
@@ -698,8 +947,7 @@ channelsRouter.post("/channels/:id/test", async (c) => {
 
 channelsRouter.get("/channels/:id/stats", async (c) => {
 	const id = c.req.param("id") ?? "";
-	const ch = await getChannel(id);
-	if (!ch) return c.json({ error: "Channel not found" }, 404);
+	if (!(await manageableChannel(c, id))) return c.json({ error: "Channel not found" }, 404);
 	const stats = await getChannelStats(id);
 	return c.json({ stats });
 });

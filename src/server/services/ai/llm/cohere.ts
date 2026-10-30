@@ -1,3 +1,4 @@
+import { llmFetch, readJsonCapped } from "../http.js";
 import {
 	type LlmAdapter,
 	LlmError,
@@ -49,23 +50,18 @@ export function createCohereAdapter(params: CohereRequestParams): LlmAdapter {
 				temperature: request.temperature ?? 0.2,
 			};
 
-			let response: Response;
-			try {
-				response = await fetch(`${baseUrl}/v1/chat`, {
+			const response = await llmFetch(
+				`${baseUrl}/v1/chat`,
+				{
 					method: "POST",
 					headers: {
 						"Content-Type": "application/json",
 						Authorization: `Bearer ${apiKey}`,
 					},
 					body: JSON.stringify(body),
-					signal: AbortSignal.timeout(timeoutMs),
-				});
-			} catch (err) {
-				if (err instanceof Error && err.name === "TimeoutError") {
-					throw new LlmError("transient_timeout", "Cohere request timed out", undefined, err);
-				}
-				throw new LlmError("unknown", `Cohere request failed: ${err}`, undefined, err);
-			}
+				},
+				{ timeoutMs, signal: request.signal, label: "Cohere" },
+			);
 
 			if (!response.ok) {
 				const { subType, body: errBody, status } = await classifyHttpError(response);
@@ -73,7 +69,7 @@ export function createCohereAdapter(params: CohereRequestParams): LlmAdapter {
 				throw new LlmError(subType, `Cohere ${status}: ${message}`, status);
 			}
 
-			const json = (await response.json()) as {
+			const json = (await readJsonCapped(response)) as {
 				text?: string;
 				finish_reason?: string | null;
 				meta?: {

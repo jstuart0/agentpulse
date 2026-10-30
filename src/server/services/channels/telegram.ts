@@ -1,10 +1,15 @@
+import { createHash } from "node:crypto";
+import { WATCHER_REPORT_PREFIX, type WatcherReportVerdict } from "../../../shared/types.js";
+import { formatUntrustedInline } from "../ai/untrusted-text.js";
 import { getChannelCredential } from "./channels-service.js";
 import { getTelegramBotToken } from "./telegram-credentials.js";
+import { redactForTelegram } from "./telegram-text.js";
 import {
 	type ChannelDeliveryResult,
 	type NotificationChannelAdapter,
 	type NotificationChannelRecord,
 	type SendChannelMessageInput,
+	type SendChannelReportInput,
 	encodeHitlCallbackData,
 } from "./types.js";
 
@@ -72,27 +77,26 @@ export const telegramAdapter: NotificationChannelAdapter = {
 			return { ok: false, error: "Channel has no stored chat id" };
 		}
 
-		const text = formatHitlMessage(input);
-		const keyboard = {
-			inline_keyboard: [
-				[
-					{
-						text: "✅ Approve",
-						callback_data: encodeHitlCallbackData({
-							hitlId: input.hitlId,
-							action: "approve",
-						}),
-					},
-					{
-						text: "❌ Decline",
-						callback_data: encodeHitlCallbackData({
-							hitlId: input.hitlId,
-							action: "decline",
-						}),
-					},
-				],
-			],
-		};
+		// A group-enrolled channel never gets prompt text, whatever its setting says:
+		// anyone in the group would see it.
+		const detail: "minimal" | "full" = cred.chatId.startsWith("-") ? "minimal" : input.detail;
+		const message = formatHitlMessage({ ...input, detail });
+		const text = message.text;
+		const buttons = [
+			...(message.approvable
+				? [
+						{
+							text: "✅ Approve",
+							callback_data: encodeHitlCallbackData({ hitlId: input.hitlId, action: "approve" }),
+						},
+					]
+				: []),
+			{
+				text: "Dismiss",
+				callback_data: encodeHitlCallbackData({ hitlId: input.hitlId, action: "decline" }),
+			},
+		];
+		const keyboard = { inline_keyboard: [buttons] };
 		const res = await callTelegram<{ message_id: number }>("sendMessage", {
 			chat_id: cred.chatId,
 			text,
@@ -103,31 +107,135 @@ export const telegramAdapter: NotificationChannelAdapter = {
 		if (!res.ok) return { ok: false, error: res.description };
 		return { ok: true, externalMessageId: String(res.result.message_id) };
 	},
+
+	async sendReport(
+		channel: NotificationChannelRecord,
+		input: SendChannelReportInput,
+	): Promise<ChannelDeliveryResult> {
+		if (!this.isConfigured()) {
+			return { ok: false, error: "Telegram bot token not configured" };
+		}
+		if (!channel.verifiedAt) {
+			return { ok: false, error: "Channel is not verified yet" };
+		}
+		const cred = await getChannelCredential(channel.id);
+		if (!cred?.chatId) {
+			return { ok: false, error: "Channel has no stored chat id" };
+		}
+		// Plain text on purpose: a model wrote the note, so no markup is ever interpreted.
+		const detail: "minimal" | "full" = cred.chatId.startsWith("-") ? "minimal" : input.detail;
+		const res = await callTelegram<{ message_id: number }>("sendMessage", {
+			chat_id: cred.chatId,
+			text: formatReportMessage({ ...input, detail }),
+			disable_web_page_preview: true,
+		});
+		if (!res.ok) return { ok: false, error: res.description };
+		return { ok: true, externalMessageId: String(res.result.message_id) };
+	},
 };
 
-function formatHitlMessage(input: SendChannelMessageInput): string {
-	const sessionLabel = input.sessionDisplayName ?? input.sessionId.slice(0, 8);
+const REPORT_HEADLINE: Record<WatcherReportVerdict, string> = {
+	finished: "Finished",
+	stuck: "Looks stuck",
+	needs_you: "Waiting for you",
+};
+
+/** What `minimal` says instead of the model's note: nothing from the session. */
+const REPORT_GENERIC_REASON: Record<WatcherReportVerdict, string> = {
+	finished: "The agent finished its turn.",
+	stuck: "The agent looks stuck.",
+	needs_you: "The agent is waiting for you.",
+};
+
+/** Telegram's message limit. */
+const TELEGRAM_TEXT_LIMIT = 4096;
+
+/**
+ * The report as plain text. It starts with the fixed untrusted-content line;
+ * `minimal` (the default) carries the verdict and a generic reason, `full` adds
+ * the model's note. Everything that came from the session is redacted and
+ * path-normalised first, and the whole message is held to Telegram's limit.
+ */
+export function formatReportMessage(input: SendChannelReportInput): string {
+	const ctx = { cwd: input.sessionCwd };
+	const label = redactForTelegram(
+		formatUntrustedInline(input.sessionLabel ?? input.sessionId.slice(0, 8)),
+		ctx,
+	);
+	const lines = [
+		WATCHER_REPORT_PREFIX,
+		`${REPORT_HEADLINE[input.verdict]}: ${label}`,
+		input.detail === "full"
+			? redactForTelegram(input.why, ctx)
+			: REPORT_GENERIC_REASON[input.verdict],
+	];
+	if (input.dashboardUrl) lines.push(input.dashboardUrl);
+	const text = lines.join("\n");
+	return text.length > TELEGRAM_TEXT_LIMIT ? `${text.slice(0, TELEGRAM_TEXT_LIMIT - 1)}…` : text;
+}
+
+/** Telegram caps a message at 4096 characters; the prompt gets this much of that. */
+const PROMPT_DISPLAY_BUDGET = 3_000;
+
+export interface FormattedHitlMessage {
+	text: string;
+	/** Whether an Approve button may go with it. */
+	approvable: boolean;
+}
+
+/**
+ * The HITL message. Every text in it is redacted and path-normalised first. In
+ * `minimal` detail it carries no prompt text and no Approve button. In `full`
+ * detail the prompt is shown in a fence, and Approve exists only when the
+ * session can take a prompt, the suggestion is approvable as stored, and what is
+ * shown is exactly what would be sent: not truncated, not altered by redaction,
+ * and still matching the stored hash.
+ */
+export function formatHitlMessage(input: SendChannelMessageInput): FormattedHitlMessage {
+	const ctx = { cwd: input.sessionCwd };
+	const label = redactForTelegram(
+		formatUntrustedInline(input.sessionDisplayName ?? input.sessionId.slice(0, 8)),
+		ctx,
+	);
 	const decision = input.decision === "continue" ? "continue" : "ask";
 	const lines = [
 		"*AgentPulse* · HITL request",
-		`Session: \`${escapeMd(sessionLabel)}\``,
+		`Session: \`${escapeCode(label)}\``,
 		`Decision: \`${decision}\``,
 	];
-	if (input.why) {
-		lines.push("", `_${escapeMd(input.why)}_`);
+
+	if (input.detail !== "full") {
+		lines.push("", "_A suggestion is waiting for your review in the dashboard\\._");
+		return { text: lines.join("\n"), approvable: false };
 	}
+
+	if (input.why) lines.push("", `_${escapeMd(redactForTelegram(input.why, ctx))}_`);
+	let approvable = false;
 	if (input.prompt?.trim()) {
-		// Telegram limits messages to 4096 chars. Budget 3000 for the prompt.
-		const snippet = input.prompt.length > 3000 ? `${input.prompt.slice(0, 3000)}…` : input.prompt;
-		lines.push("", "```", snippet, "```");
+		const shown = redactForTelegram(input.prompt, ctx);
+		const truncated = shown.length > PROMPT_DISPLAY_BUDGET;
+		const snippet = truncated ? `${shown.slice(0, PROMPT_DISPLAY_BUDGET)}…` : shown;
+		lines.push("", "```", escapeCode(snippet), "```");
+		approvable =
+			input.deliverable &&
+			input.approvable &&
+			!truncated &&
+			shown === input.prompt &&
+			(input.promptSha256 === null ||
+				createHash("sha256").update(input.prompt).digest("hex") === input.promptSha256);
 	}
-	return lines.join("\n");
+	return { text: lines.join("\n"), approvable };
 }
 
-// MarkdownV2 reserved chars per https://core.telegram.org/bots/api#markdownv2-style.
-// We don't escape inside pre/code blocks — that's handled by Telegram.
-function escapeMd(text: string): string {
-	return text.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, "\\$1");
+// MarkdownV2 reserved chars per https://core.telegram.org/bots/api#markdownv2-style,
+// including the backslash itself. Not for use inside code entities (see escapeCode).
+export function escapeMd(text: string): string {
+	return text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
+}
+
+// Inside pre and code entities only the backtick and the backslash are special.
+function escapeCode(text: string): string {
+	return text.replace(/([`\\])/g, "\\$1");
 }
 
 /**

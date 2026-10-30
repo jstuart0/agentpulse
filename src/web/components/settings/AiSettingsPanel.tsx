@@ -1,5 +1,6 @@
+import "../../lib/watcher-api-errors.js";
 import { useEffect, useState } from "react";
-import { plainErrorMessage } from "../../lib/api-errors.js";
+import { apiErrorCode, plainErrorMessage } from "../../lib/api-errors.js";
 import { type AiProvider, type AiProviderKind, api } from "../../lib/api.js";
 import { useAiStatusStore } from "../../stores/ai-status-store.js";
 import { VectorSearchSection } from "./VectorSearchSection.js";
@@ -30,6 +31,7 @@ export function AiSettingsPanel() {
 	const [statusLoaded, setStatusLoaded] = useState(false);
 	const [providers, setProviders] = useState<AiProvider[]>([]);
 	const [defaultProviderId, setDefaultProviderId] = useState<string | null>(null);
+	const [fastProviderId, setFastProviderId] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [banner, setBanner] = useState<{ kind: "info" | "error"; text: string } | null>(null);
 	const [spendCents, setSpendCents] = useState(0);
@@ -42,6 +44,7 @@ export function AiSettingsPanel() {
 				const [p, spend] = await Promise.all([api.getAiProviders(), api.getAiSpend()]);
 				setProviders(p.providers);
 				setDefaultProviderId(p.defaultProviderId);
+				setFastProviderId(p.fastProviderId);
 				setSpendCents(spend.spendCents);
 			}
 		} catch (err) {
@@ -80,6 +83,28 @@ export function AiSettingsPanel() {
 		}
 	}
 
+	async function setWatcherDefault(key: "notify" | "continue", value: boolean) {
+		const current = status?.watcherDefaults ?? { notify: true, continue: false };
+		try {
+			await useAiStatusStore.getState().update({ watcherDefaults: { ...current, [key]: value } });
+		} catch (err) {
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
+		}
+	}
+
+	async function setAutoSendPaused(paused: boolean) {
+		try {
+			await useAiStatusStore.getState().update({ watcherAutoSendPaused: paused });
+		} catch (err) {
+			// Turning it back on is allowed for anyone; turning it off needs a signed-in person.
+			const text =
+				apiErrorCode(err) === "human_required"
+					? "Sign in to the dashboard to turn this off."
+					: plainErrorMessage(err);
+			setBanner({ kind: "error", text });
+		}
+	}
+
 	async function removeProvider(id: string) {
 		if (!confirm("Delete this provider? Watchers configured to use it will break.")) return;
 		try {
@@ -93,6 +118,15 @@ export function AiSettingsPanel() {
 	async function makeDefault(id: string) {
 		try {
 			await api.updateAiProvider(id, { isDefault: true });
+			await reload();
+		} catch (err) {
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
+		}
+	}
+
+	async function setFast(id: string, isFast: boolean) {
+		try {
+			await api.updateAiProvider(id, { isFast });
 			await reload();
 		} catch (err) {
 			setBanner({ kind: "error", text: plainErrorMessage(err) });
@@ -190,6 +224,52 @@ export function AiSettingsPanel() {
 						<span className="text-xs">Enabled</span>
 					</label>
 				</div>
+				<fieldset className="border-t border-border pt-3">
+					<legend className="text-sm font-semibold">New watchers start with</legend>
+					<div className="text-xs text-muted-foreground mb-2">
+						Each session can change this in its AI tab. Notify reports to your inbox when a turn
+						ends. Continue suggests the next prompt; sending it needs your approval unless the
+						session is set to automatic.
+					</div>
+					<div className="flex flex-wrap gap-4">
+						<label className="inline-flex min-h-[44px] items-center gap-2 cursor-pointer md:min-h-0">
+							<input
+								type="checkbox"
+								checked={status.watcherDefaults?.notify ?? true}
+								onChange={(e) => setWatcherDefault("notify", e.target.checked)}
+								className="w-4 h-4"
+							/>
+							<span className="text-xs">Notify</span>
+						</label>
+						<label className="inline-flex min-h-[44px] items-center gap-2 cursor-pointer md:min-h-0">
+							<input
+								type="checkbox"
+								checked={status.watcherDefaults?.continue ?? false}
+								onChange={(e) => setWatcherDefault("continue", e.target.checked)}
+								className="w-4 h-4"
+							/>
+							<span className="text-xs">Continue</span>
+						</label>
+					</div>
+				</fieldset>
+				<div className="flex items-center justify-between border-t border-border pt-3">
+					<div>
+						<div className="text-sm font-semibold">Pause automatic prompt sending</div>
+						<div className="text-xs text-muted-foreground">
+							On by default. While on, a session set to automatic opens a request for you instead of
+							sending. Turning it off needs you signed in to the dashboard, not an API key.
+						</div>
+					</div>
+					<label className="inline-flex min-h-[44px] items-center gap-2 cursor-pointer md:min-h-0">
+						<input
+							type="checkbox"
+							checked={status.watcherAutoSendPaused !== false}
+							onChange={(e) => setAutoSendPaused(e.target.checked)}
+							className="w-4 h-4"
+						/>
+						<span className="text-xs">Paused</span>
+					</label>
+				</div>
 				<div className="border-t border-border pt-3 text-xs text-muted-foreground">
 					Today's spend:{" "}
 					<span className="font-mono text-foreground">${(spendCents / 100).toFixed(2)}</span>
@@ -227,6 +307,11 @@ export function AiSettingsPanel() {
 												default
 											</span>
 										)}
+										{p.id === fastProviderId && (
+											<span className="text-[10px] bg-muted text-muted-foreground border border-border rounded px-1.5 py-0.5">
+												quick calls
+											</span>
+										)}
 									</div>
 									<div className="text-xs text-muted-foreground font-mono mt-0.5">
 										{p.kind} / {p.model} / key {p.credentialHint}
@@ -240,6 +325,16 @@ export function AiSettingsPanel() {
 										className="text-xs text-primary hover:underline"
 									>
 										Make default
+									</button>
+								)}
+								{p.id !== defaultProviderId && (
+									<button
+										type="button"
+										onClick={() => setFast(p.id, p.id !== fastProviderId)}
+										title="Ask routing, query expansion and alert checks go to this provider first, so they stay quick while the default provider is busy with a long call. Answers and summaries stay on the default. If it fails, the default answers instead."
+										className="text-xs text-primary hover:underline"
+									>
+										{p.id === fastProviderId ? "Stop using for quick calls" : "Use for quick calls"}
 									</button>
 								)}
 								<button

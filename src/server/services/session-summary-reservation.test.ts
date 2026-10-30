@@ -39,6 +39,9 @@ const SID = "res-s1";
 const CAP = spend.DEFAULT_DAILY_CAP_CENTS;
 const TIMESTAMP = /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/;
 const BASE = Date.UTC(2031, 0, 1, 12, 0, 0);
+const { summaryLeaseSeconds } = await import("./ai/session-summary/service-limits.js");
+/** The lease at the default call limit (780 s); a boundary is this, one less, one more. */
+const LEASE_MS = summaryLeaseSeconds() * 1000;
 let stub: ReturnType<typeof H.startStub>;
 
 beforeAll(async () => {
@@ -280,7 +283,7 @@ describe("the claim and its races", () => {
 		expect((await rowOf(other))?.attemptStatus).toBe("idle");
 	});
 
-	test("TC-5.21c the claim's own fences are strict: exactly 30 s of cooldown and exactly 300 s of lease still hold; one second more gives way", async () => {
+	test("TC-5.21c the claim's own fences are strict: exactly 30 s of cooldown and exactly the lease still hold; one second more gives way", async () => {
 		await H.seedActiveSession(SID);
 		await H.seedSummaryRow(SID, {
 			attemptStatus: "failed",
@@ -296,11 +299,11 @@ describe("the claim and its races", () => {
 				attemptStartedAt: toDbTimestamp(new Date(BASE)),
 				attemptToken: "old",
 			});
-		expect(await svc.claimSummaryAttempt(SID, "l300", new Date(BASE + 300_000))).toBe(false);
-		expect(await svc.claimSummaryAttempt(SID, "l301", new Date(BASE + 301_000))).toBe(true);
+		expect(await svc.claimSummaryAttempt(SID, "l300", new Date(BASE + LEASE_MS))).toBe(false);
+		expect(await svc.claimSummaryAttempt(SID, "l301", new Date(BASE + LEASE_MS + 1000))).toBe(true);
 	});
 
-	test("TC-5.22 lease: a generation 300 s old is joined; at 301 s a new claim wins inside the cooldown", async () => {
+	test("TC-5.22 lease: a generation one lease old is joined; one second later a new claim wins inside the cooldown", async () => {
 		const { editId } = await H.seedActiveSession(SID);
 		setSystemTime(new Date(BASE));
 		await H.seedSummaryRow(SID, {
@@ -308,7 +311,7 @@ describe("the claim and its races", () => {
 			attemptStartedAt: toDbTimestamp(new Date(BASE)),
 			attemptToken: "old",
 		});
-		setSystemTime(new Date(BASE + 300_000));
+		setSystemTime(new Date(BASE + LEASE_MS));
 		const joined = await H.request(SID);
 		expect(joined.kind).toBe("joined");
 		if (joined.kind === "joined")
@@ -318,7 +321,7 @@ describe("the claim and its races", () => {
 				joined: true,
 			});
 		expect((await rowOf(SID))?.attemptToken).toBe("old");
-		setSystemTime(new Date(BASE + 301_000));
+		setSystemTime(new Date(BASE + LEASE_MS + 1000));
 		script(ok([editId]));
 		await H.runGeneration(SID);
 		const row = await rowOf(SID);
@@ -335,7 +338,7 @@ describe("the claim and its races", () => {
 		const before = await H.snapshotSpend(SID);
 		const { done: doneA } = await H.startGeneration(SID);
 		await H.withDeadline(gateA.arrived);
-		setSystemTime(new Date(BASE + 301_000));
+		setSystemTime(new Date(BASE + LEASE_MS + 1000));
 		const { done: doneB } = await H.startGeneration(SID);
 		await H.withDeadline(gateB.arrived);
 		const tokenB = (await rowOf(SID))?.attemptToken;
@@ -370,7 +373,7 @@ describe("the claim and its races", () => {
 		);
 		const { done: doneA } = await H.startGeneration(SID);
 		await H.withDeadline(gateA.arrived);
-		setSystemTime(new Date(BASE + 301_000));
+		setSystemTime(new Date(BASE + LEASE_MS + 1000));
 		const { done: doneB } = await H.startGeneration(SID);
 		await H.withDeadline(gateB.arrived);
 		gateA.release();
@@ -953,7 +956,7 @@ describe("reserve, then die", () => {
 		expect(await H.daySpend()).toBe(m);
 		expect((await rowOf(SID))?.attemptStatus).toBe("generating");
 
-		setSystemTime(new Date(BASE + 301_000));
+		setSystemTime(new Date(BASE + LEASE_MS + 1000));
 		const view = await svc.getSessionSummaryView(SID);
 		expect(view?.attempt).toMatchObject({ status: "failed", errorCode: "interrupted" });
 		script(ok([editId]));

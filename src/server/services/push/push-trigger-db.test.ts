@@ -95,7 +95,7 @@ function failingToolEvents(sessionIds: string[]) {
 	const rows = sessionIds.flatMap((sessionId) =>
 		[0, 1, 2].map((n) => ({
 			sessionId,
-			eventType: "PostToolUse",
+			eventType: "PostToolUseFailure",
 			category: "tool_event",
 			source: "observed_hook",
 			toolName: "Bash",

@@ -21,6 +21,12 @@ export const watcherConfigsSqlite = sqliteTable("watcher_configs", {
 	continuationsUsed: integer("continuations_used").notNull().default(0),
 	maxDailyCents: integer("max_daily_cents"),
 	systemPrompt: text("system_prompt"),
+	// Two independent switches. Rows that predate them behave as Continue-only.
+	notifyEnabled: integer("notify_enabled", { mode: "boolean" }).notNull().default(false),
+	continueEnabled: integer("continue_enabled", { mode: "boolean" }).notNull().default(true),
+	// Set only by a human confirming the `auto` policy; auto is honoured only while set.
+	autoConfirmedAt: text("auto_confirmed_at"),
+	autoConfirmedBy: text("auto_confirmed_by"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
@@ -38,6 +44,10 @@ export const watcherConfigsPg = pgTable("watcher_configs", {
 	continuationsUsed: pgInteger("continuations_used").notNull().default(0),
 	maxDailyCents: pgInteger("max_daily_cents"),
 	systemPrompt: pgText("system_prompt"),
+	notifyEnabled: boolean("notify_enabled").notNull().default(false),
+	continueEnabled: boolean("continue_enabled").notNull().default(true),
+	autoConfirmedAt: pgText("auto_confirmed_at"),
+	autoConfirmedBy: pgText("auto_confirmed_by"),
 	createdAt: tsColumn("postgres", "created_at"),
 	updatedAt: tsColumn("postgres", "updated_at"),
 });

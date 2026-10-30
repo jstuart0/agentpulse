@@ -1,5 +1,6 @@
 import type { Session, SessionEvent } from "../../../shared/types.js";
 import type { HitlRequestRecord } from "./hitl-service.js";
+import { readResponse } from "./session-summary/response-text.js";
 
 /**
  * Session intelligence classifier. Reads recent events, session metadata,
@@ -244,16 +245,20 @@ function countToolFailures(events: SessionEvent[]): { total: number; distinctToo
 	return { total: failures.length, distinctTools: tools.size };
 }
 
+/**
+ * A tool call the tool itself reported as failed: a `PostToolUseFailure` hook
+ * (not one the user interrupted), or a response that carries a non-zero exit
+ * code. The words in the output say nothing about that: a file that mentions
+ * "error", or a green run that prints "0 failed", is not a failure, and
+ * counting it made ordinary sessions read as stuck.
+ */
 function isToolFailure(event: SessionEvent): boolean {
 	if (event.category !== "tool_event") return false;
-	if (!event.toolResponse) return false;
-	const text = event.toolResponse.toLowerCase();
-	return (
-		text.includes("error") ||
-		text.includes("failed") ||
-		text.includes("exception") ||
-		text.includes("non-zero exit")
-	);
+	if (event.eventType === "PostToolUseFailure") {
+		return event.rawPayload?.is_interrupt !== true;
+	}
+	const { exitCode } = readResponse(event.toolResponse);
+	return exitCode !== null && exitCode !== 0;
 }
 
 function countRecentAiErrors(events: SessionEvent[]): number {

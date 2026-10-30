@@ -348,7 +348,7 @@ describe("runRetentionPass", () => {
 describe("retention of session summaries (TC-5.45, 5.56, 5.57)", () => {
 	const NOW = new Date(Date.UTC(2031, 5, 15, 12, 0, 0));
 	const DAY = 24 * 60 * 60 * 1000;
-	const LEASE_MS = 300 * 1000;
+	const LEASE_MS = 780 * 1000;
 	const at = (ms: number) => toDbTimestamp(new Date(ms));
 	const CUTOFF_MS = NOW.getTime() - 30 * DAY;
 
@@ -390,6 +390,38 @@ describe("retention of session summaries (TC-5.45, 5.56, 5.57)", () => {
 		expect(result.summariesDeleted).toBe(0);
 		expect(await present("old")).toBe(true);
 	});
+
+	for (const t of [360, 120]) {
+		test(`AGEN-77 the spare window is the lease at T = ${t}: one second inside is kept, exactly the lease is kept, one second past is deleted`, async () => {
+			const { config } = await import("../config.js");
+			const saved = config.sessionSummaryTimeoutSeconds;
+			config.sessionSummaryTimeoutSeconds = t;
+			try {
+				const leaseMs = (2 * t + 60) * 1000;
+				await upsertSetting("eventsRetentionDays", 30);
+				const old = at(CUTOFF_MS - DAY);
+				for (const [name, ageMs] of [
+					["inside", leaseMs - 1000],
+					["exact", leaseMs],
+					["past", leaseMs + 1000],
+				] as const) {
+					await seedSummary(name, {
+						generatedAt: old,
+						attemptStatus: "generating",
+						attemptStartedAt: at(NOW.getTime() - ageMs),
+						attemptToken: "t",
+					});
+				}
+				const result = await runRetentionPass(NOW);
+				expect(result.summariesDeleted).toBe(1);
+				expect(await present("inside")).toBe(true);
+				expect(await present("exact")).toBe(true);
+				expect(await present("past")).toBe(false);
+			} finally {
+				config.sessionSummaryTimeoutSeconds = saved;
+			}
+		});
+	}
 
 	test("TC-5.56 a generating row whose lease has lapsed is deleted; one inside its lease and one with NULL generated_at are kept", async () => {
 		await upsertSetting("eventsRetentionDays", 30);

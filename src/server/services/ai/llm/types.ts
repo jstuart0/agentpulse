@@ -11,6 +11,7 @@
 // and client agree on the kind list. Imported + re-exported here so
 // adapter code can keep its existing `from "./types"` imports.
 import type { ProviderKind } from "../../../../shared/types.js";
+import { readErrorBody } from "../http.js";
 
 export { KNOWN_PROVIDER_KINDS } from "../../../../shared/types.js";
 export type { ProviderKind };
@@ -32,6 +33,8 @@ export interface LlmRequest {
 	 *  (used for JSON-only classifier calls on local models like qwen3).
 	 *  Adapter-specific: openai-compatible sets `reasoning_effort: "none"`. */
 	disableReasoning?: boolean;
+	/** Aborts the call when the caller no longer wants the answer. */
+	signal?: AbortSignal;
 }
 
 export interface LlmUsage {
@@ -82,6 +85,8 @@ export type LlmErrorSubType =
 	| "transient_timeout"
 	| "permanent_auth"
 	| "permanent_validation"
+	/** The provider answered, but with no answer text (e.g. all output went to reasoning). */
+	| "empty_output"
 	| "unknown";
 
 export class LlmError extends Error {
@@ -90,6 +95,10 @@ export class LlmError extends Error {
 		message: string,
 		readonly status?: number,
 		readonly cause?: unknown,
+		/** True only when the call's own total deadline fired. */
+		readonly deadline: boolean = false,
+		/** What the provider reported for a call it answered but that yielded no usable text; it was billed. */
+		readonly usage?: LlmUsage,
 	) {
 		super(message);
 		this.name = "LlmError";
@@ -100,7 +109,7 @@ export class LlmError extends Error {
 export async function classifyHttpError(
 	response: Response,
 ): Promise<{ subType: LlmErrorSubType; body: string; status: number }> {
-	const body = await response.text().catch(() => "");
+	const body = await readErrorBody(response);
 	const status = response.status;
 	if (status === 401 || status === 403) {
 		return { subType: "permanent_auth", body, status };

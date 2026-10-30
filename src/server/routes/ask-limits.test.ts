@@ -336,8 +336,16 @@ describeSqliteOnly("Telegram turns share the limit", () => {
 		);
 		const credentials = await import("../services/channels/telegram-credentials.js");
 		getSqlite().exec("DELETE FROM notification_channels");
-		const { channel } = await createPendingChannel({ kind: "telegram", label: "limit test" });
-		await completeEnrollment({ channelId: channel.id, chatId });
+		const { channel, enrollmentCode } = await createPendingChannel({
+			kind: "telegram",
+			label: "limit test",
+		});
+		await completeEnrollment({
+			channelId: channel.id,
+			chatId,
+			fromUserId: chatId,
+			code: enrollmentCode,
+		});
 		await credentials.clearTelegramCredentials();
 		(config as Record<string, unknown>).telegramBotToken = "test-token";
 		await credentials.refreshTelegramCredentials();
@@ -361,7 +369,10 @@ describeSqliteOnly("Telegram turns share the limit", () => {
 	}
 
 	const update = (text: string) =>
-		({ update_id: 1, message: { message_id: 1, chat: { id: 4242 }, text } }) as never;
+		({
+			update_id: 1,
+			message: { message_id: 1, chat: { id: 4242, type: "private" }, from: { id: 4242 }, text },
+		}) as never;
 
 	test("a Telegram turn takes a slot like any other, so scans and LLM calls are bounded for every caller", async () => {
 		const credentials = await enrolChat("4242");

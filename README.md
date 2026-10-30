@@ -6,12 +6,16 @@
 [![Bun](https://img.shields.io/badge/runtime-Bun-000?logo=bun)](https://bun.sh)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-✓-green)](https://github.com/awesome-selfhosted/awesome-selfhosted)
 [![Wiki](https://img.shields.io/badge/docs-wiki-informational)](https://github.com/jstuart0/agentpulse/wiki)
+[![Website](https://img.shields.io/badge/website-guides-informational)](https://jstuart0.github.io/agentpulse/)
+[![npm](https://img.shields.io/npm/v/@craze0/agentpulse-mcp?label=MCP%20server)](https://www.npmjs.com/package/@craze0/agentpulse-mcp)
 
-**Command center for AI coding agents across all your machines.**
+**Open-source, self-hosted dashboard to monitor, orchestrate and remotely control Claude Code, Codex CLI and Copilot CLI sessions across all your machines.**
 
 If you run multiple Claude Code, Codex CLI, or Copilot CLI sessions across different terminal tabs, you know the pain: *which tab is doing what?* AgentPulse gives you a live dashboard that shows every active session, what it's working on, and a scrollable chat history of everything you've said to each agent.
 
-![AgentPulse dashboard — live view of every active Claude Code / Codex / Copilot session](src/web/assets/screenshots/agentpulse-dashboard.png)
+![AgentPulse dashboard showing a grid of live Claude Code, Codex CLI and Copilot CLI sessions, each with its status, project, session name and tool-use count](src/web/assets/screenshots/agentpulse-dashboard.png)
+
+*The AgentPulse dashboard: every running Claude Code, Codex CLI and Copilot CLI session in one grid, marked Working, Waiting, Idle or Error.*
 
 ## What AgentPulse is
 
@@ -27,6 +31,16 @@ You can run AgentPulse as:
 - **observability only** -- hooks + dashboard, no supervisor/control plane
 - **full local orchestration** -- hooks + dashboard + local supervisor for launch/control on the same machine
 - **remote dashboard** -- relay local events to a remote AgentPulse instance
+
+## Use cases
+
+- **Monitor multiple Claude Code sessions at once.** One live grid instead of a dozen terminal tabs, with each session's state, last prompt and full history. [Guide](https://jstuart0.github.io/agentpulse/guides/monitor-multiple-claude-code-sessions/)
+- **See agents on every machine in one place.** A relay on each laptop, desktop or server forwards events to one dashboard, with a filter by machine. [Guide](https://jstuart0.github.io/agentpulse/guides/monitor-multiple-claude-code-sessions/)
+- **Check on and control Claude Code from your phone or another computer.** Watch any session remotely, and launch, prompt, stop or retry the ones AgentPulse started. [Guide](https://jstuart0.github.io/agentpulse/guides/remote-claude-code-dashboard/)
+- **Self-host it for yourself or a team.** Docker or Kubernetes, SQLite or PostgreSQL, behind Authentik, Authelia, oauth2-proxy, Pomerium or Cloudflare Access. [Guide](https://jstuart0.github.io/agentpulse/guides/self-hosted-ai-coding-agent-dashboard/)
+- **Let your agents manage your other agents over MCP.** Claude Code or Codex CLI can list, search, launch and steer sessions through the `@craze0/agentpulse-mcp` server. [Guide](https://jstuart0.github.io/agentpulse/guides/mcp-server-for-coding-agents/)
+
+Not sure whether you need monitoring or orchestration? See [observability vs. orchestration for AI coding agents](https://jstuart0.github.io/agentpulse/guides/observability-vs-orchestration/).
 
 ## How it works
 
@@ -92,7 +106,9 @@ docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUT
 
 ## What you'll see
 
-![Session detail — chat-style timeline with inline tool usage](src/web/assets/screenshots/agentpulse-session.png)
+![AgentPulse session detail view with a chat-style timeline of the user's prompts to Claude Code and the agent's tool calls shown inline](src/web/assets/screenshots/agentpulse-session.png)
+
+*Session detail: a chat-style history of your prompts to one agent, with its tool calls inline.*
 
 - **Dashboard** -- grid of all sessions with status, project name, session name, duration, and tool use count. Each session is in exactly one operational state: **Waiting** (the agent finished a turn, or has an outstanding permission prompt, and is waiting on you -- "Mark as seen" clears it), **Error** (the session failed and hasn't been dismissed -- "Dismiss error" clears it), **Working** (the agent is actively working right now), or **Idle** (nothing is waiting and the agent isn't working). Status cards above the grid filter by state; a "What do these states mean?" popover repeats this explanation in the UI
 - **Session detail** -- click a session to see a chat-style timeline with your prompts as blue bubbles and tool usage inline
@@ -125,13 +141,13 @@ Without cloning this repo -- the standalone [`@craze0/agentpulse-mcp`](packages/
 npx @craze0/agentpulse-mcp install --mint my-agent
 ```
 
-> **Not yet published.** The package and its release workflow (`.github/workflows/mcp-release.yml`, triggered by an `mcp-v*` tag) exist, but no version has shipped to npm yet. Until the first tag is cut, run the MCP server from a checkout instead (`agentpulse mcp serve` / `agentpulse mcp install`, above).
-
 Either way, `install` prints ready-to-paste Claude Code and Codex CLI config. See **[docs/MCP.md](docs/MCP.md)** for the full tool catalog, client setup, and a security section covering what a `manage`-scoped key can do and why Codex CLI does not honor Claude Code's confirmation prompt.
 
 ## AI Labs (experimental)
 
-![Ask assistant — grounded conversational interface over live session state](src/web/assets/screenshots/agentpulse-ask.png)
+![AgentPulse Ask assistant answering a natural-language question about live Claude Code and Codex sessions](src/web/assets/screenshots/agentpulse-ask.png)
+
+*The Ask assistant: ask about, launch or search your agent sessions in plain language.*
 
 > **Heads up:** the AI layer is new, shipping under explicit Labs framing. Every feature is toggleable under **Settings → Labs**. Contracts, UI, and defaults may change. Disable any toggle if it gets in your way -- nothing else in AgentPulse depends on it.
 
@@ -139,8 +155,12 @@ When enabled, AgentPulse can use an LLM provider you choose (Anthropic, OpenAI, 
 
 ### Capabilities
 
-- **Session watcher** -- on each handoff (a `Stop` event, idle pause, plan completion, or error), the watcher reads recent events, redacts secrets via a configurable rule list, and asks the configured provider to emit one JSON decision: `continue` (with a next prompt), `ask` (route to HITL), `report` (summarize), `stop`, or `wait`. Proposals land in a durable queue so they survive server restarts.
-- **Per-session config** -- provider, policy (`ask_always` / `ask_on_risk` / `auto`), daily spend cap, max continuations, optional custom system prompt, all from the session detail **AI** tab.
+- **Session watcher** -- wakes when a turn ends (a `Stop`, or a managed session's own turn end) or a session ends, waits ten seconds for a follow-up, and then does up to two things for that session, each with its own switch:
+  - **Notify** writes a two-line status note for you -- finished, looks stuck, or waiting for you -- from what happened since the last note, and puts it in the inbox and (optionally) Telegram. It never sends anything to the agent.
+  - **Continue** asks the provider for the next prompt and opens a request for you to approve. A watcher can *send* it only into a session AgentPulse launched; for any other session it is a suggestion to copy.
+  
+  Secrets are redacted before anything reaches the provider. New watchers start with Notify on and Continue off (Settings → AI watcher changes that). Every note starts with a fixed line saying the text after it came from session content AgentPulse doesn't control.
+- **Per-session config** -- provider, the two modes, policy (`ask_always` / `ask_on_risk` / `auto`), daily spend cap, the most automatic sends, optional custom system prompt, and the notification channel, all from the session detail **AI** tab. `auto` sends only three fixed nudges (retry the failed step, run the tests, summarize status), asks you to confirm it first, and is paused until you turn "Pause automatic prompt sending" off in Settings.
 - **Auto-enable on Ask-initiated sessions** -- when Ask launches a session, a watcher row is attached at correlation time (enabled, `ask_on_risk` policy, default provider). Five silent-skip branches keep this from ever failing a launch: not Ask-initiated, AI inactive, user opt-out, watcher already configured, or no default provider. Settings → AI watcher has a toggle (default on) to disable.
 - **Session intelligence classifier** -- deterministic heuristic flags sessions as `healthy` / `blocked` / `stuck` / `risky` / `complete_candidate` with a one-sentence reason. Shows as a chip on dashboard cards. Optionally feeds back into watcher decisions.
 - **Ask command surface** -- conversational interface (web + Telegram) that turns natural language into approval cards. Every state-mutating intent goes through the same `ai_action_requests` atomic-claim approval pipeline, so concurrent web + Telegram approvals can't double-execute. Examples:
@@ -154,6 +174,10 @@ When enabled, AgentPulse can use an LLM provider you choose (Anthropic, OpenAI, 
   - *"summarize session brave-falcon"* / *"why did session amber-wolf fail"* — bounded-transcript Q&A with provenance footer; cached for 15 minutes per `(session, normalized question)` and invalidated by new events
   - *"show me failed sessions"* / *"what happened today"* — read-only NL search and digest; both heuristic-only (no LLM call), so they're fast and free
   - *"which sessions are waiting"* / *"what needs attention"* — answered from the same operational state as the dashboard's status cards (waiting, or error for needs attention). The project digest and the bulk actions (*"archive completed sessions…"*) still use the lifecycle states (active, completed, failed): they have no waiting or needs-attention filter.
+  - **Models that think first:** every model call that produces an answer or a decision asks the provider to skip its reasoning phase. If a model still returns no answer text (for example it spent its whole output budget on reasoning), Ask shows an error instead of the model's partial reasoning. Query expansion is an optional extra: after one failed attempt it is skipped for two minutes, so a slow or busy provider costs one failed call, not one per question.
+  - **A separate provider for quick calls:** in Settings, AI, "Use for quick calls" on a provider sends the short helper calls (Ask routing and intent checks, query expansion, alert-rule checks) to it first. A model that is busy with a long call, such as a session summary, answers nothing else until it finishes, so on a single server those short calls queue behind it and time out; a small model on its own server keeps them quick. Answers and summaries always use the default provider. The quick provider gets a short limit of its own (`AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS`, 5 seconds). If it fails or times out, the call is made again on the default provider with the full limit, and the quick provider is left alone for a minute. Unset (the default) means every call uses the default provider.
+  - **Follow-ups:** a message that points back at the conversation ("what did it change?", "and the other one?", "what else") starts from the sessions the previous answer was built from, up to two. They rank above a weak match for the new message and below a strong one, and when the message names a new subject they are dropped. A short question with no back-reference is treated as new.
+  - **Vector search stays current by itself:** a background pass runs every minute, embedding events that arrived since the last one (hook-delivered events included) in small batches with a short pause between them, so a large backlog is worked off without slowing hook ingest. If the embedding provider is down, passes back off (a minute, doubling to 5 minutes, each retry first a single probe request) and the index catches up when it returns; no restart is needed. A full pass from the oldest event repeats every six hours.
   - **Limits:** at most two Ask turns run at once, across the web and Telegram together (`AGENTPULSE_ASK_MAX_CONCURRENT`). A turn that finds both slots taken waits up to 30 seconds in a short line, then is refused: the web answers `503` with `Retry-After`, the streaming web reply sends an error frame, and Telegram replies that Ask is busy. A message over 8,000 characters is refused (`400 message_too_long` on the web, a reply on Telegram), pinned `sessionIds` must be at most 20 strings of at most 128 characters (`400 invalid_session_ids`), and a request body over 256 KiB is `413`. When vector search is on, semantic matching covers the newest 50,000 vectors of the active model within a 4-second budget; older events are still found by keyword search (see `AGENTPULSE_VECTOR_SCAN_MAX_ROWS` and `AGENTPULSE_VECTOR_SCAN_MAX_MS`).
 - **Operator inbox** -- single `/inbox` view that aggregates open HITL requests, Ask-driven action requests, stuck / risky sessions, and recently failed proposals across every session and project. Approve / decline inline, snooze noisy failed proposals for 1h / 4h / 24h / 7d, or batch decline.
 - **Project digest** -- `/digest` rolls up the last 24 hours of activity grouped by working directory: active / blocked / stuck / completed counts per repo, top plan completions, notable failures. Cached daily, manual refresh available.
@@ -164,7 +188,7 @@ When enabled, AgentPulse can use an LLM provider you choose (Anthropic, OpenAI, 
 - **Guarded `auto` policy** -- dispatch without HITL only when the session is managed, the supervisor is connected, no risk class matched, and the dispatch-filter accepts the prompt. Every other case still routes to HITL. Everything is auditable via `ai_continue_sent` events.
 - **Spend + kill switch** -- per-user daily spend cap, per-rule cap for freeform alert rules, a global kill switch in Settings that immediately pauses all watchers, and HITL / action requests carry optional timeouts that auto-expire if ignored.
 - **Session summary** (off by default) -- an on-demand, checkable summary of any session: outcome, what changed, what was validated, what is unfinished, a handoff to paste into another agent. See [Session summary](#session-summary-experimental-labssessionsummary).
-- **Summary spend** -- money set aside for a session summary in progress counts toward "Today's spend" until the summary settles at its real cost; after a hard crash it stays counted until the server's local midnight. A call that cannot have been billed (the connection never opened, or the provider answered with a 4xx) costs nothing; a call whose outcome is unknown (a timeout, a gateway cut-off, a connection dropped mid-call) is charged its worst case, and the daily cap is checked against the worst case of the prompt actually sent. Three such failures in ten minutes pause new summary requests (they answer busy) until a call succeeds or five minutes pass.
+- **Summary spend** -- money set aside for a session summary in progress counts toward "Today's spend" until the summary settles at its real cost; after a hard crash it stays counted until the server's local midnight. A call that cannot have been billed (the connection never opened, or the provider answered with a 4xx) costs nothing; a call whose outcome is unknown (a timeout, a gateway cut-off, a connection dropped mid-call) is charged its worst case, and the daily cap is checked against the worst case of the prompt actually sent. Three such failures within the breaker window (27 minutes at the default call limit; see [Session summary](#session-summary-experimental-labssessionsummary)) pause that caller's new summary requests (they answer busy) for 5 minutes, then longer on each repeat, until a call succeeds.
 - **Local-model thinking suppression** -- when the configured provider is OpenAI-compatible (Ollama, vLLM, llama.cpp), classifier calls send `reasoning_effort: "none"` so qwen3 and similar reasoning models return clean JSON instead of burying the response in chain-of-thought. Anthropic / OpenAI / Google / OpenRouter providers receive prompts unchanged.
 - **Observability** -- every wake emits a structured JSON log line prefixed with `ai_metric` (watcher run queued / completed, HITL resolution latency, classifier distribution, etc.). Pipe them into Loki / Datadog / Splunk / Elastic. Optional OTLP forwarding via `AGENTPULSE_OTEL_ENDPOINT`. A `/api/v1/ai/diagnostics` endpoint returns a point-in-time queue and flag snapshot for in-dashboard viewing.
 
@@ -208,7 +232,9 @@ Direct URLs (`/inbox`, `/digest`, etc.) stay reachable when a flag is off -- tog
 
 ### Telegram HITL (experimental, `labs.telegramChannel`)
 
-When enabled, the watcher can forward HITL requests to a Telegram chat with inline **Approve / Decline** buttons instead of (or in addition to) the in-app inbox. Useful for approving continuations from your phone while an agent is running somewhere else.
+When enabled, the watcher can forward its Notify reports and its HITL requests to a Telegram chat instead of (or in addition to) the in-app inbox. A request gets **Approve** and **Dismiss** buttons, and Approve appears only when the session can take a prompt and the message shows the exact text that would be sent. Useful for approving continuations from your phone while an agent is running somewhere else.
+
+Telegram is a third-party service. By default a message carries only the session name, the verdict or decision, and a generic reason (**minimal**). **Full** detail adds the note and the suggested prompt, redacted of secrets and with home paths shortened; set it per channel in Settings, and it is never available for a group chat.
 
 Enable it:
 
@@ -220,16 +246,19 @@ Enable it:
    ```
 3. Restart AgentPulse. Open **Settings → Labs** and flip `telegramChannel` on.
 4. A new **Telegram HITL channel** section appears in Settings. Click **Set webhook** once — it points Telegram at `PUBLIC_URL/api/v1/channels/telegram/webhook`.
-5. Click **Generate code**. Copy the `/start <code>` shown and DM it to your bot. The bot confirms the link.
+5. Click **Generate code**. Copy the `/start <code>` shown and DM it to your bot **from a private chat** (a group can't be tied to one person). The code is single-use and expires after 15 minutes. The bot confirms the link, and from then on only that Telegram account's taps and messages are accepted. Only a channel enrolled in a group needs re-linking (from its row in Settings) to approve or ask from Telegram; one enrolled in a private chat keeps working. In team mode, channels that belong to nobody (created before ownership was recorded) also refuse approvals until an admin re-links them.
 6. On any session, open the **AI** tab and assign that channel in the watcher config.
 
-From then on, any HITL that watcher opens for that session is sent to Telegram. Tapping **Approve** routes through the same HITL-resolve path as the in-app button: the `ai_hitl_response` and `ai_continue_sent` events fire identically, just annotated with `channel: telegram`.
+From then on, any HITL that watcher opens for that session is sent to Telegram. Tapping **Approve** routes through the same path as the in-app button and really types the prompt into the session: the `ai_hitl_response` and `ai_continue_sent` events fire identically, just naming Telegram as the actor.
+
+Rate limits keep a busy fleet from flooding the chat: one routine report per session per ten minutes, at most three "stuck" or "waiting for you" reports per session per hour, and 30 messages an hour across everything. A message over a limit is skipped in Telegram and still appears in the inbox.
 
 Safety notes:
 - The bot token is instance-wide; every chat that's enrolled via `/start` shares the same bot. The chat id itself is encrypted at rest with `AGENTPULSE_SECRETS_KEY`.
 - The webhook route validates Telegram's `X-Telegram-Bot-Api-Secret-Token` header against `TELEGRAM_WEBHOOK_SECRET` on every request (a constant-time comparison, done before the body is read), so a lucky guesser still can't forge approvals. A body over 1 MiB is refused with `413`.
 - A Telegram question whose turn fails gets a fixed reply; the error detail goes to the server log, not to the chat. Some launch set-up failures (creating or cloning a project from an Ask message) still include the underlying error message in the reply; see the Known limitations in `CHANGELOG.md`.
-- An approval tapped in Telegram is cross-checked against the HITL row's `channel_id` before any resolve happens — a user who learns a HITL id cannot use a different chat to act on it.
+- Every inbound update (taps, Ask messages, action buttons) is checked against the enrolled private chat *and* the enrolled Telegram user before anything runs, and an approval is also cross-checked against the HITL row's `channel_id`. A callback carries only the request id and the action; the prompt and its hash always come from the server.
+- In team mode a channel belongs to the person who created it. Channels that existed before ownership was recorded belong to nobody and refuse approvals until an admin re-links them.
 - Delivery failures never block the in-app HITL path. If Telegram is down or slow, approve/decline still works from the dashboard or `/inbox`.
 
 ### Session summary (experimental, `labs.sessionSummary`)
@@ -242,6 +271,10 @@ A **Summary** tab on each session that summarizes it on request: what it set out
 
 **What it costs.** Each summary is one provider call, plus one repair call if the first answer is unusable. The most it can cost, and the most with a repair, is shown under the button before you press it, and counts against the same daily AI cap as the watcher and Ask (500 cents by default). A new summary of the same session can start 30 seconds after the last attempt began. A free or local provider records no cost.
 
+**How long one call may take.** Each model call (the first, and the repair if there is one) gets `AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS`: default 360, range 30 to 1800. The repair call gets the full limit again, not what is left of the first. The limit covers connecting, the wait for the first byte and reading the answer, so a provider that stops sending mid-answer also times out. A slow local model (for example a local Ollama model) on a large session can need minutes: one call with a roughly 18,600-token prompt took about 213 seconds in testing, and the largest prompt a summary sends can take about 305 seconds. If a call hits the limit, the Summary tab names the current model and limit and says the setting can be raised; whoever runs the server sets the variable and restarts. A provider answering with a 5xx is reported as a provider error, not as a timeout.
+
+The limit sets the other time bounds. A summary that is still `generating` after the lease, 2 × the limit + 60 seconds (780 seconds at the default), is shown as failed (interrupted), and a new request can then start; the same bound is how long a stuck row (a crash, a hung call) blocks. On SQLite a restart recovers such a row at boot; on Postgres it is recovered only when the lease lapses, 13 minutes at the default and 61 at the maximum. With two generation slots, two hung runs can hold both for that long. Use the same value on every replica: replicas that disagree can start a duplicate run of the same summary (and spend twice) or let retention delete a row another replica is still generating.
+
 **How it is checked.** The model cites numbered events from the session. The server checks each cited event exists and what kind it is and how it ended, drops the ones that don't, and marks a claim with no confirming citation "Agent's claim only". A test or build the session ran that failed cannot be shown as passed (the result becomes "unknown", marked adjusted), nor can a pass stand when an edit came after it. A summary whose text looks like it carries instructions for whoever pastes it shows a "check before pasting" notice and relabels the copy buttons.
 
 **Limits.**
@@ -252,7 +285,7 @@ A **Summary** tab on each session that summarizes it on request: what it set out
 - The check-before-pasting notice is a heuristic tripwire, not a control. Read a handoff before you paste it into an agent. It does not catch: commands in inline code whose verb is outside its list (`find -delete`, `tar`, `ln`), writes done by redirects, interpreter scripts and `source`/`eval`, bare hosts whose top-level domain isn't on its list, prose instructions with no code in them, loopback GET requests that have side effects, `git` pointed at a plain remote name, and PowerShell syntax (not parsed).
 - A summary is a snapshot. When the session moves on, a notice says how many events came after it; **Update** makes a new one.
 - Summaries are on demand. Nothing summarizes in the background.
-- Spend is one shared daily cap. A failure that may have been billed (a timeout, a gateway cut-off, a dropped connection) is charged the per-call maximum. Three of those in ten minutes make that caller's new requests answer busy for 5 minutes, then longer on each repeat. Once such charges reach a quarter of the daily cap, summaries are refused for everyone until local midnight, so one member who can make the provider time out can switch summaries off for everyone for the rest of the day.
+- Spend is one shared daily cap. A failure that may have been billed (a timeout, a gateway cut-off, a dropped connection) is charged the per-call maximum. Three of those within the breaker window (10 minutes, or two leases and a minute when that is longer: 27 minutes at the default call limit) make that caller's new requests answer busy for 5 minutes, then longer on each repeat. Once such charges reach a quarter of the daily cap, summaries are refused for everyone until local midnight, so one member who can make the provider time out can switch summaries off for everyone for the rest of the day.
 - The request limit (6 a minute per caller), the two generation slots, the breaker and the daily ceiling live in each server process; with more than one replica they loosen, and a restart clears them.
 - A summary is visible to everyone who can read the session. Team mode shares reads, so that is everyone on the instance with dashboard access. Observe-only API keys can't read it.
 - Stored summaries are deleted by the event-retention pass when retention is on; otherwise they stay until the session is deleted.
@@ -260,7 +293,8 @@ A **Summary** tab on each session that summarizes it on request: what it set out
 
 ### Safety posture
 
-- **HITL by default** -- a Claude/Codex watcher can propose, but `auto`-dispatch only runs when the session is managed and the supervisor is connected.
+- **HITL by default** -- **Approve really sends**: for a session AgentPulse launched, approving a request (in the app or in Telegram) types the prompt into the agent. Nothing the watcher writes is sent without a person, except the `auto` policy's three fixed nudges. `auto` needs you to confirm it from the dashboard, never fires while the agent is asking a question or a permission prompt is open, is limited to six sends an hour per session and 20 overall, stops at the per-session total you set, and is paused until you turn "Pause automatic prompt sending" off. Every send and every refusal is written to an append-only audit table that is not removed with the session.
+- **Keep manage keys out of agent environments** -- a key that can manage can approve proposals. Give agents ingest-scoped keys only. With `DISABLE_AUTH` on, every control that is normally "signed-in person only" (confirming `auto`, un-pausing, re-linking a channel) is available to any caller.
 - **Dispatch filter** -- every prompt (watcher-proposed or user-approved) is screened against a deny-list of destructive / injection-flavored patterns before dispatch.
 - **Redactor** -- the watcher's transcripts and session summaries are scrubbed of common secret patterns before being sent to your provider, with a dry-run preview available. Ask and Q&A do not redact.
 - **Prompt injection hardening** -- user transcripts are embedded in an explicit `<transcript>` UNTRUSTED block with instructions for the model to treat the contents as data.
@@ -580,6 +614,12 @@ AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). T
 | `AGENTPULSE_VECTOR_SCAN_MAX_MS` | `4000` | Longest one Ask semantic scan runs, in milliseconds, pacing included. Range 250 to 60,000. |
 | `AGENTPULSE_VECTOR_SCAN_CPU_SHARE` | `0.3` | Share of CPU all concurrent semantic scans together may use. Range 0.05 to 1; `1` turns pacing off. |
 | `AGENTPULSE_ASK_MAX_CONCURRENT` | `2` | Ask turns that may run at once, web and Telegram together, per process. Range 1 to 8. |
+| `AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS` | `180` | Ask: the time limit of the model call that writes the answer (streamed or not), and of a per-session Q&A answer, in seconds. Range 30 to 1800; out-of-range values are clamped. |
+| `AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS` | `20` | The time limit of the short helper calls, in seconds: the Ask intent classifiers, Ask query expansion and the alert-rule yes/no check. Range 5 to 300. Raise it if your model must load before it answers. |
+| `AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS` | `5` | The time limit of the attempt on the provider chosen for quick calls (Settings, AI), in seconds. Range 1 to 60. On failure the call is repeated on the default provider with the full helper limit. |
+| `AGENTPULSE_WATCHER_TIMEOUT_SECONDS` | `90` | The time limit of each watcher model call (the Notify note and the Continue decision), in seconds. Range 10 to 1800; out-of-range values are clamped. |
+| `AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS` | `360` | Session summary: the time limit of one model call, in seconds, per call (the repair call gets the full limit too). Range 30 to 1800; out-of-range values are clamped. The summary lease is 2 × this + 60 seconds (780 at the default), and the failure breaker window scales with it. Set the same value on every replica. On Postgres a stuck summary is recovered only at the lease. |
+| `AGENTPULSE_MANAGED_SESSION_MAX_SILENCE_HOURS` | `72` | Hours of silence after which a supervisor-launched session stops being exempt from the inactivity sweep, even while its host is heartbeating, and completes. The next hook reopens it. Range 1 to 720. |
 | `DATABASE_URL` | `""` (SQLite) | Postgres connection string. When set to a `postgres://...` URL, AgentPulse uses PostgreSQL instead of SQLite. Example: `postgres://agentpulse:password@host:5432/agentpulse?sslmode=require`. Leave unset or empty for SQLite. |
 | `AGENTPULSE_PG_POOL_MAX` | `10` | Maximum Postgres connection pool size. Integer in [1, 100]. Tune based on your Postgres server's `max_connections` and replica count. |
 | `AGENTPULSE_LEGACY_INIT` | (unset) | SQLite existing-install migration behaviour. Set to `"false"` to force a fresh Drizzle migrate on an existing SQLite install (opt-in, non-destructive if schema is already current). Unset keeps the legacy `initializeDatabase()` path for existing SQLite installs. |

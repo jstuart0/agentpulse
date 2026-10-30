@@ -27,6 +27,9 @@ import { type EmbeddingAdapter, vectorToBuffer } from "./types.js";
  *      writes the float32 vector as a blob.
  *   3. runBackfill() finds events without an embedding (or with a stale
  *      model name) and processes them in batches with progress logging.
+ *      runBackfillPass() is the bounded form; embedding-schedule.ts runs it
+ *      on a timer, which is what keeps hook-delivered events (never on the
+ *      session bus) embedded.
  *
  * All paths are no-ops when AGENTPULSE_VECTOR_SEARCH=false. Designed to
  * run async / fire-and-forget from the ingest hot path so adding this
@@ -245,6 +248,14 @@ export async function getBackfillProgress(): Promise<BackfillProgress> {
 	};
 }
 
+/** The highest event id, 0 for an empty table: one primary-key read. */
+export function readNewestEventId(): number {
+	const row = getSqlite().prepare("SELECT COALESCE(MAX(id), ?) AS m FROM events").get(0) as {
+		m: number;
+	};
+	return row.m;
+}
+
 /**
  * Walk the events table and embed anything missing for the active model.
  * Concurrency-1 today (Ollama doesn't love parallel embed calls on a
@@ -254,8 +265,87 @@ export async function getBackfillProgress(): Promise<BackfillProgress> {
  * Returns immediately if a backfill is already running.
  */
 export async function runBackfill(): Promise<BackfillProgress> {
-	if (config.dialect !== "sqlite" || !isVectorSearchBuildEnabled()) return backfillState;
-	if (backfillState.running) return backfillState;
+	return (await runBackfillPass()).progress;
+}
+
+/** How one backfill pass is bounded. The default is a whole walk from id 0, which is what boot and the manual button want. */
+export interface BackfillPassOptions {
+	/** Start the id cursor here instead of 0; every pending event at or below it is already handled. */
+	fromId?: number;
+	/** Stop after this many batches, leaving the rest for a later pass. */
+	maxBatches?: number;
+	/** Sleep this long after each batch, on top of yielding to the event loop. */
+	pauseMs?: number;
+	/** Open the circuit after this many consecutive failed batches (default 5). 1 is a single probe. */
+	failureLimit?: number;
+	/**
+	 * Count the embeddable events for the progress total (default true). The count
+	 * scans the table (`event_type` has no index), so the scheduled pass, which runs
+	 * every minute, skips it; `getBackfillProgress` computes its own total.
+	 */
+	countTotal?: boolean;
+}
+
+export interface BackfillPassResult {
+	progress: BackfillProgress;
+	/** False when nothing was attempted: another pass was running, or there is no adapter. */
+	ran: boolean;
+	/** Every pending event at or below this id is embedded or marked as having no text, for `model`. */
+	endCursor: number;
+	model: string | null;
+	/** The cursor reached the newest event. */
+	reachedEnd: boolean;
+	/** The pass stopped because the provider kept failing. */
+	circuitOpen: boolean;
+	/** The pass ended on a circuit-open or an unexpected error: try again later, not at once. */
+	failed: boolean;
+	/** Events handled by this pass (embedded or marked textless). */
+	handled: number;
+}
+
+/** Set synchronously by the first caller, before any await, and cleared in `finally`. */
+let passInFlight = false;
+
+/** True while a pass is running: the manual button, the schedule and the boot path share this one guard. */
+export function isBackfillRunning(): boolean {
+	return passInFlight;
+}
+
+export async function runBackfillPass(
+	options: BackfillPassOptions = {},
+): Promise<BackfillPassResult> {
+	if (passInFlight) {
+		return {
+			progress: backfillState,
+			ran: false,
+			endCursor: options.fromId ?? 0,
+			model: null,
+			reachedEnd: false,
+			circuitOpen: false,
+			failed: false,
+			handled: 0,
+		};
+	}
+	passInFlight = true;
+	try {
+		return await runBackfillPassLocked(options);
+	} finally {
+		passInFlight = false;
+	}
+}
+
+async function runBackfillPassLocked(options: BackfillPassOptions): Promise<BackfillPassResult> {
+	const idle = (ran: boolean, model: string | null = null): BackfillPassResult => ({
+		progress: backfillState,
+		ran,
+		endCursor: options.fromId ?? 0,
+		model,
+		reachedEnd: false,
+		circuitOpen: false,
+		failed: false,
+		handled: 0,
+	});
+	if (config.dialect !== "sqlite" || !isVectorSearchBuildEnabled()) return idle(false);
 
 	const adapter = await resolveEmbeddingAdapter();
 	if (!adapter) {
@@ -264,7 +354,7 @@ export async function runBackfill(): Promise<BackfillProgress> {
 			running: false,
 			error: "no embedding provider configured",
 		};
-		return backfillState;
+		return idle(false);
 	}
 
 	backfillState = {
@@ -278,12 +368,19 @@ export async function runBackfill(): Promise<BackfillProgress> {
 		error: null,
 	};
 
+	let processed = 0;
+	let circuitOpen = false;
+	let reachedEnd = false;
+	let threw = false;
+	let cursor = options.fromId ?? 0;
 	try {
 		const placeholders = EMBEDDED_EVENT_TYPES.map(() => "?").join(",");
-		const totalRow = getSqlite()
-			.prepare(`SELECT COUNT(*) AS n FROM events WHERE event_type IN (${placeholders})`)
-			.get(...EMBEDDED_EVENT_TYPES) as { n: number };
-		backfillState.total = totalRow.n;
+		if (options.countTotal !== false) {
+			const totalRow = getSqlite()
+				.prepare(`SELECT COUNT(*) AS n FROM events WHERE event_type IN (${placeholders})`)
+				.get(...EMBEDDED_EVENT_TYPES) as { n: number };
+			backfillState.total = totalRow.n;
+		}
 
 		// An id cursor walks the table once. Each pass reads (stage one) the ids
 		// and payload sizes of up to a batch of pending rows inside an id window
@@ -319,16 +416,19 @@ export async function runBackfill(): Promise<BackfillProgress> {
 		);
 		const yieldToLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-		let processed = 0;
+		const failureLimit = options.failureLimit ?? BACKFILL_MAX_CONSECUTIVE_FAILURES;
 		let consecutiveFailures = 0;
-		let circuitOpen = false;
-		let cursor = 0;
+		let batches = 0;
 		let maxId = readMaxEventId();
 		while (true) {
 			if (cursor >= maxId) {
 				maxId = readMaxEventId();
-				if (cursor >= maxId) break;
+				if (cursor >= maxId) {
+					reachedEnd = true;
+					break;
+				}
 			}
+			if (options.maxBatches !== undefined && batches >= options.maxBatches) break;
 			const windowEnd = cursor + BACKFILL_ID_WINDOW;
 			const candidates = stageOne.all(
 				adapter.model,
@@ -401,7 +501,7 @@ export async function runBackfill(): Promise<BackfillProgress> {
 					consecutiveFailures++;
 					backfillState.error = err instanceof Error ? err.message : String(err);
 					console.warn("[embeddings] batch embed failed:", err);
-					if (consecutiveFailures >= BACKFILL_MAX_CONSECUTIVE_FAILURES) {
+					if (consecutiveFailures >= failureLimit) {
 						console.warn(
 							JSON.stringify({
 								kind: "embedding_circuit_open",
@@ -430,6 +530,7 @@ export async function runBackfill(): Promise<BackfillProgress> {
 				consecutiveFailures = 0; // reset on successful batch
 			}
 			processed += rows.length;
+			batches++;
 			cursor = nextCursor;
 			console.log(
 				JSON.stringify({
@@ -446,50 +547,37 @@ export async function runBackfill(): Promise<BackfillProgress> {
 			backfillState.pending = Math.max(0, backfillState.total - processed);
 			// Yield so the event loop processes other work between batches.
 			await yieldToLoop();
+			if (options.pauseMs) await new Promise((resolve) => setTimeout(resolve, options.pauseMs));
 		}
 
 		backfillState.running = false;
 		backfillState.finishedAt = new Date().toISOString();
 		if (circuitOpen) {
 			console.warn(
-				`[embeddings] backfill paused: circuit open after ${BACKFILL_MAX_CONSECUTIVE_FAILURES} consecutive adapter failures — will retry on next scheduled trigger`,
+				`[embeddings] backfill paused: circuit open after ${failureLimit} consecutive adapter failures — the scheduled backfill tries again later`,
 			);
-		} else {
+		} else if (reachedEnd) {
 			console.log(
 				`[embeddings] backfill complete: ${processed} events indexed with ${adapter.model}`,
 			);
 		}
 	} catch (err) {
+		threw = true;
 		backfillState.running = false;
 		backfillState.error = err instanceof Error ? err.message : String(err);
 		backfillState.finishedAt = new Date().toISOString();
 		console.warn("[embeddings] backfill failed:", err);
 	}
-	return backfillState;
-}
-
-/**
- * Boot-time hook: kick off a non-blocking backfill if there's a gap
- * between events count and embedded count. Safe to call unconditionally
- * from server startup — bails out fast when the build flag is off.
- */
-export async function startBackfillIfNeeded(): Promise<void> {
-	if (config.dialect !== "sqlite" || !isVectorSearchBuildEnabled()) return;
-	const adapter = await resolveEmbeddingAdapter();
-	if (!adapter) {
-		console.warn(
-			"[embeddings] vector search built in but no embedding provider — Settings → AI → Vector search will surface a clearer error.",
-		);
-		return;
-	}
-	const progress = await getBackfillProgress();
-	if (progress.pending > 0 && !progress.running) {
-		console.log(
-			`[embeddings] starting backfill: ${progress.pending} events to index with ${adapter.model}`,
-		);
-		// Fire and forget — the server doesn't wait for backfill to finish.
-		void runBackfill();
-	}
+	return {
+		progress: backfillState,
+		ran: true,
+		endCursor: cursor,
+		model: adapter.model,
+		reachedEnd,
+		circuitOpen,
+		failed: circuitOpen || threw,
+		handled: processed,
+	};
 }
 
 /**

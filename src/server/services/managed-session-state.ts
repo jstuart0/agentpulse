@@ -272,12 +272,29 @@ export async function upsertManagedSessionState(
 	};
 }
 
+/** A supervisor tried to write an event only the watcher may write. */
+export class ReservedEventTypeError extends Error {
+	constructor() {
+		super("A supervisor may not write the watcher's own events.");
+		this.name = "ReservedEventTypeError";
+	}
+}
+
+function isReservedEvent(event: ManagedSessionEventInput): boolean {
+	return (
+		(typeof event.category === "string" && event.category.startsWith("ai_")) ||
+		(typeof event.eventType === "string" && /^ai/i.test(event.eventType.trim()))
+	);
+}
+
 export async function appendManagedSessionEvents(
 	supervisorId: string,
 	sessionId: string,
 	events: ManagedSessionEventInput[],
 ) {
 	await assertSupervisorCanWriteSession(supervisorId, sessionId);
+	// The whole batch is refused: one forged event poisons the rest.
+	if (events.some(isReservedEvent)) throw new ReservedEventTypeError();
 	const normalized = events.map((event) => ({
 		eventType: event.eventType,
 		category: event.category,

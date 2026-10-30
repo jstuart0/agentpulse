@@ -3,6 +3,7 @@ import {
 	and,
 	desc,
 	eq,
+	gt,
 	inArray,
 	isNotNull,
 	isNull,
@@ -11,6 +12,7 @@ import {
 	not,
 	notLike,
 	or,
+	sql,
 } from "drizzle-orm";
 import type { HitlReplyKind } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
@@ -38,6 +40,13 @@ export interface HitlRequestRecord {
 	replyKind: HitlReplyKind | null;
 	replyText: string | null;
 	expiresAt: string | null;
+	/** The turn this request is about, the event that triggered it, and the hash of the prompt a person is shown. */
+	turnKey: string | null;
+	triggerEventId: number | null;
+	promptSha256: string | null;
+	/** True only when the stored suggestion survived the sanitiser unchanged. Null on requests from before it existed. */
+	approvable: boolean | null;
+	telegramSentAt: string | null;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -52,6 +61,11 @@ function toRecord(row: typeof aiHitlRequests.$inferSelect): HitlRequestRecord {
 		replyKind: (row.replyKind as HitlReplyKind) ?? null,
 		replyText: row.replyText,
 		expiresAt: row.expiresAt,
+		turnKey: row.turnKey,
+		triggerEventId: row.triggerEventId,
+		promptSha256: row.promptSha256,
+		approvable: row.approvable,
+		telegramSentAt: row.telegramSentAt,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
 	};
@@ -106,6 +120,10 @@ export async function openHitlRequest(input: {
 	sessionId: string;
 	channelId?: string | null;
 	expiresAt?: string | null;
+	turnKey?: string | null;
+	triggerEventId?: number | null;
+	promptSha256?: string | null;
+	approvable?: boolean | null;
 }): Promise<HitlRequestRecord> {
 	await supersedeOpenHitl(input.sessionId);
 	const now = new Date().toISOString();
@@ -117,6 +135,10 @@ export async function openHitlRequest(input: {
 			channelId: input.channelId ?? null,
 			status: "awaiting_reply",
 			expiresAt: input.expiresAt ?? new Date(Date.now() + HITL_TTL_MS).toISOString(),
+			turnKey: input.turnKey ?? null,
+			triggerEventId: input.triggerEventId ?? null,
+			promptSha256: input.promptSha256 ?? null,
+			approvable: input.approvable ?? null,
 			createdAt: now,
 			updatedAt: now,
 		})
@@ -208,4 +230,93 @@ export async function expireOverdueHitl(): Promise<number> {
 		.returning({ sessionId: aiHitlRequests.sessionId });
 	for (const sessionId of new Set(rows.map((r) => r.sessionId))) notifyInboxChanged({ sessionId });
 	return rows.length;
+}
+
+/**
+ * Claim an open HITL for a decision before any side effect: one conditional
+ * update that matches only a request still awaiting a reply and not yet
+ * expired. Of two concurrent decisions exactly one gets the row back. The
+ * claim time is returned so a release can recognise its own claim.
+ */
+export async function claimHitl(input: {
+	id: string;
+	status: "applied" | "declined";
+	replyKind: HitlReplyKind;
+	replyText?: string | null;
+}): Promise<{ claimedAt: string } | null> {
+	const claimedAt = new Date().toISOString();
+	const rows = await getDb()
+		.update(aiHitlRequests)
+		.set({
+			status: input.status,
+			replyKind: input.replyKind,
+			replyText: input.replyText ?? null,
+			updatedAt: claimedAt,
+		})
+		.where(
+			and(
+				eq(aiHitlRequests.id, input.id),
+				eq(aiHitlRequests.status, "awaiting_reply"),
+				or(isNull(aiHitlRequests.expiresAt), gt(aiHitlRequests.expiresAt, claimedAt)),
+			),
+		)
+		.returning({ id: aiHitlRequests.id });
+	return rows.length > 0 ? { claimedAt } : null;
+}
+
+/**
+ * Give a claim back after a refusal that happened before anything was sent, so
+ * the person can still decline, copy or edit. Re-opens the request only if it
+ * is still this claim's and no other request is open for the session (a newer
+ * one must not be made to share the slot); returns false when it could not.
+ */
+export async function releaseHitlClaim(input: {
+	id: string;
+	sessionId: string;
+	claimedAt: string;
+}): Promise<boolean> {
+	try {
+		const rows = await getDb()
+			.update(aiHitlRequests)
+			.set({
+				status: "awaiting_reply",
+				replyKind: null,
+				replyText: null,
+				updatedAt: new Date().toISOString(),
+			})
+			.where(
+				and(
+					eq(aiHitlRequests.id, input.id),
+					eq(aiHitlRequests.status, "applied"),
+					eq(aiHitlRequests.updatedAt, input.claimedAt),
+					sql`NOT EXISTS (SELECT 1 FROM ai_hitl_requests o WHERE o.session_id = ${input.sessionId} AND o.status = 'awaiting_reply' AND o.id <> ${input.id})`,
+				),
+			)
+			.returning({ id: aiHitlRequests.id });
+		return rows.length > 0;
+	} catch {
+		// A request opened between the check and the update trips the one-open-per-session index.
+		return false;
+	}
+}
+
+/** Close one request that is still open. Returns whether it changed. */
+export async function closeOpenHitl(
+	id: string,
+	status: "superseded" | "timed_out",
+): Promise<boolean> {
+	const rows = await getDb()
+		.update(aiHitlRequests)
+		.set({ status, updatedAt: new Date().toISOString() })
+		.where(and(eq(aiHitlRequests.id, id), eq(aiHitlRequests.status, "awaiting_reply")))
+		.returning({ id: aiHitlRequests.id });
+	return rows.length > 0;
+}
+
+/** A Telegram copy of this request was sent: counted toward the global Telegram cap. */
+export async function stampHitlTelegramSent(id: string): Promise<void> {
+	await getDb()
+		.update(aiHitlRequests)
+		.set({ telegramSentAt: new Date().toISOString() })
+		.where(eq(aiHitlRequests.id, id));
 }

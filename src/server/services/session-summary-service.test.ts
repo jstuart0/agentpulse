@@ -135,7 +135,7 @@ describe("a successful run", () => {
 		expect(cost()).toBeGreaterThan(0);
 	});
 
-	test("TC-5.8 the recorded wire body carries the provider's model, 4,000 tokens, 0.2, no reasoning, system and user", async () => {
+	test("TC-5.8 the recorded wire body carries the provider's model, 4,000 tokens, 0.2, the lowest reasoning effort, system and user", async () => {
 		const { editId } = await H.seedActiveSession(SID);
 		script(ok([editId]));
 		await H.runGeneration(SID);
@@ -145,7 +145,8 @@ describe("a successful run", () => {
 		expect(body.model).toBe("gpt-5-mini");
 		expect(body.max_tokens).toBe(4000);
 		expect(body.temperature).toBe(0.2);
-		expect(body.reasoning_effort).toBe("none");
+		// gpt-5-mini is an OpenAI reasoning model; its lowest accepted effort is "minimal".
+		expect(body.reasoning_effort).toBe("minimal");
 		expect(body.messages[0]).toEqual({ role: "system", content: SESSION_SUMMARY_SYSTEM_PROMPT });
 		expect(body.messages[1].role).toBe("user");
 		expect(body.messages[1].content).toContain("Add retry to the uploader.");
@@ -416,12 +417,12 @@ describe("provider failures", () => {
 		[401, "provider_auth", "zero"],
 		[403, "provider_auth", "zero"],
 		[429, "provider_rate_limit", "zero"],
-		[503, "provider_timeout", "input"],
+		[503, "provider_error", "input"],
 		[400, "provider_error", "zero"],
 		[404, "provider_error", "zero"],
 		[422, "provider_error", "zero"],
 		[418, "provider_error", "zero"],
-		[504, "provider_timeout", "max"],
+		[504, "provider_error", "max"],
 	];
 	for (const [status, code, charge] of CASES) {
 		test(`TC-5.14 HTTP ${status} gives ${code}; the row leaves generating and keeps the previous summary`, async () => {
@@ -469,6 +470,59 @@ describe("provider failures", () => {
 		} finally {
 			bad.stop(true);
 		}
+	});
+
+	describe("provider text stays out of the row, the view and the failure log", () => {
+		const SENTINEL = "SENTINEL-PROVIDER-TEXT";
+
+		async function expectSentinelAbsent(run: () => Promise<void>) {
+			await H.seedActiveSession(SID);
+			const logs = H.captureLogs();
+			try {
+				await run();
+			} finally {
+				logs.restore();
+			}
+			expect((await summaryOf(SID)).attemptErrorCode).not.toBeNull();
+			expect(await serialized(SID)).not.toContain(SENTINEL);
+			expect(JSON.stringify(await viewOf(SID))).not.toContain(SENTINEL);
+			// The failure line was written, and it carries a code, never provider text.
+			expect(logs.lines.some((l) => l.includes("[session-summary] attempt failed"))).toBe(true);
+			expect(logs.lines.filter((l) => l.includes(SENTINEL))).toEqual([]);
+		}
+
+		test("in a provider error body (the adapter copies up to 300 characters into its LlmError message)", async () => {
+			const bad = Bun.serve({
+				port: 0,
+				hostname: "127.0.0.1",
+				fetch: () => new Response(`{"error":"${SENTINEL}"}`, { status: 500 }),
+			});
+			try {
+				await H.resetWorld(stub);
+				await H.enableAi();
+				await H.seedProviderAt(`http://127.0.0.1:${bad.port}/v1`);
+				await expectSentinelAbsent(() => H.runGeneration(SID));
+			} finally {
+				bad.stop(true);
+			}
+		});
+
+		test("inside an LlmError message", async () => {
+			const spy = spyOn(registry, "getAdapter").mockImplementation(
+				() =>
+					({
+						kind: "openai",
+						complete: async () => {
+							throw new LlmError("unknown", `openai 500: ${SENTINEL}`, 500);
+						},
+					}) as never,
+			);
+			try {
+				await expectSentinelAbsent(() => H.runGeneration(SID));
+			} finally {
+				spy.mockRestore();
+			}
+		});
 	});
 
 	test("TC-5.14c an undecryptable key is a failed attempt after the claim (P5-7): provider_key_unreadable, a 5 s soft cooldown, nothing sent", async () => {

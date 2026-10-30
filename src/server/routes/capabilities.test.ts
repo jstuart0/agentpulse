@@ -208,6 +208,7 @@ describe("GET /capabilities", () => {
 	});
 
 	test("AI built in but not switched on is also a 200, active false", async () => {
+		await setAiRuntime(false);
 		Object.assign(config as Record<string, unknown>, {
 			aiEnabled: true,
 			secretsKey: "k".repeat(32),

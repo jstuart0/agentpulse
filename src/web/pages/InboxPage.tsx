@@ -1,3 +1,4 @@
+import "../lib/watcher-api-errors.js";
 import { useCallback, useEffect, useState } from "react";
 import { LabsBadge } from "../components/LabsBadge.js";
 import { SkeletonCardList } from "../components/SkeletonCard.js";
@@ -6,9 +7,9 @@ import { FailedProposalCard } from "../components/inbox/FailedProposalCard.js";
 import { HitlCard } from "../components/inbox/HitlCard.js";
 import { RiskyCard } from "../components/inbox/RiskyCard.js";
 import { StuckCard } from "../components/inbox/StuckCard.js";
+import { WatcherReportCard } from "../components/inbox/WatcherReportCard.js";
 import { plainErrorMessage } from "../lib/api-errors.js";
 import { type ActionRequestDecision, type Inbox, type InboxWorkItem, api } from "../lib/api.js";
-import { describeDelivery, isStaleItemError } from "../lib/hitl-outcome.js";
 import { useInboxSignalStore } from "../stores/inbox-signal-store.js";
 
 /**
@@ -24,6 +25,7 @@ const KIND_META: Record<InboxWorkItem["kind"], { shortLabel: string; longLabel: 
 	stuck: { shortLabel: "stuck", longLabel: "Stuck" },
 	risky: { shortLabel: "risky", longLabel: "Risky" },
 	failed_proposal: { shortLabel: "failed", longLabel: "Failed" },
+	watcher_report: { shortLabel: "reports", longLabel: "Watcher reports" },
 	action_launch: { shortLabel: "launches", longLabel: "Launch requests" },
 	action_add_project: { shortLabel: "projects", longLabel: "Project requests" },
 	action_session_stop: { shortLabel: "stops", longLabel: "Session stop" },
@@ -75,22 +77,16 @@ export function InboxPage() {
 	}, [reload, inboxVersion]);
 
 	async function handleHitlDecide(
-		item: Extract<InboxWorkItem, { kind: "hitl" }>,
+		id: string,
 		action: "approve" | "decline",
+		promptSha256: string | null,
 	) {
 		try {
-			const result = await api.decideInboxHitl(item.id, {
-				action,
-				// Approve exactly the prompt on this card: if the agent changed it meanwhile, the server says so.
-				promptHash: action === "approve" ? (item.promptHash ?? undefined) : undefined,
-			});
-			setNotice(action === "approve" ? describeDelivery(result.delivery) : null);
-		} catch (err) {
-			// Someone else may have answered, or it expired: look again so the stale card goes away.
-			if (isStaleItemError(err)) void reload();
-			throw err;
+			await api.decideInboxHitl(id, { action, promptSha256 });
+		} finally {
+			// A refusal (out of date, expired, already answered) also means the card is stale.
+			reload();
 		}
-		void reload();
 	}
 
 	async function handleActionDecide(id: string, decision: ActionRequestDecision) {
@@ -114,6 +110,10 @@ export function InboxPage() {
 			case "failed_proposal":
 				return (
 					<FailedProposalCard key={`${item.kind}:${item.id}`} item={item} onSnooze={handleSnooze} />
+				);
+			case "watcher_report":
+				return (
+					<WatcherReportCard key={`${item.kind}:${item.id}`} item={item} onSnooze={handleSnooze} />
 				);
 			case "action_session_stop":
 			case "action_session_archive":

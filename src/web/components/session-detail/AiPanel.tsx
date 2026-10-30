@@ -1,3 +1,4 @@
+import "../../lib/watcher-api-errors.js";
 import { useCallback, useEffect, useState } from "react";
 import { plainErrorMessage } from "../../lib/api-errors.js";
 import {
@@ -5,22 +6,22 @@ import {
 	type AiProvider,
 	type AiWatcherConfig,
 	type AiWatcherPolicy,
-	type HitlReplyKind,
+	type AiWatcherReport,
 	type NotificationChannelRecord,
+	type PromptDelivery,
 	api,
 } from "../../lib/api.js";
-import {
-	describeDelivery,
-	isStaleItemError,
-	plainHitlErrorMessage,
-} from "../../lib/hitl-outcome.js";
 import { useAiStatusStore } from "../../stores/ai-status-store.js";
 import { useLabsStore } from "../../stores/labs-store.js";
+import { ConfirmDialog } from "../ConfirmDialog.js";
 import { SummaryLabsPointer } from "./SummaryLabsPointer.js";
+import { WatcherHitlCard } from "./WatcherHitlCard.js";
+import { WatcherModeSwitches } from "./WatcherModeSwitches.js";
+import { WatcherReports } from "./WatcherReports.js";
+import { autoConfirmationPoints } from "./watcher-panel-model.js";
 
 interface AiPanelProps {
 	sessionId: string;
-	sessionIsManaged: boolean;
 }
 
 /** The AI tab: a line about Session summaries while they're off, above whatever the tab itself shows. */
@@ -35,11 +36,16 @@ export function AiPanel(props: AiPanelProps) {
 	);
 }
 
-function AiWatcherPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
+function AiWatcherPanel({ sessionId }: AiPanelProps) {
 	const featureActive = useAiStatusStore((s) => s.status?.active ?? null);
 	const [providers, setProviders] = useState<AiProvider[]>([]);
 	const [config, setConfig] = useState<AiWatcherConfig | null>(null);
 	const [proposals, setProposals] = useState<AiProposal[]>([]);
+	const [reports, setReports] = useState<AiWatcherReport[]>([]);
+	const [delivery, setDelivery] = useState<PromptDelivery | null>(null);
+	const [autoDialog, setAutoDialog] = useState<{ error: string | null; busy: boolean } | null>(
+		null,
+	);
 	const [channels, setChannels] = useState<NotificationChannelRecord[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [banner, setBanner] = useState<{ kind: "error" | "info"; text: string } | null>(null);
@@ -57,6 +63,8 @@ function AiWatcherPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 			setProviders(p.providers);
 			setConfig(w.config);
 			setProposals(w.proposals);
+			setReports(w.reports);
+			setDelivery(w.promptDelivery);
 			if (telegramEnabled) {
 				try {
 					const ch = await api.getChannels();
@@ -85,6 +93,7 @@ function AiWatcherPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 			return;
 		}
 		try {
+			// The modes come from the server's defaults for a new watcher.
 			await api.updateAiWatcher(sessionId, {
 				enabled: true,
 				providerId: def.id,
@@ -116,6 +125,34 @@ function AiWatcherPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 			await reload();
 		} catch (err) {
 			setBanner({ kind: "error", text: plainErrorMessage(err) });
+		}
+	}
+
+	async function resetAutoSends() {
+		try {
+			await api.updateAiWatcher(sessionId, { resetContinuations: true });
+			await reload();
+		} catch (err) {
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
+		}
+	}
+
+	async function changePolicy(policy: AiWatcherPolicy) {
+		if (policy === "auto") {
+			setAutoDialog({ error: null, busy: false });
+			return;
+		}
+		await updateConfigField("policy", policy);
+	}
+
+	async function confirmAuto() {
+		setAutoDialog({ error: null, busy: true });
+		try {
+			await api.updateAiWatcher(sessionId, { policy: "auto" });
+			setAutoDialog(null);
+			await reload();
+		} catch (err) {
+			setAutoDialog({ error: plainErrorMessage(err), busy: false });
 		}
 	}
 
@@ -173,13 +210,8 @@ function AiWatcherPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 						</div>
 						<div className="text-xs text-muted-foreground mt-0.5">
 							{config?.enabled
-								? `${config.continuationsUsed} / ${config.maxContinuations} continuations this cycle`
+								? "Watching this session."
 								: "Off — no LLM calls fire for this session."}
-							{!sessionIsManaged && config?.enabled && (
-								<span className="ml-2 text-[10px] text-amber-300">
-									observed session: watcher can propose, not dispatch
-								</span>
-							)}
 						</div>
 					</div>
 					{config?.enabled ? (
@@ -200,20 +232,27 @@ function AiWatcherPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 						</button>
 					)}
 				</div>
+				{config?.enabled && (
+					<WatcherModeSwitches
+						config={config}
+						delivery={delivery}
+						onToggle={(key, value) => void updateConfigField(key, value)}
+						onReset={() => void resetAutoSends()}
+					/>
+				)}
 			</div>
 
 			{/* HITL card (only when something is waiting) */}
 			{openHitl && (
-				<HitlCard
+				<WatcherHitlCard
 					proposal={openHitl}
-					onResolved={(note) => {
-						if (note) setBanner({ kind: "info", text: note });
-						void reload();
-					}}
+					delivery={delivery ?? { deliverable: false, reason: "observed" }}
+					onResolved={reload}
 					onError={(e) => setBanner({ kind: "error", text: e })}
-					onStale={reload}
 				/>
 			)}
+
+			<WatcherReports reports={reports} />
 
 			{/* Recent proposals */}
 			{proposals.length > 0 && (
@@ -227,7 +266,11 @@ function AiWatcherPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 								<ProposalBadge state={p.state} decision={p.decision} />
 								<div className="flex-1 min-w-0 text-xs">
 									<div className="truncate font-mono text-foreground/80">
-										{p.nextPrompt || p.reportSummary || p.errorMessage || "(no content)"}
+										{p.suggestedPrompt ||
+											p.nextPrompt ||
+											p.reportSummary ||
+											p.errorMessage ||
+											"(no content)"}
 									</div>
 									<div className="text-muted-foreground mt-0.5">
 										{new Date(p.createdAt).toLocaleString()} · {p.tokensIn}/{p.tokensOut} tok
@@ -268,22 +311,36 @@ function AiWatcherPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 						<Field label="Policy">
 							<select
 								value={config.policy}
-								onChange={(e) => updateConfigField("policy", e.target.value as AiWatcherPolicy)}
+								onChange={(e) => void changePolicy(e.target.value as AiWatcherPolicy)}
 								className="w-full bg-background border border-border rounded px-2 py-1"
 							>
 								<option value="ask_always">Always ask</option>
-								<option value="ask_on_risk">Ask on risky actions (coming in phase 2)</option>
+								<option value="ask_on_risk">Ask on risky actions</option>
+								<option value="auto">Send fixed nudges automatically…</option>
 							</select>
+							{config.policy === "auto" && !config.autoConfirmedAt && (
+								<div className="mt-1 text-[11px] text-amber-300">
+									Automatic sending is on hold until you confirm it again.{" "}
+									<button
+										type="button"
+										onClick={() => setAutoDialog({ error: null, busy: false })}
+										className="underline"
+									>
+										Confirm
+									</button>
+								</div>
+							)}
 						</Field>
-						<Field label="Max continuations per cycle">
+						<Field label="Most automatic sends in total">
 							<input
 								type="number"
-								min={1}
+								min={0}
 								max={50}
 								value={config.maxContinuations}
-								onChange={(e) =>
-									updateConfigField("maxContinuations", Number.parseInt(e.target.value, 10) || 10)
-								}
+								onChange={(e) => {
+									const value = Number.parseInt(e.target.value, 10);
+									if (Number.isFinite(value)) void updateConfigField("maxContinuations", value);
+								}}
 								className="w-full bg-background border border-border rounded px-2 py-1 font-mono"
 							/>
 						</Field>
@@ -328,6 +385,23 @@ function AiWatcherPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 						)}
 					</div>
 				</details>
+			)}
+			{autoDialog && (
+				<ConfirmDialog
+					title="Turn on automatic sending?"
+					confirmLabel="Turn on automatic sending"
+					focusCancel
+					busy={autoDialog.busy}
+					error={autoDialog.error}
+					onConfirm={() => void confirmAuto()}
+					onCancel={() => setAutoDialog(null)}
+				>
+					<ul className="list-disc space-y-1 pl-5">
+						{autoConfirmationPoints(config?.maxContinuations ?? 10).map((point) => (
+							<li key={point}>{point}</li>
+						))}
+					</ul>
+				</ConfirmDialog>
 			)}
 		</div>
 	);
@@ -388,124 +462,6 @@ function ProposalBadge({ state, decision }: { state: string; decision: string | 
 		<span className={`${base} bg-card text-muted-foreground border-border`}>
 			{decision ?? state}
 		</span>
-	);
-}
-
-function HitlCard({
-	proposal,
-	onResolved,
-	onError,
-	onStale,
-}: {
-	proposal: AiProposal;
-	onResolved: (note: string | null) => void;
-	onError: (err: string) => void;
-	/** The server says this request moved on without us: reload so the card goes away. */
-	onStale: () => void;
-}) {
-	const [submitting, setSubmitting] = useState(false);
-	const [customOpen, setCustomOpen] = useState(false);
-	const [customPrompt, setCustomPrompt] = useState(proposal.nextPrompt ?? "");
-
-	async function act(action: HitlReplyKind) {
-		setSubmitting(true);
-		try {
-			const result = await api.decideAiProposal(proposal.id, {
-				action,
-				customPrompt: action === "custom" ? customPrompt : undefined,
-				// Approve exactly the prompt on screen: if the agent changed it meanwhile, the server says so.
-				promptHash: action === "approve" ? (proposal.promptHash ?? undefined) : undefined,
-			});
-			onResolved(action === "decline" ? null : describeDelivery(result.delivery));
-		} catch (err) {
-			onError(plainHitlErrorMessage(err));
-			// Whatever the refusal, what's on screen may be out of date: look again.
-			if (isStaleItemError(err)) onStale();
-		} finally {
-			setSubmitting(false);
-		}
-	}
-
-	const why = (proposal.rawResponse as Record<string, unknown> | null)?.why ?? null;
-
-	return (
-		<div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
-			<div className="flex items-center justify-between">
-				<div className="text-sm font-semibold text-amber-200">Watcher wants your approval</div>
-				<span className="text-[10px] font-mono text-muted-foreground">
-					{new Date(proposal.createdAt).toLocaleTimeString()}
-				</span>
-			</div>
-			<div className="text-xs text-muted-foreground">Proposed next prompt:</div>
-			<pre className="text-xs font-mono bg-background border border-border rounded p-3 whitespace-pre-wrap break-words">
-				{proposal.nextPrompt || proposal.reportSummary || "(no content)"}
-			</pre>
-			{typeof why === "string" && why && (
-				<div className="text-xs text-muted-foreground">Why: {why}</div>
-			)}
-
-			{customOpen && (
-				<div className="space-y-2">
-					<label className="text-[10px] uppercase tracking-wider text-muted-foreground">
-						Custom prompt
-					</label>
-					<textarea
-						rows={5}
-						value={customPrompt}
-						onChange={(e) => setCustomPrompt(e.target.value)}
-						className="w-full text-xs font-mono bg-background border border-border rounded p-2"
-					/>
-				</div>
-			)}
-
-			<div className="flex items-center gap-2 flex-wrap">
-				{!customOpen ? (
-					<>
-						<button
-							type="button"
-							onClick={() => act("approve")}
-							disabled={submitting || !proposal.approvable}
-							className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground disabled:opacity-40"
-						>
-							Approve
-						</button>
-						<button
-							type="button"
-							onClick={() => setCustomOpen(true)}
-							className="text-xs px-3 py-1.5 rounded border border-border hover:bg-muted/40"
-						>
-							Custom…
-						</button>
-						<button
-							type="button"
-							onClick={() => act("decline")}
-							disabled={submitting}
-							className="text-xs px-3 py-1.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted/40"
-						>
-							Decline
-						</button>
-					</>
-				) : (
-					<>
-						<button
-							type="button"
-							onClick={() => act("custom")}
-							disabled={submitting || !customPrompt.trim()}
-							className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground disabled:opacity-40"
-						>
-							Send custom
-						</button>
-						<button
-							type="button"
-							onClick={() => setCustomOpen(false)}
-							className="text-xs px-3 py-1.5 rounded border border-border hover:bg-muted/40"
-						>
-							Back
-						</button>
-					</>
-				)}
-			</div>
-		</div>
 	);
 }
 

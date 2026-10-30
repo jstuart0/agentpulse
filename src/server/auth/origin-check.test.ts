@@ -22,7 +22,9 @@ import {
 const { initializeDatabase } = await import("../db/client.js");
 const { config } = await import("../config.js");
 const { Hono } = await import("hono");
-const { ALWAYS_ADMIN_ROUTES, requireRolePolicy } = await import("./route-scope-policy.js");
+const { ALWAYS_ADMIN_ROUTES, refuseBadOrigin, requireRolePolicy } = await import(
+	"./route-scope-policy.js"
+);
 
 const originalDisableAuth = config.disableAuth;
 const originalPublicUrl = process.env.PUBLIC_URL;
@@ -250,5 +252,43 @@ describe("same-origin requests need no configuration", () => {
 	test("with no Host header only the configured list applies", async () => {
 		expect((await sendFrom("http://127.0.0.1:3000", null)).status).toBe(403);
 		expect((await sendFrom(ALLOWED, null)).status).toBe(200);
+	});
+});
+
+describe("refuseBadOrigin with authentication off (DNS rebinding)", () => {
+	function guarded() {
+		const app = new Hono();
+		app.post("/x", (c) => refuseBadOrigin(c) ?? c.json({ reached: true }));
+		return app;
+	}
+	const post = (host: string, origin: string) =>
+		guarded().request("http://placeholder/x", {
+			method: "POST",
+			headers: { Host: host, Origin: origin },
+		});
+
+	test("an Origin equal to an unlisted, non-loopback Host is refused", async () => {
+		(config as Record<string, unknown>).disableAuth = true;
+		const res = await post("rebind.example.test", "http://rebind.example.test");
+		expect(res.status).toBe(403);
+		expect(((await res.json()) as { error: string }).error).toBe("bad_origin");
+	});
+
+	test("the same shape on a loopback Host, or on an allowlisted name, is accepted", async () => {
+		(config as Record<string, unknown>).disableAuth = true;
+		expect((await post("localhost:3000", "http://localhost:3000")).status).toBe(200);
+		expect((await post("127.0.0.1:3000", "http://127.0.0.1:3000")).status).toBe(200);
+	});
+
+	test("with authentication on, an Origin equal to the Host is still accepted", async () => {
+		(config as Record<string, unknown>).disableAuth = false;
+		expect((await post("lan.example.test", "http://lan.example.test")).status).toBe(200);
+	});
+
+	test("a foreign Origin is refused either way", async () => {
+		for (const off of [true, false]) {
+			(config as Record<string, unknown>).disableAuth = off;
+			expect((await post("localhost:3000", "https://evil.example.test")).status).toBe(403);
+		}
 	});
 });

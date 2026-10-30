@@ -363,11 +363,11 @@ describe("the other triggers", () => {
 		]);
 	});
 
-	test("hitl_opened is dispatched in the runner right after the HITL request is opened, and only with an id", () => {
-		const source = readFileSync(join(import.meta.dir, "ai/runner.ts"), "utf8");
+	test("hitl_opened is dispatched where the watcher opens the HITL request, right after it is opened, and only with an id", () => {
+		const source = readFileSync(join(import.meta.dir, "ai/continue-decision.ts"), "utf8");
 		const opened = source.indexOf("await completeProposalAsHitl(");
 		const dispatched = source.indexOf("dispatchEvent(hitlOpenedEvent(");
-		const guard = source.lastIndexOf("if (hitlOpen.hitlId)", dispatched);
+		const guard = source.lastIndexOf("if (opened.hitlId)", dispatched);
 		expect(opened).toBeGreaterThan(-1);
 		expect(dispatched).toBeGreaterThan(opened);
 		expect(guard).toBeGreaterThan(opened);

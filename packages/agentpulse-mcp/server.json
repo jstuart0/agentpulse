@@ -1,0 +1,36 @@
+{
+	"$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+	"name": "io.github.jstuart0/agentpulse",
+	"title": "AgentPulse",
+	"description": "Monitor and orchestrate Claude Code, Codex CLI and Copilot CLI sessions via self-hosted AgentPulse",
+	"websiteUrl": "https://jstuart0.github.io/agentpulse/",
+	"repository": {
+		"url": "https://github.com/jstuart0/agentpulse",
+		"source": "github",
+		"subfolder": "packages/agentpulse-mcp"
+	},
+	"version": "0.2.2",
+	"packages": [
+		{
+			"registryType": "npm",
+			"identifier": "@craze0/agentpulse-mcp",
+			"version": "0.2.2",
+			"transport": { "type": "stdio" },
+			"packageArguments": [{ "type": "positional", "value": "serve" }],
+			"environmentVariables": [
+				{
+					"name": "AGENTPULSE_URL",
+					"description": "URL of your AgentPulse server",
+					"default": "http://localhost:3000",
+					"isRequired": false
+				},
+				{
+					"name": "AGENTPULSE_API_KEY",
+					"description": "AgentPulse API key with the observe scope (or manage, to launch and steer sessions)",
+					"isRequired": true,
+					"isSecret": true
+				}
+			]
+		}
+	]
+}

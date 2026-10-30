@@ -7,8 +7,15 @@ import {
 import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { aiActionRequests, aiHitlRequests, aiInboxSnoozes, events, sessions, watcherProposals } =
-	await import("../../db/schema/index.js");
+const {
+	aiActionRequests,
+	aiHitlRequests,
+	aiInboxSnoozes,
+	aiWatcherReports,
+	events,
+	sessions,
+	watcherProposals,
+} = await import("../../db/schema/index.js");
 const { buildInbox } = await import("./inbox-service.js");
 const { snoozeItem } = await import("./inbox-snooze-service.js");
 const { completeProposalAsHitl, createPendingProposal, failProposal } = await import(
@@ -23,6 +30,7 @@ beforeEach(async () => {
 	await getDb().delete(aiInboxSnoozes).execute();
 	await getDb().delete(aiActionRequests).execute();
 	await getDb().delete(aiHitlRequests).execute();
+	await getDb().delete(aiWatcherReports).execute();
 	await getDb().delete(watcherProposals).execute();
 	await getDb().delete(events).execute();
 	await getDb().delete(sessions).execute();
@@ -144,6 +152,7 @@ describe("inbox-service", () => {
 			"action_create_alert_rule",
 			"action_create_freeform_alert_rule",
 			"action_bulk_session",
+			"watcher_report",
 		] as const;
 
 		// Bidirectional subset checks → compile-time set equality.
@@ -230,5 +239,92 @@ describe("inbox-service", () => {
 		});
 		const after = await buildInbox();
 		expect(after.items.some((i) => i.kind === "failed_proposal" && i.id === p.id)).toBe(false);
+	});
+	describe("watcher reports", () => {
+		const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+		async function report(
+			sessionId: string,
+			turnKey: string,
+			over: Partial<typeof aiWatcherReports.$inferInsert> = {},
+		) {
+			const id = crypto.randomUUID();
+			await getDb()
+				.insert(aiWatcherReports)
+				.values({
+					id,
+					sessionId,
+					turnKey,
+					status: "delivered",
+					verdict: "finished",
+					why: "The agent finished the change.",
+					throughEventId: 1,
+					createdAt: ago(60_000),
+					...over,
+				});
+			return id;
+		}
+
+		test("a delivered report shows, with a severity per verdict", async () => {
+			await mkSession("w1");
+			await mkSession("w2");
+			await mkSession("w3");
+			await report("w1", "p:1", { verdict: "finished" });
+			await report("w2", "p:1", { verdict: "stuck" });
+			await report("w3", "p:1", { verdict: "needs_you" });
+			const inbox = await buildInbox();
+			const reports = inbox.items.filter((i) => i.kind === "watcher_report");
+			expect(reports).toHaveLength(3);
+			const by = (id: string) => reports.find((r) => r.sessionId === id)?.severity;
+			expect([by("w1"), by("w2"), by("w3")]).toEqual(["info", "normal", "high"]);
+			expect(inbox.byKind.watcher_report).toBe(3);
+		});
+
+		test("only the newest delivered report of a session shows", async () => {
+			await mkSession("w4");
+			await report("w4", "p:1", { createdAt: ago(300_000), why: "old" });
+			const newest = await report("w4", "p:2", { createdAt: ago(60_000), why: "new" });
+			const inbox = await buildInbox();
+			const reports = inbox.items.filter((i) => i.kind === "watcher_report");
+			expect(reports.map((r) => r.id)).toEqual([newest]);
+		});
+
+		test("failed, suppressed and claimed rows never show", async () => {
+			await mkSession("w5");
+			// Each carries a verdict and a note, so only its status keeps it out.
+			await report("w5", "p:1", { status: "failed", failureCode: "parse" });
+			await report("w5", "p:2", { status: "suppressed", failureCode: "stale" });
+			await report("w5", "p:3", { status: "claimed" });
+			const inbox = await buildInbox();
+			expect(inbox.items.filter((i) => i.kind === "watcher_report")).toEqual([]);
+		});
+
+		test("acknowledging the session clears it, and a later report shows again", async () => {
+			await mkSession("w6", { lastUserAcknowledgedAt: ago(30_000) });
+			await report("w6", "p:1", { createdAt: ago(60_000) });
+			expect((await buildInbox()).items.filter((i) => i.kind === "watcher_report")).toEqual([]);
+			const later = await report("w6", "p:2", { createdAt: ago(5_000) });
+			const shown = (await buildInbox()).items.filter((i) => i.kind === "watcher_report");
+			expect(shown.map((r) => r.id)).toEqual([later]);
+		});
+
+		test("a SQLite-format acknowledgement time is compared as a time, not as text", async () => {
+			// 'YYYY-MM-DD HH:MM:SS' (UTC) against an ISO report time one hour later.
+			const ackAt = new Date(Date.now() - 3_600_000).toISOString().slice(0, 19).replace("T", " ");
+			await mkSession("w7", { lastUserAcknowledgedAt: ackAt });
+			const id = await report("w7", "p:1", { createdAt: ago(60_000) });
+			const shown = (await buildInbox()).items.filter((i) => i.kind === "watcher_report");
+			expect(shown.map((r) => r.id)).toEqual([id]);
+		});
+
+		test("snoozing a report hides it", async () => {
+			await mkSession("w8");
+			const id = await report("w8", "p:1");
+			await snoozeItem({
+				kind: "watcher_report",
+				targetId: id,
+				until: new Date(Date.now() + 60_000),
+			});
+			expect((await buildInbox()).items.filter((i) => i.kind === "watcher_report")).toEqual([]);
+		});
 	});
 });

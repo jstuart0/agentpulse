@@ -232,3 +232,128 @@ describe("ask turn concurrency", () => {
 		expect(await load("")).toBe(2);
 	});
 });
+
+describe("AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS (AGEN-77)", () => {
+	const KEY = "AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS";
+	let saved: string | undefined;
+	let fresh = 0;
+	beforeEach(() => {
+		saved = process.env[KEY];
+	});
+	afterEach(() => {
+		if (saved === undefined) delete process.env[KEY];
+		else process.env[KEY] = saved;
+	});
+
+	/** config.ts computes this once at import, so each case imports a fresh copy of the module. */
+	async function load(value?: string) {
+		if (value === undefined) delete process.env[KEY];
+		else process.env[KEY] = value;
+		const mod = (await import(`./config.js?summary-timeout-${++fresh}`)) as {
+			config: { sessionSummaryTimeoutSeconds: number };
+		};
+		return mod.config.sessionSummaryTimeoutSeconds;
+	}
+
+	test("unset gives 360", async () => {
+		expect(await load()).toBe(360);
+	});
+
+	test("clamps to 30..1800 with both boundaries accepted exactly", async () => {
+		expect(await load("29")).toBe(30);
+		expect(await load("30")).toBe(30);
+		expect(await load("31")).toBe(31);
+		expect(await load("1799")).toBe(1799);
+		expect(await load("1800")).toBe(1800);
+		expect(await load("1801")).toBe(1800);
+	});
+
+	test("a fraction is floored and junk falls back to the default", async () => {
+		expect(await load("45.9")).toBe(45);
+		expect(await load("abc")).toBe(360);
+		expect(await load("")).toBe(360);
+	});
+
+	test("the clamp's maximum is the largest timeout the fetch helper accepts", async () => {
+		const { MAX_LLM_CALL_TIMEOUT_SECONDS } = await import("./config.js");
+		const { llmFetch } = await import("./services/ai/http.js");
+		expect(await load("99999")).toBe(MAX_LLM_CALL_TIMEOUT_SECONDS);
+		const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("ok") });
+		try {
+			const url = `http://127.0.0.1:${server.port}/`;
+			const res = await llmFetch(url, {}, { timeoutMs: MAX_LLM_CALL_TIMEOUT_SECONDS * 1000 });
+			expect(res.status).toBe(200);
+			await res.text();
+			await expect(
+				llmFetch(url, {}, { timeoutMs: MAX_LLM_CALL_TIMEOUT_SECONDS * 1000 + 1 }),
+			).rejects.toThrow();
+		} finally {
+			server.stop(true);
+		}
+	});
+});
+
+describe("AI call timeouts (AGEN-79)", () => {
+	const ANSWER = "AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS";
+	const HELPER = "AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS";
+	const FAST = "AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS";
+	const saved: Record<string, string | undefined> = {};
+	let fresh = 0;
+	beforeEach(() => {
+		for (const key of [ANSWER, HELPER, FAST]) saved[key] = process.env[key];
+	});
+	afterEach(() => {
+		for (const key of [ANSWER, HELPER, FAST]) {
+			if (saved[key] === undefined) delete process.env[key];
+			else process.env[key] = saved[key];
+		}
+	});
+
+	async function load(env: Record<string, string | undefined> = {}) {
+		for (const key of [ANSWER, HELPER, FAST]) {
+			const value = env[key];
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		const mod = (await import(`./config.js?ai-timeouts-${++fresh}`)) as {
+			config: {
+				askAnswerTimeoutSeconds: number;
+				aiHelperTimeoutSeconds: number;
+				aiFastProviderTimeoutSeconds: number;
+			};
+		};
+		return mod.config;
+	}
+
+	test("unset: the answer gets 180 s and a helper call 20 s", async () => {
+		const c = await load();
+		expect(c.askAnswerTimeoutSeconds).toBe(180);
+		expect(c.aiHelperTimeoutSeconds).toBe(20);
+	});
+
+	test("the answer limit clamps to 30..1800, the helper limit to 5..300, boundaries exact", async () => {
+		expect((await load({ [ANSWER]: "29" })).askAnswerTimeoutSeconds).toBe(30);
+		expect((await load({ [ANSWER]: "30" })).askAnswerTimeoutSeconds).toBe(30);
+		expect((await load({ [ANSWER]: "1800" })).askAnswerTimeoutSeconds).toBe(1800);
+		expect((await load({ [ANSWER]: "1801" })).askAnswerTimeoutSeconds).toBe(1800);
+		expect((await load({ [HELPER]: "4" })).aiHelperTimeoutSeconds).toBe(5);
+		expect((await load({ [HELPER]: "5" })).aiHelperTimeoutSeconds).toBe(5);
+		expect((await load({ [HELPER]: "300" })).aiHelperTimeoutSeconds).toBe(300);
+		expect((await load({ [HELPER]: "301" })).aiHelperTimeoutSeconds).toBe(300);
+	});
+
+	test("the fast provider attempt gets 5 s, clamped to 1..60", async () => {
+		expect((await load()).aiFastProviderTimeoutSeconds).toBe(5);
+		expect((await load({ [FAST]: "0" })).aiFastProviderTimeoutSeconds).toBe(1);
+		expect((await load({ [FAST]: "1" })).aiFastProviderTimeoutSeconds).toBe(1);
+		expect((await load({ [FAST]: "60" })).aiFastProviderTimeoutSeconds).toBe(60);
+		expect((await load({ [FAST]: "61" })).aiFastProviderTimeoutSeconds).toBe(60);
+		expect((await load({ [FAST]: "x" })).aiFastProviderTimeoutSeconds).toBe(5);
+	});
+
+	test("a fraction is floored and junk falls back to the default", async () => {
+		expect((await load({ [ANSWER]: "90.9" })).askAnswerTimeoutSeconds).toBe(90);
+		expect((await load({ [ANSWER]: "abc" })).askAnswerTimeoutSeconds).toBe(180);
+		expect((await load({ [HELPER]: "" })).aiHelperTimeoutSeconds).toBe(20);
+	});
+});

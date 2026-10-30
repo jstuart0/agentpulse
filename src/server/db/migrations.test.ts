@@ -184,7 +184,7 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 
 			const tables = getTableNames(freshDb);
 
-			// Drizzle migrate should have created all 31 SQLite tables (30 plus event_embeddings).
+			// Drizzle migrate should have created all 33 SQLite tables (32 plus event_embeddings).
 			const required = [
 				"sessions",
 				"events",
@@ -215,6 +215,8 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 				"pairing_codes",
 				"mobile_devices",
 				"mobile_device_activities",
+				"ai_watcher_reports",
+				"ai_dispatch_audit",
 				"ask_threads",
 				"ask_messages",
 				"projects",
@@ -770,7 +772,7 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 import { describePostgresOnly } from "../test-utils/backend.js";
 
 describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
-	test("TC-1.3 fresh Postgres install creates every table (pairing_codes and ai_session_summaries among them) + 10 cascade FKs", async () => {
+	test("TC-1.3 fresh Postgres install creates every table (pairing_codes, ai_session_summaries and ai_watcher_reports among them) + 11 cascade FKs", async () => {
 		// Requires DATABASE_URL to point at an empty test database.
 		// Run with: AGENTPULSE_TEST_BACKEND=postgres DATABASE_URL=postgres://... bun test
 		const { default: postgres } = await import("postgres");
@@ -814,6 +816,8 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				"pairing_codes",
 				"mobile_devices",
 				"mobile_device_activities",
+				"ai_watcher_reports",
+				"ai_dispatch_audit",
 				"ask_threads",
 				"ask_messages",
 				"projects",
@@ -861,7 +865,7 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				  AND rc.delete_rule = 'CASCADE'
 			`) as Array<{ table_name: string; delete_rule: string }>;
 
-			expect(cascadeFks.length, "expected 10 cascade FKs on sessions(session_id)").toBe(10);
+			expect(cascadeFks.length, "expected 11 cascade FKs on sessions(session_id)").toBe(11);
 			expect(
 				cascadeFks.map((r) => r.table_name),
 				"the summaries table is one of the cascade children",
@@ -874,6 +878,10 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				cascadeFks.map((r) => r.table_name),
 				"and so is a decided proposal's delivery",
 			).toContain("ai_hitl_deliveries");
+			expect(
+				cascadeFks.map((r) => r.table_name),
+				"the reports table is one of the cascade children",
+			).toContain("ai_watcher_reports");
 
 			// All 15 user-ownership columns + 3 indexes on Postgres, by
 			// information_schema.columns / pg_indexes.
@@ -1289,7 +1297,7 @@ describeSqliteOnly("vector scan index on both SQLite install shapes", () => {
 const PAIRING_INDEXES = ["pairing_codes_code_hash_unique", "idx_pairing_codes_redeemed_key"];
 const PAIRING_TRIGGER = "pairing_codes_redeemed_key_immutable";
 
-/** A copy of drizzle/<dialect> with every migration from 0012_pairing_codes on removed: the database as 0011 left it. */
+/** A copy of drizzle/<dialect> with every migration from 0013_pairing_codes on removed: the database as 0011 left it. */
 async function migrationsBefore0012(dialect: "sqlite" | "postgres"): Promise<string> {
 	const { cpSync, readFileSync, unlinkSync, writeFileSync } = await import("node:fs");
 	const dir = mkdtempSync(join(tmpdir(), `ap-prior-${dialect}-0012-`));
@@ -1298,8 +1306,8 @@ async function migrationsBefore0012(dialect: "sqlite" | "postgres"): Promise<str
 	const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
 		entries: Array<{ tag: string }>;
 	};
-	const cut = journal.entries.findIndex((e) => e.tag === "0012_pairing_codes");
-	expect(cut, "the journal lists 0012_pairing_codes").toBeGreaterThan(0);
+	const cut = journal.entries.findIndex((e) => e.tag === "0013_pairing_codes");
+	expect(cut, "the journal lists 0013_pairing_codes").toBeGreaterThan(0);
 	for (const dropped of journal.entries.slice(cut)) unlinkSync(join(dir, `${dropped.tag}.sql`));
 	writeFileSync(
 		journalPath,
@@ -1427,7 +1435,7 @@ describeSqliteOnly("pairing_codes on SQLite", () => {
 		const db = new Database(tmpDbPath());
 		try {
 			migrate(drizzle(db), { migrationsFolder: folder });
-			const sql = readFileSync(join(folder, "0012_pairing_codes.sql"), "utf8");
+			const sql = readFileSync(join(folder, "0013_pairing_codes.sql"), "utf8");
 			for (const statement of sql.split("--> statement-breakpoint")) db.exec(statement);
 			expect(sqliteTriggerNames(db).filter((n) => n === PAIRING_TRIGGER).length).toBe(1);
 		} finally {
@@ -1506,7 +1514,7 @@ describePostgresOnly("pairing_codes on Postgres", () => {
 					await failureOf(after`UPDATE pairing_codes SET redeemed_key_id = 'k-2' WHERE id = 'c-1'`),
 				).toMatch(/immutable/);
 
-				const sqlText = readFileSync(join(full, "0012_pairing_codes.sql"), "utf8");
+				const sqlText = readFileSync(join(full, "0013_pairing_codes.sql"), "utf8");
 				for (const statement of sqlText.split("--> statement-breakpoint")) {
 					await after.unsafe(statement);
 				}
@@ -1588,7 +1596,7 @@ async function migrationsBefore(dialect: "sqlite" | "postgres", tag: string): Pr
 }
 
 const migrationsBefore0013 = (dialect: "sqlite" | "postgres") =>
-	migrationsBefore(dialect, "0013_mobile_devices");
+	migrationsBefore(dialect, "0014_mobile_devices");
 
 /** The cascade foreign keys of a SQLite table: [from column, referenced table, on delete]. */
 function sqliteForeignKeys(db: Database, table: string): string[][] {
@@ -1745,7 +1753,7 @@ describeSqliteOnly("mobile devices on SQLite", () => {
 		const db = new Database(tmpDbPath());
 		try {
 			migrate(drizzle(db), { migrationsFolder: folder });
-			const sql = readFileSync(join(folder, "0013_mobile_devices.sql"), "utf8");
+			const sql = readFileSync(join(folder, "0014_mobile_devices.sql"), "utf8");
 			for (const statement of sql.split("--> statement-breakpoint")) db.exec(statement);
 			assertShape(db);
 		} finally {
@@ -1852,7 +1860,7 @@ describePostgresOnly("mobile devices on Postgres", () => {
 				await after`DELETE FROM mobile_devices WHERE id = 'd-3'`;
 				expect(await activities()).toBe(0);
 
-				const sqlText = readFileSync(join(full, "0013_mobile_devices.sql"), "utf8");
+				const sqlText = readFileSync(join(full, "0014_mobile_devices.sql"), "utf8");
 				for (const statement of sqlText.split("--> statement-breakpoint")) {
 					await after.unsafe(statement);
 				}
@@ -1944,7 +1952,7 @@ describeSqliteOnly("hitl deliveries on SQLite", () => {
 	test("upgrading from 0011 with data in it: the table appears, the earlier rows survive, and the constraints hold", async () => {
 		const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
 		const { drizzle } = await import("drizzle-orm/bun-sqlite");
-		const prior = await migrationsBefore("sqlite", "0012_pairing_codes");
+		const prior = await migrationsBefore("sqlite", "0013_pairing_codes");
 		const db = new Database(tmpDbPath());
 		db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
 		try {
@@ -2010,7 +2018,7 @@ describeSqliteOnly("hitl deliveries on SQLite", () => {
 		const db = new Database(tmpDbPath());
 		try {
 			migrate(drizzle(db), { migrationsFolder: folder });
-			const sql = readFileSync(join(folder, "0014_hitl_deliveries.sql"), "utf8");
+			const sql = readFileSync(join(folder, "0015_hitl_deliveries.sql"), "utf8");
 			for (const statement of sql.split("--> statement-breakpoint")) db.exec(statement);
 			assertShape(db);
 		} finally {
@@ -2025,7 +2033,7 @@ describePostgresOnly("hitl deliveries on Postgres", () => {
 		const { migrate } = await import("drizzle-orm/postgres-js/migrator");
 		const { drizzle: drizzlePg } = await import("drizzle-orm/postgres-js");
 		const { readFileSync } = await import("node:fs");
-		const prior = await migrationsBefore("postgres", "0012_pairing_codes");
+		const prior = await migrationsBefore("postgres", "0013_pairing_codes");
 		const full = join(process.cwd(), "drizzle", "postgres");
 
 		const baseUrl = process.env.DATABASE_URL ?? "";
@@ -2093,7 +2101,7 @@ describePostgresOnly("hitl deliveries on Postgres", () => {
 				await after`DELETE FROM sessions WHERE session_id = 's-1'`;
 				expect((await after`SELECT COUNT(*)::int AS n FROM ai_hitl_deliveries`)[0]?.n).toBe(0);
 
-				const sqlText = readFileSync(join(full, "0014_hitl_deliveries.sql"), "utf8");
+				const sqlText = readFileSync(join(full, "0015_hitl_deliveries.sql"), "utf8");
 				for (const statement of sqlText.split("--> statement-breakpoint")) {
 					await after.unsafe(statement);
 				}

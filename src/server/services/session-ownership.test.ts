@@ -24,7 +24,9 @@ const { controlActions, launchRequests, managedSessions, sessions, supervisors }
 	"../db/schema/index.js"
 );
 const { executeRows } = await import("../db/sql-helpers.js");
+const { findOffendingLeafImports } = await import("../test-utils/leaf-imports.js");
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
+const { seedSupervisor } = await import("../test-utils/supervisor-fixture.js");
 const { claimNextControlAction } = await import("./control-actions.js");
 const {
 	assertSupervisorCanWriteSession,
@@ -106,32 +108,13 @@ async function seedSessionRow(sessionId: string) {
 
 // ─── D17 leaf check ──────────────────────────────────────────────────────────
 
-// F29: tolerates an optional trailing same-line comment after the import
-// statement (`import { x } from "y.js"; // why`) — the prior regex's `$`
-// anchor sat directly after the closing `;`/quote, so any import line
-// carrying a trailing comment silently fell out of the scanned set entirely
-// (not flagged, not cleared — just invisible to the check).
-const LEAF_IMPORT_LINE = /^import\s.+?from\s+["'][^"']+["'];?\s*(?:\/\/.*)?$/gm;
-
-function findOffendingLeafImports(source: string, allowedValueSpecifiers: Set<string>): string[] {
-	const importLines = source.match(LEAF_IMPORT_LINE) ?? [];
-	const offending: string[] = [];
-	for (const line of importLines) {
-		const isTypeOnly = /^import\s+type\s/.test(line);
-		if (isTypeOnly) continue;
-		const match = line.match(/from\s+["']([^"']+)["']/);
-		const specifier = match?.[1];
-		if (!specifier || !allowedValueSpecifiers.has(specifier)) {
-			offending.push(line);
-		}
-	}
-	return offending;
-}
-
 const LEAF_ALLOWED_SPECIFIERS = new Set([
 	"drizzle-orm",
 	"../db/client.js",
 	"../db/schema/index.js",
+	// Pure lease predicate (itself a leaf: only ./util/db-time.js); lets the
+	// liveness readers share one evaluator instead of reading a status column.
+	"./supervisor-liveness.js",
 ]);
 
 describe("session-ownership.ts is a leaf module (D17)", () => {
@@ -167,46 +150,46 @@ describe("session-ownership.ts is a leaf module (D17)", () => {
 describe("resolveSessionOwner", () => {
 	test("(a) launch claimed by A, no managed row → A", async () => {
 		await seedOwnedLaunch("sess-a", "sup-A");
-		expect(await resolveSessionOwner("sess-a")).toBe("sup-A");
+		expect(await resolveSessionOwner(getDb(), "sess-a")).toBe("sup-A");
 	});
 
 	test("(b) launch unclaimed (validated) + managed row B → B", async () => {
 		await seedUnclaimedLaunch("sess-b", "validated");
 		await seedManagedRow("sess-b", "sup-B");
-		expect(await resolveSessionOwner("sess-b")).toBe("sup-B");
+		expect(await resolveSessionOwner(getDb(), "sess-b")).toBe("sup-B");
 	});
 
 	test("(c) no launch + managed B → B", async () => {
 		await seedManagedRow("sess-c", "sup-B");
-		expect(await resolveSessionOwner("sess-c")).toBe("sup-B");
+		expect(await resolveSessionOwner(getDb(), "sess-c")).toBe("sup-B");
 	});
 
 	test("(d) neither exists → null", async () => {
-		expect(await resolveSessionOwner("sess-d")).toBeNull();
+		expect(await resolveSessionOwner(getDb(), "sess-d")).toBeNull();
 	});
 
 	test("(e) launch claimed by A (running) + managed row B (legacy hijack) → A", async () => {
 		await seedOwnedLaunch("sess-e", "sup-A", { status: "running" });
 		await seedManagedRow("sess-e", "sup-B");
-		expect(await resolveSessionOwner("sess-e")).toBe("sup-A");
+		expect(await resolveSessionOwner(getDb(), "sess-e")).toBe("sup-A");
 	});
 
 	test("(f) launch claimed by A, status cancelled, + managed B → A", async () => {
 		await seedOwnedLaunch("sess-f", "sup-A", { status: "cancelled" });
 		await seedManagedRow("sess-f", "sup-B");
-		expect(await resolveSessionOwner("sess-f")).toBe("sup-A");
+		expect(await resolveSessionOwner(getDb(), "sess-f")).toBe("sup-A");
 	});
 
 	test("(g) launch claimed by A, status failed, + managed B → A", async () => {
 		await seedOwnedLaunch("sess-g", "sup-A", { status: "failed" });
 		await seedManagedRow("sess-g", "sup-B");
-		expect(await resolveSessionOwner("sess-g")).toBe("sup-A");
+		expect(await resolveSessionOwner(getDb(), "sess-g")).toBe("sup-A");
 	});
 
 	test("(h) launch claimed by A, status running, + managed A → A", async () => {
 		await seedOwnedLaunch("sess-h", "sup-A", { status: "running" });
 		await seedManagedRow("sess-h", "sup-A");
-		expect(await resolveSessionOwner("sess-h")).toBe("sup-A");
+		expect(await resolveSessionOwner(getDb(), "sess-h")).toBe("sup-A");
 	});
 });
 
@@ -357,7 +340,7 @@ describe("sessionOwnedBy predicate matches resolveSessionOwner (D8 parity)", () 
 
 		let comparisons = 0;
 		for (const sessionId of fixtures) {
-			const owner = await resolveSessionOwner(sessionId);
+			const owner = await resolveSessionOwner(getDb(), sessionId);
 			for (const candidate of candidates) {
 				comparisons++;
 				const [row] = await getDb()
@@ -490,12 +473,12 @@ describe("owner-of-record drift guard (D19) + wiring pin", () => {
 	// rule, not merely stop reading the raw column (e.g. a hard-coded
 	// `supervisorConnected: true` would pass the count-based scan above
 	// while being wrong).
-	test("control-actions.ts, managed-session-state.ts, session-tracker.ts, ai/runner.ts, ai/intelligence-service.ts all import session-ownership.js", () => {
+	test("control-actions.ts, managed-session-state.ts, session-tracker.ts, ai/prompt-deliverability.ts, ai/intelligence-service.ts all import session-ownership.js", () => {
 		const wired = [
 			"src/server/services/control-actions.ts",
 			"src/server/services/managed-session-state.ts",
 			"src/server/services/session-tracker.ts",
-			"src/server/services/ai/runner.ts",
+			"src/server/services/ai/prompt-deliverability.ts",
 			"src/server/services/ai/intelligence-service.ts",
 		];
 		const missing: string[] = [];
@@ -560,36 +543,8 @@ async function runMarkerSql(
 	return lastRows;
 }
 
-async function seedSupervisorRow(id: string, hostName: string) {
-	const now = new Date().toISOString();
-	await getDb()
-		.insert(supervisors)
-		.values({
-			id,
-			hostName,
-			platform: "linux",
-			arch: "x64",
-			version: "1.0.0",
-			capabilities: {
-				version: 1,
-				agentTypes: ["claude_code"],
-				launchModes: ["headless"],
-				os: "linux",
-				terminalSupport: [],
-				features: [],
-			},
-			trustedRoots: [],
-			status: "connected",
-			capabilitySchemaVersion: 2,
-			configSchemaVersion: 1,
-			lastHeartbeatAt: now,
-			heartbeatLeaseExpiresAt: now,
-			enrollmentState: "active",
-			createdAt: now,
-			updatedAt: now,
-		})
-		.execute();
-}
+const seedSupervisorRow = (id: string, hostName: string) =>
+	seedSupervisor(id, { hostName, leaseOffsetMs: 60_000, leaseBaseMs: Date.now() });
 
 describe("runbook — audit query (deploy/k8s/FORWARDAUTH.md, ownership-audit-sql)", () => {
 	test("flags owner_mismatch, launch-less (no_launch), launch_pointer_mismatch and launch_pointer_missing; leaves healthy rows (including the legacy fallback) alone", async () => {
@@ -663,7 +618,7 @@ describe("runbook — repair statement (ownership-repair-sql)", () => {
 
 		await runMarkerSql("ownership-repair-sql");
 
-		expect(await resolveSessionOwner("repair-mismatch-sess")).toBe("sup-A");
+		expect(await resolveSessionOwner(getDb(), "repair-mismatch-sess")).toBe("sup-A");
 
 		const rows = await runMarkerSql("ownership-audit-sql");
 		const flaggedIds = new Set(rows.map((r) => r.session_id as string));
@@ -706,7 +661,7 @@ describe("runbook — reassign-host pair (ownership-reassign-sql)", () => {
 			new_supervisor_id: "reassign-new",
 		});
 
-		expect(await resolveSessionOwner("reassign-s1")).toBe("reassign-new");
+		expect(await resolveSessionOwner(getDb(), "reassign-s1")).toBe("reassign-new");
 		const [s1Row] = await getDb()
 			.select()
 			.from(managedSessions)
@@ -720,7 +675,7 @@ describe("runbook — reassign-host pair (ownership-reassign-sql)", () => {
 		expect(oldClaim).toBeNull();
 
 		// Named non-vacuity member: S2 (not named in the pair) is untouched.
-		expect(await resolveSessionOwner("reassign-s2")).toBe("reassign-old");
+		expect(await resolveSessionOwner(getDb(), "reassign-s2")).toBe("reassign-old");
 
 		// Launch-less S3 moves via the managed-row UPDATE alone (0 launch rows
 		// affected, 1 managed row affected).
@@ -728,7 +683,7 @@ describe("runbook — reassign-host pair (ownership-reassign-sql)", () => {
 			session_id: "reassign-s3",
 			new_supervisor_id: "reassign-new",
 		});
-		expect(await resolveSessionOwner("reassign-s3")).toBe("reassign-new");
+		expect(await resolveSessionOwner(getDb(), "reassign-s3")).toBe("reassign-new");
 	});
 
 	test("negative control: the managed_sessions statement alone has no effect — the launch claimant still outranks it", async () => {
@@ -745,7 +700,7 @@ describe("runbook — reassign-host pair (ownership-reassign-sql)", () => {
 			.set({ supervisorId: "reassign-neg-new", hostName: "new-host" })
 			.where(eq(managedSessions.sessionId, "reassign-neg-sess"));
 
-		expect(await resolveSessionOwner("reassign-neg-sess")).toBe("reassign-neg-old");
+		expect(await resolveSessionOwner(getDb(), "reassign-neg-sess")).toBe("reassign-neg-old");
 	});
 });
 

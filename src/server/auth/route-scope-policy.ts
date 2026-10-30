@@ -38,7 +38,7 @@ import { getAdminServiceKeyIds } from "../services/service-keys.js";
 import { type Actor, type EffectiveRole, actorFromAuthUser } from "./actor.js";
 import { SCOPE_ALL, SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE, SCOPE_RESPOND } from "./api-key.js";
 import { type AuthUser, authenticate } from "./middleware.js";
-import { isAcceptedOrigin } from "./request-origin.js";
+import { isAcceptedRequestOrigin } from "./request-origin.js";
 
 const READ_METHODS = new Set(["GET", "HEAD"]);
 
@@ -387,6 +387,14 @@ export const OWNER_CHECKED_ROUTES: ReadonlySet<string> = new Set([
 	"GET /ai/ask/threads",
 	"GET /ai/ask/threads/:id",
 	"DELETE /ai/ask/threads/:id",
+	// Channels: judged on the channel's own user (404 for one the caller can't see).
+	// The mutating ones are also in TEAM_ADMIN_ROUTES, so in team mode they stay admin-only.
+	"GET /channels/:id",
+	"GET /channels/:id/stats",
+	"DELETE /channels/:id",
+	"PATCH /channels/:id/config",
+	"POST /channels/:id/test",
+	"POST /channels/:id/relink",
 ]);
 
 export async function resolveEffectiveRole(
@@ -412,6 +420,19 @@ export async function resolveEffectiveRole(
 export function isHumanAdmin(authUser: AuthUser): boolean {
 	if (config.disableAuth) return true;
 	return authUser.source !== "api_key" && authUser.userId !== null && authUser.role === "admin";
+}
+
+/**
+ * A human at the dashboard: the DISABLE_AUTH operator, or a cookie or SSO
+ * caller with a user id. Never an API key, whoever owns it. Unlike
+ * isHumanAdmin it does not need the admin role: it gates the things a person
+ * must do themselves (confirming `auto`, un-pausing, re-linking) on their own
+ * sessions. Under DISABLE_AUTH every caller is "human", so these gates are
+ * inert there, which is that flag's existing posture.
+ */
+export function isHumanCaller(authUser: AuthUser): boolean {
+	if (config.disableAuth) return true;
+	return authUser.source !== "api_key" && authUser.userId !== null;
 }
 
 const MODE_KEY = "instanceModePromise";
@@ -480,13 +501,15 @@ function findPolicyEntry(entries: PolicyEntry[], method: string, path: string): 
 }
 
 /**
- * Refuses a mutating request whose Origin is neither configured (the list the
- * WebSocket upgrade uses) nor the request's own. No Origin header at all
+ * Refuses a mutating request whose Origin is neither configured nor the
+ * request's own, by the same rule as the WebSocket upgrade: with authentication
+ * off, "the request's own" holds only for a loopback or allowlisted Host, so a
+ * page on a name that resolves to this machine (DNS rebinding) is refused. No Origin header at all
  * (curl, scripts, MCP) passes: those are judged by authentication alone.
  */
 export function refuseBadOrigin(c: Context): Response | null {
 	const origin = c.req.header("Origin");
-	if (origin === undefined || isAcceptedOrigin(origin, c.req.header("Host"))) return null;
+	if (origin === undefined || isAcceptedRequestOrigin(origin, c.req.header("Host"))) return null;
 	return c.json({ error: "bad_origin" }, 403);
 }
 

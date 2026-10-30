@@ -171,14 +171,74 @@ describe("the route sets match the real app", () => {
 	});
 });
 
+const EXPECTED_OWNER_CHECKED_ROUTES = new Set([
+	"POST /sessions/:sessionId/acknowledge",
+	"DELETE /sessions/:sessionId/acknowledge",
+	"PUT /sessions/:sessionId/archive",
+	"PUT /sessions/:sessionId/rename",
+	"PUT /sessions/:sessionId/pin",
+	"PUT /sessions/:sessionId/notes",
+	"PUT /sessions/:sessionId/claude-md",
+	"DELETE /sessions/:sessionId",
+	"PUT /sessions/:sessionId/native-name",
+	"GET /api-keys/:id",
+	"DELETE /api-keys/:id",
+	"POST /api-keys",
+	"PUT /settings",
+	"POST /admin/supervisors/:id/rotate",
+	"POST /admin/supervisors/:id/revoke",
+	"POST /ai/action-requests/:id/decide",
+	// Mobile companion: device writes (assertCanManageDevice) and Live Activity writes.
+	"POST /devices",
+	"PATCH /devices/:id",
+	"DELETE /devices/:id",
+	"POST /devices/:id/test",
+	"POST /devices/:id/activities",
+	"DELETE /devices/:id/activities/:sessionId",
+	// Judged by the HITL decision, inbox and snooze services against the session's owner.
+	"POST /ai/proposals/:id/decision",
+	"POST /ai/proposals/:id/delivery/retry",
+	"GET /ai/proposals/:id/delivery",
+	"POST /ai/inbox/hitl/:id/decide",
+	"POST /ai/inbox/batch-decline",
+	"GET /ai/inbox",
+	"GET /ai/inbox/snoozes",
+	"POST /ai/inbox/snooze",
+	"DELETE /ai/inbox/snooze/:id",
+	"DELETE /ai/inbox/snooze",
+	// Session-changing routes the app composer uses, and the Ask cancel (the asker only).
+	"POST /sessions/:sessionId/prompt",
+	"POST /sessions/:sessionId/stop",
+	"POST /sessions/:sessionId/retry",
+	"GET /sessions/:sessionId/control-actions",
+	// Watcher: configuring a session needs its owner or an admin.
+	"PUT /ai/sessions/:sessionId/watcher",
+	"DELETE /ai/sessions/:sessionId/watcher",
+	"POST /ai/ask/threads/:id/cancel",
+	// Ask threads belong to whoever asked.
+	"GET /ai/ask/threads",
+	"GET /ai/ask/threads/:id",
+	"DELETE /ai/ask/threads/:id",
+	// Channels: judged on the channel's own user.
+	"GET /channels/:id",
+	"GET /channels/:id/stats",
+	"DELETE /channels/:id",
+	"PATCH /channels/:id/config",
+	"POST /channels/:id/test",
+	"POST /channels/:id/relink",
+]);
+
+// The channel routes that are admin-only in team mode AND owner-checked in the handler.
+const ALSO_TEAM_ADMIN = new Set([
+	"DELETE /channels/:id",
+	"PATCH /channels/:id/config",
+	"POST /channels/:id/test",
+]);
+
 describe("routes judged inside the handler (owner-or-admin, through the authorization service)", () => {
 	test("are listed, pinned in size, registered on the real app, and in neither policy set", async () => {
 		const { app } = await import("../app.js");
-		// 16 from before the mobile companion, the four device writes (assertCanManageDevice) and the two
-		// Live Activity writes, plus the ten HITL decision, inbox and snooze routes judged by their services, the four session-changing
-		// routes the app composer uses (prompt, stop, retry, the control-actions read, watcher PUT and DELETE) and the Ask cancel,
-		// plus the three Ask thread routes judged against the thread's asker (list, read, archive).
-		expect(OWNER_CHECKED_ROUTES.size).toBe(42);
+		expect(new Set(OWNER_CHECKED_ROUTES)).toEqual(EXPECTED_OWNER_CHECKED_ROUTES);
 		const registered = new Set(app.routes.map((route) => `${route.method} ${route.path}`));
 		for (const entry of OWNER_CHECKED_ROUTES) {
 			const [method, template] = entry.split(" ");
@@ -187,7 +247,10 @@ describe("routes judged inside the handler (owner-or-admin, through the authoriz
 				registered: true,
 			});
 			expect(ALWAYS_ADMIN_ROUTES.has(entry)).toBe(false);
-			expect(TEAM_ADMIN_ROUTES.has(entry)).toBe(false);
+			expect({ entry, teamAdmin: TEAM_ADMIN_ROUTES.has(entry) }).toEqual({
+				entry,
+				teamAdmin: ALSO_TEAM_ADMIN.has(entry),
+			});
 		}
 		for (const named of [
 			"POST /sessions/:sessionId/acknowledge",

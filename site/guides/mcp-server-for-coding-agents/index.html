@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>An MCP Server to Monitor and Control Claude Code and Codex Sessions — AgentPulse</title>
+	<meta name="description" content="Use the @craze0/agentpulse-mcp MCP server to let Claude Code, Codex CLI or any MCP client list, search, launch and steer your AI coding agent sessions, with scoped API keys.">
+	<link rel="canonical" href="https://jstuart0.github.io/agentpulse/guides/mcp-server-for-coding-agents/">
+	<meta property="og:type" content="article">
+	<meta property="og:site_name" content="AgentPulse">
+	<meta property="og:title" content="Control your coding agent fleet from Claude Code over MCP">
+	<meta property="og:description" content="Let Claude Code, Codex CLI or any MCP client list, search, launch and steer your agent sessions.">
+	<meta property="og:url" content="https://jstuart0.github.io/agentpulse/guides/mcp-server-for-coding-agents/">
+	<meta property="og:image" content="https://jstuart0.github.io/agentpulse/assets/agentpulse-ask-assistant.png">
+	<meta name="twitter:card" content="summary_large_image">
+	<link rel="stylesheet" href="../../assets/style.css">
+	<script type="application/ld+json">
+	{
+		"@context": "https://schema.org",
+		"@type": "TechArticle",
+		"headline": "Control your coding agent fleet from Claude Code over MCP",
+		"datePublished": "2026-10-18",
+		"author": { "@type": "Person", "name": "jstuart0", "url": "https://github.com/jstuart0" },
+		"image": "https://jstuart0.github.io/agentpulse/assets/agentpulse-ask-assistant.png",
+		"mainEntityOfPage": "https://jstuart0.github.io/agentpulse/guides/mcp-server-for-coding-agents/"
+	}
+	</script>
+</head>
+<body>
+<header class="site">
+	<div class="wrap">
+		<a class="brand" href="../../">AgentPulse</a>
+		<nav>
+			<a href="../">Guides</a>
+			<a href="https://github.com/jstuart0/agentpulse#quick-start">Install</a>
+			<a href="https://github.com/jstuart0/agentpulse/blob/main/docs/MCP.md">MCP server</a>
+			<a href="https://github.com/jstuart0/agentpulse">GitHub</a>
+		</nav>
+	</div>
+</header>
+<main>
+	<article class="wrap">
+		<h1>Control your coding agent fleet from Claude Code over MCP</h1>
+		<p class="lede">The dashboard is for you. The MCP server is for your agents. With <code>@craze0/agentpulse-mcp</code>, Claude Code, Codex CLI or any Model Context Protocol client can see what your other sessions are doing, and, if you allow it, launch and steer them.</p>
+
+		<h2>What an agent can do with it</h2>
+		<p>Some things you can ask a Claude Code session once the server is connected:</p>
+		<ul>
+			<li>"Which of my sessions are waiting on me right now?"</li>
+			<li>"Search my sessions from last week for the migration we discussed."</li>
+			<li>"What did the session in the api repo change?"</li>
+			<li>"Start a Codex session in the docs repo to update the changelog." (needs a <code>manage</code> key)</li>
+		</ul>
+
+		<h2>Install</h2>
+		<p>You need a running AgentPulse server. Then, with no checkout of the repository:</p>
+		<pre><code>npx @craze0/agentpulse-mcp install --mint my-agent</code></pre>
+		<p>This mints an API key and prints configuration ready to paste into Claude Code or Codex CLI. By default the key is <strong>observe-only</strong>: it can read sessions and search, and nothing else.</p>
+		<p>From a checkout of the repository, the same is available as <code>agentpulse mcp install</code>. Add <code>--orchestrate</code> to mint a <code>manage</code> key that can also launch and steer. Read the security notes below first.</p>
+
+		<h2>The tools</h2>
+		<table>
+			<thead><tr><th>Tier</th><th>Examples</th></tr></thead>
+			<tbody>
+				<tr><td>Read (<code>observe</code>)</td><td><code>list_sessions</code>, <code>get_session</code>, <code>get_session_timeline</code>, <code>search</code>, <code>get_stats</code>, <code>get_digest</code>, <code>list_projects_summary</code></td></tr>
+				<tr><td>Read (<code>manage</code>)</td><td><code>list_templates</code>, <code>list_launches</code>, <code>get_inbox</code>, <code>list_hosts</code></td></tr>
+				<tr><td>Act (<code>manage</code>)</td><td><code>launch_agent</code>, <code>prompt_session</code>, <code>stop_session</code>, <code>retry_launch</code>, <code>update_session</code>, <code>decide_hitl</code>, <code>decide_action_request</code></td></tr>
+			</tbody>
+		</table>
+		<p>Some reads need <code>manage</code> because what they return can include environment variables or launch specs. The full catalog is in <a href="https://github.com/jstuart0/agentpulse/blob/main/docs/MCP.md">docs/MCP.md</a>.</p>
+
+		<h2>Security notes</h2>
+		<ul>
+			<li><strong>The API key's scope is the real boundary.</strong> An <code>observe</code> key can't launch anything, whatever the client does.</li>
+			<li>Mutating tools are marked so Claude Code asks for confirmation. Codex CLI and headless MCP clients ignore that marker, so a <code>manage</code> key there acts without asking.</li>
+			<li><code>prompt_session</code>, <code>stop_session</code> and <code>retry_launch</code> work only on sessions AgentPulse launched. Sessions you started in a terminal can be read, not steered.</li>
+			<li>Install from npm's listing for <code>@craze0/agentpulse-mcp</code>. Near-miss names are not this package.</li>
+		</ul>
+
+		<div class="related">
+			<h3>Related guides</h3>
+			<ul>
+				<li><a href="../observability-vs-orchestration/">Observability vs. orchestration for AI coding agents</a></li>
+				<li><a href="../remote-claude-code-dashboard/">Control Claude Code from another computer or your phone</a></li>
+			</ul>
+		</div>
+	</article>
+</main>
+<footer class="site">
+	<div class="wrap">AgentPulse is MIT licensed. Source, issues and releases are on <a href="https://github.com/jstuart0/agentpulse">GitHub</a>.</div>
+</footer>
+</body>
+</html>

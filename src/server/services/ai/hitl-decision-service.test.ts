@@ -13,7 +13,6 @@ import {
 	describe,
 	expect,
 	setDefaultTimeout,
-	spyOn,
 	test,
 } from "bun:test";
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -48,9 +47,10 @@ const { app } = await import("../../app.js");
 const { upsertSetting } = await import("../settings-service.js");
 const { seedOwnedLaunch } = await import("../../test-utils/owned-launch.js");
 const { claimNextControlAction, updateControlAction } = await import("../control-actions.js");
-const { createPendingProposal, completeProposalAsHitl } = await import("./proposals-service.js");
+const { enableAiRuntime, seedFinishedTurn, seedProposalWithHitl, seedProvider } = await import(
+	"../../test-utils/watcher-fixtures.js"
+);
 const {
-	TELEGRAM_DECISION_CONTEXT,
 	declineAll,
 	decideHitl,
 	getDeliveryState,
@@ -59,10 +59,8 @@ const {
 	retryDelivery,
 } = await import("./hitl-decision-service.js");
 const { config } = await import("../../config.js");
-const telegram = await import("../channels/telegram.js");
 const { getProposal: getProposalRow } = await import("./proposals-service.js");
 import { describeSqliteOnly } from "../../test-utils/backend.js";
-const { handleTelegramUpdate } = await import("../../routes/channels.js");
 
 async function reset() {
 	await getDb().delete(aiHitlDeliveries);
@@ -83,7 +81,8 @@ setDefaultTimeout(HOOK_TIMEOUT_MS);
 beforeAll(() => initializeDatabase(), HOOK_TIMEOUT_MS);
 beforeEach(async () => {
 	await reset();
-	await upsertSetting("ai.enabled", true, { allowProtected: true });
+	await enableAiRuntime();
+	providerId = await seedProvider();
 }, HOOK_TIMEOUT_MS);
 afterEach(async () => {
 	await reset();
@@ -91,6 +90,7 @@ afterEach(async () => {
 }, HOOK_TIMEOUT_MS);
 
 const PROMPT = "Run the full test suite and fix what fails.";
+let providerId = "";
 const SUPERVISOR = "sup-1";
 
 async function seedSession(sessionId: string, ownerUserId: string | null = null) {
@@ -119,7 +119,12 @@ async function seedManaged(sessionId: string, opts: { connected?: boolean } = {}
 			platform: "darwin",
 			arch: "arm64",
 			version: "1",
-			status: opts.connected === false ? "disconnected" : "connected",
+			status: "connected",
+			enrollmentState: "active",
+			// Liveness is the heartbeat lease, not the stored status.
+			heartbeatLeaseExpiresAt: new Date(
+				Date.now() + (opts.connected === false ? -60_000 : 60_000),
+			).toISOString(),
 		})
 		.onConflictDoNothing();
 	const { launchId } = await seedOwnedLaunch(sessionId, SUPERVISOR);
@@ -134,18 +139,24 @@ async function seedManaged(sessionId: string, opts: { connected?: boolean } = {}
 	});
 }
 
-/** A proposal with an open HITL request, as the watcher leaves it. */
-async function seedHitl(sessionId: string, nextPrompt: string | null = PROMPT) {
-	const proposal = await createPendingProposal({ sessionId, providerId: "p-1" });
-	const { hitlId } = await completeProposalAsHitl({
-		id: proposal.id,
-		decision: "continue",
-		nextPrompt,
-		tokensIn: 0,
-		tokensOut: 0,
-		costCents: 0,
+/**
+ * A proposal with an open HITL request, as the watcher leaves it: bound to a finished turn, with the
+ * hash of the suggestion it shows. Approving needs `PROMPT_HASH`-style hashes of `prompt`.
+ */
+async function seedHitl(
+	sessionId: string,
+	prompt: string | null = PROMPT,
+	over: Partial<Parameters<typeof seedProposalWithHitl>[0]> = {},
+) {
+	const turn = await seedFinishedTurn(sessionId);
+	return seedProposalWithHitl({
+		sessionId,
+		providerId,
+		prompt,
+		turnKey: turn.turnKey,
+		triggerEventId: turn.stopId,
+		...over,
 	});
-	return { proposalId: proposal.id, hitlId };
 }
 
 const actor = (over: Partial<Actor> = {}): Actor => ({
@@ -170,6 +181,8 @@ const respondCtx = (over: Partial<Actor> = {}) => ({
 	canCustomPrompt: false,
 });
 
+const PROMPT_HASH = hashPrompt(PROMPT);
+
 const hitlStatus = async (hitlId: string) =>
 	(await getDb().select().from(aiHitlRequests).where(eq(aiHitlRequests.id, hitlId)))[0]?.status;
 const actionsFor = (sessionId: string) =>
@@ -183,7 +196,14 @@ const eventCategories = async (sessionId: string) =>
 			.where(eq(events.sessionId, sessionId))
 	)
 		.map((r) => r.category)
+		.filter((category): category is string => category?.startsWith("ai_") === true)
 		.sort();
+
+const approveAs = (
+	target: Parameters<typeof decideHitl>[0],
+	ctx: Parameters<typeof decideHitl>[3] = manageCtx(),
+	prompt = PROMPT,
+) => decideHitl(target, "approve", { promptHash: hashPrompt(prompt) }, ctx);
 
 describe("approve", () => {
 	test("on a managed session with a connected supervisor queues the prompt in the same step, and says so", async () => {
@@ -191,7 +211,7 @@ describe("approve", () => {
 		await seedManaged("s-1");
 		const { proposalId, hitlId } = await seedHitl("s-1");
 
-		const out = await decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx());
+		const out = await approveAs({ kind: "proposal", proposalId });
 
 		expect(out.ok).toBe(true);
 		if (!out.ok) return;
@@ -201,6 +221,7 @@ describe("approve", () => {
 		expect(actions).toHaveLength(1);
 		expect(actions[0]?.status).toBe("queued");
 		expect((actions[0]?.metadata as { prompt?: string }).prompt).toBe(PROMPT);
+		expect(out.controlActionId).toBe(actions[0]?.id ?? null);
 		const [delivery] = await deliveries();
 		expect(delivery).toMatchObject({
 			proposalId,
@@ -214,77 +235,101 @@ describe("approve", () => {
 		expect(await eventCategories("s-1")).toEqual(["ai_continue_sent", "ai_hitl_response"]);
 	});
 
-	test("on a session no supervisor manages is not_managed, and no continue is announced", async () => {
+	test("on a session no supervisor manages is refused prompt_not_deliverable, and the request stays open for a decline", async () => {
 		await seedSession("s-2");
-		const { proposalId } = await seedHitl("s-2");
+		const { proposalId, hitlId } = await seedHitl("s-2");
 
-		const out = await decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx());
+		const out = await approveAs({ kind: "proposal", proposalId });
 
-		expect(out.ok && out.delivery?.state).toBe("not_managed");
+		expect(!out.ok && out.refusal).toMatchObject({ code: "prompt_not_deliverable", status: 409 });
+		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
 		expect(await actionsFor("s-2")).toHaveLength(0);
-		expect(await eventCategories("s-2")).toEqual(["ai_hitl_response"]);
+		expect(await deliveries()).toHaveLength(0);
 	});
 
-	test("on a managed session whose supervisor is offline is blocked, and queues nothing", async () => {
+	test("on a managed session whose supervisor is offline a person's approval is still queued: it waits for the host", async () => {
 		await seedSession("s-3");
 		await seedManaged("s-3", { connected: false });
-		const { proposalId } = await seedHitl("s-3");
+		const { proposalId, hitlId } = await seedHitl("s-3");
 
-		const out = await decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx());
+		const out = await approveAs({ kind: "proposal", proposalId });
 
-		expect(out.ok && out.delivery?.state).toBe("blocked");
-		expect(await actionsFor("s-3")).toHaveLength(0);
-		expect(await eventCategories("s-3")).toEqual(["ai_hitl_response"]);
-	});
-
-	test("while another control action holds the session: 409 control_busy, the request is still open, nothing is written", async () => {
-		await seedSession("s-4");
-		await seedManaged("s-4");
-		const { proposalId, hitlId } = await seedHitl("s-4");
-		const first = await decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx());
-		expect(first.ok).toBe(true);
-		const second = await seedHitl("s-4", "Another prompt.");
-
-		const out = await decideHitl(
-			{ kind: "proposal", proposalId: second.proposalId },
-			"approve",
-			{},
-			manageCtx(),
-		);
-
-		expect(out.ok).toBe(false);
-		if (out.ok) return;
-		expect(out.refusal).toMatchObject({ code: "control_busy", status: 409 });
-		expect(await hitlStatus(second.hitlId)).toBe("awaiting_reply");
+		expect(out.ok).toBe(true);
 		expect(await hitlStatus(hitlId)).toBe("applied");
-		expect(await actionsFor("s-4")).toHaveLength(1);
+		expect(await actionsFor("s-3")).toHaveLength(1);
 		expect(await deliveries()).toHaveLength(1);
 	});
 
-	test("an empty prompt is refused with 400 and the request stays open", async () => {
-		await seedSession("s-5");
-		const { proposalId, hitlId } = await seedHitl("s-5", null);
+	test("while another control action holds the session: 409 prompt_not_deliverable (control_busy), the request is still open, nothing is written", async () => {
+		await seedSession("s-4");
+		await seedManaged("s-4");
+		const { proposalId, hitlId } = await seedHitl("s-4");
+		const [launch] = await getDb().select().from(launchRequests);
+		const now = new Date().toISOString();
+		const [holder] = await getDb()
+			.insert(controlActions)
+			.values({
+				sessionId: "s-4",
+				launchRequestId: launch?.id ?? "",
+				actionType: "stop",
+				requestedBy: "test",
+				status: "running",
+				createdAt: now,
+				updatedAt: now,
+			})
+			.returning();
+		await getDb()
+			.update(managedSessions)
+			.set({
+				activeControlActionId: holder?.id,
+				controlLockExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+			})
+			.where(eq(managedSessions.sessionId, "s-4"));
 
-		const out = await decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx());
-
-		expect(!out.ok && out.refusal).toMatchObject({ code: "empty_prompt", status: 400 });
-		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
-	});
-
-	test("a prompt the safety filter blocks is refused with delivery blocked, and the request stays open", async () => {
-		await seedSession("s-6");
-		const { proposalId, hitlId } = await seedHitl("s-6", "please run rm -rf / now");
-
-		const out = await decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx());
+		const out = await approveAs({ kind: "proposal", proposalId });
 
 		expect(out.ok).toBe(false);
 		if (out.ok) return;
-		expect(out.refusal.status).toBe(400);
+		expect(out.refusal).toMatchObject({ code: "prompt_not_deliverable", status: 409 });
+		expect(out.refusal.body).toEqual({ error: "prompt_not_deliverable", reason: "control_busy" });
+		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
+		expect(await actionsFor("s-4")).toHaveLength(1);
+		expect(await deliveries()).toHaveLength(0);
+	});
+
+	test("a request with no prompt to send is refused (not approvable) and stays open", async () => {
+		await seedSession("s-5");
+		const { proposalId, hitlId } = await seedHitl("s-5", null, { approvable: false });
+
+		const out = await decideHitl(
+			{ kind: "proposal", proposalId },
+			"approve",
+			{ promptHash: hashPrompt("") },
+			manageCtx(),
+		);
+
+		expect(!out.ok && out.refusal.status).toBe(409);
+		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
+	});
+
+	test("a prompt the safety filter blocks is refused, the request stays open and nothing is queued", async () => {
+		await seedSession("s-6");
+		await seedManaged("s-6");
+		const blocked = "please run rm -rf / now";
+		const { proposalId, hitlId } = await seedHitl("s-6", blocked);
+
+		const out = await approveAs({ kind: "proposal", proposalId }, manageCtx(), blocked);
+
+		expect(out.ok).toBe(false);
+		if (out.ok) return;
+		expect(out.refusal).toMatchObject({ code: "dispatch_blocked", status: 400 });
 		expect(out.refusal.body).toMatchObject({
-			error: "filter_blocked",
-			delivery: { state: "blocked", reason: "filter" },
+			error: "dispatch_blocked",
+			reason: expect.any(String),
 		});
 		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
+		expect(await actionsFor("s-6")).toHaveLength(0);
+		expect(await deliveries()).toHaveLength(0);
 	});
 });
 
@@ -305,12 +350,7 @@ describe("the prompt hash", () => {
 		expect(await actionsFor("h-1")).toHaveLength(0);
 		expect(await deliveries()).toHaveLength(0);
 
-		const fresh = await decideHitl(
-			{ kind: "proposal", proposalId },
-			"approve",
-			{ promptHash: hashPrompt(PROMPT) },
-			manageCtx(),
-		);
+		const fresh = await approveAs({ kind: "proposal", proposalId });
 		expect(fresh.ok).toBe(true);
 	});
 
@@ -319,7 +359,7 @@ describe("the prompt hash", () => {
 		const { proposalId } = await seedHitl("h-2", "first version");
 		await getDb()
 			.update(watcherProposals)
-			.set({ nextPrompt: "second version" })
+			.set({ suggestedPrompt: "second version" })
 			.where(eq(watcherProposals.id, proposalId));
 
 		const out = await decideHitl(
@@ -465,7 +505,7 @@ describe("who may decide what", () => {
 		const out = await decideHitl(
 			{ kind: "hitl", hitlId },
 			"approve",
-			{},
+			{ promptHash: PROMPT_HASH },
 			respondCtx({ userId: alice.id, mode: "team" }),
 		);
 
@@ -480,8 +520,8 @@ describe("atomicity", () => {
 		const { proposalId } = await seedHitl("r-1");
 
 		const results = await Promise.all([
-			decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx()),
-			decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx()),
+			approveAs({ kind: "proposal", proposalId }),
+			approveAs({ kind: "proposal", proposalId }),
 		]);
 
 		const refusals = results.filter((r) => !r.ok);
@@ -492,11 +532,11 @@ describe("atomicity", () => {
 		expect(await actionsFor("r-1")).toHaveLength(1);
 	}, 30_000);
 
-	test("a failure after the request was closed rolls the close back: nothing is persisted", async () => {
+	test("a failure while recording the delivery rolls the queueing back: nothing is persisted and the request is open again", async () => {
 		await seedSession("r-2");
 		await seedManaged("r-2");
 		const { proposalId, hitlId } = await seedHitl("r-2");
-		// A delivery row already exists for this proposal, so the insert that follows the close fails.
+		// A delivery row already exists for this proposal, so the insert made with the queueing fails.
 		await getDb().insert(aiHitlDeliveries).values({
 			proposalId,
 			hitlId,
@@ -505,31 +545,27 @@ describe("atomicity", () => {
 			updatedAt: "x",
 		});
 
-		await expect(
-			decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx()),
-		).rejects.toThrow();
+		const out = await approveAs({ kind: "proposal", proposalId });
 
+		expect(!out.ok && out.refusal).toMatchObject({ code: "dispatch_failed", status: 500 });
 		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
 		expect(await actionsFor("r-2")).toHaveLength(0);
-		expect(await eventCategories("r-2")).toEqual([]);
+		expect((await getDb().select().from(managedSessions))[0]?.activeControlActionId).toBeNull();
+		expect(await eventCategories("r-2")).not.toContain("ai_continue_sent");
 	});
 
-	test("a managed row whose launch pointer resolves to nothing commits as blocked (launch_not_found), queues nothing, and reports the reason", async () => {
+	test("a managed row whose launch pointer resolves to nothing is refused launch_missing, queues nothing and leaves the request open", async () => {
 		await seedSession("r-3");
 		await seedManaged("r-3");
 		const { proposalId, hitlId } = await seedHitl("r-3");
 		await getDb().update(managedSessions).set({ launchRequestId: "no-such-launch" });
 
-		const out = await decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx());
+		const out = await approveAs({ kind: "proposal", proposalId });
 
-		expect(out.ok && out.delivery).toMatchObject({ state: "blocked", reason: "launch_not_found" });
-		expect(await hitlStatus(hitlId)).toBe("applied");
+		expect(!out.ok && out.refusal).toMatchObject({ code: "launch_missing", status: 409 });
+		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
 		expect(await actionsFor("r-3")).toHaveLength(0);
-		const read = await getDeliveryState(proposalId, manageCtx());
-		expect(read.ok && read.delivery).toMatchObject({
-			state: "blocked",
-			reason: "launch_not_found",
-		});
+		expect(await deliveries()).toHaveLength(0);
 	});
 
 	test("deciding a request twice: the second is 409 and the first answer stands", async () => {
@@ -537,7 +573,12 @@ describe("atomicity", () => {
 		const { hitlId } = await seedHitl("r-4");
 		await decideHitl({ kind: "hitl", hitlId }, "decline", {}, manageCtx());
 
-		const again = await decideHitl({ kind: "hitl", hitlId }, "approve", {}, manageCtx());
+		const again = await decideHitl(
+			{ kind: "hitl", hitlId },
+			"approve",
+			{ promptHash: PROMPT_HASH },
+			manageCtx(),
+		);
 
 		expect(!again.ok && again.refusal).toMatchObject({ code: "already_resolved", status: 409 });
 		expect(await hitlStatus(hitlId)).toBe("declined");
@@ -718,39 +759,39 @@ async function rawExec(statement: string): Promise<void> {
 	}
 }
 
-async function failEveryDeliveryUpdate(): Promise<() => Promise<void>> {
+async function failEveryDeliveryInsert(): Promise<() => Promise<void>> {
 	if (config.dialect === "postgres") {
 		await rawExec(
-			"CREATE OR REPLACE FUNCTION tmp_fail_delivery_update() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'injected failure'; END $$ LANGUAGE plpgsql",
+			"CREATE OR REPLACE FUNCTION tmp_fail_delivery_insert() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'injected failure'; END $$ LANGUAGE plpgsql",
 		);
 		await rawExec(
-			"CREATE TRIGGER tmp_fail_delivery_update BEFORE UPDATE ON ai_hitl_deliveries FOR EACH ROW EXECUTE FUNCTION tmp_fail_delivery_update()",
+			"CREATE TRIGGER tmp_fail_delivery_insert BEFORE INSERT ON ai_hitl_deliveries FOR EACH ROW EXECUTE FUNCTION tmp_fail_delivery_insert()",
 		);
 		return async () => {
-			await rawExec("DROP TRIGGER IF EXISTS tmp_fail_delivery_update ON ai_hitl_deliveries");
-			await rawExec("DROP FUNCTION IF EXISTS tmp_fail_delivery_update()");
+			await rawExec("DROP TRIGGER IF EXISTS tmp_fail_delivery_insert ON ai_hitl_deliveries");
+			await rawExec("DROP FUNCTION IF EXISTS tmp_fail_delivery_insert()");
 		};
 	}
 	await rawExec(
-		"CREATE TRIGGER tmp_fail_delivery_update BEFORE UPDATE ON ai_hitl_deliveries BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
+		"CREATE TRIGGER tmp_fail_delivery_insert BEFORE INSERT ON ai_hitl_deliveries BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
 	);
-	return () => rawExec("DROP TRIGGER IF EXISTS tmp_fail_delivery_update");
+	return () => rawExec("DROP TRIGGER IF EXISTS tmp_fail_delivery_insert");
 }
 
 describe("a failure after the prompt was queued undoes the queueing too", () => {
-	test("the close, the delivery, the control action and the session lock all roll back together", async () => {
+	test("the delivery, the control action and the session lock all roll back together, and the request is open again", async () => {
 		await seedSession("f-1");
 		await seedManaged("f-1");
 		const { proposalId, hitlId } = await seedHitl("f-1");
-		const undo = await failEveryDeliveryUpdate();
+		const undo = await failEveryDeliveryInsert();
+		let out: Awaited<ReturnType<typeof approveAs>>;
 		try {
-			await expect(
-				decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx()),
-			).rejects.toThrow();
+			out = await approveAs({ kind: "proposal", proposalId });
 		} finally {
 			await undo();
 		}
 
+		expect(!out.ok && out.refusal).toMatchObject({ code: "dispatch_failed", status: 500 });
 		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
 		expect(await deliveries()).toHaveLength(0);
 		expect(await actionsFor("f-1")).toHaveLength(0);
@@ -759,7 +800,7 @@ describe("a failure after the prompt was queued undoes the queueing too", () => 
 			.from(managedSessions)
 			.where(eq(managedSessions.sessionId, "f-1"));
 		expect(managed?.activeControlActionId).toBeNull();
-		expect(await eventCategories("f-1")).toEqual([]);
+		expect(await eventCategories("f-1")).not.toContain("ai_continue_sent");
 	});
 });
 
@@ -867,7 +908,7 @@ describe("the entry points all go through the service", () => {
 
 		const res = await authedRoute(
 			`/ai/proposals/${proposalId}/decision`,
-			{ action: "approve" },
+			{ action: "approve", promptHash: PROMPT_HASH },
 			key,
 		);
 
@@ -875,10 +916,13 @@ describe("the entry points all go through the service", () => {
 		const body = (await res.json()) as {
 			ok: boolean;
 			dispatched: boolean;
+			controlActionId: string;
 			delivery: { state: string; deliveryId: string };
 		};
 		expect(body).toMatchObject({ ok: true, dispatched: true, delivery: { state: "queued" } });
-		expect(await actionsFor("e-1")).toHaveLength(1);
+		const actions = await actionsFor("e-1");
+		expect(actions).toHaveLength(1);
+		expect(body.controlActionId).toBe(actions[0]?.id ?? "");
 	});
 
 	test("the inbox decide route queues the prompt too", async () => {
@@ -887,7 +931,11 @@ describe("the entry points all go through the service", () => {
 		const { hitlId } = await seedHitl("e-2");
 		const key = (await seedKey("e-manage", ["manage"])).key;
 
-		const res = await authedRoute(`/ai/inbox/hitl/${hitlId}/decide`, { action: "approve" }, key);
+		const res = await authedRoute(
+			`/ai/inbox/hitl/${hitlId}/decide`,
+			{ action: "approve", promptHash: PROMPT_HASH },
+			key,
+		);
 
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as {
@@ -939,139 +987,6 @@ describe("the entry points all go through the service", () => {
 		expect(await hitlStatus(bobs.hitlId)).toBe("awaiting_reply");
 	});
 
-	/** Gives a request the channel the chat taps belong to; without one no chat may answer it. */
-	const bindToChat = (hitlId: string) =>
-		getDb()
-			.update(aiHitlRequests)
-			.set({ channelId: "tg-chan" })
-			.where(eq(aiHitlRequests.id, hitlId));
-	const tap = async (
-		hitlId: string,
-		action: "approve" | "decline",
-		chatId = 555,
-		channelOf: (chat: string) => { id: string } | null = () => ({ id: "tg-chan" }),
-	) => {
-		const answers: string[] = [];
-		const spy = spyOn(telegram, "answerCallbackQuery").mockImplementation(async (_id, text) => {
-			answers.push(text ?? "");
-		});
-		const channels = await import("../channels/channels-service.js");
-		const finder = spyOn(channels, "findActiveChannelByChatId").mockImplementation((async (
-			chat: string,
-		) => channelOf(chat)) as never);
-		try {
-			await handleTelegramUpdate({
-				update_id: 1,
-				callback_query: {
-					id: "cb-1",
-					from: { id: 555 },
-					data: `hitl:${hitlId}:${action}`,
-					message: { chat: { id: chatId } },
-				},
-			} as never);
-		} finally {
-			spy.mockRestore();
-			finder.mockRestore();
-		}
-		return answers;
-	};
-
-	test("Telegram approve leaves the request open, says so, queues nothing and writes no event", async () => {
-		await seedSession("e-5");
-		await seedManaged("e-5");
-		const { hitlId } = await seedHitl("e-5");
-		await bindToChat(hitlId);
-
-		const answers = await tap(hitlId, "approve");
-
-		expect(answers).toEqual([
-			"Approving from Telegram isn't supported any more. Open AgentPulse to answer.",
-		]);
-		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
-		expect(await actionsFor("e-5")).toHaveLength(0);
-		expect(await deliveries()).toHaveLength(0);
-		expect(await eventCategories("e-5")).toEqual([]);
-	});
-
-	test("a request with no channel can't be answered from any chat: Not authorized, nothing changes", async () => {
-		await seedSession("e-5c");
-		const { hitlId } = await seedHitl("e-5c");
-		for (const action of ["approve", "decline"] as const) {
-			expect(await tap(hitlId, action)).toEqual(["Not authorized."]);
-		}
-		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
-		expect(await eventCategories("e-5c")).toEqual([]);
-	});
-
-	test("Telegram decline closes the request audit-only with the Telegram user recorded, and never writes ai_continue_sent", async () => {
-		await seedSession("e-5b");
-		await seedManaged("e-5b");
-		const { hitlId } = await seedHitl("e-5b");
-		await bindToChat(hitlId);
-
-		const answers = await tap(hitlId, "decline");
-
-		expect(answers).toEqual(["Declined ✗"]);
-		expect(await hitlStatus(hitlId)).toBe("declined");
-		expect(await actionsFor("e-5b")).toHaveLength(0);
-		expect(await eventCategories("e-5b")).toEqual(["ai_hitl_response"]);
-		const [event] = await getDb().select().from(events).where(eq(events.sessionId, "e-5b"));
-		expect(JSON.stringify(event?.rawPayload)).toContain("telegram:555");
-		const [row] = await getDb().select().from(aiHitlRequests).where(eq(aiHitlRequests.id, hitlId));
-		expect(row?.replyText).toBeNull();
-	});
-
-	test("team mode: a chat bound to the request's channel may decline another member's session; a chat from another channel may not", async () => {
-		await setStoredMode("team");
-		const bob = await seedLocalUser("tg-bob");
-		await seedSession("bobs", bob.id);
-		const { hitlId } = await seedHitl("bobs");
-		// Pin today's rule: the chat is the credential, and it is checked against the request's channel only.
-		await getDb()
-			.update(aiHitlRequests)
-			.set({ channelId: "chan-1" })
-			.where(eq(aiHitlRequests.id, hitlId));
-		const channelOf = (chat: string) =>
-			chat === "555" ? { id: "chan-1" } : chat === "777" ? { id: "chan-2" } : null;
-		expect(await tap(hitlId, "decline", 777, channelOf)).toEqual(["Not authorized."]);
-		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
-		expect(await tap(hitlId, "decline", 555, channelOf)).toEqual(["Declined ✗"]);
-		expect(await hitlStatus(hitlId)).toBe("declined");
-	});
-
-	test("Telegram never forwards, whatever the action: custom is refused too, and a telegram actor smuggled into another context is still Telegram", async () => {
-		await seedSession("e-6");
-		await seedManaged("e-6");
-		const { hitlId } = await seedHitl("e-6");
-
-		const out = await decideHitl(
-			{ kind: "hitl", hitlId },
-			"custom",
-			{ customPrompt: "run this instead" },
-			TELEGRAM_DECISION_CONTEXT,
-		);
-		expect(!out.ok && out.refusal.code).toBe("telegram_approve_unsupported");
-		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
-		expect(await actionsFor("e-6")).toHaveLength(0);
-
-		await seedSession("e-7");
-		await seedManaged("e-7");
-		const other = await seedHitl("e-7");
-		const sneaky = { ...manageCtx(), actor: { userId: null, label: "telegram" as const } };
-		const refused = await decideHitl({ kind: "hitl", hitlId: other.hitlId }, "approve", {}, sneaky);
-		expect(!refused.ok && refused.refusal.code).toBe("telegram_approve_unsupported");
-		expect(await actionsFor("e-7")).toHaveLength(0);
-	});
-
-	test("the Telegram context is frozen: it can't be widened by a caller", () => {
-		expect(Object.isFrozen(TELEGRAM_DECISION_CONTEXT)).toBe(true);
-		expect(Object.isFrozen(TELEGRAM_DECISION_CONTEXT.actor)).toBe(true);
-		expect(Object.isFrozen(TELEGRAM_DECISION_CONTEXT.scopes)).toBe(true);
-		expect(() => {
-			(TELEGRAM_DECISION_CONTEXT as { canCustomPrompt: boolean }).canCustomPrompt = true;
-		}).toThrow();
-	});
-
 	test("a respond key may approve and decline through the proposal route, never custom", async () => {
 		await seedSession("e-8");
 		await seedManaged("e-8");
@@ -1119,6 +1034,7 @@ describe("the entry points all go through the service", () => {
 
 	test("a signed-in person (cookie) may send custom text", async () => {
 		await seedSession("e-11");
+		await seedManaged("e-11");
 		const { proposalId } = await seedHitl("e-11");
 		const user = await seedLocalUser("e-person", "admin");
 		const cookie = await cookieHeadersFor(user.id);
@@ -1171,7 +1087,7 @@ describe("delivery", () => {
 		const out = await decideHitl(
 			{ kind: "proposal", proposalId: hitl.proposalId },
 			"approve",
-			{},
+			{ promptHash: PROMPT_HASH },
 			manageCtx(),
 		);
 		expect(out.ok).toBe(true);
@@ -1231,19 +1147,24 @@ describe("delivery", () => {
 		expect(state.ok && state.delivery.state).toBe("unknown");
 	});
 
-	test("not_managed and blocked are read back from the recorded terminal state", async () => {
+	test("a delivery row carrying a recorded terminal state reads back as that state", async () => {
 		await seedSession("v-4");
 		const plain = await seedHitl("v-4");
-		await decideHitl(
-			{ kind: "proposal", proposalId: plain.proposalId },
-			"approve",
-			{},
-			manageCtx(),
-		);
+		await getDb().insert(aiHitlDeliveries).values({
+			proposalId: plain.proposalId,
+			hitlId: plain.hitlId,
+			sessionId: "v-4",
+			terminalState: "blocked:supervisor_offline",
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString(),
+		});
 
 		const state = await getDeliveryState(plain.proposalId, manageCtx());
 
-		expect(state.ok && state.delivery.state).toBe("not_managed");
+		expect(state.ok && state.delivery).toMatchObject({
+			state: "blocked",
+			reason: "supervisor_offline",
+		});
 	});
 
 	test("team mode: another member's delivery is 403 and a declined proposal has none (404)", async () => {
@@ -1256,7 +1177,7 @@ describe("delivery", () => {
 		await decideHitl(
 			{ kind: "proposal", proposalId: hitl.proposalId },
 			"approve",
-			{},
+			{ promptHash: PROMPT_HASH },
 			manageCtx({ userId: bob.id, role: "member", mode: "team" }),
 		);
 		const aliceKey = (await seedKey("v-alice-key", ["respond"], alice.id)).key;
@@ -1420,7 +1341,7 @@ describe("delivery", () => {
 			await decideHitl(
 				{ kind: "proposal", proposalId: hitl.proposalId },
 				"approve",
-				{},
+				{ promptHash: PROMPT_HASH },
 				manageCtx({ userId: alice.id, role: "member", mode: "team" }),
 			);
 			await getDb()
@@ -1473,6 +1394,7 @@ describe("the prompt hash against a known oracle", () => {
 	test("approve with the literal hash of the stored prompt is 200; one character off is 409 prompt_changed", async () => {
 		const literal = "4d43c48e2ed117498f546bbc902aec050ce7142aa40ea3546bbcafd3cc6ed2c6";
 		await seedSession("o-1");
+		await seedManaged("o-1");
 		const { proposalId, hitlId } = await seedHitl("o-1", PROMPT);
 		const off = `${literal.slice(0, -1)}${literal.endsWith("6") ? "7" : "6"}`;
 
@@ -1494,50 +1416,9 @@ describe("the prompt hash against a known oracle", () => {
 		expect(right.ok).toBe(true);
 	});
 
-	test("a prompt with spaces and a newline around it is stored trimmed, so the hash of the trimmed text is the one that works", async () => {
-		await seedSession("o-2");
-		const { proposalId } = await seedHitl("o-2", `  ${PROMPT}\n`);
-		const stored = await getProposalRow(proposalId);
-		expect(stored?.nextPrompt).toBe(PROMPT);
-		expect(stored?.promptHash).toBe(
-			"4d43c48e2ed117498f546bbc902aec050ce7142aa40ea3546bbcafd3cc6ed2c6",
-		);
-
-		const untrimmed = await decideHitl(
-			{ kind: "proposal", proposalId },
-			"approve",
-			{ promptHash: hashPrompt(`  ${PROMPT}\n`) },
-			manageCtx(),
-		);
-		expect(!untrimmed.ok && untrimmed.refusal.code).toBe("prompt_changed");
-		const trimmed = await decideHitl(
-			{ kind: "proposal", proposalId },
-			"approve",
-			{ promptHash: hashPrompt(PROMPT) },
-			manageCtx(),
-		);
-		expect(trimmed.ok).toBe(true);
-	});
-
-	test("a legacy proposal stored with untrimmed text is still sent, hashed and shown trimmed", async () => {
-		await seedSession("o-3");
-		const { proposalId } = await seedHitl("o-3", PROMPT);
-		await getDb()
-			.update(watcherProposals)
-			.set({ nextPrompt: `  ${PROMPT}  ` })
-			.where(eq(watcherProposals.id, proposalId));
-		expect((await getProposalRow(proposalId))?.promptHash).toBe(hashPrompt(PROMPT));
-		const out = await decideHitl(
-			{ kind: "proposal", proposalId },
-			"approve",
-			{ promptHash: hashPrompt(PROMPT) },
-			manageCtx(),
-		);
-		expect(out.ok && out.prompt).toBe(PROMPT);
-	});
-
 	test("custom ignores the hash entirely", async () => {
 		await seedSession("o-4");
+		await seedManaged("o-4");
 		const { proposalId } = await seedHitl("o-4");
 		const out = await decideHitl(
 			{ kind: "proposal", proposalId },
@@ -1551,7 +1432,8 @@ describe("the prompt hash against a known oracle", () => {
 	test("the hash the runner pushes for a new request is accepted by decide", async () => {
 		const { hitlOpenedEvent } = await import("./runner.js");
 		await seedSession("o-5");
-		const { proposalId, hitlId } = await seedHitl("o-5", `  ${PROMPT}\n`);
+		await seedManaged("o-5");
+		const { proposalId, hitlId } = await seedHitl("o-5", PROMPT);
 		const event = hitlOpenedEvent("o-5", hitlId, proposalId, `  ${PROMPT}\n`);
 		expect(event.promptHash).toBe(hashPrompt(PROMPT));
 		expect(hitlOpenedEvent("o-5", hitlId, proposalId, null)).not.toHaveProperty("promptHash");
@@ -1566,7 +1448,7 @@ describe("the prompt hash against a known oracle", () => {
 	});
 });
 
-describe("a key without manage must carry the hash to approve", () => {
+describe("an approve must carry the hash of the prompt reviewed", () => {
 	test("approve without promptHash is 400 prompt_hash_required for a respond key, and nothing is written", async () => {
 		await seedSession("k-1");
 		await seedManaged("k-1");
@@ -1580,19 +1462,17 @@ describe("a key without manage must carry the hash to approve", () => {
 		expect(await actionsFor("k-1")).toHaveLength(0);
 	});
 
-	test("manage keys and signed-in people may omit it; a respond key may decline without it", async () => {
+	test("a manage key and a signed-in person must carry it too; a respond key may decline without it", async () => {
 		await seedSession("k-2");
+		await seedManaged("k-2");
 		const first = await seedHitl("k-2");
-		expect(
-			(await decideHitl({ kind: "hitl", hitlId: first.hitlId }, "approve", {}, manageCtx())).ok,
-		).toBe(true);
-
-		await seedSession("k-3");
-		const second = await seedHitl("k-3");
 		const person = { ...manageCtx(), source: "session" as const, keyId: null, scopes: [] };
-		expect(
-			(await decideHitl({ kind: "hitl", hitlId: second.hitlId }, "approve", {}, person)).ok,
-		).toBe(true);
+		for (const ctx of [manageCtx(), person]) {
+			const bare = await decideHitl({ kind: "hitl", hitlId: first.hitlId }, "approve", {}, ctx);
+			expect(!bare.ok && bare.refusal.code).toBe("prompt_hash_required");
+		}
+		expect(await hitlStatus(first.hitlId)).toBe("awaiting_reply");
+		expect((await approveAs({ kind: "hitl", hitlId: first.hitlId }, person)).ok).toBe(true);
 
 		await seedSession("k-4");
 		const third = await seedHitl("k-4");
@@ -1601,15 +1481,21 @@ describe("a key without manage must carry the hash to approve", () => {
 		).toBe(true);
 	});
 
-	test("a request with no prompt is not approvable: the proposal says so and Approve is 400 empty_prompt, not a hash demand", async () => {
+	test("a request with no prompt is not approvable: the proposal says so and Approve is refused", async () => {
 		await seedSession("k-5");
-		const { proposalId } = await seedHitl("k-5", null);
+		const { proposalId, hitlId } = await seedHitl("k-5", null, { approvable: false });
 		const row = await getProposalRow(proposalId);
-		expect(row).toMatchObject({ approvable: false, promptHash: null });
+		expect(row).toMatchObject({ approvable: false });
 
-		const out = await decideHitl({ kind: "proposal", proposalId }, "approve", {}, respondCtx());
+		const out = await decideHitl(
+			{ kind: "proposal", proposalId },
+			"approve",
+			{ promptHash: PROMPT_HASH },
+			respondCtx(),
+		);
 
-		expect(!out.ok && out.refusal.code).toBe("empty_prompt");
+		expect(!out.ok && out.refusal.status).toBe(409);
+		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
 	});
 });
 
@@ -1705,16 +1591,24 @@ describe("what the routes refuse before anything else", () => {
 		expect(await hitl.json()).toEqual({ error: "not_found", message: "hitl not found" });
 	});
 
-	test("reply_text keeps the prompt for approve and custom, and stays empty for a decline and for Telegram", async () => {
+	test("reply_text keeps a custom prompt, and stays empty for an approve and a decline", async () => {
 		const replyOf = async (hitlId: string) =>
 			(await getDb().select().from(aiHitlRequests).where(eq(aiHitlRequests.id, hitlId)))[0]
 				?.replyText;
 		await seedSession("x-4");
+		await seedManaged("x-4");
 		const a = await seedHitl("x-4");
-		await decideHitl({ kind: "hitl", hitlId: a.hitlId }, "approve", {}, manageCtx());
-		expect(await replyOf(a.hitlId)).toBe(PROMPT);
+		await decideHitl(
+			{ kind: "hitl", hitlId: a.hitlId },
+			"approve",
+			{ promptHash: PROMPT_HASH },
+			manageCtx(),
+		);
+		// An approve keeps no copy: the prompt is the control action's and the audit row's.
+		expect(await replyOf(a.hitlId)).toBeNull();
 
 		await seedSession("x-5");
+		await seedManaged("x-5");
 		const b = await seedHitl("x-5");
 		await decideHitl(
 			{ kind: "hitl", hitlId: b.hitlId },
@@ -1728,11 +1622,6 @@ describe("what the routes refuse before anything else", () => {
 		const c = await seedHitl("x-6");
 		await decideHitl({ kind: "hitl", hitlId: c.hitlId }, "decline", {}, manageCtx());
 		expect(await replyOf(c.hitlId)).toBeNull();
-
-		await seedSession("x-7");
-		const d = await seedHitl("x-7");
-		await decideHitl({ kind: "hitl", hitlId: d.hitlId }, "decline", {}, TELEGRAM_DECISION_CONTEXT);
-		expect(await replyOf(d.hitlId)).toBeNull();
 	});
 });
 
@@ -1792,7 +1681,7 @@ describe("a request past its expiry", () => {
 		const ok = await decideHitl(
 			{ kind: "proposal", proposalId: first.proposalId },
 			"approve",
-			{},
+			{ promptHash: PROMPT_HASH },
 			manageCtx(),
 		);
 		expect(ok.ok).toBe(true);
@@ -1804,7 +1693,7 @@ describe("a request past its expiry", () => {
 		const late = await decideHitl(
 			{ kind: "proposal", proposalId: second.proposalId },
 			"approve",
-			{},
+			{ promptHash: PROMPT_HASH },
 			manageCtx(),
 		);
 		expect(!late.ok && late.refusal).toMatchObject({ code: "expired", status: 409 });
@@ -1866,7 +1755,12 @@ describe("retrying a delivery", () => {
 		await seedSession("ra-1");
 		await seedManaged("ra-1");
 		const { proposalId } = await seedHitl("ra-1");
-		await decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx());
+		await decideHitl(
+			{ kind: "proposal", proposalId },
+			"approve",
+			{ promptHash: PROMPT_HASH },
+			manageCtx(),
+		);
 		await getDb()
 			.update(managedSessions)
 			.set({ controlLockExpiresAt: new Date(Date.now() - 1_000).toISOString() });
@@ -1884,7 +1778,12 @@ describe("retrying a delivery", () => {
 		await seedSession("ra-3");
 		await seedManaged("ra-3");
 		const { proposalId } = await seedHitl("ra-3");
-		await decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx());
+		await decideHitl(
+			{ kind: "proposal", proposalId },
+			"approve",
+			{ promptHash: PROMPT_HASH },
+			manageCtx(),
+		);
 		await getDb()
 			.update(managedSessions)
 			.set({ controlLockExpiresAt: new Date(Date.now() - 1_000).toISOString() });
@@ -1899,7 +1798,12 @@ describe("retrying a delivery", () => {
 		await seedSession("ra-2");
 		await seedManaged("ra-2");
 		const { proposalId } = await seedHitl("ra-2");
-		await decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx());
+		await decideHitl(
+			{ kind: "proposal", proposalId },
+			"approve",
+			{ promptHash: PROMPT_HASH },
+			manageCtx(),
+		);
 		await getDb()
 			.update(managedSessions)
 			.set({ controlLockExpiresAt: new Date(Date.now() - 1_000).toISOString() });
@@ -1940,17 +1844,19 @@ describe("authentication switched off", () => {
 		expect(await decisionContextFor(bare)).toMatchObject({ canCustomPrompt: false });
 	});
 
-	test("the operator can approve without a hash and send a custom prompt (there is no key to hold back)", async () => {
+	test("the operator can send a custom prompt and approve with the hash (there is no key to hold back)", async () => {
 		const { config } = await import("../../config.js");
 		await seedSession("da-1");
+		await seedManaged("da-1");
 		const first = await seedHitl("da-1");
 		await seedSession("da-2");
+		await seedManaged("da-2");
 		const second = await seedHitl("da-2");
 		(config as Record<string, unknown>).disableAuth = true;
 		try {
 			const approve = await app.request(
 				`/api/v1/ai/proposals/${first.proposalId}/decision`,
-				jsonRequest("POST", { action: "approve" }),
+				jsonRequest("POST", { action: "approve", promptHash: PROMPT_HASH }),
 			);
 			const custom = await app.request(
 				`/api/v1/ai/proposals/${second.proposalId}/decision`,
@@ -1970,7 +1876,10 @@ describe("batch decline by session", () => {
 		await declineAll({ hitlIds: [], sessionIds: ["bs-1"], ctx: manageCtx({ userId: "u-1" }) });
 
 		expect(await hitlStatus(hitlId)).toBe("superseded");
-		const [event] = await getDb().select().from(events).where(eq(events.sessionId, "bs-1"));
+		const [event] = await getDb()
+			.select()
+			.from(events)
+			.where(and(eq(events.sessionId, "bs-1"), eq(events.category, "ai_hitl_response")));
 		expect(event?.category).toBe("ai_hitl_response");
 		expect(event?.rawPayload).toMatchObject({
 			action: "decline",
@@ -1983,7 +1892,10 @@ describe("batch decline by session", () => {
 		await seedSession("bs-2");
 		const { hitlId } = await seedHitl("bs-2");
 		await decideHitl({ kind: "hitl", hitlId }, "decline", {}, manageCtx({ userId: "u-2" }));
-		const [event] = await getDb().select().from(events).where(eq(events.sessionId, "bs-2"));
+		const [event] = await getDb()
+			.select()
+			.from(events)
+			.where(and(eq(events.sessionId, "bs-2"), eq(events.category, "ai_hitl_response")));
 		expect(event?.rawPayload).toMatchObject({ actor_user_id: "u-2", key_id: "key-manage" });
 	});
 
@@ -2008,27 +1920,26 @@ describe("batch decline by session", () => {
 });
 
 describe("delivery states and reasons", () => {
-	test("a supervisor offline is blocked with reason supervisor_offline, in the decision and when read back", async () => {
+	test("an approval for an offline host is queued, and reads back as queued until the host returns", async () => {
 		await seedSession("dr-1");
 		await seedManaged("dr-1", { connected: false });
 		const { proposalId } = await seedHitl("dr-1");
-		const out = await decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx());
-		expect(out.ok && out.delivery).toMatchObject({
-			state: "blocked",
-			reason: "supervisor_offline",
-		});
+		const out = await approveAs({ kind: "proposal", proposalId });
+		expect(out.ok && out.delivery?.state).toBe("queued");
 		const read = await getDeliveryState(proposalId, manageCtx());
-		expect(read.ok && read.delivery).toMatchObject({
-			state: "blocked",
-			reason: "supervisor_offline",
-		});
+		expect(read.ok && read.delivery.state).toBe("queued");
 	});
 
 	test("reading a delivery works while the watcher is paused (200), but retry still needs AI active", async () => {
 		await seedSession("dr-2");
 		await seedManaged("dr-2");
 		const { proposalId } = await seedHitl("dr-2");
-		await decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx());
+		await decideHitl(
+			{ kind: "proposal", proposalId },
+			"approve",
+			{ promptHash: PROMPT_HASH },
+			manageCtx(),
+		);
 		const key = (await seedKey("dr-manage", ["manage"])).key;
 		await upsertSetting("ai.enabled", false, { allowProtected: true });
 
@@ -2048,7 +1959,7 @@ describe("delivery states and reasons", () => {
 describeSqliteOnly(
 	"a session that vanished under a decision (SQLite: Postgres cascades the managed row away first)",
 	() => {
-		test("SessionNotFoundError is 404 and the whole decision rolls back", async () => {
+		test("a missing session is 404, nothing is queued and the request is closed as superseded", async () => {
 			await seedSession("sn-1");
 			await seedManaged("sn-1");
 			const { proposalId, hitlId } = await seedHitl("sn-1");
@@ -2057,10 +1968,15 @@ describeSqliteOnly(
 			try {
 				await getDb().delete(sessions).where(eq(sessions.sessionId, "sn-1"));
 
-				const out = await decideHitl({ kind: "proposal", proposalId }, "approve", {}, manageCtx());
+				const out = await decideHitl(
+					{ kind: "proposal", proposalId },
+					"approve",
+					{ promptHash: PROMPT_HASH },
+					manageCtx(),
+				);
 
-				expect(!out.ok && out.refusal).toMatchObject({ code: "session_not_found", status: 404 });
-				expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
+				expect(!out.ok && out.refusal).toMatchObject({ code: "session_missing", status: 404 });
+				expect(await hitlStatus(hitlId)).toBe("superseded");
 				expect(await deliveries()).toHaveLength(0);
 				expect(await actionsFor("sn-1")).toHaveLength(0);
 			} finally {

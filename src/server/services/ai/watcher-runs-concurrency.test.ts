@@ -93,8 +93,8 @@ describe("watcher-runs-concurrency — enqueue race", () => {
 		// (where the partial unique index enforces at-most-one open run). On SQLite,
 		// the SQLite Drizzle schema has no partial unique index; concurrent calls would
 		// both succeed. This sequential test covers the happy-path deduplication logic.
-		const runA = await enqueueRun({ sessionId: "race-s2", triggerKind: "idle" });
-		const runB = await enqueueRun({ sessionId: "race-s2", triggerKind: "stop" });
+		const { run: runA } = await enqueueRun({ sessionId: "race-s2", triggerKind: "idle" });
+		const { run: runB } = await enqueueRun({ sessionId: "race-s2", triggerKind: "stop" });
 
 		// Sequential: second call finds first's row via getOpenRunForSession.
 		expect(runA.id).toBe(runB.id);
@@ -109,6 +109,21 @@ describe("watcher-runs-concurrency — enqueue race", () => {
 
 		// Other Postgres error codes must NOT match.
 		expect(isUniqueViolationError({ code: "23503" })).toBe(false); // FK violation
+		// bun:sqlite's real shape: the extended error name is `code`, the message is plain text.
+		expect(
+			isUniqueViolationError(
+				Object.assign(new Error("UNIQUE constraint failed: t.a"), {
+					code: "SQLITE_CONSTRAINT_UNIQUE",
+				}),
+			),
+		).toBe(true);
+		expect(
+			isUniqueViolationError(
+				Object.assign(new Error("FOREIGN KEY constraint failed"), {
+					code: "SQLITE_CONSTRAINT_FOREIGNKEY",
+				}),
+			),
+		).toBe(false);
 		expect(isUniqueViolationError({ code: "42P01" })).toBe(false); // undefined_table
 
 		// Generic errors are not unique violations.
@@ -129,7 +144,7 @@ describe("watcher-runs-concurrency — enqueue race", () => {
 describePostgresOnly("watcher-runs-concurrency — Postgres real-race (separate connections)", () => {
 	test("claim race: two separate connections compete; exactly one wins", async () => {
 		// Enqueue one row via the shared connection.
-		const queued = await enqueueRun({ sessionId: "race-s3", triggerKind: "idle" });
+		const { run: queued } = await enqueueRun({ sessionId: "race-s3", triggerKind: "idle" });
 		expect(queued.status).toBe("queued");
 
 		// Two separate postgres-js clients → two separate TCP connections.
@@ -198,7 +213,7 @@ describePostgresOnly("watcher-runs-concurrency — Postgres real-race (separate 
 		// We call the service function directly (it uses the module DB client),
 		// which is sufficient to verify the catch logic fires on SQLSTATE 23505.
 		// The separate-connection infrastructure is verified by the claim-race test.
-		const [runA, runB] = await Promise.all([
+		const [{ run: runA }, { run: runB }] = await Promise.all([
 			enqueueRun({ sessionId: "race-s4", triggerKind: "idle" }),
 			enqueueRun({ sessionId: "race-s4", triggerKind: "stop" }),
 		]);

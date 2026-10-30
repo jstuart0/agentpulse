@@ -72,6 +72,11 @@ describe("classifier", () => {
 				replyKind: null,
 				replyText: null,
 				expiresAt: null,
+				turnKey: null,
+				triggerEventId: null,
+				promptSha256: null,
+				approvable: null,
+				telegramSentAt: null,
 				createdAt: "2026-04-20T00:15:00Z",
 				updatedAt: "2026-04-20T00:15:00Z",
 			},
@@ -96,8 +101,8 @@ describe("classifier", () => {
 		const events = Array.from({ length: 3 }, () =>
 			makeEvent({
 				category: "tool_event",
+				eventType: "PostToolUseFailure",
 				toolName: "Bash",
-				toolResponse: "Error: build failed",
 			}),
 		);
 		const intel = classifySession({
@@ -107,6 +112,62 @@ describe("classifier", () => {
 		});
 		expect(intel.health).toBe("stuck");
 		expect(intel.reasonCode).toBe("repeated_tool_failure");
+	});
+
+	describe("the stuck rule reads the tool's own failure signal, not words in its output (AGEN-79)", () => {
+		const verdict = (events: SessionEvent[]) =>
+			classifySession({ session: makeSession(), recentEvents: events, now: NOW }).reasonCode;
+		const three = (overrides: Partial<SessionEvent>) =>
+			Array.from({ length: 3 }, () =>
+				makeEvent({
+					category: "tool_event",
+					eventType: "PostToolUse",
+					toolName: "Bash",
+					...overrides,
+				}),
+			);
+
+		test("a successful call whose output says error, failed or exception is not a failure", () => {
+			for (const toolResponse of [
+				"Error handling lives in src/errors.ts",
+				'{"stdout":"12 passed, 0 failed","stderr":"","interrupted":false}',
+				"throw new Exception('x') is documented here",
+				"exit with non-zero exit status is described in the README",
+			]) {
+				expect(verdict(three({ toolResponse }))).not.toBe("repeated_tool_failure");
+			}
+		});
+
+		test("PostToolUseFailure counts, and so does a non-zero exit code in the response", () => {
+			expect(verdict(three({ eventType: "PostToolUseFailure" }))).toBe("repeated_tool_failure");
+			expect(verdict(three({ toolResponse: '{"stdout":"","exit_code":1}' }))).toBe(
+				"repeated_tool_failure",
+			);
+			expect(verdict(three({ toolResponse: '{"metadata":{"exit_code":127}}' }))).toBe(
+				"repeated_tool_failure",
+			);
+		});
+
+		test("an exit code of zero is a success whatever the output says", () => {
+			expect(
+				verdict(three({ toolResponse: '{"stdout":"error: none. failed: 0","exit_code":0}' })),
+			).not.toBe("repeated_tool_failure");
+		});
+
+		test("a call the user interrupted is not the session being stuck", () => {
+			expect(
+				verdict(three({ eventType: "PostToolUseFailure", rawPayload: { is_interrupt: true } })),
+			).not.toBe("repeated_tool_failure");
+		});
+
+		test("two failures are not enough, three on more than two tools are not stuck", () => {
+			const failure = (toolName: string) =>
+				makeEvent({ category: "tool_event", eventType: "PostToolUseFailure", toolName });
+			expect(verdict([failure("Bash"), failure("Bash")])).not.toBe("repeated_tool_failure");
+			expect(verdict([failure("Bash"), failure("Edit"), failure("Read")])).not.toBe(
+				"repeated_tool_failure",
+			);
+		});
 	});
 
 	test("risky on consecutive ai errors", () => {
@@ -180,6 +241,11 @@ describe("classifier", () => {
 				replyKind: null,
 				replyText: null,
 				expiresAt: null,
+				turnKey: null,
+				triggerEventId: null,
+				promptSha256: null,
+				approvable: null,
+				telegramSentAt: null,
 				createdAt: "2026-04-20T00:29:00Z",
 				updatedAt: "2026-04-20T00:29:00Z",
 			},

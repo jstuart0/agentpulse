@@ -2,9 +2,9 @@ import { and, eq, sql } from "drizzle-orm";
 import { type Db, getDb } from "../../db/client.js";
 import { aiDailySpend, sessions } from "../../db/schema/index.js";
 
-function today(): string {
+export function today(date: Date = new Date()): string {
 	// YYYY-MM-DD in local server timezone (matches what UI shows).
-	const d = new Date();
+	const d = date;
 	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 

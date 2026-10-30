@@ -1,3 +1,4 @@
+import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type { SupervisorRecord } from "../../shared/types.js";
 import { type DirectoryEntry, hostLabel } from "../lib/owner-label.js";
 import type { OwnershipUi } from "../lib/ownership-ui.js";
@@ -145,8 +146,8 @@ export const HOST_EXCLUDE_INVALID_TEXT =
 	"This host's supervisor is sending nothing: its exclude file or its saved exclude state has an error. Run agentpulse exclude check on that machine.";
 
 function leaseIsLive(leaseExpiresAt: string | undefined, now: number): boolean {
-	const expiry = Date.parse(leaseExpiresAt ?? "");
-	return Number.isFinite(expiry) && expiry > now;
+	const expiry = parseStoredTimestamp(leaseExpiresAt);
+	return expiry !== null && expiry > now;
 }
 
 export function deriveHostExcludeNotice(

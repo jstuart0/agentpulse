@@ -409,12 +409,12 @@ describe("P5-19 the prompt URLs are collected in slices that yield the event loo
 });
 
 describe("the timings are pinned (Q-6, Q-8b)", () => {
-	test("TC-5.65 with no hook set the watchdog is the lease (300 s), the join wait 5 s and the release budget 2 s, and the hooks override each", () => {
+	test("TC-5.65 with no hook set the watchdog is the lease (780 s), the join wait 5 s and the release budget 2 s, and the hooks override each", () => {
 		svc._setSummaryHooksForTest(null);
-		expect(svc.watchdogDelayMs()).toBe(300_000);
+		expect(svc.watchdogDelayMs()).toBe(780_000);
 		expect(svc.joinWaitMs()).toBe(5000);
 		expect(svc.releaseBudgetMs()).toBe(2000);
-		expect(limits.SUMMARY_LEASE_SECONDS * 1000).toBe(300_000);
+		expect(limits.summaryLeaseSeconds() * 1000).toBe(780_000);
 		expect(limits.JOIN_WAIT_BUDGET_MS).toBe(5000);
 		expect(limits.SHUTDOWN_RELEASE_BUDGET_MS).toBe(2000);
 		svc._setSummaryHooksForTest({ watchdogMs: 11, joinWaitMs: 22, releaseBudgetMs: 33 });

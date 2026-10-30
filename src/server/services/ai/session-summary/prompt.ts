@@ -30,6 +30,7 @@ import {
 	MAX_SECTION_ITEMS,
 	OVERVIEW_MAX_CHARS,
 	SUMMARY_CALL_OPTIONS,
+	summaryCallTimeoutSeconds,
 } from "./prompt-limits.js";
 
 export const PROMPT_VERSION = "3";
@@ -527,5 +528,6 @@ export function buildSummaryLlmRequest(
 			: built.transcriptPrompt,
 		model,
 		...SUMMARY_CALL_OPTIONS,
+		timeoutMs: summaryCallTimeoutSeconds() * 1000,
 	};
 }

@@ -214,8 +214,16 @@ describeSqliteOnly("Telegram turns", () => {
 		);
 		const credentials = await import("../services/channels/telegram-credentials.js");
 		getSqlite().exec("DELETE FROM notification_channels");
-		const { channel } = await createPendingChannel({ kind: "telegram", label: "hardening" });
-		await completeEnrollment({ channelId: channel.id, chatId: "4242" });
+		const { channel, enrollmentCode } = await createPendingChannel({
+			kind: "telegram",
+			label: "hardening",
+		});
+		await completeEnrollment({
+			channelId: channel.id,
+			chatId: "4242",
+			fromUserId: "4242",
+			code: enrollmentCode,
+		});
 		await credentials.clearTelegramCredentials();
 		(config as Record<string, unknown>).telegramBotToken = "test-token";
 		await credentials.refreshTelegramCredentials();
@@ -244,7 +252,10 @@ describeSqliteOnly("Telegram turns", () => {
 	}
 
 	const update = (text: string) =>
-		({ update_id: 1, message: { message_id: 1, chat: { id: 4242 }, text } }) as never;
+		({
+			update_id: 1,
+			message: { message_id: 1, chat: { id: 4242, type: "private" }, from: { id: 4242 }, text },
+		}) as never;
 
 	test("a turn that fails sends the fixed generic reply, never the error text, and logs only strings", async () => {
 		const { ASK_FAILED_REPLY } = await import("../services/channels/telegram-replies.js");

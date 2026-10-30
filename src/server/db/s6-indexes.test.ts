@@ -1,5 +1,5 @@
 /**
- * The indexes migration 0016 adds for the stats poll's "launches requested today" count and for the Ask
+ * The indexes migration 0017 adds for the stats poll's "launches requested today" count and for the Ask
  * thread lists, on both dialects: they exist, and the planner uses the launch one for the real subquery.
  */
 import { beforeAll, describe, expect, test } from "bun:test";
@@ -28,7 +28,7 @@ async function indexNames(table: string): Promise<string[]> {
 	return rows.map((r) => r.name);
 }
 
-describe("migration 0016 indexes", () => {
+describe("migration 0017 indexes", () => {
 	test("the launch and Ask owner indexes exist", async () => {
 		expect(await indexNames("launch_requests")).toContain("idx_launch_requests_created_at");
 		const ask = await indexNames("ask_threads");

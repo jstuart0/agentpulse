@@ -14,7 +14,7 @@
  * credential at all; and, in solo only, DISABLE_AUTH.
  *
  * Entry points: E1 proposal decision, E2 inbox decide, E3 batch by hitlIds, E4 batch by sessionIds,
- * E5 Telegram (its own block below: a chat is not one of these callers), E6 retry, E7 delivery read,
+ * E6 retry, E7 delivery read,
  * E8 inbox read, E9 snoozes read, E10 snooze, E11 unsnooze by id, E12 unsnooze by target, E13 the
  * `inbox_changed` frame, and the session-changing routes M4a prompt, M4b stop, M4c watcher PUT,
  * M4d watcher DELETE, M4e control-actions read, M4f retry. E1a and E2a are the approve variants of E1 and
@@ -69,8 +69,8 @@ const {
 const { app } = await import("../app.js");
 const { upsertSetting } = await import("../services/settings-service.js");
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
-const { createPendingProposal, completeProposalAsHitl } = await import(
-	"../services/ai/proposals-service.js"
+const { enableAiRuntime, seedFinishedTurn, seedProposalWithHitl, seedProvider } = await import(
+	"../test-utils/watcher-fixtures.js"
 );
 const { decideHitl, hashPrompt } = await import("../services/ai/hitl-decision-service.js");
 const { snoozeItem } = await import("../services/ai/inbox-snooze-service.js");
@@ -274,6 +274,7 @@ interface World {
 	adminId: string;
 }
 let world: World;
+let providerId = "";
 const originalDisableAuth = config.disableAuth;
 
 async function wipeDomain() {
@@ -319,7 +320,8 @@ async function buildWorld(mode: "solo" | "team"): Promise<World> {
 	const kept = await seedKey("mx-kept", ["manage"], null);
 	await setAdminServiceKeyList([kept.id]);
 	await setStoredMode(mode);
-	await upsertSetting("ai.enabled", true, { allowProtected: true });
+	await enableAiRuntime();
+	providerId = await seedProvider();
 
 	// The same people signed in through forwardauth.
 	const sso = async (label: string, id: string) => {
@@ -429,6 +431,8 @@ async function seedCell(entry: Entry, target: Target): Promise<Cell> {
 				platform: "linux",
 				arch: "x64",
 				version: "0",
+				enrollmentState: "active",
+				heartbeatLeaseExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
 				// A retry is judged as a new launch, so the host has to be one that could take it.
 				trustedRoots: ["/tmp"],
 				capabilities: {
@@ -470,14 +474,13 @@ async function seedCell(entry: Entry, target: Target): Promise<Cell> {
 				updatedAt: now,
 			});
 	}
-	const proposal = await createPendingProposal({ sessionId, providerId: "p" });
-	const { hitlId } = await completeProposalAsHitl({
-		id: proposal.id,
-		decision: "continue",
-		nextPrompt: PROMPT,
-		tokensIn: 0,
-		tokensOut: 0,
-		costCents: 0,
+	const turn = await seedFinishedTurn(sessionId);
+	const { proposalId, hitlId } = await seedProposalWithHitl({
+		sessionId,
+		providerId,
+		prompt: PROMPT,
+		turnKey: turn.turnKey,
+		triggerEventId: turn.stopId,
 	});
 	let snoozeId: string | null = null;
 	if (["E9 snoozes read", "E11 unsnooze by id", "E12 unsnooze by target"].includes(entry)) {
@@ -490,7 +493,7 @@ async function seedCell(entry: Entry, target: Target): Promise<Cell> {
 		await decideHitl(
 			{ kind: "hitl", hitlId },
 			"approve",
-			{},
+			{ promptHash: hashPrompt(PROMPT) },
 			{
 				actor: { userId: null, label: "system", role: "admin", mode: "solo" },
 				source: "session",
@@ -508,7 +511,7 @@ async function seedCell(entry: Entry, target: Target): Promise<Cell> {
 	if (entry === "M4d watcher DELETE" || entry === "M4c watcher PUT") {
 		await upsertWatcherConfig({ sessionId, providerId: "p", enabled: false });
 	}
-	return { sessionId, hitlId, proposalId: proposal.id, snoozeId };
+	return { sessionId, hitlId, proposalId, snoozeId };
 }
 
 let bobId = "";
@@ -1173,85 +1176,6 @@ for (const mode of ["team", "solo"] as const) {
 	});
 }
 
-// ── E5: a Telegram chat is not one of the callers above ────────────────────
-
-describe("E5 Telegram", () => {
-	const telegramPromise = import("../services/channels/telegram.js");
-	const channelsPromise = import("../services/channels/channels-service.js");
-	const tap = async (hitlId: string, action: "approve" | "decline") => {
-		const { spyOn } = await import("bun:test");
-		const telegram = await telegramPromise;
-		const channels = await channelsPromise;
-		const { handleTelegramUpdate } = await import("./channels.js");
-		const answers: string[] = [];
-		const answer = spyOn(telegram, "answerCallbackQuery").mockImplementation(async (_id, text) => {
-			answers.push(text ?? "");
-		});
-		const finder = spyOn(channels, "findActiveChannelByChatId").mockImplementation((async () => ({
-			id: "mx-chan",
-		})) as never);
-		try {
-			await handleTelegramUpdate({
-				update_id: 1,
-				callback_query: {
-					id: "cb",
-					from: { id: 9 },
-					data: `hitl:${hitlId}:${action}`,
-					message: { chat: { id: 9 } },
-				},
-			} as never);
-		} finally {
-			answer.mockRestore();
-			finder.mockRestore();
-		}
-		return answers;
-	};
-
-	for (const mode of ["team", "solo"] as const) {
-		test(
-			`${mode}: approve never closes anything; decline from the request's own channel closes it, whoever owns the session (the chat is the credential)`,
-			async () => {
-				await initializeDatabase();
-				world = await buildWorld(mode);
-				bobId = await lookupBobId();
-				for (const target of ["alices", "bobs", "unowned"] as const) {
-					const approveCell = await seedCell("E1 decision", target);
-					await getDb()
-						.update(aiHitlRequests)
-						.set({ channelId: "mx-chan" })
-						.where(eq(aiHitlRequests.id, approveCell.hitlId));
-					const approved = await tap(approveCell.hitlId, "approve");
-					expect(approved).toEqual([
-						"Approving from Telegram isn't supported any more. Open AgentPulse to answer.",
-					]);
-					expect(
-						(
-							await getDb()
-								.select()
-								.from(aiHitlRequests)
-								.where(eq(aiHitlRequests.id, approveCell.hitlId))
-						)[0]?.status,
-					).toBe("awaiting_reply");
-					expect((await getDb().select().from(controlActions)).length).toBe(0);
-
-					const declined = await tap(approveCell.hitlId, "decline");
-					expect(declined).toEqual(["Declined ✗"]);
-					expect(
-						(
-							await getDb()
-								.select()
-								.from(aiHitlRequests)
-								.where(eq(aiHitlRequests.id, approveCell.hitlId))
-						)[0]?.status,
-					).toBe("declined");
-				}
-				await wipeDomain();
-			},
-			TIMEOUT,
-		);
-	}
-});
-
 // ── Coverage: every owner-checked route is exercised somewhere ─────────────
 
 describe("coverage", () => {
@@ -1321,6 +1245,14 @@ describe("coverage", () => {
 			file: "services/push/live-activity-routes.test.ts",
 			marker: "activities",
 		},
+		// A Telegram chat is not one of this grid's callers: channels.ts judges the chat and the channel's owner
+		// (channels-hitl.test.ts, channels-ownership.test.ts).
+		"GET /channels/:id": { file: "routes/channels-ownership.test.ts", marker: "GET" },
+		"GET /channels/:id/stats": { file: "routes/channels-ownership.test.ts", marker: "/stats" },
+		"DELETE /channels/:id": { file: "routes/channels-ownership.test.ts", marker: "DELETE" },
+		"PATCH /channels/:id/config": { file: "routes/channels-ownership.test.ts", marker: "/config" },
+		"POST /channels/:id/test": { file: "routes/channels-ownership.test.ts", marker: "/test" },
+		"POST /channels/:id/relink": { file: "routes/channels-ownership.test.ts", marker: "relink" },
 		"GET /ai/ask/threads": {
 			file: "routes/ask-thread-owner.test.ts",
 			// the respond-key rows (admin, solo, owner, ownerless; D74) live in the second describe

@@ -33,7 +33,7 @@ import { resolveSessionHost } from "./session-ownership.js";
 export const NOT_OWNER_MESSAGE = "Only the owner or an admin can do that.";
 
 export class NotOwnerError extends Error {
-	constructor(readonly resource: "session" | "key" | "host" | "device") {
+	constructor(readonly resource: "session" | "key" | "host" | "channel" | "device") {
 		super(`Only the ${resource}'s owner or an admin can do that.`);
 		this.name = "NotOwnerError";
 	}
@@ -168,6 +168,10 @@ export const assertCanRenameSession = assertSessionOwnerOrAdmin;
 export const assertCanPinSession = assertSessionOwnerOrAdmin;
 /** Notes and the stored CLAUDE.md (which feeds the owner's AI watcher context). */
 export const assertCanEditSessionNotes = assertSessionOwnerOrAdmin;
+/** Configure or remove a session's watcher. Solo: everyone. Team: the session's owner or an admin. */
+export const assertCanConfigureWatcher = assertSessionOwnerOrAdmin;
+/** Approve, decline or edit a watcher proposal on a session. Same rule as configuring it. */
+export const assertCanDecideProposal = assertSessionOwnerOrAdmin;
 
 /**
  * May this caller manage this device (change it, test it, delete it)? Solo: yes.
@@ -198,6 +202,45 @@ async function assertKeyOwnerOrAdmin(actor: Actor, keyId: string): Promise<void>
 
 export const assertCanRevokeKey = assertKeyOwnerOrAdmin;
 export const assertCanViewKey = assertKeyOwnerOrAdmin;
+
+/**
+ * May this actor see, change or re-link this notification channel? Solo:
+ * everyone, as before. Team: an admin, or the user the channel belongs to. A
+ * channel whose user is "local" belongs to nobody in team mode, so only an
+ * admin may touch it (the one who re-links it claims it).
+ */
+export async function mayManageChannel(
+	actor: Actor,
+	channel: { userId: string },
+): Promise<boolean> {
+	if ((await modeOf(actor)) === "solo") return true;
+	if (actor.role === "none") return false;
+	if (actor.role === "admin") return true;
+	if (channel.userId === "local") return false;
+	return actor.userId !== null && actor.userId === channel.userId;
+}
+
+/**
+ * Re-linking is narrower than managing: it hands the channel's inbound rights
+ * to whoever redeems the next code, so in team mode only its owner may do it. An
+ * admin may only for a channel owned by "local", which belongs to nobody and is
+ * claimed by the re-link. Solo mode has one operator.
+ */
+export async function mayRelinkChannel(
+	actor: Actor,
+	channel: { userId: string },
+): Promise<boolean> {
+	if ((await modeOf(actor)) === "solo") return true;
+	if (channel.userId === "local") return actor.role === "admin";
+	return actor.userId !== null && actor.userId === channel.userId;
+}
+
+export async function assertCanManageChannel(
+	actor: Actor,
+	channel: { userId: string },
+): Promise<void> {
+	if (!(await mayManageChannel(actor, channel))) throw new NotOwnerError("channel");
+}
 
 /** Rotate or revoke a host: its owner or an admin. Never consulted for launching on it. */
 export async function assertCanManageHost(actor: Actor, supervisorId: string): Promise<void> {

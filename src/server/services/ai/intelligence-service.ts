@@ -34,6 +34,12 @@ export interface ProjectedEventRow {
 	providerEventType: string | null;
 	toolName: string | null;
 	toolResponse: string | null;
+	/**
+	 * The failure hook's `is_interrupt` flag, extracted in SQL for
+	 * `PostToolUseFailure` rows only (a user stopping a tool is not the session
+	 * being stuck). The rest of `raw_payload` is never loaded.
+	 */
+	isInterrupt: boolean;
 	createdAt: string;
 }
 
@@ -50,7 +56,7 @@ function toClassifierSessionEvent(row: ProjectedEventRow): SessionEvent {
 		toolName: row.toolName,
 		toolInput: null,
 		toolResponse: row.toolResponse,
-		rawPayload: {},
+		rawPayload: row.isInterrupt ? { is_interrupt: true } : {},
 		createdAt: row.createdAt,
 	};
 }
@@ -85,11 +91,14 @@ export async function loadRecentEventsBySession(
 			provider_event_type: string | null;
 			tool_name: string | null;
 			tool_response: string | null;
+			is_interrupt: string | null;
 			created_at: string;
 		}>(
 			getDb(),
 			sql`SELECT e.id, e.session_id, e.event_type, e.category, e.source, e.content, e.is_noise,
-			           e.provider_event_type, e.tool_name, e.tool_response, e.created_at
+			           e.provider_event_type, e.tool_name, e.tool_response, e.created_at,
+			           CASE WHEN e.event_type = 'PostToolUseFailure'
+			                THEN e.raw_payload ->> 'is_interrupt' END AS is_interrupt
 			      FROM (VALUES ${idList}) AS s(session_id)
 			      CROSS JOIN LATERAL (
 			        SELECT * FROM events ev WHERE ev.session_id = s.session_id ORDER BY ev.id DESC LIMIT ${limit}
@@ -110,6 +119,7 @@ export async function loadRecentEventsBySession(
 				providerEventType: r.provider_event_type,
 				toolName: r.tool_name,
 				toolResponse: r.tool_response,
+				isInterrupt: r.is_interrupt === "true",
 				createdAt: r.created_at,
 			});
 		}
@@ -132,6 +142,9 @@ export async function loadRecentEventsBySession(
 				providerEventType: events.providerEventType,
 				toolName: events.toolName,
 				toolResponse: events.toolResponse,
+				interruptFlag: sql<
+					number | null
+				>`CASE WHEN ${events.eventType} = 'PostToolUseFailure' AND json_valid(${events.rawPayload}) THEN json_extract(${events.rawPayload}, '$.is_interrupt') END`,
 				createdAt: events.createdAt,
 			})
 			.from(events)
@@ -140,8 +153,9 @@ export async function loadRecentEventsBySession(
 			.limit(limit);
 		out.set(
 			id,
-			rows.reverse().map((row) => ({
+			rows.reverse().map(({ interruptFlag, ...row }) => ({
 				...row,
+				isInterrupt: interruptFlag === 1,
 				category: row.category as EventCategory | null,
 				source: row.source as SessionEvent["source"],
 			})),
@@ -169,7 +183,7 @@ export async function intelligenceForSession(
 	const openHitl = await getOpenHitlForSession(sessionId);
 
 	const supervisorConnected: boolean | undefined = (
-		await getSessionOwnerConnections([sessionId])
+		await getSessionOwnerConnections([sessionId], now.getTime())
 	).get(sessionId);
 
 	return classifySession({
@@ -216,7 +230,7 @@ export async function intelligenceForSessions(
 	}
 
 	// 3) Owner-of-record supervisor connected-state, batched.
-	const ownerConnected = await getSessionOwnerConnections(presentIds);
+	const ownerConnected = await getSessionOwnerConnections(presentIds, now.getTime());
 	const managedBySession = new Map<string, { supervisorConnected: boolean }>();
 	for (const [id, connected] of ownerConnected) {
 		managedBySession.set(id, { supervisorConnected: connected });

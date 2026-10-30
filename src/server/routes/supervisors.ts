@@ -34,6 +34,7 @@ import { claimNextLaunchRequest, updateLaunchDispatchStatus } from "../services/
 import { associateObservedSession } from "../services/launch-dispatch.js";
 import { cleanMachineName } from "../services/machine-name.js";
 import {
+	ReservedEventTypeError,
 	appendManagedSessionEvents,
 	listManagedSessionsNeedingSync,
 	upsertManagedSessionState,
@@ -427,6 +428,9 @@ supervisorsAgentRouter.post(
 			}
 			return c.json({ events: inserted });
 		} catch (err) {
+			if (err instanceof ReservedEventTypeError) {
+				return c.json({ error: "reserved_event_type" }, 400);
+			}
 			if (err instanceof SessionOwnershipError) {
 				console.warn("[supervisors] session write rejected", {
 					supervisorId,

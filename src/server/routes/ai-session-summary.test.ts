@@ -976,6 +976,57 @@ describe("the GET body has the fixture's shape", () => {
 		});
 	}
 
+	test("AGEN-77 attempt.timeoutSeconds is present only for a failed provider_timeout, and the polled view's attempt is identical", async () => {
+		const headers = disableAuth();
+		await activeSession(SID);
+		const seedFailed = (code: string) =>
+			H.seedSummaryRow(SID, {
+				attemptStatus: "failed",
+				attemptStartedAt: toDbTimestamp(new Date(Date.now() - 20_000)),
+				attemptErrorCode: code,
+			});
+		await seedFailed("provider_timeout~long");
+		const full = await get(SID, headers);
+		const polled = await poll(SID, headers);
+		expect(full.json?.attempt).toMatchObject({
+			errorCode: "provider_timeout",
+			timeoutSeconds: 360,
+		});
+		expect(polled.json?.attempt).toEqual(full.json?.attempt);
+		await getDb().delete(aiSessionSummaries);
+		for (const code of ["provider_error", "provider_rate_limit", "interrupted"]) {
+			await seedFailed(code);
+			const view = await get(SID, headers);
+			expect("timeoutSeconds" in (view.json?.attempt as object), code).toBe(false);
+			await getDb().delete(aiSessionSummaries);
+		}
+		const idle = await get(SID, headers);
+		expect("timeoutSeconds" in (idle.json?.attempt as object)).toBe(false);
+	});
+
+	test("AGEN-77 no timeoutSeconds on a generating attempt (held), nor on a lapsed generating lease", async () => {
+		const headers = disableAuth();
+		const edit = await activeSession(SID);
+		const gate = scriptGated([edit]);
+		expect((await post(SID, headers)).status).toBe(202);
+		await H.withDeadline(gate.arrived);
+		for (const view of [await get(SID, headers), await poll(SID, headers)]) {
+			expect((view.json?.attempt as { status: string }).status).toBe("generating");
+			expect("timeoutSeconds" in (view.json?.attempt as object)).toBe(false);
+		}
+		gate.release();
+		await waitForGenerations();
+		await getDb().delete(aiSessionSummaries);
+		await H.seedSummaryRow(SID, {
+			attemptStatus: "generating",
+			attemptToken: "old",
+			attemptStartedAt: toDbTimestamp(new Date(Date.now() - 3600_000)),
+		});
+		const lapsed = await get(SID, headers);
+		expect(lapsed.json?.attempt).toMatchObject({ status: "failed", errorCode: "interrupted" });
+		expect("timeoutSeconds" in (lapsed.json?.attempt as object)).toBe(false);
+	});
+
 	test("TC-6.5r2 a real failed run (the provider answers badly) reads back as a failed view", async () => {
 		const edit = await activeSession(SID);
 		void edit;
@@ -1220,7 +1271,7 @@ describe("both mounts", () => {
 // ── TC-6.8: classification ───────────────────────────────────────────────────
 
 describe("classification", () => {
-	test("TC-6.8 the GET is in INTENTIONALLY_MANAGE_ONLY once and in no other set; the POST is in none; both are registered on both mounts; OWNER_CHECKED_ROUTES gains nothing from it", () => {
+	test("TC-6.8 the GET is in INTENTIONALLY_MANAGE_ONLY once and in no other set; the POST is in none; both are registered on both mounts; neither summary route is owner-checked", () => {
 		expect(INTENTIONALLY_MANAGE_ONLY.has(GET_ROUTE)).toBe(true);
 		expect(OBSERVE_READ_PATHS.has(GET_ROUTE)).toBe(false);
 		for (const set of [TEAM_ADMIN_ROUTES, OWNER_CHECKED_ROUTES, INGEST_WRITABLE_ROUTES]) {
@@ -1229,7 +1280,6 @@ describe("classification", () => {
 		}
 		expect(ALWAYS_ADMIN_ROUTES.has(POST_ROUTE)).toBe(false);
 		expect(ALWAYS_ADMIN_ROUTES.has(`GET ${GET_ROUTE}`)).toBe(false);
-		expect(OWNER_CHECKED_ROUTES.size).toBe(42); // 16 before the mobile companion + 4 device writes + 2 Live Activity writes + 10 HITL decision, inbox and snooze routes + 6 session-changing routes (prompt, stop, retry, control-actions read, watcher PUT and DELETE) + the Ask cancel + the Ask thread list, read and archive
 
 		const registered = new Set(app.routes.map((r) => `${r.method} ${r.path}`));
 		for (const mount of MOUNTS) {
@@ -1405,9 +1455,17 @@ describe("origin, audit, shutdown", () => {
 		expect(await H.readSummaryRow(SID)).toBeUndefined();
 		expect((await get(SID, foreign)).status).toBe(200);
 
+		// With authentication off, "same Origin as the Host" holds only for a loopback or
+		// allowlisted Host (otherwise a page on a rebound name would pass).
+		const rebound = new Headers(base);
+		rebound.set("Host", "summary.example.test");
+		rebound.set("Origin", "http://summary.example.test");
+		const reboundPost = await post(SID, rebound);
+		expect([reboundPost.status, reboundPost.json?.error]).toEqual([403, "bad_origin"]);
+
 		const same = new Headers(base);
-		same.set("Host", "summary.example.test");
-		same.set("Origin", "http://summary.example.test");
+		same.set("Host", "localhost:3000");
+		same.set("Origin", "http://localhost:3000");
 		scriptOk([editId]);
 		expect((await post(SID, same)).status).toBe(202);
 		await waitForGenerations();

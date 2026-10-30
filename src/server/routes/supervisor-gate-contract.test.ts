@@ -38,7 +38,7 @@ const { supervisorsAgentRouter } = await import("./supervisors.js");
 const { createSupervisorEnrollmentToken } = await import("../auth/supervisor-auth.js");
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
 const { queueStopAction, claimNextControlAction } = await import("../services/control-actions.js");
-const { listLiveOwnedManagedSessionIds } = await import("../services/session-ownership.js");
+const { listLiveOwnedManagedSessions } = await import("../services/session-ownership.js");
 const { createReportGate, LAUNCH_REFUSED_MESSAGE } = await import(
 	"../../supervisor/services/report-gate.js"
 );
@@ -46,6 +46,8 @@ const { createReportGate, LAUNCH_REFUSED_MESSAGE } = await import(
 const app = new Hono().route("/api/v1", supervisorsAgentRouter);
 const originalDisableAuth = config.disableAuth;
 const LIVE_STATES = ["interactive_terminal", "headless", "managed", "pending"];
+const liveSessionIds = async () =>
+	(await listLiveOwnedManagedSessions(LIVE_STATES)).map((row) => row.sessionId);
 
 beforeAll(async () => {
 	await initializeDatabase();
@@ -149,7 +151,7 @@ describe("a newly excluded managed session", () => {
 			await gate.reportEvents(sessionId, [
 				{ eventType: "HeadlessTaskStarted", category: "system_event", content: "started" },
 			]);
-			expect(await listLiveOwnedManagedSessionIds(LIVE_STATES)).toContain(sessionId);
+			expect(await liveSessionIds()).toContain(sessionId);
 
 			// a control action is in flight: the session is locked by it
 			const queued = await queueStopAction(sessionId, { userId: null, label: "user" });
@@ -168,7 +170,7 @@ describe("a newly excluded managed session", () => {
 			const after = await sessionRow(sessionId);
 			expect(after?.status).toBe("completed");
 			expect((await managedRow(sessionId))?.managedState).toBe("stopped");
-			expect(await listLiveOwnedManagedSessionIds(LIVE_STATES)).not.toContain(sessionId);
+			expect(await liveSessionIds()).not.toContain(sessionId);
 
 			// nothing the session did not already have was stored
 			expect(after?.cwd).toBe(before?.cwd);

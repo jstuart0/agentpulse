@@ -6,9 +6,12 @@ import { handleTelegramUpdate } from "./routes/channels.js";
 import { markDbReady } from "./routes/health.js";
 import { getInFlightCount } from "./routes/ingest-counters.js";
 import { handleServerRequest } from "./server-fetch.js";
-import { embedEvent, startBackfillIfNeeded } from "./services/ai/embeddings/embedding-service.js";
+import { startEmbeddingBackfillSchedule } from "./services/ai/embeddings/embedding-schedule.js";
+import { embedEvent } from "./services/ai/embeddings/embedding-service.js";
 import { validateAiStartupConfig } from "./services/ai/feature.js";
+import { isAiBuildEnabled } from "./services/ai/feature.js";
 import { maybeStartWatcherRunner } from "./services/ai/runner.js";
+import { runWatcherMaintenanceOnce } from "./services/ai/watcher-maintenance.js";
 import { ensureDefaultKeyThenWarn } from "./services/boot-keys.js";
 import {
 	getTelegramBotToken,
@@ -222,12 +225,25 @@ initWsBroadcaster(sessionBus, { annotate: stampMachine });
 // Start anonymous telemetry (opt-out with AGENTPULSE_TELEMETRY=off)
 startTelemetry();
 startTranscriptSync();
-void maybeStartWatcherRunner();
+// The one-shot cleanup runs before the runner, so a converted `auto` policy or
+// a superseded HITL is never seen by a live run.
+void (async () => {
+	if (isAiBuildEnabled()) {
+		try {
+			await runWatcherMaintenanceOnce();
+		} catch (err) {
+			console.error("[ai-watcher] one-shot maintenance failed:", err);
+		}
+	}
+	await maybeStartWatcherRunner();
+})();
 
-// Vector search: kick off any backfill that's pending and wire ingest
-// → fire-and-forget embed. Both no-op when AGENTPULSE_VECTOR_SEARCH is
-// unset, so this is safe to call unconditionally.
-void startBackfillIfNeeded();
+// Vector search: a scheduled, bounded backfill keeps the index current (hook
+// events never reach the session bus, so the inline embed below does not see
+// them) and recovers from a provider outage; the bus listener embeds the
+// events that do reach it at once. Both no-op when AGENTPULSE_VECTOR_SEARCH
+// is unset, so this is safe to call unconditionally.
+startEmbeddingBackfillSchedule();
 sessionBus.on("session_event", ({ event }) => {
 	if (event.id > 0) void embedEvent(event.id);
 });

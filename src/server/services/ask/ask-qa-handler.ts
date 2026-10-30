@@ -1,9 +1,12 @@
 import { and, desc, eq, max } from "drizzle-orm";
+import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
 import { events, aiQaCache } from "../../db/schema/index.js";
 import { getAdapter } from "../ai/llm/registry.js";
+import { LlmError } from "../ai/llm/types.js";
 import { getDefaultProvider, getProviderApiKey } from "../ai/providers-service.js";
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";
+import { chargeFailedCall, globalCentsForUsage } from "../ai/usage-cost.js";
 import { resolveSession } from "./ask-resolver.js";
 import type { QaIntent } from "./launch-intent-detector.js";
 
@@ -16,6 +19,19 @@ const TOKEN_BUDGET_QA_CHARS = 40_000; // ~10k tokens
 const QA_SYSTEM_PROMPT = `You are an AI assistant analyzing an AI coding session's event transcript.
 Answer the user's question based solely on the events provided. Do not speculate beyond the evidence.
 At the end of your response, append a provenance line on its own line exactly as described below — do not omit it.`;
+
+/** What the user is told when the model call fails; the detail stays in the error. */
+export function qaFailureReply(err: unknown): string {
+	if (err instanceof LlmError) {
+		if (err.subType === "empty_output") {
+			return "The AI model didn't produce an answer. Try again, or ask about a narrower stretch of the session.";
+		}
+		if (err.subType === "transient_timeout" && err.deadline) {
+			return "The AI provider took too long to answer. Try a narrower question, or ask whoever runs this server to raise AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS.";
+		}
+	}
+	return "The AI provider returned an error. Try again in a moment.";
+}
 
 /**
  * Normalize a question for cache key computation: lowercase, trim, collapse
@@ -186,18 +202,15 @@ export async function handleSessionQa(
 			model: full.model,
 			maxTokens: 800,
 			temperature: 0.3,
-			timeoutMs: 60_000,
+			disableReasoning: true,
+			timeoutMs: config.askAnswerTimeoutSeconds * 1000,
 		});
 
 		replyText = res.text.trim() || "(no response)";
-		actualCents = res.usage.estimated
-			? ESTIMATED_QA_COST_CENTS
-			: Math.max(
-					1,
-					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
-				);
-	} catch {
-		return { replyText: "The AI provider returned an error. Try again in a moment." };
+		actualCents = globalCentsForUsage(res.usage, ESTIMATED_QA_COST_CENTS);
+	} catch (err) {
+		chargeFailedCall(err, ESTIMATED_QA_COST_CENTS);
+		return { replyText: qaFailureReply(err) };
 	}
 
 	// 9. Record spend (best-effort; don't block the reply).

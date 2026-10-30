@@ -10,6 +10,7 @@ const { applyNativeName, getSessions, getStats, renameSession, updateStaleSessio
 );
 const { AGENT_TYPES } = await import("../../shared/constants.js");
 const { sessionBus } = await import("./notifier.js");
+const { seedManagedSession, seedSupervisor } = await import("../test-utils/supervisor-fixture.js");
 
 beforeAll(() => {
 	return initializeDatabase();
@@ -187,6 +188,29 @@ describe("updateStaleSessions broadcasts what it changed", () => {
 		expect(byId.get("done-b")?.status).toBe("completed");
 		expect(byId.has("fresh-b")).toBe(false);
 		for (const s of seen) expect("ingestKeyId" in s).toBe(false);
+	});
+
+	test("L6: a stale-lease managed session gets exactly one update, completed, still managed", async () => {
+		await seedSupervisor("dead-host", {
+			storedStatus: "connected",
+			leaseOffsetMs: -100 * 24 * 60 * MINUTE,
+			leaseBaseMs: Date.now(),
+		});
+		await seedManagedSession({
+			sessionId: "l6",
+			supervisorId: "dead-host",
+			managedState: "interactive_terminal",
+			session: {
+				status: "active",
+				isWorking: true,
+				lastActivityAt: isoAgo(100 * 24 * 60 * MINUTE),
+			},
+		});
+		await updateStaleSessions();
+		const forL6 = seen.filter((s) => s.sessionId === "l6");
+		expect(forL6.length).toBe(1);
+		expect(forL6[0]?.operationalStatus).toBe("completed");
+		expect(forL6[0]?.managedSession?.managedState).toBe("interactive_terminal");
 	});
 
 	test("nothing changed, nothing broadcast", async () => {

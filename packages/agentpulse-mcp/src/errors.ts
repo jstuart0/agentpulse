@@ -103,12 +103,37 @@ const ERROR_TABLE: ReadonlyArray<{
 			return `AgentPulse rejected the request: this key lacks the "${required}" scope.`;
 		},
 	},
-	// Answering a HITL request (decide_hitl). Each is a plain sentence; control_busy says it is safe to retry.
+	// Answering a HITL request (decide_hitl). Each is a plain sentence; a busy session says it is safe to retry.
 	{
 		status: 409,
-		error: "control_busy",
+		error: "prompt_not_deliverable",
+		message: (body) => {
+			const reason =
+				body && typeof body === "object" && "reason" in body
+					? String((body as { reason?: unknown }).reason)
+					: "";
+			if (reason === "control_busy") {
+				return "AgentPulse is busy: another action is already running on that session, so the prompt was NOT sent and the request is still open. Retryable: wait a few seconds and call decide_hitl again.";
+			}
+			return `AgentPulse can't type into that session${reason ? ` (${reason})` : ""}, so the prompt was NOT sent and the request is still open. Decline it, or answer in the session.`;
+		},
+	},
+	{
+		status: 409,
+		error: "stale_proposal",
 		message:
-			"AgentPulse is busy: another action is already running on that session, so the prompt was NOT sent and the request is still open. Retryable: wait a few seconds and call decide_hitl again.",
+			"The session has moved on since the agent asked, so nothing was sent. Call get_inbox again for the current request.",
+	},
+	{
+		status: 409,
+		error: "not_approvable",
+		message:
+			"That suggestion can't be approved as it stands. Decline it, or reply with a custom prompt.",
+	},
+	{
+		status: 409,
+		error: "launch_missing",
+		message: "AgentPulse can't find how that session was launched, so nothing was sent.",
 	},
 	{
 		status: 409,
@@ -141,17 +166,23 @@ const ERROR_TABLE: ReadonlyArray<{
 		status: 400,
 		error: "prompt_hash_required",
 		message:
-			"This key can only approve the exact prompt it was shown: pass prompt_hash from the inbox item's promptHash.",
+			"An approve must carry the hash of the prompt you reviewed: pass prompt_hash from the inbox item's promptHash.",
 	},
 	{
 		status: 400,
-		error: "filter_blocked",
+		error: "dispatch_blocked",
 		message: (body) =>
 			`The safety filter blocked that prompt${
-				body && typeof body === "object" && "rule" in body
-					? ` (${String((body as { rule?: unknown }).rule)})`
+				body && typeof body === "object" && "reason" in body
+					? ` (${String((body as { reason?: unknown }).reason)})`
 					: ""
 			}. Nothing was sent and the request is still open.`,
+	},
+	{
+		status: 400,
+		error: "prompt_unsafe",
+		message:
+			"That prompt has characters AgentPulse won't type into a session. Nothing was sent and the request is still open.",
 	},
 	// Ownership and role refusals (team mode). The bare codes are opaque to a
 	// model or a script; each says what is needed instead.

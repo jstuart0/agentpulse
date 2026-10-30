@@ -1,5 +1,5 @@
 {
-	"id": "caf13a6b-52fa-4533-af09-331b8153f52b",
+	"id": "b822245d-a52c-4a50-b34b-d05d365059e8",
 	"prevId": "cd786f35-3745-4673-9e5b-a31ffe5a0902",
 	"version": "7",
 	"dialect": "postgresql",
@@ -154,6 +154,196 @@
 			"checkConstraints": {},
 			"isRLSEnabled": false
 		},
+		"public.ai_dispatch_audit": {
+			"name": "ai_dispatch_audit",
+			"schema": "",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "CURRENT_TIMESTAMP"
+				},
+				"completed_at": {
+					"name": "completed_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"outcome": {
+					"name": "outcome",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "'pending'"
+				},
+				"refusal_code": {
+					"name": "refusal_code",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"session_id": {
+					"name": "session_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"session_name": {
+					"name": "session_name",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"actor_kind": {
+					"name": "actor_kind",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"actor_user_id": {
+					"name": "actor_user_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"actor_label": {
+					"name": "actor_label",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"telegram_from_id": {
+					"name": "telegram_from_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"telegram_chat_id": {
+					"name": "telegram_chat_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"prompt_sha256": {
+					"name": "prompt_sha256",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"prompt_text": {
+					"name": "prompt_text",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"continue_kind": {
+					"name": "continue_kind",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"proposal_id": {
+					"name": "proposal_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"hitl_id": {
+					"name": "hitl_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"turn_key": {
+					"name": "turn_key",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"provider_id": {
+					"name": "provider_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"model": {
+					"name": "model",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"control_action_id": {
+					"name": "control_action_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"config_snapshot": {
+					"name": "config_snapshot",
+					"type": "json",
+					"primaryKey": false,
+					"notNull": false
+				}
+			},
+			"indexes": {
+				"idx_ai_dispatch_audit_session_created": {
+					"name": "idx_ai_dispatch_audit_session_created",
+					"columns": [
+						{
+							"expression": "session_id",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						},
+						{
+							"expression": "created_at",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				},
+				"idx_ai_dispatch_audit_outcome_created": {
+					"name": "idx_ai_dispatch_audit_outcome_created",
+					"columns": [
+						{
+							"expression": "outcome",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						},
+						{
+							"expression": "created_at",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {},
+			"isRLSEnabled": false
+		},
 		"public.ai_hitl_requests": {
 			"name": "ai_hitl_requests",
 			"schema": "",
@@ -203,6 +393,36 @@
 				},
 				"expires_at": {
 					"name": "expires_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"turn_key": {
+					"name": "turn_key",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"trigger_event_id": {
+					"name": "trigger_event_id",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"prompt_sha256": {
+					"name": "prompt_sha256",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"approvable": {
+					"name": "approvable",
+					"type": "boolean",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"telegram_sent_at": {
+					"name": "telegram_sent_at",
 					"type": "text",
 					"primaryKey": false,
 					"notNull": false
@@ -597,6 +817,207 @@
 				"ai_session_summaries_session_id_sessions_session_id_fk": {
 					"name": "ai_session_summaries_session_id_sessions_session_id_fk",
 					"tableFrom": "ai_session_summaries",
+					"tableTo": "sessions",
+					"columnsFrom": ["session_id"],
+					"columnsTo": ["session_id"],
+					"onDelete": "cascade",
+					"onUpdate": "no action"
+				}
+			},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {},
+			"isRLSEnabled": false
+		},
+		"public.ai_watcher_reports": {
+			"name": "ai_watcher_reports",
+			"schema": "",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true
+				},
+				"session_id": {
+					"name": "session_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"turn_key": {
+					"name": "turn_key",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"trigger_event_id": {
+					"name": "trigger_event_id",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"through_event_id": {
+					"name": "through_event_id",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"verdict": {
+					"name": "verdict",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"why": {
+					"name": "why",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"evidence_ids": {
+					"name": "evidence_ids",
+					"type": "json",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"status": {
+					"name": "status",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "'claimed'"
+				},
+				"failure_code": {
+					"name": "failure_code",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"attempt_count": {
+					"name": "attempt_count",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"default": 1
+				},
+				"claimed_at": {
+					"name": "claimed_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"provider_id": {
+					"name": "provider_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"tokens_in": {
+					"name": "tokens_in",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"default": 0
+				},
+				"tokens_out": {
+					"name": "tokens_out",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"default": 0
+				},
+				"cost_cents": {
+					"name": "cost_cents",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"default": 0
+				},
+				"telegram_status": {
+					"name": "telegram_status",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"telegram_sent_at": {
+					"name": "telegram_sent_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "CURRENT_TIMESTAMP"
+				}
+			},
+			"indexes": {
+				"uq_ai_watcher_reports_session_turn": {
+					"name": "uq_ai_watcher_reports_session_turn",
+					"columns": [
+						{
+							"expression": "session_id",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						},
+						{
+							"expression": "turn_key",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": true,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				},
+				"idx_ai_watcher_reports_session_created": {
+					"name": "idx_ai_watcher_reports_session_created",
+					"columns": [
+						{
+							"expression": "session_id",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						},
+						{
+							"expression": "created_at",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				},
+				"idx_ai_watcher_reports_telegram_sent": {
+					"name": "idx_ai_watcher_reports_telegram_sent",
+					"columns": [
+						{
+							"expression": "telegram_sent_at",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				}
+			},
+			"foreignKeys": {
+				"ai_watcher_reports_session_id_sessions_session_id_fk": {
+					"name": "ai_watcher_reports_session_id_sessions_session_id_fk",
+					"tableFrom": "ai_watcher_reports",
 					"tableTo": "sessions",
 					"columnsFrom": ["session_id"],
 					"columnsTo": ["session_id"],
@@ -1965,107 +2386,6 @@
 			"checkConstraints": {},
 			"isRLSEnabled": false
 		},
-		"public.pairing_codes": {
-			"name": "pairing_codes",
-			"schema": "",
-			"columns": {
-				"id": {
-					"name": "id",
-					"type": "text",
-					"primaryKey": true,
-					"notNull": true
-				},
-				"code_hash": {
-					"name": "code_hash",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true
-				},
-				"user_id": {
-					"name": "user_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false
-				},
-				"access": {
-					"name": "access",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true
-				},
-				"device_label": {
-					"name": "device_label",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false
-				},
-				"minter_credential": {
-					"name": "minter_credential",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false
-				},
-				"created_at": {
-					"name": "created_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true
-				},
-				"expires_at": {
-					"name": "expires_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true
-				},
-				"redeemed_at": {
-					"name": "redeemed_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false
-				},
-				"redeemed_key_id": {
-					"name": "redeemed_key_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false
-				},
-				"redeemed_device_name": {
-					"name": "redeemed_device_name",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false
-				}
-			},
-			"indexes": {
-				"idx_pairing_codes_redeemed_key": {
-					"name": "idx_pairing_codes_redeemed_key",
-					"columns": [
-						{
-							"expression": "redeemed_key_id",
-							"isExpression": false,
-							"asc": true,
-							"nulls": "last"
-						}
-					],
-					"isUnique": false,
-					"concurrently": false,
-					"method": "btree",
-					"with": {}
-				}
-			},
-			"foreignKeys": {},
-			"compositePrimaryKeys": {},
-			"uniqueConstraints": {
-				"pairing_codes_code_hash_unique": {
-					"name": "pairing_codes_code_hash_unique",
-					"nullsNotDistinct": false,
-					"columns": ["code_hash"]
-				}
-			},
-			"policies": {},
-			"checkConstraints": {},
-			"isRLSEnabled": false
-		},
 		"public.project_alert_rule_fires": {
 			"name": "project_alert_rule_fires",
 			"schema": "",
@@ -3269,6 +3589,32 @@
 					"primaryKey": false,
 					"notNull": false
 				},
+				"notify_enabled": {
+					"name": "notify_enabled",
+					"type": "boolean",
+					"primaryKey": false,
+					"notNull": true,
+					"default": false
+				},
+				"continue_enabled": {
+					"name": "continue_enabled",
+					"type": "boolean",
+					"primaryKey": false,
+					"notNull": true,
+					"default": true
+				},
+				"auto_confirmed_at": {
+					"name": "auto_confirmed_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"auto_confirmed_by": {
+					"name": "auto_confirmed_by",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
 				"created_at": {
 					"name": "created_at",
 					"type": "text",
@@ -3401,6 +3747,24 @@
 					"primaryKey": false,
 					"notNull": false
 				},
+				"turn_key": {
+					"name": "turn_key",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"suggested_prompt": {
+					"name": "suggested_prompt",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"continue_kind": {
+					"name": "continue_kind",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
 				"created_at": {
 					"name": "created_at",
 					"type": "text",
@@ -3416,7 +3780,30 @@
 					"default": "CURRENT_TIMESTAMP"
 				}
 			},
-			"indexes": {},
+			"indexes": {
+				"uq_watcher_proposals_session_turn": {
+					"name": "uq_watcher_proposals_session_turn",
+					"columns": [
+						{
+							"expression": "session_id",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						},
+						{
+							"expression": "turn_key",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": true,
+					"where": "\"watcher_proposals\".\"turn_key\" IS NOT NULL",
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				}
+			},
 			"foreignKeys": {
 				"watcher_proposals_session_id_sessions_session_id_fk": {
 					"name": "watcher_proposals_session_id_sessions_session_id_fk",

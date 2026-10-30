@@ -34,7 +34,7 @@ beforeEach(async () => {
 
 describe("watcher-runs-service", () => {
 	test("enqueue then claim drives status transitions", async () => {
-		const run = await enqueueRun({
+		const { run } = await enqueueRun({
 			sessionId: "s1",
 			triggerKind: "idle",
 			triggerEventId: 42,
@@ -52,8 +52,8 @@ describe("watcher-runs-service", () => {
 	});
 
 	test("duplicate enqueue while one is open returns the existing run", async () => {
-		const a = await enqueueRun({ sessionId: "s2", triggerKind: "idle" });
-		const b = await enqueueRun({ sessionId: "s2", triggerKind: "idle" });
+		const { run: a } = await enqueueRun({ sessionId: "s2", triggerKind: "idle" });
+		const { run: b } = await enqueueRun({ sessionId: "s2", triggerKind: "idle" });
 		expect(b.id).toBe(a.id);
 
 		const snap = await queueSnapshot();
@@ -74,7 +74,7 @@ describe("watcher-runs-service", () => {
 	});
 
 	test("mark succeeded clears lease and records proposal id", async () => {
-		const run = await enqueueRun({ sessionId: "s3", triggerKind: "stop" });
+		const { run } = await enqueueRun({ sessionId: "s3", triggerKind: "stop" });
 		const claimed = await claimNextRun({
 			leaseOwner: "owner-1",
 			leaseDurationMs: 10_000,
@@ -90,7 +90,7 @@ describe("watcher-runs-service", () => {
 	});
 
 	test("mark failed records error subtype", async () => {
-		const run = await enqueueRun({ sessionId: "s4", triggerKind: "idle" });
+		const { run } = await enqueueRun({ sessionId: "s4", triggerKind: "idle" });
 		await claimNextRun({
 			leaseOwner: "owner-1",
 			leaseDurationMs: 10_000,
@@ -103,7 +103,7 @@ describe("watcher-runs-service", () => {
 	});
 
 	test("reclaim expired leases requeues runs below max attempts", async () => {
-		const run = await enqueueRun({ sessionId: "s5", triggerKind: "idle" });
+		const { run } = await enqueueRun({ sessionId: "s5", triggerKind: "idle" });
 		await claimNextRun({
 			leaseOwner: "owner-1",
 			leaseDurationMs: 10_000,
@@ -122,7 +122,7 @@ describe("watcher-runs-service", () => {
 	});
 
 	test("reclaim expired leases expires runs past max attempts", async () => {
-		const _run = await enqueueRun({ sessionId: "s6", triggerKind: "idle" });
+		const { run: _run } = await enqueueRun({ sessionId: "s6", triggerKind: "idle" });
 		await claimNextRun({ leaseOwner: "owner-1", leaseDurationMs: 10_000 });
 		// Bump attempt count above ceiling.
 		await getDb().update(aiWatcherRuns).set({ attemptCount: 3 }).execute();
@@ -138,7 +138,7 @@ describe("watcher-runs-service", () => {
 	});
 
 	test("heartbeat extends lease only for the owning leaser", async () => {
-		const run = await enqueueRun({ sessionId: "s7", triggerKind: "idle" });
+		const { run } = await enqueueRun({ sessionId: "s7", triggerKind: "idle" });
 		await claimNextRun({ leaseOwner: "owner-1", leaseDurationMs: 10_000 });
 
 		const ok = await heartbeatRun({
@@ -159,7 +159,7 @@ describe("watcher-runs-service", () => {
 	test("only one run per session is open at a time (unique partial index)", async () => {
 		await enqueueRun({ sessionId: "s8", triggerKind: "idle" });
 		// Second enqueue should reuse the first; otherwise would violate index.
-		const dup = await enqueueRun({ sessionId: "s8", triggerKind: "stop" });
+		const { run: dup } = await enqueueRun({ sessionId: "s8", triggerKind: "stop" });
 		const runs = await listRecentRunsForSession("s8");
 		expect(runs.length).toBe(1);
 		expect(dup.triggerKind).toBe("idle");

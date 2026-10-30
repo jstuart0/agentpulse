@@ -34,7 +34,7 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   - `GET /sessions/stats` adds `completedToday`, `failedToday` (sessions that ended today, by outcome) and `launchesToday`
     (drafts and rejected requests excluded), and `todayStartsAt` (the server's local midnight as an ISO instant, so a client can
     label "today" honestly). Capabilities: `sessionCardView`, `detailEventsLimit`, `timelineKeyset`, `statsToday`.
-  - `sessions.current_turn_started_at` (migration 0016): when the turn in progress began. It rides on every session row and on
+  - `sessions.current_turn_started_at` (migration 0017): when the turn in progress began. It rides on every session row and on
     the WebSocket `Session` frame.
 - `GET /projects/:id/sessions` rows carry the effective `machine`, as the session list's do.
 - Push: `hitl_opened` carries `decision` (`continue` or `ask`); `ask_reply` carries the thread `title` (only for a device that
@@ -45,7 +45,7 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 - **Ask: a respond key can stop only a turn it asked.** `POST /ai/ask/threads/:id/cancel` applies the same own-thread rule as the thread read: an admin's respond key and a solo respond key no longer stop another person's running turn (the 404 is the same as for no turn). Manage credentials keep the admin and solo rule.
 - **`ask_reply` push targets only phones that can open the thread.** The push still goes to the requester's devices, but a device is skipped when its respond key would get a 404 on `GET /ai/ask/threads/:id`: an admin or solo caller who continued another person's thread, a thread asked by a different ownerless key, and a thread that can't be found push to nobody. A key owned by a person reads every thread that person owns (including one started on the web), so the common case is unchanged. In solo, an ownerless respond key reads only threads that exact key asked; nothing links two ownerless keys to one person, so none is guessed.
 - A failed launch's `failureReason` now also reduces `/root/...` and `/var/root/...` to `~`. The scrub is pattern-based (documented in `session-card.ts`): homes in other locations and account names outside a path are not caught.
-- **Ask threads belong to whoever asked them** (migration 0016: `ask_threads.owner_user_id` / `owner_key_id`, set at creation).
+- **Ask threads belong to whoever asked them** (migration 0017: `ask_threads.owner_user_id` / `owner_key_id`, set at creation).
   In team mode, reading, listing, archiving and cancelling a thread is for the asker (by user, or by key for a key with no
   owner) or an admin; anyone else gets the same 404 as for a thread that doesn't exist. Threads that already exist have no owner,
   so in team mode they are an admin's alone (**threads from before this change that members used to see become admin-only
@@ -53,7 +53,7 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   itself (`GET /ai/ask/threads/:id`), even an admin's respond key and even in solo mode: a respond key never reads another's thread. A turn that names a thread id its asker can't reach starts a new thread instead.
 - `GET /sessions?status=archived` matches the archive flag or the legacy status (it matched only the legacy status, which new rows
   never carry, so it listed nothing).
-- Migration 0016 also adds `idx_launch_requests_created_at` and two partial indexes on `ask_threads` (active threads by owner).
+- Migration 0017 also adds `idx_launch_requests_created_at` and two partial indexes on `ask_threads` (active threads by owner).
 - **Search: `sessionStatus=archived` finds sessions archived by the flag** (and rows with the legacy status), on both search
   backends and in Ask's "show me archived" queries.
 - The launch preview and template validation no longer warn that the working directory "does not exist on this machine": the
@@ -62,17 +62,18 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 - The install commands the dashboard hands out are `curl -fsSL`, and `curl -fsSL --proto '=https'` for an https server, so an HTTP
   error no longer pipes an error page into bash and a redirect can't step down to plain http.
 
-- **Approving a HITL request now sends the prompt to the agent** (every mode,
-  including the web): an approved or custom prompt on a managed session with a
-  connected supervisor is queued as a control action, in the same step that
-  closes the request. A `409 control_busy` appears when another control action
-  already holds the session. The decision response gains `delivery`, and
-  `GET /ai/proposals/:id/delivery` reports where the prompt went. Telegram never
-  forwards a prompt (and no longer approves at all; see below).
-- **Every way of answering a HITL request goes through one rule set**: the
-  proposal route, the inbox decide route, batch decline and Telegram. Inbox
-  decide now refuses an empty prompt (400) and an already-answered request (409)
-  instead of overwriting it.
+- **A HITL decision from the dashboard or a phone says who may answer, then
+  uses the watcher's one send path.** The proposal route, the inbox decide route
+  and batch decline judge the caller (owner or admin, `custom` needs `manage` or
+  a signed-in person, an approve carries the hash of the prompt shown) and hand
+  the answer to the same dispatch the watcher uses, so a person's send is
+  audited, checked against the kill switches and the turn it was made for, and
+  queued with the delivery record in one transaction. A refusal before anything
+  is queued (`prompt_not_deliverable`, `stale_proposal`, `launch_missing`, ...)
+  leaves the request open. The decision response gains `controlActionId` and
+  `delivery`, and `GET /ai/proposals/:id/delivery` reports where the prompt went
+  (`POST /ai/proposals/:id/delivery/retry` re-sends a failed one). Telegram keeps
+  its release behavior: the channel route calls the same dispatch directly.
 - **Team mode: the inbox, snooze and decisions follow session ownership.** A
   member sees only the items of sessions they can read, can no longer decide,
   snooze or unsnooze another member's items (403), and sees no action requests
@@ -80,12 +81,11 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 - **Ask replies are no longer lost when the page or app closes mid-answer**: a
   turn that has started finishes and saves its reply; a phone is notified.
 - **Stricter, and visible to API clients** (S5 fix round 1):
-  - Approving a HITL request with an API key that lacks `manage` must send `promptHash`
-    (400 `prompt_hash_required`); manage keys and signed-in people may omit it.
-    Approving a request that has no prompt is 400 `empty_prompt`, where the inbox decide route used to mark it applied.
-  - An approve tapped in Telegram no longer does anything: it answers that approving there isn't
-    supported and leaves the request open. A decline still closes it, with the Telegram user recorded.
-  - A request expires a day after it opens (`expiresAt`), is refused after that (409 `expired`), and the watcher sweep closes overdue ones.
+  - Approving a HITL request must send `promptHash` (or the web's `promptSha256`) for every caller (400
+    `prompt_hash_required`; 409 `prompt_changed` when the prompt moved). Approving a request with no prompt is refused
+    (409 `not_approvable`), where the inbox decide route used to mark it applied.
+  - A request the watcher opens expires after 20 minutes, any other a day after it opens (`expiresAt`), is refused after that
+    (409 `expired`), and the watcher sweep closes overdue ones.
   - `/sessions/:id/prompt`, `/sessions/:id/stop` and the watcher PUT/DELETE are owner-or-admin in team mode (403 `not_owner`).
     A key with no owner is refused on them in team mode unless it is a kept admin service key, and an approved stop action
     request needs the same. Stopping also takes the session's control lock with a guarded write (409 when another action holds it).
@@ -93,8 +93,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   - A key with no owner in team mode gets an empty inbox with a `notice` explaining why.
   - Batch decline caps each list at 200 ids (400 `invalid_ids` past that or for non-strings). Its `closed` count now counts only
     requests it actually closed (an already-answered one is no longer counted), and closing by session id writes an audit event per request.
-  - Errors that were sentences (`Empty prompt`, `Proposal not found`, the safety-filter message) are now codes (`empty_prompt`, `not_found`,
-    `filter_blocked`) with the sentence in `message`.
+  - Errors that were sentences (`Empty prompt`, `Proposal not found`) are now codes (`empty_prompt`, `not_found`) with the
+    sentence in `message`.
   - A delivery whose lock ran out reads `unknown` (it may have run), not `failed`; retrying it needs `confirm: true`.
   - New: `POST /ai/ask/threads/:id/cancel` stops an Ask answer that is still being written (the asker, or an admin in team mode).
     It answers `{ok:true, stopping:true}`: the turn ends at its next stream event. A thread already streaming a turn takes no
@@ -103,10 +103,9 @@ section with a `⚠ breaking` prefix so they're easy to spot.
     are owner-or-admin in team mode, and the retry answer no longer carries the clone's `env`, `claimToken` or `launchSpec.env`.
     In team mode `POST /ai/action-requests/:id/decide` is an admin's (403 `admin_required`, before the request is looked up),
     so a member who used to approve an action on their own session must ask an admin.
-  - Round 2: a Telegram tap on a request or action request that has no channel is "Not authorized" (it was never sent to a chat).
-    Requests opened before expiry existed expire a day after they were created, an overdue request is no longer offered in the inbox,
+  - Round 2: Requests opened before expiry existed expire a day after they were created, an overdue request is no longer offered in the inbox,
     the sweep announces what it closes, and a delivery older than a day can't be retried.
-  - Round 2: with authentication switched off the operator can approve without a hash and send custom prompts.
+  - Round 2: with authentication switched off the operator can send custom prompts.
   - Round 3: `GET /sessions/:id` no longer embeds another member's control actions (their prompts) in team mode: `controlActions` is
     present only for the session's owner, an admin, and in solo. A control action's launch `env` is never returned by any read, and
     the prompt/stop answers omit it too.
@@ -169,8 +168,221 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   idempotency key per requester for 48 hours: a repeat of the same request returns the
   first launch with 200 and `idempotentReplay: true`, a different request under the same
   key is 409. Client-supplied `launchSpec.prelaunchActions` are refused.
-  Migration `0015_launch_idempotency_key` adds the column on both dialects.
+  Migration `0016_launch_idempotency_key` adds the column on both dialects.
 
+## [0.9.0] — 2026-10-24
+
+### Upgrade notes
+
+- Schema migration 0012 runs at startup on SQLite and Postgres. It adds two
+  watcher columns, a report table and an append-only dispatch audit table.
+  **Take a backup first:** on the first start the watcher's old no-op run rows
+  (trigger-less `manual` runs with no proposal) are deleted, and that can't be
+  undone. The startup log line `watcher_maintenance` reports what was removed.
+- Existing watchers keep Continue on and Notify off. Existing `auto` watchers
+  become `ask_on_risk`, and requests that were waiting for an answer are
+  superseded. To use `auto` again, confirm it from the dashboard and turn off
+  "Pause automatic prompt sending".
+- Approving a watcher proposal now sends the prompt to sessions AgentPulse
+  launched (see Changed).
+- Telegram channels enrolled in a group chat must be re-linked before they can
+  approve or ask; private-chat channels keep working. In team mode, channels
+  created before this release refuse approvals until an admin re-links them.
+- With authentication disabled, the same-origin check for state-changing
+  routes accepts a request only on a loopback or allowlisted host.
+- The session-summary call limit rises from 120 to 360 seconds
+  (`AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS`); set the same value on every
+  replica.
+
+### Added
+
+- **Notify mode.** A watcher can now write a two-line status note for you when a turn ends
+  (finished, looks stuck, or waiting for you), from what happened since the last
+  note. It appears in the AI tab, as a new inbox item that clears when you open the
+  session, and, if you assign a channel, in Telegram. It never sends anything to the agent. New
+  watchers start with Notify on and Continue off; change that under Settings, AI
+  watcher ("New watchers start with"), and per session in the AI tab.
+- **Pause automatic prompt sending** (Settings, AI watcher), on by default. While it is on, a
+  session set to `auto` opens a request for you instead of sending.
+- **A dispatch audit trail.** Every prompt the watcher sent, or refused to send, is recorded in
+  an append-only table that is not deleted with the session.
+- **Telegram message detail** per channel: Minimal (the default: session name, verdict and a
+  generic reason) or Full (adds the note and the suggested prompt, redacted). Full is never
+  available for a group chat. Telegram is a third-party service.
+- Telegram channels can be re-linked from Settings without losing the sessions that point at
+  them.
+- `AGENTPULSE_WATCHER_TIMEOUT_SECONDS` (default `90`, range 10 to 1800): the time limit of each
+  watcher model call.
+- **A provider for quick calls.** Settings, AI: "Use for quick calls" on a
+  provider sends the short helper calls (Ask intent checks, query expansion,
+  alert-rule checks) to it first, so they no longer queue behind a long call
+  such as a session summary on a single model server. Answers and summaries stay
+  on the default provider. If the quick provider fails or times out, the call is
+  repeated once on the default provider and the quick provider is skipped for a
+  minute. The quick provider gets its own short limit. Unset keeps today's behaviour.
+
+- `AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS` (default `180`, range 30 to 1800): the
+  time limit of the model call that writes an Ask answer and of a per-session
+  Q&A answer. The Q&A limit was 60 seconds.
+- `AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS` (default `5`, range 1 to 60): the
+  time limit of the attempt on the quick-calls provider, before the call is
+  repeated on the default provider.
+- `AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS` (default `20`, range 5 to 300): the
+  time limit of the short helper calls (Ask intent classifiers, query expansion,
+  alert-rule yes/no check). They were 8 and 15 seconds.
+- `AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS` (default `360`, range 30 to 1800):
+  the time limit of one session-summary model call, per call (the repair call
+  gets it in full). Use the same value on every replica. See the README's
+  "Session summary" section.
+
+### Changed
+
+- **⚠ breaking: approving a watcher proposal now sends the prompt.** For a session AgentPulse
+  launched, Approve (in the app or in Telegram) types the prompt into the agent. For any other
+  session, Approve is replaced by Copy prompt and Dismiss, and the Telegram message has no
+  Approve button. Approval is refused if the session has moved on, the request expired (20
+  minutes), or the text changed after you opened it. An approval is queued for the host
+  even if it is offline at that moment; only `auto` requires a live host.
+- **⚠ breaking: the `auto` policy sends only fixed nudges.** It can send "retry the failed
+  step", "run the tests" or "summarize status" and nothing the model wrote. It must be confirmed
+  from the dashboard (not with an API key), is paused until "Pause automatic prompt sending"
+  is turned off, and is limited to 6 sends an hour per session and 20 overall. Editing the
+  system prompt, provider or limit asks for a new confirmation. **Existing `auto` watchers were
+  switched to `ask_on_risk`.**
+- **⚠ breaking: `auto` never sends while the agent is asking a question or a permission prompt
+  is open**, and a "keep going" nudge (`proceed`) is no longer sent automatically.
+- **⚠ breaking: Telegram taps and messages are accepted only from the enrolled account in a
+  private chat.** Channels enrolled in a group must be re-linked to approve or ask from
+  Telegram; channels enrolled in a private chat keep working. In team mode a channel belongs to
+  the person who created it, and only that person can re-link it; channels created before this
+  release belong to nobody, refuse approvals until an admin re-links them, and the admin who
+  does becomes the owner. Enrollment codes are longer and expire after 15 minutes.
+- The watcher now wakes when a turn ends (after a 10 second wait for a follow-up) instead of on
+  every event, for sessions that report through hooks as well as managed ones.
+- "Max continuations" now counts automatic sends only; approving a suggestion yourself never
+  uses it up, and re-enabling a watcher no longer resets it (the AI tab has a Reset button).
+- Changing a session's watcher and deciding a proposal are checked against the session's owner
+  (or an admin) in team mode, validate their input strictly, and are written to the audit log.
+  The AI pause and kill switches stay global settings that only a team admin can change.
+  Turning `auto` on, resetting the counter and switching the pause or kill off need a signed-in
+  person, not an API key.
+- Every Telegram message the watcher sends is redacted of secrets and has home paths shortened.
+- **Session summary time bounds follow the new call limit, for every install.**
+  The per-call limit rises from 120 to 360 seconds, the lease on a running
+  summary from 300 to 780 seconds (2 x the limit + 60), and the watchdog from
+  5 to 13 minutes. A hung call now holds a generation slot for 13 minutes, and on
+  Postgres a stuck `generating` row is recovered only at the lease. The failure
+  breaker window is the longer of 10 minutes and two leases and a minute (27
+  minutes at the default), and a forgotten subject is dropped after the longer
+  of 60 minutes and that window. A running generation is aborted when it is
+  released (watchdog, lease or shutdown), so its connection closes.
+- **LLM responses are capped**: a success body or stream at 8 MiB, an error body
+  at 4 KiB. Over the cap is a provider error.
+
+### Fixed
+
+- **The watcher never woke for sessions that report through hooks.** It listened for events
+  only managed sessions emit; a hook-observed session was never watched.
+- **The max-continuations cap never applied, and reset when a watcher was re-enabled.**
+- **Inbox approvals skipped the safety filter** that the other approval routes applied.
+- **Telegram approvals, action buttons and Ask messages were not tied to their chat or user**,
+  and the enrollment code was short, never expired and had no failure limit. Any operator could
+  list every Telegram channel and see pending enrollment codes.
+- **Proposals never expired**, a stuck pending proposal stayed pending forever, and a corrupted
+  kill-switch value did not stop AI.
+- The watcher no longer leaves one no-op run row per event: existing rows are removed once at
+  startup (see the upgrade notes).
+- **Ask no longer shows a model's truncated reasoning as its answer.** A model
+  that thinks before it answers could spend its whole output budget on
+  reasoning and return an empty reply; the OpenAI-compatible adapter then
+  passed the reasoning text on as the answer. An empty reply is now an error
+  (with the finish reason in the message) for every caller, streamed or not.
+  Every call that produces an answer or a decision (the Ask answer, per-session
+  Q&A, query expansion, the alert-rule yes/no check, the watcher) now asks the
+  provider to skip its reasoning phase, as the session summary and the intent
+  classifiers already did.
+- **A failed query expansion no longer costs every Ask question its timeout.**
+  The optional expansion step now asks with reasoning off and a small token
+  budget, and after a failure it is skipped for two minutes.
+- **"What sessions are going?" answers from the Working state.** It was
+  searched as the text "are going" and listed any session whose events
+  contained the word. Phrasings that mean the state (going, running, working,
+  in progress, right now, "what's running") now list the sessions the
+  dashboard shows as Working, filler words no longer become a search, and a
+  classifier failure note no longer repeats the classifier's internal error.
+- **Ask follow-ups keep their subject.** A message that points
+  back ("what did it change?", "and the other one?") starts from the sessions
+  the previous answer was built from instead of resolving on its own. A new
+  subject the message names outranks them.
+- **The "stuck" badge no longer fires on sessions that merely mention errors.**
+  The repeated-failure rule counted any tool output containing "error",
+  "failed" or "exception". It now counts failed tool calls (a failure hook the
+  user did not interrupt, or a non-zero exit code), which also catches real
+  failures the old rule missed. Inbox and digest entries that came from the old
+  rule clear on their own as sessions are re-evaluated.
+- **Vector search no longer stops indexing new events while the server runs.**
+  Events delivered by hooks were only embedded by a backfill at startup, so the
+  index fell behind until the next restart, and a provider outage during that
+  backfill left a backlog. A background pass now runs every minute in small
+  batches (100 batches of up to 32 events at most, a short pause after each),
+  and works off any backlog on its own. While the embedding provider is down
+  it retries after a growing wait (up to 5 minutes), each time with a single
+  probe request first, and resumes by itself when the provider returns; no
+  restart or rebuild is needed.
+- **Session summaries on slow local models no longer always time out**.
+  A summary call longer than 300 seconds was cut by Bun's own fetch limit
+  whatever the configured timeout; that limit is now lifted, so the configured
+  limit is the real one. A provider that stops sending in the middle of an
+  answer is now a timeout (the Summary tab says so) rather than an internal
+  error, and the same applies to the AI watcher, Ask and the classifier. An
+  immediate provider 5xx (including 502, 504 and 524) is reported as a provider
+  error, no longer as a timeout. The failed-summary message now names the
+  current model and limit and the setting that raises it. The unknown-outcome
+  daily ceiling is charged to the day the call started, not the day it ended.
+
+## [0.8.1] — 2026-10-20
+
+### Upgrade notes
+
+- No schema change. On the first inactivity sweeps after upgrading (it runs
+  every 60 seconds), managed sessions whose host stopped heartbeating complete,
+  so the Active tab can shrink at once. They reopen if their host comes back
+  and posts a hook.
+- Optional: set `AGENTPULSE_MANAGED_SESSION_MAX_SILENCE_HOURS` to change the
+  72-hour ceiling below.
+
+### Fixed
+
+- **Sessions of a host that stopped heartbeating no longer stay Active
+  forever** (AGEN-76). A supervisor now counts as connected only while its
+  heartbeat lease is unexpired, decided in one place for the inactivity sweep,
+  the AI watcher and classifier, and the launch recommender. Previously the
+  stored `supervisors.status` was never cleared on expiry, so a host that
+  vanished kept protecting its managed sessions indefinitely. Sessions already
+  stuck this way complete on the first sweep after upgrade, and open dashboards
+  are told.
+
+### Added
+
+- `AGENTPULSE_MANAGED_SESSION_MAX_SILENCE_HOURS` (default `72`, range 1 to 720):
+  a managed session silent longer than this stops being exempt from the sweep
+  and completes, even while its host is heartbeating (for example a terminal
+  bridge that died). 72 hours outlasts a weekend.
+
+### Changed
+
+- **The watcher routes to a human for hosts whose lease has expired.** Such a
+  host now reads offline to the AI watcher and the session classifier, even if
+  its stored status says connected: no continue or report is attempted, auto
+  dispatch goes to human review, and the card badge shows
+  `blocked/supervisor_offline`. The launch recommender no longer suggests such a
+  host.
+- **A sleeping laptop's managed sessions now age out like unmanaged ones** once
+  the host's lease lapses (idle after 5 minutes, completed after 30). Nothing is
+  lost: the next hook reopens the session as `active`.
+- Sessions completed this way stay `managed` and controllable: `managed` means a
+  supervisor launched the session, not that it is live. A prompt or stop queued
+  for a dead host waits until that host returns.
 - **The MCP server package is published to npm as `@craze0/agentpulse-mcp`**
   (the maintainer's own npm scope). `agentpulse mcp install` and the package
   README now print `npx -y @craze0/agentpulse-mcp@<version> serve` (still pinned

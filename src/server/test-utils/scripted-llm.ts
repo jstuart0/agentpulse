@@ -22,6 +22,10 @@ let answerHold: Promise<void> | null = null;
 /** Classifier replies keyed by a substring of the classifier's system prompt. */
 let classifierReplies: Array<[string, string]> = [];
 let answerText = "ANSWER";
+/** Thrown by the next answer calls (until reset), to drive the failure copy. */
+let answerError: Error | null = null;
+/** Thrown by a classifier whose system prompt contains the key. */
+let classifierErrors: Array<[string, Error]> = [];
 
 export function resetScriptedLlm(): void {
 	hold = null;
@@ -29,6 +33,8 @@ export function resetScriptedLlm(): void {
 	llmCalls.length = 0;
 	classifierReplies = [];
 	answerText = "ANSWER";
+	answerError = null;
+	classifierErrors = [];
 }
 
 export function scriptClassifier(promptSubstring: string, reply: unknown): void {
@@ -36,6 +42,14 @@ export function scriptClassifier(promptSubstring: string, reply: unknown): void 
 		promptSubstring,
 		typeof reply === "string" ? reply : JSON.stringify(reply),
 	]);
+}
+
+export function setAnswerError(error: Error | null): void {
+	answerError = error;
+}
+
+export function scriptClassifierError(promptSubstring: string, error: Error): void {
+	classifierErrors.push([promptSubstring, error]);
 }
 
 export function setAnswerText(text: string): void {
@@ -58,6 +72,11 @@ export const scriptedAdapter = {
 		llmCalls.push({ kind, systemPrompt: req.systemPrompt, transcriptPrompt: req.transcriptPrompt });
 		if (hold) await hold;
 		if (kind === "answer" && answerHold) await answerHold;
+		if (kind === "answer" && answerError) throw answerError;
+		if (kind === "classifier") {
+			const failing = classifierErrors.find(([needle]) => req.systemPrompt.includes(needle));
+			if (failing) throw failing[1];
+		}
 		let text = "";
 		if (kind === "answer") text = answerText;
 		else if (kind === "classifier") {

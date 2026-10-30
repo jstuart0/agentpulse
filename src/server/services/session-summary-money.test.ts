@@ -774,7 +774,9 @@ describe("Q-1 the breaker: three maximum-charged failures in ten minutes close t
 	async function timeoutRun(): Promise<void> {
 		const id = `brk-${session++}`;
 		await H.seedActiveSession(id);
-		const spy = throwingAdapter(() => new LlmError("transient_timeout", "timed out"));
+		const spy = throwingAdapter(
+			() => new LlmError("transient_timeout", "timed out", undefined, undefined, true),
+		);
 		try {
 			await H.runGeneration(id);
 		} finally {
@@ -834,10 +836,10 @@ describe("Q-1 the breaker: three maximum-charged failures in ten minutes close t
 		await succeed();
 	});
 
-	test("failures older than ten minutes do not count", async () => {
+	test("failures older than the breaker window (27 minutes at the default limit) do not count", async () => {
 		await timeoutRun();
 		await timeoutRun();
-		setSystemTime(new Date(T0 + 11 * MINUTE));
+		setSystemTime(new Date(T0 + 28 * MINUTE));
 		await timeoutRun();
 		await succeed();
 	});
@@ -877,7 +879,9 @@ describe("Q-1 the breaker: three maximum-charged failures in ten minutes close t
 });
 
 const timeoutOn = async (id: string, caller = H.SOLO) => {
-	const spy = throwingAdapter(() => new LlmError("transient_timeout", "timed out"));
+	const spy = throwingAdapter(
+		() => new LlmError("transient_timeout", "timed out", undefined, undefined, true),
+	);
 	try {
 		await H.runGeneration(id, caller);
 	} finally {

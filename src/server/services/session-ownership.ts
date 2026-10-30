@@ -8,8 +8,8 @@
  * what makes this rule self-healing against a legacy hijack with no
  * migration (D8/D11).
  *
- * This module is a leaf (D17): it imports only drizzle-orm, ../db/client.js
- * and ../db/schema/index.js. That's what lets launch-dispatch.ts reuse
+ * This module is a leaf (D17): it imports only drizzle-orm, ../db/client.js,
+ * ../db/schema/index.js and ./supervisor-liveness.js (itself pure). That's what lets launch-dispatch.ts reuse
  * findLaunchRowByCorrelationId without an import cycle
  * (launch-dispatch.ts -> managed-session-state.ts -> session-ownership.ts).
  * A source-scan test in session-ownership.test.ts enforces this structurally.
@@ -17,10 +17,11 @@
  * It never reads authUser or config.disableAuth (D9) — ownership is
  * evaluated identically whether or not auth is enabled.
  */
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { getDb } from "../db/client.js";
-import { launchRequests, managedSessions, supervisors } from "../db/schema/index.js";
+import { launchRequests, managedSessions, sessions, supervisors } from "../db/schema/index.js";
+import { isSupervisorLive } from "./supervisor-liveness.js";
 
 export type SessionOwnershipReason = "foreign_owner" | "no_owner" | "launch_mismatch";
 
@@ -41,7 +42,8 @@ export class SessionOwnershipError extends Error {
  */
 export async function findLaunchRowByCorrelationId(
 	sessionId: string,
-	db: ReturnType<typeof getDb> = getDb(),
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any = getDb(),
 ): Promise<typeof launchRequests.$inferSelect | null> {
 	const [row] = await db
 		.select()
@@ -89,49 +91,77 @@ const ownerSupervisorJoin = eq(supervisors.id, sessionOwnerSql);
 /**
  * Batch "is this managed session's owner of record connected?" (D18, F20).
  * A key is present iff `sessionId` has a managed_sessions row; its value is
- * true iff the owner of record's supervisors.status is "connected" (an
- * owner id with no supervisors row is false). Unmanaged sessions are simply
- * absent, matching every existing caller's `.get(id)` -> undefined
- * semantics for "not managed".
+ * true iff the owner of record's heartbeat lease is unexpired at `nowMs`
+ * (`isSupervisorLive`; an owner id with no supervisors row is false).
+ * Unmanaged sessions are simply absent, matching every existing caller's
+ * `.get(id)` -> undefined semantics for "not managed".
  */
 export async function getSessionOwnerConnections(
 	sessionIds: readonly string[],
-	db: ReturnType<typeof getDb> = getDb(),
+	nowMs: number = Date.now(),
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any = getDb(),
 ): Promise<Map<string, boolean>> {
 	if (sessionIds.length === 0) return new Map();
 
 	const rows = await db
-		.select({ sessionId: managedSessions.sessionId, ownerStatus: supervisors.status })
+		.select({
+			sessionId: managedSessions.sessionId,
+			lease: supervisors.heartbeatLeaseExpiresAt,
+			enrollmentState: supervisors.enrollmentState,
+		})
 		.from(managedSessions)
 		.leftJoin(launchRequests, ownerLaunchJoin)
 		.leftJoin(supervisors, ownerSupervisorJoin)
 		.where(inArray(managedSessions.sessionId, [...sessionIds]));
 
 	const result = new Map<string, boolean>();
-	for (const row of rows) {
-		result.set(row.sessionId, row.ownerStatus === "connected");
+	for (const row of rows as Array<{
+		sessionId: string;
+		lease: string | null;
+		enrollmentState: string | null;
+	}>) {
+		result.set(row.sessionId, isSupervisorLive(row.lease, row.enrollmentState, nowMs));
 	}
 	return result;
 }
 
 /**
- * The session ids whose managed_state is in `states` AND whose owner of
- * record is currently connected (D18, F19). Used by the lifecycle sweep to
- * decide which sessions a live supervisor is still actively running.
+ * The sessions whose managed_state is in `states` AND whose owner of record
+ * is connected at `nowMs` (D18, F19), with each session's last activity.
+ * Used by the lifecycle sweep to decide which sessions a live supervisor is
+ * still running. One statement: revoked owners are cut in SQL (a safe
+ * superset, revoked is never live) and the lease check runs in JS, so the
+ * liveness rule has a single evaluator. A managed row with no sessions row
+ * drops out; the sweep only updates sessions.
  */
-export async function listLiveOwnedManagedSessionIds(states: readonly string[]): Promise<string[]> {
+export async function listLiveOwnedManagedSessions(
+	states: readonly string[],
+	nowMs: number = Date.now(),
+): Promise<{ sessionId: string; lastActivityAt: string }[]> {
 	if (states.length === 0) return [];
 
 	const rows = await getDb()
-		.select({ sessionId: managedSessions.sessionId })
+		.select({
+			sessionId: managedSessions.sessionId,
+			lastActivityAt: sessions.lastActivityAt,
+			lease: supervisors.heartbeatLeaseExpiresAt,
+			enrollmentState: supervisors.enrollmentState,
+		})
 		.from(managedSessions)
 		.leftJoin(launchRequests, ownerLaunchJoin)
 		.innerJoin(supervisors, ownerSupervisorJoin)
+		.innerJoin(sessions, eq(sessions.sessionId, managedSessions.sessionId))
 		.where(
-			and(inArray(managedSessions.managedState, [...states]), eq(supervisors.status, "connected")),
+			and(
+				inArray(managedSessions.managedState, [...states]),
+				ne(supervisors.enrollmentState, "revoked"),
+			),
 		);
 
-	return rows.map((row) => row.sessionId);
+	return rows
+		.filter((row) => isSupervisorLive(row.lease, row.enrollmentState, nowMs))
+		.map((row) => ({ sessionId: row.sessionId, lastActivityAt: row.lastActivityAt }));
 }
 
 /**
@@ -162,8 +192,9 @@ export async function resolveSessionHost(
  * owns it (no managed row and no claimed launch).
  */
 export async function resolveSessionOwner(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
 	sessionId: string,
-	db: ReturnType<typeof getDb> = getDb(),
 ): Promise<string | null> {
 	const [managedOwnerRow] = await db
 		.select({ owner: sessionOwnerSql })
@@ -191,7 +222,7 @@ export async function assertSupervisorCanWriteSession(
 	sessionId: string,
 	opts?: { launchRequestId?: string | null },
 ): Promise<void> {
-	const owner = await resolveSessionOwner(sessionId);
+	const owner = await resolveSessionOwner(getDb(), sessionId);
 	if (owner === null) {
 		throw new SessionOwnershipError("no_owner", `No owner of record for session ${sessionId}`);
 	}

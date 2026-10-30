@@ -33,13 +33,19 @@ const {
 	watcherProposals,
 } = await import("../../db/schema/index.js");
 const { seedOwnedLaunch } = await import("../../test-utils/owned-launch.js");
-const { createPendingProposal, completeProposalAsHitl } = await import("./proposals-service.js");
+const { enableAiRuntime, seedFinishedTurn, seedProposalWithHitl, seedProvider } = await import(
+	"../../test-utils/watcher-fixtures.js"
+);
+const { hashPrompt } = await import("./prompt-hash.js");
 const { decideHitl, retryDelivery } = await import("./hitl-decision-service.js");
 const { queuePromptAction, queueStopAction, expireStaleControlLock, ControlBusyError } =
 	await import("../control-actions.js");
 const { default: postgres } = await import("postgres");
 
 const SUPERVISOR = "race-sup";
+const PROMPT = "Run the full test suite and fix what fails.";
+const APPROVE = { promptHash: hashPrompt(PROMPT) };
+let providerId = "";
 const ctx = {
 	actor: { userId: null, label: "api_key" as const, role: "admin" as const, mode: "solo" as const },
 	source: "api_key" as const,
@@ -62,7 +68,11 @@ async function reset() {
 	await resetIdentityState();
 	await clearInstanceSettings();
 }
-beforeEach(reset, LIMIT);
+beforeEach(async () => {
+	await reset();
+	await enableAiRuntime();
+	providerId = await seedProvider();
+}, LIMIT);
 afterEach(reset, LIMIT);
 
 async function seedManaged(sessionId: string) {
@@ -75,7 +85,15 @@ async function seedManaged(sessionId: string) {
 	});
 	await getDb()
 		.insert(supervisors)
-		.values({ id: SUPERVISOR, hostName: "h", platform: "linux", arch: "x64", version: "0" })
+		.values({
+			id: SUPERVISOR,
+			hostName: "h",
+			platform: "linux",
+			arch: "x64",
+			version: "0",
+			enrollmentState: "active",
+			heartbeatLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+		})
 		.onConflictDoNothing();
 	const { launchId } = await seedOwnedLaunch(sessionId, SUPERVISOR);
 	const now = new Date().toISOString();
@@ -90,16 +108,14 @@ async function seedManaged(sessionId: string) {
 }
 
 async function seedHitl(sessionId: string) {
-	const proposal = await createPendingProposal({ sessionId, providerId: "p" });
-	const { hitlId } = await completeProposalAsHitl({
-		id: proposal.id,
-		decision: "continue",
-		nextPrompt: "Run the full test suite and fix what fails.",
-		tokensIn: 0,
-		tokensOut: 0,
-		costCents: 0,
+	const turn = await seedFinishedTurn(sessionId);
+	return seedProposalWithHitl({
+		sessionId,
+		providerId,
+		prompt: PROMPT,
+		turnKey: turn.turnKey,
+		triggerEventId: turn.stopId,
 	});
-	return { proposalId: proposal.id, hitlId };
 }
 
 /**
@@ -235,8 +251,8 @@ describePostgresOnly("interleaved: operations that have all read the same state"
 			"SELECT 1 FROM ai_hitl_requests WHERE id = $1 FOR UPDATE",
 			[hitlId],
 			[
-				() => decideHitl({ kind: "proposal", proposalId }, "approve", {}, ctx),
-				() => decideHitl({ kind: "hitl", hitlId }, "approve", {}, ctx),
+				() => decideHitl({ kind: "proposal", proposalId }, "approve", APPROVE, ctx),
+				() => decideHitl({ kind: "hitl", hitlId }, "approve", APPROVE, ctx),
 			],
 		);
 
@@ -247,10 +263,10 @@ describePostgresOnly("interleaved: operations that have all read the same state"
 		expect(await getDb().select().from(controlActions)).toHaveLength(1);
 	});
 
-	test("interleaved: retry. Two retries that both saw the attempt failed: one wins, the other is control_busy (the lock guard fires before the delivery move), one new action exists", async () => {
+	test("interleaved: retry. Two retries that both saw the attempt failed: one wins, the other is refused stale_proposal (the winner's prompt moved the turn on), one new action exists", async () => {
 		await seedManaged("rc-3");
 		const { proposalId } = await seedHitl("rc-3");
-		await decideHitl({ kind: "proposal", proposalId }, "approve", {}, ctx);
+		await decideHitl({ kind: "proposal", proposalId }, "approve", APPROVE, ctx);
 		await getDb()
 			.update(managedSessions)
 			.set({ controlLockExpiresAt: new Date(Date.now() - 1_000).toISOString() });
@@ -266,7 +282,8 @@ describePostgresOnly("interleaved: operations that have all read the same state"
 
 		expect(results.filter((r) => r.ok)).toHaveLength(1);
 		const lost = results.find((r) => !r.ok);
-		expect(!lost?.ok && lost?.refusal).toMatchObject({ code: "control_busy", status: 409 });
+		// The winner's new prompt is itself a prompt after the trigger, so the loser finds the turn moved on.
+		expect(!lost?.ok && lost?.refusal).toMatchObject({ code: "stale_proposal", status: 409 });
 		expect(await getDb().select().from(controlActions)).toHaveLength(2);
 		const [delivery] = await getDb().select().from(aiHitlDeliveries);
 		expect(delivery?.attempt).toBe(2);
@@ -278,7 +295,7 @@ describePostgresOnly("interleaved: operations that have all read the same state"
 		const [result] = await behindRowLock(
 			"SELECT 1 FROM ai_hitl_requests WHERE id = $1 FOR UPDATE",
 			[hitlId],
-			[() => decideHitl({ kind: "proposal", proposalId }, "approve", {}, ctx)],
+			[() => decideHitl({ kind: "proposal", proposalId }, "approve", APPROVE, ctx)],
 			async (holder) => {
 				await holder.unsafe("DELETE FROM sessions WHERE session_id = $1", ["rc-5"]);
 			},
@@ -296,7 +313,7 @@ describePostgresOnly("interleaved: operations that have all read the same state"
 		const [result] = await behindRowLock(
 			"SELECT 1 FROM ai_hitl_requests WHERE id = $1 FOR UPDATE",
 			[hitlId],
-			[() => decideHitl({ kind: "proposal", proposalId }, "approve", {}, ctx)],
+			[() => decideHitl({ kind: "proposal", proposalId }, "approve", APPROVE, ctx)],
 			async (holder) => {
 				// what the sweep does to an overdue request, committed while the decision is parked on it
 				await holder.unsafe("UPDATE ai_hitl_requests SET status = 'timed_out' WHERE id = $1", [
@@ -315,7 +332,7 @@ describePostgresOnly("interleaved: operations that have all read the same state"
 	test("interleaved: the sweep after a decision that won finds nothing to close, and leaves the answer alone", async () => {
 		await seedManaged("rc-7");
 		const { proposalId, hitlId } = await seedHitl("rc-7");
-		await decideHitl({ kind: "proposal", proposalId }, "approve", {}, ctx);
+		await decideHitl({ kind: "proposal", proposalId }, "approve", APPROVE, ctx);
 		await getDb()
 			.update(aiHitlRequests)
 			.set({ expiresAt: new Date(Date.now() - 1_000).toISOString() })
@@ -331,7 +348,7 @@ describePostgresOnly("interleaved: operations that have all read the same state"
 	test("interleaved: expiry versus completion. The supervisor's success commits while the lock's expiry is waiting on the row: the action stays succeeded", async () => {
 		await seedManaged("rc-4");
 		const { proposalId } = await seedHitl("rc-4");
-		await decideHitl({ kind: "proposal", proposalId }, "approve", {}, ctx);
+		await decideHitl({ kind: "proposal", proposalId }, "approve", APPROVE, ctx);
 		const [action] = await getDb().select().from(controlActions);
 		await getDb()
 			.update(managedSessions)
@@ -346,7 +363,7 @@ describePostgresOnly("interleaved: operations that have all read the same state"
 			await holder.unsafe("UPDATE control_actions SET status = 'succeeded' WHERE id = $1", [
 				action?.id as string,
 			]);
-			const expiry = expireStaleControlLock("rc-4");
+			const expiry = expireStaleControlLock(getDb(), "rc-4");
 			const deadline = Date.now() + 30_000;
 			for (;;) {
 				const [{ n }] = (await monitor`

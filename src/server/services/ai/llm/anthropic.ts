@@ -1,3 +1,4 @@
+import { llmFetch, readJsonCapped } from "../http.js";
 import {
 	type LlmAdapter,
 	LlmError,
@@ -52,9 +53,9 @@ export function createAnthropicAdapter(params: AnthropicRequestParams): LlmAdapt
 				],
 			};
 
-			let response: Response;
-			try {
-				response = await fetch(`${baseUrl}/v1/messages`, {
+			const response = await llmFetch(
+				`${baseUrl}/v1/messages`,
+				{
 					method: "POST",
 					headers: {
 						"Content-Type": "application/json",
@@ -62,21 +63,16 @@ export function createAnthropicAdapter(params: AnthropicRequestParams): LlmAdapt
 						"anthropic-version": apiVersion,
 					},
 					body: JSON.stringify(body),
-					signal: AbortSignal.timeout(timeoutMs),
-				});
-			} catch (err) {
-				if (err instanceof Error && err.name === "TimeoutError") {
-					throw new LlmError("transient_timeout", "Anthropic request timed out", undefined, err);
-				}
-				throw new LlmError("unknown", `Anthropic request failed: ${err}`, undefined, err);
-			}
+				},
+				{ timeoutMs, signal: request.signal, label: "Anthropic" },
+			);
 
 			if (!response.ok) {
 				const { subType, body: errBody, status } = await classifyHttpError(response);
 				throw new LlmError(subType, `Anthropic ${status}: ${errBody.slice(0, 300)}`, status);
 			}
 
-			const json = (await response.json()) as {
+			const json = (await readJsonCapped(response)) as {
 				content?: Array<{ type: string; text?: string }>;
 				stop_reason?: string | null;
 				usage?: {

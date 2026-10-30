@@ -14,11 +14,17 @@ const REGISTRY: Record<NotificationChannelKind, NotificationChannelAdapter> = {
 		async send() {
 			return { ok: false, error: "webhook adapter not implemented" };
 		},
+		async sendReport() {
+			return { ok: false, error: "webhook adapter not implemented" };
+		},
 	},
 	email: {
 		kind: "email",
 		isConfigured: () => false,
 		async send() {
+			return { ok: false, error: "email adapter not implemented" };
+		},
+		async sendReport() {
 			return { ok: false, error: "email adapter not implemented" };
 		},
 	},

@@ -7,12 +7,14 @@
  */
 import { sql } from "drizzle-orm";
 import {
+	boolean,
 	index as pgIndex,
+	integer as pgInteger,
 	pgTable,
 	text as pgText,
 	uniqueIndex as pgUniqueIndex,
 } from "drizzle-orm/pg-core";
-import { sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { sessionsPg } from "../core/sessions.js";
 import { tsColumn } from "../factory.js";
 
@@ -27,6 +29,14 @@ export const aiHitlRequestsSqlite = sqliteTable("ai_hitl_requests", {
 	replyKind: text("reply_kind"),
 	replyText: text("reply_text"),
 	expiresAt: text("expires_at"),
+	// What a decision on this request is bound to: the turn, the event that
+	// triggered it, the hash of the prompt a human is shown, whether that
+	// prompt is approvable as stored, and when a Telegram copy was sent.
+	turnKey: text("turn_key"),
+	triggerEventId: integer("trigger_event_id"),
+	promptSha256: text("prompt_sha256"),
+	approvable: integer("approvable", { mode: "boolean" }),
+	telegramSentAt: text("telegram_sent_at"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
@@ -47,6 +57,11 @@ export const aiHitlRequestsPg = pgTable(
 		replyKind: pgText("reply_kind"),
 		replyText: pgText("reply_text"),
 		expiresAt: pgText("expires_at"),
+		turnKey: pgText("turn_key"),
+		triggerEventId: pgInteger("trigger_event_id"),
+		promptSha256: pgText("prompt_sha256"),
+		approvable: boolean("approvable"),
+		telegramSentAt: pgText("telegram_sent_at"),
 		createdAt: tsColumn("postgres", "created_at"),
 		updatedAt: tsColumn("postgres", "updated_at"),
 	},

@@ -1,8 +1,8 @@
 {
 	"version": "6",
 	"dialect": "sqlite",
-	"id": "4fbd0f2c-8aa1-4d8c-8577-fbe02969061c",
-	"prevId": "9261dc3f-701c-4cdb-a2ce-7612af1947d1",
+	"id": "c562c3bf-ce3d-40d9-8482-e36932bc1245",
+	"prevId": "b7143b0e-a867-4058-8888-5e0b2e928c2e",
 	"tables": {
 		"ai_action_requests": {
 			"name": "ai_action_requests",
@@ -167,8 +167,8 @@
 			"uniqueConstraints": {},
 			"checkConstraints": {}
 		},
-		"ai_hitl_deliveries": {
-			"name": "ai_hitl_deliveries",
+		"ai_dispatch_audit": {
+			"name": "ai_dispatch_audit",
 			"columns": {
 				"id": {
 					"name": "id",
@@ -177,18 +177,34 @@
 					"notNull": true,
 					"autoincrement": false
 				},
-				"proposal_id": {
-					"name": "proposal_id",
+				"created_at": {
+					"name": "created_at",
 					"type": "text",
 					"primaryKey": false,
 					"notNull": true,
+					"autoincrement": false,
+					"default": "(datetime('now'))"
+				},
+				"completed_at": {
+					"name": "completed_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
 					"autoincrement": false
 				},
-				"hitl_id": {
-					"name": "hitl_id",
+				"outcome": {
+					"name": "outcome",
 					"type": "text",
 					"primaryKey": false,
 					"notNull": true,
+					"autoincrement": false,
+					"default": "'pending'"
+				},
+				"refusal_code": {
+					"name": "refusal_code",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
 					"autoincrement": false
 				},
 				"session_id": {
@@ -198,6 +214,104 @@
 					"notNull": true,
 					"autoincrement": false
 				},
+				"session_name": {
+					"name": "session_name",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"actor_kind": {
+					"name": "actor_kind",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"actor_user_id": {
+					"name": "actor_user_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"actor_label": {
+					"name": "actor_label",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"telegram_from_id": {
+					"name": "telegram_from_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"telegram_chat_id": {
+					"name": "telegram_chat_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"prompt_sha256": {
+					"name": "prompt_sha256",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"prompt_text": {
+					"name": "prompt_text",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"continue_kind": {
+					"name": "continue_kind",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"proposal_id": {
+					"name": "proposal_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"hitl_id": {
+					"name": "hitl_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"turn_key": {
+					"name": "turn_key",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"provider_id": {
+					"name": "provider_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"model": {
+					"name": "model",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
 				"control_action_id": {
 					"name": "control_action_id",
 					"type": "text",
@@ -205,80 +319,27 @@
 					"notNull": false,
 					"autoincrement": false
 				},
-				"attempt": {
-					"name": "attempt",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false,
-					"default": 1
-				},
-				"terminal_state": {
-					"name": "terminal_state",
+				"config_snapshot": {
+					"name": "config_snapshot",
 					"type": "text",
 					"primaryKey": false,
 					"notNull": false,
-					"autoincrement": false
-				},
-				"approved_by_user_id": {
-					"name": "approved_by_user_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"approved_by_key_id": {
-					"name": "approved_by_key_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"prompt_hash": {
-					"name": "prompt_hash",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"created_at": {
-					"name": "created_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"updated_at": {
-					"name": "updated_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
 					"autoincrement": false
 				}
 			},
 			"indexes": {
-				"ai_hitl_deliveries_proposal_unique": {
-					"name": "ai_hitl_deliveries_proposal_unique",
-					"columns": ["proposal_id"],
-					"isUnique": true
+				"idx_ai_dispatch_audit_session_created": {
+					"name": "idx_ai_dispatch_audit_session_created",
+					"columns": ["session_id", "created_at"],
+					"isUnique": false
 				},
-				"idx_ai_hitl_deliveries_session": {
-					"name": "idx_ai_hitl_deliveries_session",
-					"columns": ["session_id"],
+				"idx_ai_dispatch_audit_outcome_created": {
+					"name": "idx_ai_dispatch_audit_outcome_created",
+					"columns": ["outcome", "created_at"],
 					"isUnique": false
 				}
 			},
-			"foreignKeys": {
-				"ai_hitl_deliveries_session_id_sessions_session_id_fk": {
-					"name": "ai_hitl_deliveries_session_id_sessions_session_id_fk",
-					"tableFrom": "ai_hitl_deliveries",
-					"tableTo": "sessions",
-					"columnsFrom": ["session_id"],
-					"columnsTo": ["session_id"],
-					"onDelete": "cascade",
-					"onUpdate": "no action"
-				}
-			},
+			"foreignKeys": {},
 			"compositePrimaryKeys": {},
 			"uniqueConstraints": {},
 			"checkConstraints": {}
@@ -338,6 +399,41 @@
 				},
 				"expires_at": {
 					"name": "expires_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"turn_key": {
+					"name": "turn_key",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"trigger_event_id": {
+					"name": "trigger_event_id",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"prompt_sha256": {
+					"name": "prompt_sha256",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"approvable": {
+					"name": "approvable",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"telegram_sent_at": {
+					"name": "telegram_sent_at",
 					"type": "text",
 					"primaryKey": false,
 					"notNull": false,
@@ -683,6 +779,181 @@
 			"uniqueConstraints": {},
 			"checkConstraints": {}
 		},
+		"ai_watcher_reports": {
+			"name": "ai_watcher_reports",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"session_id": {
+					"name": "session_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"turn_key": {
+					"name": "turn_key",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"trigger_event_id": {
+					"name": "trigger_event_id",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"through_event_id": {
+					"name": "through_event_id",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"verdict": {
+					"name": "verdict",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"why": {
+					"name": "why",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"evidence_ids": {
+					"name": "evidence_ids",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"status": {
+					"name": "status",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false,
+					"default": "'claimed'"
+				},
+				"failure_code": {
+					"name": "failure_code",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"attempt_count": {
+					"name": "attempt_count",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false,
+					"default": 1
+				},
+				"claimed_at": {
+					"name": "claimed_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"provider_id": {
+					"name": "provider_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"tokens_in": {
+					"name": "tokens_in",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false,
+					"default": 0
+				},
+				"tokens_out": {
+					"name": "tokens_out",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false,
+					"default": 0
+				},
+				"cost_cents": {
+					"name": "cost_cents",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false,
+					"default": 0
+				},
+				"telegram_status": {
+					"name": "telegram_status",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"telegram_sent_at": {
+					"name": "telegram_sent_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false,
+					"default": "(datetime('now'))"
+				}
+			},
+			"indexes": {
+				"uq_ai_watcher_reports_session_turn": {
+					"name": "uq_ai_watcher_reports_session_turn",
+					"columns": ["session_id", "turn_key"],
+					"isUnique": true
+				},
+				"idx_ai_watcher_reports_session_created": {
+					"name": "idx_ai_watcher_reports_session_created",
+					"columns": ["session_id", "created_at"],
+					"isUnique": false
+				},
+				"idx_ai_watcher_reports_telegram_sent": {
+					"name": "idx_ai_watcher_reports_telegram_sent",
+					"columns": ["telegram_sent_at"],
+					"isUnique": false
+				}
+			},
+			"foreignKeys": {
+				"ai_watcher_reports_session_id_sessions_session_id_fk": {
+					"name": "ai_watcher_reports_session_id_sessions_session_id_fk",
+					"tableFrom": "ai_watcher_reports",
+					"tableTo": "sessions",
+					"columnsFrom": ["session_id"],
+					"columnsTo": ["session_id"],
+					"onDelete": "cascade",
+					"onUpdate": "no action"
+				}
+			},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"checkConstraints": {}
+		},
 		"ai_watcher_runs": {
 			"name": "ai_watcher_runs",
 			"columns": {
@@ -796,7 +1067,24 @@
 					"default": "(datetime('now'))"
 				}
 			},
-			"indexes": {},
+			"indexes": {
+				"idx_ai_watcher_runs_status_lease": {
+					"name": "idx_ai_watcher_runs_status_lease",
+					"columns": ["status", "lease_expires_at"],
+					"isUnique": false
+				},
+				"idx_ai_watcher_runs_session_created": {
+					"name": "idx_ai_watcher_runs_session_created",
+					"columns": ["session_id", "\"created_at\" desc"],
+					"isUnique": false
+				},
+				"idx_ai_watcher_runs_open_per_session": {
+					"name": "idx_ai_watcher_runs_open_per_session",
+					"columns": ["session_id"],
+					"isUnique": true,
+					"where": "\"ai_watcher_runs\".\"status\" IN ('queued', 'claimed', 'running')"
+				}
+			},
 			"foreignKeys": {},
 			"compositePrimaryKeys": {},
 			"uniqueConstraints": {},
@@ -1024,36 +1312,9 @@
 					"primaryKey": false,
 					"notNull": false,
 					"autoincrement": false
-				},
-				"owner_user_id": {
-					"name": "owner_user_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"owner_key_id": {
-					"name": "owner_key_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
 				}
 			},
-			"indexes": {
-				"idx_ask_threads_owner_user": {
-					"name": "idx_ask_threads_owner_user",
-					"columns": ["owner_user_id", "\"updated_at\" desc"],
-					"isUnique": false,
-					"where": "\"ask_threads\".\"archived_at\" IS NULL"
-				},
-				"idx_ask_threads_owner_key": {
-					"name": "idx_ask_threads_owner_key",
-					"columns": ["owner_key_id", "\"updated_at\" desc"],
-					"isUnique": false,
-					"where": "\"ask_threads\".\"archived_at\" IS NULL AND \"ask_threads\".\"owner_user_id\" IS NULL"
-				}
-			},
+			"indexes": {},
 			"foreignKeys": {},
 			"compositePrimaryKeys": {},
 			"uniqueConstraints": {},
@@ -1724,11 +1985,6 @@
 					"name": "launch_requests_idempotency_key_unique",
 					"columns": ["idempotency_key"],
 					"isUnique": true
-				},
-				"idx_launch_requests_created_at": {
-					"name": "idx_launch_requests_created_at",
-					"columns": ["created_at"],
-					"isUnique": false
 				}
 			},
 			"foreignKeys": {},
@@ -1981,262 +2237,6 @@
 			"uniqueConstraints": {},
 			"checkConstraints": {}
 		},
-		"mobile_device_activities": {
-			"name": "mobile_device_activities",
-			"columns": {
-				"id": {
-					"name": "id",
-					"type": "text",
-					"primaryKey": true,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"device_id": {
-					"name": "device_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"session_id": {
-					"name": "session_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"slot": {
-					"name": "slot",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"generation": {
-					"name": "generation",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false,
-					"default": 0
-				},
-				"created_at": {
-					"name": "created_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"ended_at": {
-					"name": "ended_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				}
-			},
-			"indexes": {
-				"mobile_device_activities_device_session_unique": {
-					"name": "mobile_device_activities_device_session_unique",
-					"columns": ["device_id", "session_id"],
-					"isUnique": true
-				},
-				"idx_mobile_device_activities_session": {
-					"name": "idx_mobile_device_activities_session",
-					"columns": ["session_id"],
-					"isUnique": false
-				}
-			},
-			"foreignKeys": {
-				"mobile_device_activities_device_id_mobile_devices_id_fk": {
-					"name": "mobile_device_activities_device_id_mobile_devices_id_fk",
-					"tableFrom": "mobile_device_activities",
-					"tableTo": "mobile_devices",
-					"columnsFrom": ["device_id"],
-					"columnsTo": ["id"],
-					"onDelete": "cascade",
-					"onUpdate": "no action"
-				},
-				"mobile_device_activities_session_id_sessions_session_id_fk": {
-					"name": "mobile_device_activities_session_id_sessions_session_id_fk",
-					"tableFrom": "mobile_device_activities",
-					"tableTo": "sessions",
-					"columnsFrom": ["session_id"],
-					"columnsTo": ["session_id"],
-					"onDelete": "cascade",
-					"onUpdate": "no action"
-				}
-			},
-			"compositePrimaryKeys": {},
-			"uniqueConstraints": {},
-			"checkConstraints": {}
-		},
-		"mobile_devices": {
-			"name": "mobile_devices",
-			"columns": {
-				"id": {
-					"name": "id",
-					"type": "text",
-					"primaryKey": true,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"user_id": {
-					"name": "user_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"api_key_id": {
-					"name": "api_key_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"paired_via_code_id": {
-					"name": "paired_via_code_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"platform": {
-					"name": "platform",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"environment": {
-					"name": "environment",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"relay_device_id": {
-					"name": "relay_device_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"send_token": {
-					"name": "send_token",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"kid": {
-					"name": "kid",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"public_key": {
-					"name": "public_key",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"client_server_ref": {
-					"name": "client_server_ref",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"device_name": {
-					"name": "device_name",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"app_version": {
-					"name": "app_version",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"os_version": {
-					"name": "os_version",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"prefs_json": {
-					"name": "prefs_json",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"last_seen_at": {
-					"name": "last_seen_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"created_at": {
-					"name": "created_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"updated_at": {
-					"name": "updated_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"revoked_at": {
-					"name": "revoked_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"revoked_reason": {
-					"name": "revoked_reason",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				}
-			},
-			"indexes": {
-				"mobile_devices_platform_relay_device_unique": {
-					"name": "mobile_devices_platform_relay_device_unique",
-					"columns": ["platform", "relay_device_id"],
-					"isUnique": true
-				},
-				"idx_mobile_devices_api_key": {
-					"name": "idx_mobile_devices_api_key",
-					"columns": ["api_key_id"],
-					"isUnique": false
-				},
-				"idx_mobile_devices_user": {
-					"name": "idx_mobile_devices_user",
-					"columns": ["user_id"],
-					"isUnique": false
-				}
-			},
-			"foreignKeys": {},
-			"compositePrimaryKeys": {},
-			"uniqueConstraints": {},
-			"checkConstraints": {}
-		},
 		"notification_channels": {
 			"name": "notification_channels",
 			"columns": {
@@ -2316,104 +2316,6 @@
 				}
 			},
 			"indexes": {},
-			"foreignKeys": {},
-			"compositePrimaryKeys": {},
-			"uniqueConstraints": {},
-			"checkConstraints": {}
-		},
-		"pairing_codes": {
-			"name": "pairing_codes",
-			"columns": {
-				"id": {
-					"name": "id",
-					"type": "text",
-					"primaryKey": true,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"code_hash": {
-					"name": "code_hash",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"user_id": {
-					"name": "user_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"access": {
-					"name": "access",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"device_label": {
-					"name": "device_label",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"minter_credential": {
-					"name": "minter_credential",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"created_at": {
-					"name": "created_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"expires_at": {
-					"name": "expires_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"redeemed_at": {
-					"name": "redeemed_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"redeemed_key_id": {
-					"name": "redeemed_key_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"redeemed_device_name": {
-					"name": "redeemed_device_name",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				}
-			},
-			"indexes": {
-				"pairing_codes_code_hash_unique": {
-					"name": "pairing_codes_code_hash_unique",
-					"columns": ["code_hash"],
-					"isUnique": true
-				},
-				"idx_pairing_codes_redeemed_key": {
-					"name": "idx_pairing_codes_redeemed_key",
-					"columns": ["redeemed_key_id"],
-					"isUnique": false
-				}
-			},
 			"foreignKeys": {},
 			"compositePrimaryKeys": {},
 			"uniqueConstraints": {},
@@ -3065,13 +2967,6 @@
 					"primaryKey": false,
 					"notNull": false,
 					"autoincrement": false
-				},
-				"current_turn_started_at": {
-					"name": "current_turn_started_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
 				}
 			},
 			"indexes": {
@@ -3642,6 +3537,36 @@
 					"notNull": false,
 					"autoincrement": false
 				},
+				"notify_enabled": {
+					"name": "notify_enabled",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false,
+					"default": false
+				},
+				"continue_enabled": {
+					"name": "continue_enabled",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false,
+					"default": true
+				},
+				"auto_confirmed_at": {
+					"name": "auto_confirmed_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"auto_confirmed_by": {
+					"name": "auto_confirmed_by",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
 				"created_at": {
 					"name": "created_at",
 					"type": "text",
@@ -3778,6 +3703,27 @@
 					"notNull": false,
 					"autoincrement": false
 				},
+				"turn_key": {
+					"name": "turn_key",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"suggested_prompt": {
+					"name": "suggested_prompt",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"continue_kind": {
+					"name": "continue_kind",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
 				"created_at": {
 					"name": "created_at",
 					"type": "text",
@@ -3795,8 +3741,485 @@
 					"default": "(datetime('now'))"
 				}
 			},
-			"indexes": {},
+			"indexes": {
+				"uq_watcher_proposals_session_turn": {
+					"name": "uq_watcher_proposals_session_turn",
+					"columns": ["session_id", "turn_key"],
+					"isUnique": true,
+					"where": "\"watcher_proposals\".\"turn_key\" IS NOT NULL"
+				}
+			},
 			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"checkConstraints": {}
+		},
+		"pairing_codes": {
+			"name": "pairing_codes",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"code_hash": {
+					"name": "code_hash",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"user_id": {
+					"name": "user_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"access": {
+					"name": "access",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"device_label": {
+					"name": "device_label",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"minter_credential": {
+					"name": "minter_credential",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"expires_at": {
+					"name": "expires_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"redeemed_at": {
+					"name": "redeemed_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"redeemed_key_id": {
+					"name": "redeemed_key_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"redeemed_device_name": {
+					"name": "redeemed_device_name",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				}
+			},
+			"indexes": {
+				"pairing_codes_code_hash_unique": {
+					"name": "pairing_codes_code_hash_unique",
+					"columns": ["code_hash"],
+					"isUnique": true
+				},
+				"idx_pairing_codes_redeemed_key": {
+					"name": "idx_pairing_codes_redeemed_key",
+					"columns": ["redeemed_key_id"],
+					"isUnique": false
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"checkConstraints": {}
+		},
+		"mobile_device_activities": {
+			"name": "mobile_device_activities",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"device_id": {
+					"name": "device_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"session_id": {
+					"name": "session_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"slot": {
+					"name": "slot",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"generation": {
+					"name": "generation",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false,
+					"default": 0
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"ended_at": {
+					"name": "ended_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				}
+			},
+			"indexes": {
+				"mobile_device_activities_device_session_unique": {
+					"name": "mobile_device_activities_device_session_unique",
+					"columns": ["device_id", "session_id"],
+					"isUnique": true
+				},
+				"idx_mobile_device_activities_session": {
+					"name": "idx_mobile_device_activities_session",
+					"columns": ["session_id"],
+					"isUnique": false
+				}
+			},
+			"foreignKeys": {
+				"mobile_device_activities_device_id_mobile_devices_id_fk": {
+					"name": "mobile_device_activities_device_id_mobile_devices_id_fk",
+					"tableFrom": "mobile_device_activities",
+					"tableTo": "mobile_devices",
+					"columnsFrom": ["device_id"],
+					"columnsTo": ["id"],
+					"onDelete": "cascade",
+					"onUpdate": "no action"
+				},
+				"mobile_device_activities_session_id_sessions_session_id_fk": {
+					"name": "mobile_device_activities_session_id_sessions_session_id_fk",
+					"tableFrom": "mobile_device_activities",
+					"tableTo": "sessions",
+					"columnsFrom": ["session_id"],
+					"columnsTo": ["session_id"],
+					"onDelete": "cascade",
+					"onUpdate": "no action"
+				}
+			},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"checkConstraints": {}
+		},
+		"mobile_devices": {
+			"name": "mobile_devices",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"user_id": {
+					"name": "user_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"api_key_id": {
+					"name": "api_key_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"paired_via_code_id": {
+					"name": "paired_via_code_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"platform": {
+					"name": "platform",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"environment": {
+					"name": "environment",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"relay_device_id": {
+					"name": "relay_device_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"send_token": {
+					"name": "send_token",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"kid": {
+					"name": "kid",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"public_key": {
+					"name": "public_key",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"client_server_ref": {
+					"name": "client_server_ref",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"device_name": {
+					"name": "device_name",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"app_version": {
+					"name": "app_version",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"os_version": {
+					"name": "os_version",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"prefs_json": {
+					"name": "prefs_json",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"last_seen_at": {
+					"name": "last_seen_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"updated_at": {
+					"name": "updated_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"revoked_at": {
+					"name": "revoked_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"revoked_reason": {
+					"name": "revoked_reason",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				}
+			},
+			"indexes": {
+				"mobile_devices_platform_relay_device_unique": {
+					"name": "mobile_devices_platform_relay_device_unique",
+					"columns": ["platform", "relay_device_id"],
+					"isUnique": true
+				},
+				"idx_mobile_devices_api_key": {
+					"name": "idx_mobile_devices_api_key",
+					"columns": ["api_key_id"],
+					"isUnique": false
+				},
+				"idx_mobile_devices_user": {
+					"name": "idx_mobile_devices_user",
+					"columns": ["user_id"],
+					"isUnique": false
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"checkConstraints": {}
+		},
+		"ai_hitl_deliveries": {
+			"name": "ai_hitl_deliveries",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"proposal_id": {
+					"name": "proposal_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"hitl_id": {
+					"name": "hitl_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"session_id": {
+					"name": "session_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"control_action_id": {
+					"name": "control_action_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"attempt": {
+					"name": "attempt",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false,
+					"default": 1
+				},
+				"terminal_state": {
+					"name": "terminal_state",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"approved_by_user_id": {
+					"name": "approved_by_user_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"approved_by_key_id": {
+					"name": "approved_by_key_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"prompt_hash": {
+					"name": "prompt_hash",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"updated_at": {
+					"name": "updated_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				}
+			},
+			"indexes": {
+				"ai_hitl_deliveries_proposal_unique": {
+					"name": "ai_hitl_deliveries_proposal_unique",
+					"columns": ["proposal_id"],
+					"isUnique": true
+				},
+				"idx_ai_hitl_deliveries_session": {
+					"name": "idx_ai_hitl_deliveries_session",
+					"columns": ["session_id"],
+					"isUnique": false
+				}
+			},
+			"foreignKeys": {
+				"ai_hitl_deliveries_session_id_sessions_session_id_fk": {
+					"name": "ai_hitl_deliveries_session_id_sessions_session_id_fk",
+					"tableFrom": "ai_hitl_deliveries",
+					"tableTo": "sessions",
+					"columnsFrom": ["session_id"],
+					"columnsTo": ["session_id"],
+					"onDelete": "cascade",
+					"onUpdate": "no action"
+				}
+			},
 			"compositePrimaryKeys": {},
 			"uniqueConstraints": {},
 			"checkConstraints": {}
@@ -3811,16 +4234,9 @@
 	},
 	"internal": {
 		"indexes": {
-			"idx_ask_threads_owner_user": {
+			"idx_ai_watcher_runs_session_created": {
 				"columns": {
-					"\"updated_at\" desc": {
-						"isExpression": true
-					}
-				}
-			},
-			"idx_ask_threads_owner_key": {
-				"columns": {
-					"\"updated_at\" desc": {
+					"\"created_at\" desc": {
 						"isExpression": true
 					}
 				}

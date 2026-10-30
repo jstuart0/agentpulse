@@ -94,6 +94,10 @@ export const aiQaCache = active.aiQaCache as typeof sqliteSchema.aiQaCache;
 // biome-ignore format: dialect-resolved re-exports keep one line each
 export const aiSessionSummaries =
 	active.aiSessionSummaries as typeof sqliteSchema.aiSessionSummaries;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const aiWatcherReports = active.aiWatcherReports as typeof sqliteSchema.aiWatcherReports;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const aiDispatchAudit = active.aiDispatchAudit as typeof sqliteSchema.aiDispatchAudit;
 
 // SQLite-only — undefined on the Postgres path (no pgvector this campaign).
 // Callers must gate on config.dialect === "sqlite" before accessing this.

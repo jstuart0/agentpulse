@@ -57,6 +57,7 @@ import {
 	finePrintLines,
 	footerText,
 	formatCost,
+	formatDuration,
 	formatElapsed,
 	formatMoment,
 	formatMoney,
@@ -898,7 +899,13 @@ describe("failureCopy", () => {
 			const m = derive(FAILED_VIEW_FIXTURES[code]);
 			expect(m.notice, code).toMatchObject({
 				kind: "failed",
-				reason: failureCopy(code, ADMIN, FAILED_VIEW_FIXTURES[code].spend.resetsAt, CLOCK),
+				reason: failureCopy(
+					code,
+					ADMIN,
+					FAILED_VIEW_FIXTURES[code].spend.resetsAt,
+					CLOCK,
+					timeoutOf(FAILED_VIEW_FIXTURES[code]),
+				),
 			});
 		}
 	});
@@ -1582,6 +1589,7 @@ describe("fixtures from the server shape", () => {
 		stale_one: "stale/available/none",
 		stale_capped: "stale/available/none",
 		failed: "none/blocked:cooling_down/failed-error",
+		failedTimeout: "none/blocked:cooling_down/failed-error",
 		failed_ai_inactive: "ready/blocked:cooling_down/failed-muted",
 		interrupted: "none/available/failed-error",
 		no_provider: "none/blocked:no_provider/none",
@@ -2101,6 +2109,92 @@ describe("phase 8 review fixes: lib", () => {
 		expect(names[1][0]).toBe(`${evidenceAccessibleName(facts.E2, CLOCK)} (2 of 2)`);
 		expect(linkNames([["E3"]], facts, CLOCK)).toEqual([[evidenceAccessibleName(facts.E3, CLOCK)]]);
 		expect(linkNames([["bogus"]], facts, CLOCK)).toEqual([[]]);
+	});
+});
+
+const timeoutOf = (v: SessionSummaryView) =>
+	v.attempt.timeoutSeconds === undefined
+		? undefined
+		: { seconds: v.attempt.timeoutSeconds, model: v.provider?.model ?? null };
+
+describe("AGEN-77 the timeout copy", () => {
+	const TIMEOUT = { seconds: 360, model: "gpt-5-mini" };
+	const SETTING = "AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS";
+
+	test("names the limit and the model; an admin is told who can raise it, a locked viewer to ask an admin", () => {
+		expect(failureCopy("provider_timeout", ADMIN, null, undefined, TIMEOUT)).toBe(
+			`The model didn't answer within 6 minutes. Large sessions on gpt-5-mini can take longer; whoever runs the server can raise ${SETTING} and restart it.`,
+		);
+		expect(failureCopy("provider_timeout", MEMBER, null, undefined, TIMEOUT)).toBe(
+			"The model didn't answer within 6 minutes. Large sessions on gpt-5-mini can take longer; ask an admin to have the time limit raised.",
+		);
+		expect(failureCopy("provider_timeout", MEMBER, null, undefined, TIMEOUT)).not.toContain(
+			SETTING,
+		);
+		expect(failureCopy("provider_timeout", ADMIN, null, undefined, TIMEOUT)).not.toContain(
+			"Try again",
+		);
+	});
+
+	test("formatDuration reads a limit in words", () => {
+		const cases: Array<[number, string]> = [
+			[30, "30 seconds"],
+			[60, "1 minute"],
+			[90, "90 seconds"],
+			[120, "2 minutes"],
+			[360, "6 minutes"],
+			[361, "6 minutes 1 second"],
+			[1800, "30 minutes"],
+			[29.2, "30 seconds"],
+			[0, "1 second"],
+		];
+		for (const [seconds, text] of cases)
+			expect(formatDuration(seconds), String(seconds)).toBe(text);
+	});
+
+	test("with no limit from the server (an older one) today's sentence stays", () => {
+		expect(failureCopy("provider_timeout", ADMIN)).toBe(
+			"The provider took too long to answer. Try again.",
+		);
+	});
+
+	test("with no model the sentence still names the limit", () => {
+		expect(
+			failureCopy("provider_timeout", ADMIN, null, undefined, { seconds: 90, model: null }),
+		).toContain("didn't answer within 90 seconds. Large sessions on slow models can take longer");
+	});
+
+	test("a model with markup and a bidi override is plain text with the invisible characters stripped", () => {
+		const copy = failureCopy("provider_timeout", ADMIN, null, undefined, {
+			seconds: 360,
+			model: "<b>x</b>\u202Ey\u200Bz\n",
+		});
+		expect(copy).toContain("on <b>x</b>yz can");
+		expect(copy).not.toMatch(/[\u202E\u200B\n]/);
+	});
+
+	test("a model name is capped", () => {
+		const copy = failureCopy("provider_timeout", ADMIN, null, undefined, {
+			seconds: 360,
+			model: "m".repeat(500),
+		});
+		expect(copy).toContain(`on ${"m".repeat(128)} can`);
+	});
+
+	test("the notice carries it from the view's timeoutSeconds and provider model", () => {
+		const m = derive(F.failedTimeout, AI_ON, ADMIN);
+		expect(m.notice).toMatchObject({ kind: "failed" });
+		expect((m.notice as { reason: string }).reason).toContain("didn't answer within 6 minutes");
+	});
+
+	test("provider_error keeps its generic copy and never mentions the setting", () => {
+		for (const viewer of [ADMIN, MEMBER]) {
+			const copy = failureCopy("provider_error", viewer, null, undefined, TIMEOUT);
+			expect(copy).toBe(
+				"The provider returned an error. Try again; if it keeps happening, check the provider's status.",
+			);
+			expect(copy).not.toContain(SETTING);
+		}
 	});
 });
 

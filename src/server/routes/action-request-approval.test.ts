@@ -20,9 +20,10 @@ import {
 	seedLocalUser,
 	setStoredMode,
 } from "../test-utils/team-fixtures.js";
+import { seedVerifiedChannel, tapUpdate } from "../test-utils/telegram-fixtures.js";
 
 const { initializeDatabase, getDb } = await import("../db/client.js");
-const { aiActionRequests, sessions } = await import("../db/schema/index.js");
+const { aiActionRequests, notificationChannels, sessions } = await import("../db/schema/index.js");
 const { app } = await import("../app.js");
 const { upsertSetting } = await import("../services/settings-service.js");
 const { createActionRequest, getActionRequest } = await import(
@@ -31,9 +32,12 @@ const { createActionRequest, getActionRequest } = await import(
 const telegram = await import("../services/channels/telegram.js");
 const { handleTelegramUpdate } = await import("./channels.js");
 
-const CHANNEL = "ar-channel";
 const CHAT_REFUSAL =
 	"Approve this in the dashboard. Chat approvals can't act on a member's session in team mode.";
+
+/** The enrolled chat these taps come from; its channel is owned by a real (non-"local") user. */
+const CHAT_ID = 555;
+let chatChannelId = "";
 
 /** What the bot answered to the callback tap. The network call itself is replaced. */
 async function tapFromChat(requestId: string, action: "approve" | "decline"): Promise<string[]> {
@@ -41,23 +45,10 @@ async function tapFromChat(requestId: string, action: "approve" | "decline"): Pr
 	const spy = spyOn(telegram, "answerCallbackQuery").mockImplementation(async (_id, text) => {
 		answers.push(text ?? "");
 	});
-	const channels = await import("../services/channels/channels-service.js");
-	const finder = spyOn(channels, "findActiveChannelByChatId").mockImplementation((async () => ({
-		id: CHANNEL,
-	})) as never);
 	try {
-		await handleTelegramUpdate({
-			update_id: 1,
-			callback_query: {
-				id: "cb-1",
-				from: { id: 555 },
-				data: `act:${action}:${requestId}`,
-				message: { chat: { id: 555 } },
-			},
-		} as never);
+		await handleTelegramUpdate(tapUpdate({ data: `act:${action}:${requestId}`, chatId: CHAT_ID }));
 	} finally {
 		spy.mockRestore();
-		finder.mockRestore();
 	}
 	return answers;
 }
@@ -69,11 +60,13 @@ async function reset() {
 	await resetIdentityState();
 	await clearInstanceSettings();
 	await getDb().delete(aiActionRequests);
+	await getDb().delete(notificationChannels);
 	await getDb().delete(sessions);
 }
 beforeEach(async () => {
 	await reset();
 	await upsertSetting("ai.enabled", true, { allowProtected: true });
+	chatChannelId = await seedVerifiedChannel({ chatId: String(CHAT_ID), userId: "chat-owner" });
 });
 afterEach(async () => {
 	await reset();
@@ -102,8 +95,7 @@ async function archiveRequest(sessionId: string) {
 		question: "Archive?",
 		payload: { sessionId, sessionDisplayName: sessionId },
 		origin: "web",
-		// The chat the request was sent to; a request with no channel was never sent to one.
-		channelId: CHANNEL,
+		channelId: chatChannelId,
 	});
 }
 const decide = (id: string, headers: Headers, decision: "applied" | "declined" = "applied") =>
@@ -247,7 +239,9 @@ describe("a chat approval (Telegram)", () => {
 
 	test("the Telegram routes pass the one named chat actor, never an inline one", () => {
 		const channels = readFileSync(join(import.meta.dir, "channels.ts"), "utf8");
-		expect(/label:\s*"telegram"/.test(channels)).toBe(false);
-		expect(channels.match(/actor:\s*TELEGRAM_ACTOR/g)?.length).toBe(2);
+		// The one inline actor is the channel owner's authority check in channelOwnerMayApprove,
+		// which carries the owner's user id; nothing that is *passed to a resolver* is inline.
+		expect(channels.match(/label:\s*"telegram"/g)?.length).toBe(1);
+		expect(channels.match(/actor:\s*TELEGRAM_ACTOR/g)?.length).toBe(3); // ask, action request, HITL decision
 	});
 });

@@ -10,6 +10,9 @@ function clampedEnvNumber(name: string, fallback: number, min: number, max: numb
 	return Math.min(max, Math.max(min, value));
 }
 
+/** Longest time one LLM call may be given; the clamp and `llmFetch` share it. */
+export const MAX_LLM_CALL_TIMEOUT_SECONDS = 1800;
+
 export const config = {
 	port: Number(process.env.PORT || 3000),
 	host: process.env.HOST || "127.0.0.1",
@@ -91,9 +94,68 @@ export const config = {
 	),
 	vectorScanCpuShare: clampedEnvNumber("AGENTPULSE_VECTOR_SCAN_CPU_SHARE", 0.3, 0.05, 1),
 
+	// A managed session whose supervisor lease is live is protected from the
+	// inactivity sweep only while it has been silent less than this long (a
+	// killed terminal bridge under a healthy host would otherwise stay Active
+	// forever). Read on every sweep, so a test can set it.
+	managedSessionMaxSilenceMs:
+		clampedEnvNumber("AGENTPULSE_MANAGED_SESSION_MAX_SILENCE_HOURS", 72, 1, 720) * 3_600_000,
+
 	// How many Ask turns may run at once, across the web and Telegram (see
 	// services/ask/ask-turn-limiter.ts). Read on every acquisition.
 	askMaxConcurrent: Math.floor(clampedEnvNumber("AGENTPULSE_ASK_MAX_CONCURRENT", 2, 1, 8)),
+
+	// Time limit of an Ask answer and of a per-session Q&A answer, per call.
+	// The call that carries the whole conversation context and decodes the
+	// answer is the slowest one an Ask turn makes (prefill of the context
+	// block plus the answer's tokens). Read on every call.
+	askAnswerTimeoutSeconds: Math.floor(
+		clampedEnvNumber(
+			"AGENTPULSE_ASK_ANSWER_TIMEOUT_SECONDS",
+			180,
+			30,
+			MAX_LLM_CALL_TIMEOUT_SECONDS,
+		),
+	),
+	// Time limit of the short helper calls: the Ask intent classifiers, the Ask
+	// query expander and the alert-rule yes/no classifier. They produce a few
+	// tokens, so on a warm model they take about two seconds; the limit covers a
+	// model that has to load first (one measurement: a cold 27B-class model
+	// answered a 64-token call in about 8 seconds), with room for a queue
+	// behind another call. Read on every call.
+	aiHelperTimeoutSeconds: Math.floor(
+		clampedEnvNumber("AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS", 20, 5, 300),
+	),
+
+	// Time limit of the attempt on the fast provider (Settings, AI: "Use for quick
+	// calls"), capped at the call's own limit. A fast provider that is down or
+	// stuck should cost a few seconds, not the whole helper limit, before the call
+	// is repeated on the default provider: the worst case is this plus
+	// `aiHelperTimeoutSeconds`. Read on every call.
+	aiFastProviderTimeoutSeconds: Math.floor(
+		clampedEnvNumber("AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS", 5, 1, 60),
+	),
+
+	// The session-summary model call's time limit, per call (the repair call
+	// gets it too). The lease, the watchdog, the stuck-row judgement,
+	// retention's spare window and the breaker window all derive from it.
+	// Replicas must agree on it.
+	sessionSummaryTimeoutSeconds: Math.floor(
+		clampedEnvNumber(
+			"AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS",
+			360,
+			30,
+			MAX_LLM_CALL_TIMEOUT_SECONDS,
+		),
+	),
+
+	// Time limit of one watcher model call, per call: the Continue decision and
+	// the Notify status note. Each is a short JSON answer, but a reasoning-off
+	// call on a cold local model can still need a while to load first. Read on
+	// every call.
+	watcherCallTimeoutSeconds: Math.floor(
+		clampedEnvNumber("AGENTPULSE_WATCHER_TIMEOUT_SECONDS", 90, 10, MAX_LLM_CALL_TIMEOUT_SECONDS),
+	),
 
 	// Telegram HITL channel — instance-wide bot token serves every
 	// per-user channel enrollment. When unset, Telegram features stay

@@ -1,12 +1,8 @@
 // Phase 4 audit: supervisor-registry.ts is clean — no raw getSqlite() calls,
 // no json_extract, no datetime('now') literals. The heartbeat-lease timestamp
 // (Date.now() + ms).toISOString() is pure JS — fully portable to Postgres.
-import { and, desc, eq, gt, sql } from "drizzle-orm";
-import type {
-	SupervisorRecord,
-	SupervisorRegistrationInput,
-	SupervisorStatus,
-} from "../../shared/types.js";
+import { desc, eq, sql } from "drizzle-orm";
+import type { SupervisorRecord, SupervisorRegistrationInput } from "../../shared/types.js";
 import { assertOwnerActive, assertOwnerAssignable } from "../auth/owner-state.js";
 import {
 	prepareSupervisorCredential,
@@ -19,8 +15,11 @@ import { supervisors } from "../db/schema/index.js";
 import { UNNAMED_HOST_NAME, cleanMachineName } from "./machine-name.js";
 import { readTrustedRoots, withCapabilityDefaults } from "./supervisor-capabilities.js";
 import { excludeRulesStateOf } from "./supervisor-exclude-state.js";
-
-const HEARTBEAT_LEASE_MS = 90_000;
+import {
+	HEARTBEAT_LEASE_MS,
+	deriveSupervisorStatus,
+	isSupervisorLive,
+} from "./supervisor-liveness.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -30,17 +29,7 @@ function leaseExpiryIso(base = Date.now()) {
 	return new Date(base + HEARTBEAT_LEASE_MS).toISOString();
 }
 
-function deriveStatus(leaseExpiry: string, enrollmentState?: string | null): SupervisorStatus {
-	if (enrollmentState === "revoked") return "offline";
-	const expiry = Date.parse(leaseExpiry);
-	const now = Date.now();
-	if (Number.isNaN(expiry)) return "offline";
-	if (expiry > now) return "connected";
-	if (expiry > now - HEARTBEAT_LEASE_MS) return "stale";
-	return "offline";
-}
-
-function mapSupervisor(row: typeof supervisors.$inferSelect): SupervisorRecord {
+function mapSupervisor(row: typeof supervisors.$inferSelect, nowMs = Date.now()): SupervisorRecord {
 	return {
 		id: row.id,
 		hostName: row.hostName,
@@ -49,7 +38,7 @@ function mapSupervisor(row: typeof supervisors.$inferSelect): SupervisorRecord {
 		version: row.version,
 		capabilities: withCapabilityDefaults(row.capabilities),
 		trustedRoots: readTrustedRoots(row.trustedRoots),
-		status: deriveStatus(row.heartbeatLeaseExpiresAt, row.enrollmentState),
+		status: deriveSupervisorStatus(row.heartbeatLeaseExpiresAt, row.enrollmentState, nowMs),
 		capabilitySchemaVersion: row.capabilitySchemaVersion,
 		configSchemaVersion: row.configSchemaVersion,
 		lastHeartbeatAt: row.lastHeartbeatAt,
@@ -215,7 +204,7 @@ export async function heartbeatSupervisor(id: string) {
 
 export async function listSupervisors() {
 	const rows = await getDb().select().from(supervisors).orderBy(desc(supervisors.updatedAt));
-	return rows.map(mapSupervisor);
+	return rows.map((row) => mapSupervisor(row));
 }
 
 export async function getSupervisor(id: string) {
@@ -223,24 +212,19 @@ export async function getSupervisor(id: string) {
 	return row ? mapSupervisor(row) : null;
 }
 
-export async function getConnectedSupervisor(id?: string | null) {
+export async function getConnectedSupervisor(id?: string | null, nowMs = Date.now()) {
 	if (id) {
-		const [row] = await getDb()
-			.select()
-			.from(supervisors)
-			.where(and(eq(supervisors.id, id), gt(supervisors.heartbeatLeaseExpiresAt, nowIso())))
-			.limit(1);
-		return row ? mapSupervisor(row) : null;
+		const [row] = await getDb().select().from(supervisors).where(eq(supervisors.id, id)).limit(1);
+		return row && isSupervisorLive(row.heartbeatLeaseExpiresAt, row.enrollmentState, nowMs)
+			? mapSupervisor(row, nowMs)
+			: null;
 	}
 
-	const [row] = await getDb()
-		.select()
-		.from(supervisors)
-		.where(gt(supervisors.heartbeatLeaseExpiresAt, nowIso()))
-		.orderBy(desc(supervisors.updatedAt))
-		.limit(1);
-
-	return row ? mapSupervisor(row) : null;
+	const rows = await getDb().select().from(supervisors).orderBy(desc(supervisors.updatedAt));
+	const row = rows.find((r) =>
+		isSupervisorLive(r.heartbeatLeaseExpiresAt, r.enrollmentState, nowMs),
+	);
+	return row ? mapSupervisor(row, nowMs) : null;
 }
 
 /**

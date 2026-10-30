@@ -480,8 +480,16 @@ describeSqliteOnly(
 			);
 			const { handleTelegramUpdate } = await import("../../routes/channels.js");
 			getSqlite().exec("DELETE FROM notification_channels");
-			const { channel } = await createPendingChannel({ kind: "telegram", label: "cap test" });
-			await completeEnrollment({ channelId: channel.id, chatId: "4242" });
+			const { channel, enrollmentCode } = await createPendingChannel({
+				kind: "telegram",
+				label: "cap test",
+			});
+			await completeEnrollment({
+				channelId: channel.id,
+				chatId: "4242",
+				fromUserId: "4242",
+				code: enrollmentCode,
+			});
 			// The credentials cache is process-wide and may hold another test's state.
 			const credentials = await import("../channels/telegram-credentials.js");
 			await credentials.clearTelegramCredentials();
@@ -496,7 +504,12 @@ describeSqliteOnly(
 			try {
 				await handleTelegramUpdate({
 					update_id: 1,
-					message: { message_id: 1, chat: { id: 4242 }, text: "a".repeat(8_001) },
+					message: {
+						message_id: 1,
+						chat: { id: 4242, type: "private" },
+						from: { id: 4242 },
+						text: "a".repeat(8_001),
+					},
 				} as never);
 			} finally {
 				globalThis.fetch = realFetch;
