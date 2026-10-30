@@ -1312,6 +1312,9 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		"CREATE INDEX IF NOT EXISTS idx_ask_threads_owner_user ON ask_threads(owner_user_id, updated_at DESC) WHERE archived_at IS NULL",
 		"CREATE INDEX IF NOT EXISTS idx_ask_threads_owner_key ON ask_threads(owner_key_id, updated_at DESC) WHERE archived_at IS NULL AND owner_user_id IS NULL",
 		"CREATE INDEX IF NOT EXISTS idx_launch_requests_created_at ON launch_requests(created_at)",
+		// Migration 0016: a launch request's idempotency key (one launch per key).
+		"ALTER TABLE launch_requests ADD COLUMN idempotency_key TEXT",
+		"CREATE UNIQUE INDEX IF NOT EXISTS launch_requests_idempotency_key_unique ON launch_requests(idempotency_key)",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when
