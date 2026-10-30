@@ -55,8 +55,8 @@ function shapeOf(db: Database): Shape {
 	const shape: Shape = {
 		tables: new Set(),
 		columns: new Set(),
-		indexes: new Set(),
-		triggers: new Set(),
+		indexes: new Set<string>(),
+		triggers: new Set<string>(),
 	};
 	const objects = db
 		.prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
@@ -148,11 +148,11 @@ describe("legacy SQLite init parity with Drizzle migrations", () => {
 	});
 
 	test("the guard sees a gap: a shape missing a column is reported", () => {
-		const a = {
+		const a: Shape = {
 			tables: new Set(["t"]),
 			columns: new Set(["t.x TEXT"]),
-			indexes: new Set(),
-			triggers: new Set(),
+			indexes: new Set<string>(),
+			triggers: new Set<string>(),
 		};
 		const b = { ...a, columns: new Set<string>() };
 		expect(missingFrom(b, a)).toEqual(["columns: t.x TEXT"]);
