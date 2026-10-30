@@ -279,6 +279,31 @@ describeSqliteOnly("withAdminLock — SQLite mutex and BEGIN IMMEDIATE retry", (
 			sqlite.exec("COMMIT");
 		}
 	});
+
+	test("is not spent by a slow event-loop turn before the first BEGIN: a loaded server still retries", async () => {
+		const sqlite = getSqlite();
+		sqlite.exec("BEGIN IMMEDIATE");
+		try {
+			const { attempts } = await withBeginSpy(
+				() => {},
+				async () => {
+					// A turn that takes longer than the whole budget, queued ahead of the lock's own yield.
+					setImmediate(() => {
+						const until = Date.now() + 120;
+						while (Date.now() < until) {
+							// busy: stands in for a loaded CI runner
+						}
+					});
+					await expect(
+						withAdminLock(async () => "unreachable", { sqliteRetryBudgetMs: 40 }),
+					).rejects.toThrow(/within a transaction/);
+				},
+			);
+			expect(attempts).toBeGreaterThan(1);
+		} finally {
+			sqlite.exec("COMMIT");
+		}
+	});
 });
 
 describe("withAdminLock protects the last admin", () => {

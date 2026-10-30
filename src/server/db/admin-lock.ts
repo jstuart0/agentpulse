@@ -221,12 +221,14 @@ async function beginImmediateWithRetry<T>(
 	const budgetMs = opts.sqliteRetryBudgetMs ?? DEFAULT_SQLITE_RETRY_BUDGET_MS;
 	let delayMs = opts.sqliteRetryInitialDelayMs ?? DEFAULT_SQLITE_RETRY_INITIAL_DELAY_MS;
 	const sqlite = getSqlite();
-	const startedAt = Date.now();
 
 	// Let the event loop turn once before taking the transaction: any request
 	// chain still working through already-resolved awaits finishes now, outside
 	// the lock, rather than half way through the body.
 	await new Promise<void>((resolve) => setImmediate(resolve));
+	// The budget bounds time spent waiting on another transaction, not event-loop lag: a slow turn
+	// above must not spend it before the first retry.
+	const startedAt = Date.now();
 
 	// Retry only the BEGIN. Once it has succeeded the body runs exactly once.
 	for (;;) {

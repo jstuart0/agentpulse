@@ -9,6 +9,7 @@ import type { AiStatusResponse } from "../lib/api.js";
 import { ApiError, type GenerateSummaryResult, api } from "../lib/api.js";
 import { resetAiStatusStore, useAiStatusStore } from "../stores/ai-status-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
+import { useUserStore } from "../stores/user-store.js";
 import {
 	deferred,
 	installDomStubs,
@@ -71,6 +72,8 @@ const AI_ON: AiStatusResponse = { build: true, runtime: true, killSwitch: false,
 const AI_PAUSED: AiStatusResponse = { build: true, runtime: true, killSwitch: true, active: false };
 /** The tab only exists once both sources have answered, so a mounted hook sees loaded stores. */
 function loadedStores(ai: AiStatusResponse = AI_ON) {
+	// Solo, as a fresh page: the refusal sentences differ for a team member, and other files leave team mode set.
+	useUserStore.setState({ mode: "solo", effectiveRole: undefined } as never);
 	useAiStatusStore.setState({ status: ai, loadState: "loaded", error: null });
 	useLabsStore.setState({
 		// biome-ignore lint/suspicious/noExplicitAny: the flag joins LabsFlags in phase 5

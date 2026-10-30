@@ -7,7 +7,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "b
 import "../db/__test_db.js";
 
 const { config } = await import("../config.js");
-const { initializeDatabase } = await import("../db/client.js");
+const { initializeDatabase, getDb } = await import("../db/client.js");
+const { llmProviders } = await import("../db/schema/index.js");
 const { app } = await import("../app.js");
 const { handleServerRequest } = await import("../server-fetch.js");
 const { seedKey, seedLocalUser, setStoredMode, clearInstanceSettings } = await import(
@@ -209,6 +210,8 @@ describe("GET /capabilities", () => {
 
 	test("AI built in but not switched on is also a 200, active false", async () => {
 		await setAiRuntime(false);
+		// The block names the default provider's kind; another test file may have left one behind.
+		await getDb().delete(llmProviders);
 		Object.assign(config as Record<string, unknown>, {
 			aiEnabled: true,
 			secretsKey: "k".repeat(32),
