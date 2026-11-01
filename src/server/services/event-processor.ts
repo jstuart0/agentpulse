@@ -122,37 +122,70 @@ function matchKey(row: {
  * trigger the delete it would have earned had it been stored. Returns DTO
  * rows (Decision 16; dedup_key never leaves this function) sorted by id.
  */
-async function persistEvents(
+/**
+ * Rows per statement. Bound parameters per row are 14, so 500 keeps one insert far under SQLite's
+ * 32,766-variable limit however many events a batch holds, and the compensating delete's `IN` list
+ * under the same bound. There is no cap on the batch itself: more rows are just more chunks.
+ */
+export const EVENT_WRITE_CHUNK_ROWS = 500;
+
+function chunked<T>(items: T[], size: number = EVENT_WRITE_CHUNK_ROWS): T[][] {
+	const out: T[][] = [];
+	for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+	return out;
+}
+
+/**
+ * The write path, chunked. A batch that needs more than one statement and was not handed a
+ * transaction opens its own, so a failed later chunk never leaves the earlier ones behind; a caller
+ * that passes `db` (insertManagedEvents passes its `tx`) owns the transaction.
+ */
+export async function persistEvents(
 	sessionId: string,
 	plan: InsertPlan,
-	db: DbHandle = getDb(),
+	db?: DbHandle,
+): Promise<SessionEvent[]> {
+	if (db === undefined && plan.retained.length > EVENT_WRITE_CHUNK_ROWS) {
+		return withTransaction((tx) => persistEventsOn(tx, sessionId, plan));
+	}
+	return persistEventsOn(db ?? getDb(), sessionId, plan);
+}
+
+async function persistEventsOn(
+	db: DbHandle,
+	sessionId: string,
+	plan: InsertPlan,
 ): Promise<SessionEvent[]> {
 	if (plan.retained.length === 0) {
 		recordDrops(plan.drops);
 		return [];
 	}
 
-	const insertedRows: StoredEventRow[] = await db
-		.insert(events)
-		.values(
-			plan.retained.map((row) => ({
-				sessionId,
-				eventType: row.eventType,
-				category: row.category,
-				source: row.source,
-				content: row.content,
-				isNoise: row.isNoise,
-				providerEventType: row.providerEventType,
-				toolName: row.toolName,
-				toolInput: row.toolInput,
-				toolResponse: row.toolResponse,
-				rawPayload: row.rawPayload,
-				dedupKey: row.dedupKey,
-				occurredAt: row.occurredAt ?? null,
-			})),
-		)
-		.onConflictDoNothing()
-		.returning();
+	const insertedRows: StoredEventRow[] = [];
+	for (const chunk of chunked(plan.retained)) {
+		const written: StoredEventRow[] = await db
+			.insert(events)
+			.values(
+				chunk.map((row) => ({
+					sessionId,
+					eventType: row.eventType,
+					category: row.category,
+					source: row.source,
+					content: row.content,
+					isNoise: row.isNoise,
+					providerEventType: row.providerEventType,
+					toolName: row.toolName,
+					toolInput: row.toolInput,
+					toolResponse: row.toolResponse,
+					rawPayload: row.rawPayload,
+					dedupKey: row.dedupKey,
+					occurredAt: row.occurredAt ?? null,
+				})),
+			)
+			.onConflictDoNothing()
+			.returning();
+		insertedRows.push(...written);
+	}
 
 	const byMatchKey = new Map<string, PlannedRow>(plan.retained.map((row) => [matchKey(row), row]));
 	let stored = insertedRows
@@ -189,16 +222,8 @@ async function persistEvents(
 		// compensated away (its own key happened to be free, e.g. an
 		// authority-superseded row that was since deleted).
 		for (let i = 0; i < plan.retained.length; i++) bump(kind);
-		if (stored.length > 0) {
-			await db.delete(events).where(
-				and(
-					eq(events.sessionId, sessionId),
-					inArray(
-						events.id,
-						stored.map(({ dbRow }) => dbRow.id),
-					),
-				),
-			);
+		for (const ids of chunked(stored.map(({ dbRow }) => dbRow.id))) {
+			await db.delete(events).where(and(eq(events.sessionId, sessionId), inArray(events.id, ids)));
 		}
 		stored = [];
 	} else {
@@ -209,10 +234,8 @@ async function persistEvents(
 	}
 
 	const deleteIds = new Set(stored.flatMap(({ planned }) => planned.deletesIfStored));
-	if (deleteIds.size > 0) {
-		await db
-			.delete(events)
-			.where(and(eq(events.sessionId, sessionId), inArray(events.id, Array.from(deleteIds))));
+	for (const ids of chunked(Array.from(deleteIds))) {
+		await db.delete(events).where(and(eq(events.sessionId, sessionId), inArray(events.id, ids)));
 	}
 
 	recordDrops(plan.drops);

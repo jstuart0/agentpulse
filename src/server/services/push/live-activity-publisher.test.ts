@@ -12,6 +12,7 @@ import {
 	BACKOFF_MS,
 	BUCKET_MS,
 	COMPLETED_DISMISSAL_SEC,
+	LATE_UPDATE_MAX_WAIT_MS,
 	LATE_UPDATE_QUIET_MS,
 	LiveActivityPublisher,
 	type LiveActivityRow,
@@ -403,6 +404,24 @@ describe("late (replayed) reports", () => {
 		await h.advance(LATE_UPDATE_QUIET_MS);
 		expect(h.sent).toHaveLength(1);
 		expect(state(h.sent[0] as Sent).status).toBe("waiting");
+	});
+
+	test("a steady trickle of late updates still refreshes no later than 10 s after the first", async () => {
+		await h.publisher.follow(h.row());
+		h.sent = [];
+		// An update every 1.5 s never leaves 2 s of quiet.
+		let elapsed = 0;
+		h.updated({ operationalStatus: "waiting" }, { late: true });
+		while (h.sent.length === 0 && elapsed < LATE_UPDATE_MAX_WAIT_MS + 3_000) {
+			await h.advance(1_500);
+			elapsed += 1_500;
+			if (h.sent.length === 0) h.updated({ operationalStatus: "error" }, { late: true });
+		}
+		expect(h.sent).toHaveLength(1);
+		expect(elapsed, "fired within the maximum wait (at the next 1.5 s step)").toBeLessThanOrEqual(
+			LATE_UPDATE_MAX_WAIT_MS + 1_500,
+		);
+		expect(elapsed).toBeGreaterThan(LATE_UPDATE_QUIET_MS);
 	});
 
 	test("a replayed terminal state still ends the activity, once, after the quiet period", async () => {

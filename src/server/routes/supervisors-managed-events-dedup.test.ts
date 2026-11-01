@@ -28,9 +28,12 @@ const { sessionBus } = await import("../services/notifier.js");
 const { appendManagedSessionDelivery, _resetOccurredAtRejectionLogForTest } = await import(
 	"../services/managed-session-state.js"
 );
-const { insertNormalizedEvents } = await import("../services/event-processor.js");
-const { __resetReplayLimiterForTests, tryAcquireReplay, replaysInFlight, MAX_CONCURRENT_REPLAYS } =
-	await import("../services/replay-limiter.js");
+const { insertNormalizedEvents, persistEvents } = await import("../services/event-processor.js");
+const managedState = await import("../services/managed-session-state.js");
+const withTransactionModule = await import("../db/with-transaction.js");
+const { __resetReplayLimiterForTests, replaysInFlight, MAX_CONCURRENT_REPLAYS } = await import(
+	"../services/replay-limiter.js"
+);
 const { embedLiveSessionEvent } = await import("../services/ai/embeddings/embedding-service.js");
 const { parseDbTimestamp } = await import("../services/util/db-time.js");
 const { DELIVERY_ID_HEADER, REPLAY_HEADER } = await import("../../shared/hook-headers.js");
@@ -223,7 +226,10 @@ describe("delivery receipt: a replay stores nothing", () => {
 
 		await expect(
 			appendManagedSessionDelivery(sup.id, sessionId, batch as never, delivery, {
-				persist: async () => {
+				// The real write runs (rows are inserted inside the transaction), then it fails.
+				persist: async (sid, plan, tx) => {
+					const written = await persistEvents(sid, plan, tx);
+					expect(written, "the insert really happened before the failure").toHaveLength(2);
 					throw new Error("injected events failure");
 				},
 			}),
@@ -285,13 +291,83 @@ describe("delivery receipt: a replay stores nothing", () => {
 		expect(await receiptRows(sessionId)).toHaveLength(0);
 	});
 
-	test("a 1,000-event delivery stores all its rows and a receipt", async () => {
+	test("a 2,500-event delivery (five insert chunks) stores every row in one transaction, and its replay is deduplicated", async () => {
 		const sup = await registerSupervisor();
 		const sessionId = await ownedSession(sup);
-		const res = await postEvents(sup, sessionId, fillers(1000), { deliveryId: newDeliveryId() });
-		expect(res.status).toBe(200);
-		expect(await storedRows(sessionId)).toHaveLength(1000);
+		const deliveryId = newDeliveryId();
+		const batch = fillers(2500);
+		const spy = spyOn(withTransactionModule, "withTransaction");
+		try {
+			const res = await postEvents(sup, sessionId, batch, { deliveryId });
+			expect(res.status).toBe(200);
+			expect(spy.mock.calls.length, "one transaction for the whole delivery").toBe(1);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(await storedRows(sessionId)).toHaveLength(2500);
 		expect(await receiptRows(sessionId)).toHaveLength(1);
+
+		const replay = await postEvents(sup, sessionId, batch, { deliveryId, replay: true });
+		expect(replay.status).toBe(200);
+		expect(await storedRows(sessionId), "the replay stores nothing").toHaveLength(2500);
+	});
+
+	test("without a delivery id a batch over one chunk still goes in one transaction and is all-or-nothing", async () => {
+		const sup = await registerSupervisor();
+		const sessionId = await ownedSession(sup);
+		const spy = spyOn(withTransactionModule, "withTransaction");
+		try {
+			expect((await postEvents(sup, sessionId, fillers(1200))).status).toBe(200);
+			expect(spy.mock.calls.length).toBe(1);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(await storedRows(sessionId)).toHaveLength(1200);
+	});
+
+	test("malformed event fields are 400 invalid_body and nothing is stored", async () => {
+		const sup = await registerSupervisor();
+		const sessionId = await ownedSession(sup);
+		const good = { eventType: "ManagedProbe", category: "system_event", content: "x" };
+		const bad: unknown[] = [
+			{ ...good, eventType: "" },
+			{ ...good, eventType: 5 },
+			{ ...good, eventType: "e".repeat(257) },
+			{ ...good, content: 7 },
+			{ ...good, content: "c".repeat(1_000_001) },
+			{ ...good, category: { a: 1 } },
+			{ ...good, category: "c".repeat(257) },
+			{ ...good, toolName: ["x"] },
+			{ ...good, rawPayload: "str" },
+			{ ...good, rawPayload: [1] },
+			{ category: "system_event" },
+		];
+		for (const event of bad) {
+			const res = await postEvents(sup, sessionId, [good, event]);
+			expect(res.status, JSON.stringify(event).slice(0, 80)).toBe(400);
+			expect(await res.json()).toEqual({ error: "invalid_body" });
+		}
+		expect(await storedRows(sessionId), "the good sibling was not stored either").toHaveLength(0);
+		// Positive control: the same shapes with valid values are accepted.
+		const ok = await postEvents(sup, sessionId, [
+			{ ...good, content: null, toolName: "Bash", rawPayload: { a: 1 }, category: "tool_event" },
+			{ eventType: "e".repeat(256), category: "system_event" },
+		]);
+		expect(ok.status).toBe(200);
+		expect(await storedRows(sessionId)).toHaveLength(2);
+	});
+
+	test("the state route's sessionId must be a string of at most 1,024 characters", async () => {
+		const sup = await registerSupervisor();
+		for (const sessionId of [123, { a: 1 }, ["x"], "s".repeat(1025)]) {
+			const res = await app.request(`/api/v1/supervisors/${sup.id}/managed-session-state`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Authorization: `Bearer ${sup.credential}` },
+				body: JSON.stringify({ sessionId }),
+			});
+			expect(res.status, JSON.stringify(sessionId).slice(0, 30)).toBe(400);
+			expect(await res.json()).toEqual({ error: "invalid_body" });
+		}
 	});
 });
 
@@ -416,7 +492,7 @@ describe("body handling", () => {
 });
 
 describe("statement budget", () => {
-	test("no header: the base count; with a delivery id: base + 1 (the receipt), at 1 and at 1,000 events", async () => {
+	test("no header: the base count; with a delivery id: base + 1 (the receipt), at 1 and at 500 events", async () => {
 		const sup = await registerSupervisor();
 		const measure = async (n: number, deliveryId?: string) => {
 			const sessionId = await ownedSession(sup);
@@ -434,10 +510,12 @@ describe("statement budget", () => {
 		// The base path is credential check + ownership + recent-rows read + one insert + the
 		// session read for the broadcast. Pinned as a literal so a change to it is seen.
 		expect(base).toBe(BASE_STATEMENTS);
-		expect(await measure(1000)).toBe(base);
+		expect(await measure(500)).toBe(base);
 
 		expect(await measure(1, newDeliveryId())).toBe(base + 1);
-		expect(await measure(1000, newDeliveryId())).toBe(base + 1);
+		expect(await measure(500, newDeliveryId())).toBe(base + 1);
+		// Past one chunk each further 500 rows is one more insert statement, and nothing else.
+		expect(await measure(2500, newDeliveryId())).toBe(base + 1 + 4);
 	});
 
 	test("no statement inside the transaction goes through getDb(): only the transaction opener asks for it", async () => {
@@ -576,34 +654,131 @@ describe("replay header: late fan-out and the concurrency cap", () => {
 		expect(embedded).toEqual([2]);
 	});
 
-	test(`the ${MAX_CONCURRENT_REPLAYS + 1}th concurrent replay request gets 503 busy with Retry-After; live reports are never refused`, async () => {
-		const sup = await registerSupervisor();
-		const sessionId = await ownedSession(sup);
-		const held = Array.from({ length: MAX_CONCURRENT_REPLAYS }, () => tryAcquireReplay());
-		expect(held.every((release) => release !== null)).toBe(true);
-		expect(tryAcquireReplay(), "positive control: the cap is really full").toBeNull();
-
-		const refused = await postEvents(sup, sessionId, [note()], { replay: true });
-		expect(refused.status).toBe(503);
-		expect(refused.headers.get("Retry-After")).toBe("2");
-		expect(await refused.json()).toEqual({ error: "busy" });
-		expect(await storedRows(sessionId)).toHaveLength(0);
-
-		const state = await app.request(`/api/v1/supervisors/${sup.id}/managed-session-state`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: `Bearer ${sup.credential}`,
-				[REPLAY_HEADER]: "1",
-			},
-			body: JSON.stringify({ sessionId }),
+	/** Holds every delivery from the named supervisors inside the service until `open()`. */
+	function gateDeliveries(heldSupervisorIds: string[]) {
+		let open!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			open = resolve;
 		});
-		expect(state.status).toBe(503);
+		let entered = 0;
+		const original = managedState.appendManagedSessionDelivery;
+		const spy = spyOn(managedState, "appendManagedSessionDelivery").mockImplementation(
+			async (...args: Parameters<typeof original>) => {
+				if (heldSupervisorIds.includes(args[0])) {
+					entered++;
+					await gate;
+				}
+				return original(...args);
+			},
+		);
+		return { open, entered: () => entered, restore: () => spy.mockRestore() };
+	}
 
-		expect((await postEvents(sup, sessionId, [note()])).status, "live is not capped").toBe(200);
+	async function until(check: () => boolean) {
+		const end = Date.now() + 5_000;
+		while (!check()) {
+			if (Date.now() > end) throw new Error("until: not met in time");
+			await new Promise((r) => setTimeout(r, 5));
+		}
+	}
 
-		held[0]?.();
-		expect((await postEvents(sup, sessionId, [note()], { replay: true })).status).toBe(200);
+	const replayPost = async (sup: Supervisor, sessionId: string) =>
+		postEvents(sup, sessionId, [note()], { replay: true, deliveryId: newDeliveryId() });
+
+	test(`${MAX_CONCURRENT_REPLAYS} replay requests really in flight fill the cap: the next gets 503 busy with Retry-After, live reports still pass, and releasing the gate lets all ${MAX_CONCURRENT_REPLAYS} finish`, async () => {
+		const [a, b, c] = [
+			await registerSupervisor(),
+			await registerSupervisor(),
+			await registerSupervisor(),
+		];
+		const sessions = [
+			await ownedSession(a),
+			await ownedSession(a),
+			await ownedSession(b),
+			await ownedSession(b),
+		];
+		const sessionC = await ownedSession(c);
+		const gated = gateDeliveries([a.id, b.id]);
+		try {
+			const owners = [a, a, b, b];
+			const inFlight = sessions.map((sessionId, i) =>
+				replayPost(owners[i] as Supervisor, sessionId),
+			);
+			await until(() => gated.entered() === MAX_CONCURRENT_REPLAYS);
+			expect(replaysInFlight()).toBe(MAX_CONCURRENT_REPLAYS);
+
+			const refused = await replayPost(c, sessionC);
+			expect(refused.status).toBe(503);
+			expect(refused.headers.get("Retry-After")).toBe("2");
+			expect(await refused.json()).toEqual({ error: "busy" });
+			expect(await storedRows(sessionC)).toHaveLength(0);
+
+			const state = await app.request(`/api/v1/supervisors/${c.id}/managed-session-state`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${c.credential}`,
+					[REPLAY_HEADER]: "1",
+				},
+				body: JSON.stringify({ sessionId: sessionC }),
+			});
+			expect(state.status).toBe(503);
+
+			expect((await postEvents(c, sessionC, [note()])).status, "live is not capped").toBe(200);
+
+			gated.open();
+			const results = await Promise.all(inFlight);
+			expect(results.map((r) => r.status)).toEqual([200, 200, 200, 200]);
+			expect(replaysInFlight()).toBe(0);
+			expect((await replayPost(c, sessionC)).status, "a slot is free again").toBe(200);
+		} finally {
+			gated.open();
+			gated.restore();
+		}
+	});
+
+	test("one supervisor holds at most 2 replay slots: its 3rd is refused while another supervisor still gets in", async () => {
+		const a = await registerSupervisor();
+		const b = await registerSupervisor();
+		const [a1, a2, a3] = [await ownedSession(a), await ownedSession(a), await ownedSession(a)];
+		const sessionB = await ownedSession(b);
+		const gated = gateDeliveries([a.id]);
+		try {
+			const held = [replayPost(a, a1), replayPost(a, a2)];
+			await until(() => gated.entered() === 2);
+			expect(replaysInFlight()).toBe(2);
+
+			const third = await replayPost(a, a3);
+			expect(third.status).toBe(503);
+			expect(third.headers.get("Retry-After")).toBe("2");
+			expect(await storedRows(a3)).toHaveLength(0);
+
+			expect((await replayPost(b, sessionB)).status, "another supervisor is unaffected").toBe(200);
+
+			gated.open();
+			expect((await Promise.all(held)).map((r) => r.status)).toEqual([200, 200]);
+			expect((await replayPost(a, a3)).status, "its slots came back").toBe(200);
+		} finally {
+			gated.open();
+			gated.restore();
+		}
+	});
+
+	test("the slot is taken after the body is read: a malformed replay never holds or needs one", async () => {
+		const a = await registerSupervisor();
+		const sessionId = await ownedSession(a);
+		const gated = gateDeliveries([a.id]);
+		try {
+			const held = [replayPost(a, await ownedSession(a)), replayPost(a, await ownedSession(a))];
+			await until(() => gated.entered() === 2);
+			const malformed = await postEvents(a, sessionId, [], { replay: true, rawBody: "{bad" });
+			expect(malformed.status, "a 400 for the body, not a 503 for the cap").toBe(400);
+			gated.open();
+			await Promise.all(held);
+		} finally {
+			gated.open();
+			gated.restore();
+		}
 	});
 
 	test("the slot is released after success, an error status, and a thrown error", async () => {

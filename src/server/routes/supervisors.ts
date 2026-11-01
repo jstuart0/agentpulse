@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { Context, MiddlewareHandler } from "hono";
+import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { DELIVERY_ID_HEADER, REPLAY_HEADER } from "../../shared/hook-headers.js";
 import { privilegeCliArgs } from "../../shared/launch-privileges.js";
@@ -395,23 +395,48 @@ const managedReportBodyLimit = bodyLimit({
 
 /**
  * A report sent late, from a supervisor's offline queue, carries the replay header. At most
- * MAX_CONCURRENT_REPLAYS are worked on at once per process; the rest are told to come back, which a
- * supervisor treats as a server hiccup and retries. Live reports are never refused here. Runs after
- * the credential check, so an unauthenticated caller can't hold a slot.
+ * MAX_CONCURRENT_REPLAYS are worked on at once per process and MAX_REPLAYS_PER_SUPERVISOR from one
+ * supervisor; the rest are told to come back, which a supervisor treats as back-pressure and
+ * retries. A live report is never refused. The slot is taken by the handler after the credential
+ * check and after the body has been read and validated, so neither an unauthenticated caller nor a
+ * slow or malformed upload can hold one. Returns the release, or null when refused.
  */
-const replayCap: MiddlewareHandler = async (c, next) => {
-	if (c.req.header(REPLAY_HEADER) !== "1") return next();
-	const release = tryAcquireReplay();
-	if (!release) {
-		c.header("Retry-After", String(REPLAY_RETRY_AFTER_SECONDS));
-		return c.json({ error: "busy" }, 503);
+function admitReplay(late: boolean, supervisorId: string): (() => void) | null {
+	return late ? tryAcquireReplay(supervisorId) : () => undefined;
+}
+
+function replayBusy(c: Context) {
+	c.header("Retry-After", String(REPLAY_RETRY_AFTER_SECONDS));
+	return c.json({ error: "busy" }, 503);
+}
+
+const MAX_EVENT_TYPE_CHARS = 256;
+const MAX_EVENT_CONTENT_CHARS = 1_000_000;
+const MAX_EVENT_SHORT_FIELD_CHARS = 256;
+const MAX_SESSION_ID_CHARS = 1024;
+
+const isPlainObject = (v: unknown) =>
+	typeof v === "object" &&
+	v !== null &&
+	!Array.isArray(v) &&
+	Object.getPrototypeOf(v) === Object.prototype;
+const isBoundedString = (v: unknown, max: number) => typeof v === "string" && v.length <= max;
+
+/** True when one event of a managed batch has a field of the wrong type or size. */
+function isMalformedManagedEvent(e: unknown): boolean {
+	if (!isPlainObject(e)) return true;
+	const event = e as Record<string, unknown>;
+	if (!isBoundedString(event.eventType, MAX_EVENT_TYPE_CHARS) || event.eventType === "")
+		return true;
+	if (event.content != null && !isBoundedString(event.content, MAX_EVENT_CONTENT_CHARS))
+		return true;
+	for (const field of ["category", "toolName"] as const) {
+		if (event[field] != null && !isBoundedString(event[field], MAX_EVENT_SHORT_FIELD_CHARS)) {
+			return true;
+		}
 	}
-	try {
-		await next();
-	} finally {
-		release();
-	}
-};
+	return event.rawPayload != null && !isPlainObject(event.rawPayload);
+}
 
 /** The parsed JSON object, or null when the text isn't a JSON object. */
 function parseJsonObject(text: string): Record<string, unknown> | null {
@@ -428,14 +453,18 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-session-state",
 	requireSupervisorAuth(),
-	replayCap,
 	managedReportBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
 		const late = c.req.header(REPLAY_HEADER) === "1";
 		const body = parseJsonObject(await c.req.text()) as ManagedSessionStateInput | null;
 		if (!body) return c.json({ error: "invalid_body" }, 400);
+		if (body.sessionId !== undefined && !isBoundedString(body.sessionId, MAX_SESSION_ID_CHARS)) {
+			return c.json({ error: "invalid_body" }, 400);
+		}
 		if (!body.sessionId) return c.json({ error: "sessionId is required" }, 400);
+		const release = admitReplay(late, supervisorId);
+		if (!release) return replayBusy(c);
 		try {
 			const result = await upsertManagedSessionState(supervisorId, body);
 			await associateObservedSession({ sessionId: body.sessionId, supervisorId });
@@ -457,6 +486,8 @@ supervisorsAgentRouter.post(
 				return c.json({ error: "session_not_owned" }, 403);
 			}
 			throw err;
+		} finally {
+			release();
 		}
 	},
 );
@@ -464,7 +495,6 @@ supervisorsAgentRouter.post(
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-sessions/:sessionId/events",
 	requireSupervisorAuth(),
-	replayCap,
 	managedReportBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
@@ -473,13 +503,11 @@ supervisorsAgentRouter.post(
 		const text = await c.req.text();
 		const body = parseJsonObject(text) as { events?: unknown } | null;
 		const batch = body?.events ?? [];
-		if (
-			!body ||
-			!Array.isArray(batch) ||
-			batch.some((e) => typeof e !== "object" || e === null || Array.isArray(e))
-		) {
+		if (!body || !Array.isArray(batch) || batch.some(isMalformedManagedEvent)) {
 			return c.json({ error: "invalid_body" }, 400);
 		}
+		const release = admitReplay(late, supervisorId);
+		if (!release) return replayBusy(c);
 		const incoming = batch as ManagedSessionEventInput[];
 		// A well-formed delivery id makes the batch idempotent (a receipt is written with
 		// the rows); without one, or with a malformed one, the batch is handled as it
@@ -517,6 +545,8 @@ supervisorsAgentRouter.post(
 				return c.json({ error: "session_not_owned" }, 403);
 			}
 			throw err;
+		} finally {
+			release();
 		}
 	},
 );
