@@ -4,7 +4,7 @@
  * saved state, the interactive bridge's directories and (later) the offline outbox. Imports nothing
  * from the gate, the outbox or the providers.
  */
-import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
+import { constants, closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import type { Stats } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -82,6 +82,21 @@ function isMissing(error: unknown): boolean {
 	return code === "ENOENT" || code === "ENOTDIR";
 }
 
+/**
+ * Reads an open file as text, at most `maxBytes`: it asks for one byte more and answers null if that
+ * byte arrives, so a file that grew after its size was checked is rejected rather than read whole.
+ */
+export function readBoundedText(fd: number, maxBytes: number): string | null {
+	const buffer = Buffer.alloc(maxBytes + 1);
+	let length = 0;
+	while (length < buffer.length) {
+		const got = readSync(fd, buffer, length, buffer.length - length, null);
+		if (got === 0) break;
+		length += got;
+	}
+	return length > maxBytes ? null : buffer.toString("utf-8", 0, length);
+}
+
 export type PrivateFileRead =
 	| { kind: "absent" }
 	| { kind: "untrusted"; why: string }
@@ -128,7 +143,10 @@ export function readPrivateFileNoFollow(path: string, maxBytes: number): Private
 				: isTrustedStateFileStat(st, process.getuid?.(), maxBytes);
 		if (!trusted)
 			return { kind: "untrusted", why: "it is not a private plain file of this account" };
-		return { kind: "ok", text: readFileSync(fd, "utf-8") };
+		const text = readBoundedText(fd, maxBytes);
+		return text === null
+			? { kind: "untrusted", why: "it is larger than allowed" }
+			: { kind: "ok", text };
 	} catch {
 		return { kind: "untrusted", why: "it could not be read" };
 	} finally {

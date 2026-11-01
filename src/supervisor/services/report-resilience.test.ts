@@ -6,6 +6,7 @@
  */
 import { describe, expect, spyOn, test } from "bun:test";
 import {
+	MIN_RETRY_AFTER_MS,
 	type ReportFailureClass,
 	SupervisorNetworkError,
 	SupervisorRequestError,
@@ -185,6 +186,8 @@ describe("classifyReportFailure (AGEN-83 D8)", () => {
 		["500", http(500), "server"],
 		["502", http(502), "server"],
 		["503 without Retry-After", http(503, "busy"), "server"],
+		["503 with Retry-After but another body", http(503, "overloaded", 2_000), "server"],
+		["503 with Retry-After and no body error", http(503, undefined, 2_000), "server"],
 		["599", http(599), "server"],
 		["404", http(404, "Launch request not found"), "stop"],
 		["413 payload_too_large", http(413, "payload_too_large"), "stop"],
@@ -209,7 +212,6 @@ describe("classifyReportFailure (AGEN-83 D8)", () => {
 
 	test("a 503 carrying Retry-After (the replay cap's busy) is back-pressure, a class of its own that is not `server`", () => {
 		expect(classifyReportFailure(http(503, "busy", 2_000))).toBe("backoff");
-		expect(classifyReportFailure(http(503, undefined, 2_000))).toBe("backoff");
 		// the same status without the header is an ordinary server failure that counts
 		expect(classifyReportFailure(http(503, "busy"))).toBe("server");
 		// Retry-After on a 5xx other than 503, or on a 429, doesn't make it back-pressure
@@ -245,7 +247,15 @@ describe("parseRetryAfterMs", () => {
 
 	test("delta-seconds", () => {
 		expect(parseRetryAfterMs("2", NOW)).toBe(2_000);
-		expect(parseRetryAfterMs(" 0 ", NOW)).toBe(0);
+	});
+
+	test("never less than a second: Retry-After 0, or a date that is a moment away, still pauses", () => {
+		expect(MIN_RETRY_AFTER_MS).toBe(1_000);
+		expect(parseRetryAfterMs(" 0 ", NOW)).toBe(1_000);
+		expect(parseRetryAfterMs("1", NOW)).toBe(1_000);
+		expect(parseRetryAfterMs("Sun, 01 Nov 2026 12:00:00 GMT", NOW)).toBe(1_000);
+		expect(parseRetryAfterMs("Sun, 01 Nov 2026 12:00:01 GMT", NOW)).toBe(1_000);
+		expect(parseRetryAfterMs("Sun, 01 Nov 2026 12:00:02 GMT", NOW)).toBe(2_000);
 	});
 
 	test("an HTTP date is read relative to now", () => {

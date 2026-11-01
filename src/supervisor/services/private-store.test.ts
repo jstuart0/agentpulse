@@ -1,9 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
+	closeSync,
 	linkSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -16,6 +18,7 @@ import {
 	isPrivateOwnStat,
 	isTrustedDirectoryStat,
 	isTrustedStateFileStat,
+	readBoundedText,
 	readPrivateFileNoFollow,
 	trustedDirectory,
 } from "./private-store.js";
@@ -128,6 +131,42 @@ describe("on disk", () => {
 		const twin = join(dir, "twin.json");
 		linkSync(file, twin);
 		expect(readPrivateFileNoFollow(file, 1024).kind, "a second hard link").toBe("untrusted");
+	});
+
+	test("a file larger than allowed is rejected by its size", () => {
+		const dir = privateDir("grow");
+		const exactly = privateFile(dir, "exactly.json", "x".repeat(100));
+		expect(readPrivateFileNoFollow(exactly, 100)).toMatchObject({ kind: "ok" });
+		const over = privateFile(dir, "over.json", "x".repeat(101));
+		expect(readPrivateFileNoFollow(over, 100)).toMatchObject({ kind: "untrusted" });
+	});
+
+	test("readBoundedText reads at most maxBytes + 1: a file bigger than the bound is refused however the size check went", () => {
+		const dir = privateDir("bounded");
+		const file = privateFile(dir, "big.txt", "z".repeat(5_000));
+		const readWith = (max: number) => {
+			const fd = openSync(file, "r");
+			try {
+				return readBoundedText(fd, max);
+			} finally {
+				closeSync(fd);
+			}
+		};
+		expect(readWith(100), "5,000 bytes, bound 100").toBeNull();
+		expect(readWith(4_999)).toBeNull();
+		const exact = openSync(file, "r");
+		try {
+			expect(readBoundedText(exact, 5_000)?.length, "exactly the bound is fine").toBe(5_000);
+		} finally {
+			closeSync(exact);
+		}
+		const empty = privateFile(dir, "empty.txt", "");
+		const emptyFd = openSync(empty, "r");
+		try {
+			expect(readBoundedText(emptyFd, 10)).toBe("");
+		} finally {
+			closeSync(emptyFd);
+		}
 	});
 
 	test("a file in a directory others can write into is untrusted, and no file there is absent", () => {

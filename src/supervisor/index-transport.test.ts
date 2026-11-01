@@ -71,3 +71,27 @@ describe("request(): failures", () => {
 		expect(new SupervisorNetworkError()).not.toBeInstanceOf(SupervisorRequestError);
 	});
 });
+
+describe("registration at start", () => {
+	const registration = SOURCE.slice(
+		SOURCE.indexOf("const registration = (await retryWithBackoff("),
+		SOURCE.indexOf("const registration = (await retryWithBackoff(") + 1_800,
+	);
+
+	test("its failure log names a status only for an HTTP answer, never 'status=undefined' for no answer", () => {
+		expect(registration).toContain("error instanceof SupervisorRequestError");
+		expect(registration).toContain("no response from the server");
+		// the status is printed only inside the HTTP branch
+		const statusAt = registration.indexOf("status=${error.status}");
+		const branchAt = registration.indexOf("error instanceof SupervisorRequestError");
+		expect(statusAt).toBeGreaterThan(branchAt);
+	});
+
+	test("the comment above it says it retries on no answer too", () => {
+		const before = SOURCE.slice(
+			SOURCE.indexOf("// F43/D10: registration retries"),
+			SOURCE.indexOf("const registration = (await retryWithBackoff("),
+		);
+		expect(before).toContain("no answer at all");
+	});
+});

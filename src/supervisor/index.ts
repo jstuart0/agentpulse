@@ -96,8 +96,10 @@ async function main() {
 	await assertTrustedRootsExcludeAgentpulseDir(config.trustedRoots);
 	// F43/D10: registration retries forever on any HTTP failure (including
 	// an old-shadow 401/403 from a not-yet-upgraded server during a
-	// mixed-version rollout) instead of exiting and crash-looping. Only a
-	// config load failure or a malformed success body is fatal here.
+	// mixed-version rollout) and on no answer at all (the server is down or
+	// unreachable, as it is when the supervisor restarts mid-outage) instead
+	// of exiting and crash-looping. Only a config load failure or a
+	// malformed success body is fatal here.
 	const registration = (await retryWithBackoff(
 		() =>
 			request("/supervisors/register", {
@@ -117,8 +119,10 @@ async function main() {
 			}),
 		(error, attempt, delayMs) => {
 			console.error(
-				`[supervisor] registration failed (attempt ${attempt + 1}): status=${error.status} statusText=${error.statusText}${
-					error.error ? ` body.error=${error.error}` : ""
+				`[supervisor] registration failed (attempt ${attempt + 1}): ${
+					error instanceof SupervisorRequestError
+						? `status=${error.status} statusText=${error.statusText}${error.error ? ` body.error=${error.error}` : ""}`
+						: "no response from the server (unreachable or timed out)"
 				}; retrying in ${delayMs}ms`,
 			);
 		},

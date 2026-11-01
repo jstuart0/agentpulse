@@ -54,11 +54,14 @@ export class SupervisorNetworkError extends Error {
 }
 
 const MAX_RETRY_AFTER_MS = 60 * 60 * 1000;
+/** The shortest wait a Retry-After produces: `Retry-After: 0` must not become a loop with no pause. */
+export const MIN_RETRY_AFTER_MS = 1_000;
 
 /**
  * A `Retry-After` header value (delta-seconds or an HTTP date) as milliseconds from `nowMs`, or
- * undefined when it is missing, unusable or negative. Capped at an hour so a hostile or broken server
- * can't park a session's queue for longer.
+ * undefined when it is missing, unusable or negative. At least a second (a server saying "0" still
+ * gets a pause) and capped at an hour, so a hostile or broken server can neither make the supervisor
+ * spin nor park a session's queue for longer.
  */
 export function parseRetryAfterMs(
 	value: string | null | undefined,
@@ -74,15 +77,16 @@ export function parseRetryAfterMs(
 		ms = date - nowMs;
 	}
 	if (!Number.isFinite(ms) || ms < 0) return undefined;
-	return Math.min(ms, MAX_RETRY_AFTER_MS);
+	return Math.min(Math.max(ms, MIN_RETRY_AFTER_MS), MAX_RETRY_AFTER_MS);
 }
 
 /**
  * How a failed report should be treated (plan D8):
  *  - `network`: the server is unreachable. Global: stop sending, keep what is queued.
  *  - `server`: a transient server answer (408, 425, 429, 5xx). This session backs off and the failure counts.
- *  - `backoff`: the server's own back-pressure (a 503 carrying Retry-After, as the replay cap sends). This
- *    session waits as told; it is not a failure and must never count toward the poison rule.
+ *  - `backoff`: the server's own back-pressure: a 503 whose body error is `busy` and that carries
+ *    Retry-After, exactly what the replay cap sends. This session waits as told; it is not a failure and
+ *    must never count toward the poison rule. Any other 503 is `server`.
  *  - `credential`: the supervisor's credential was rejected, in exactly the server's three wordings.
  *  - `session`: the session is not this supervisor's (403 session_not_owned). Drop its queue.
  *  - `entry`: this one report is malformed or forbidden (400 with a known code). Drop it.
@@ -119,7 +123,8 @@ export function classifyReportFailure(error: unknown): ReportFailureClass {
 	if (status === 400 && error.error !== undefined && ENTRY_400_ERRORS.has(error.error)) {
 		return "entry";
 	}
-	if (status === 503 && error.retryAfterMs !== undefined) return "backoff";
+	if (status === 503 && error.error === "busy" && error.retryAfterMs !== undefined)
+		return "backoff";
 	if (status === 408 || status === 425 || status === 429 || status >= 500) return "server";
 	return "stop";
 }
