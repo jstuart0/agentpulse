@@ -33,6 +33,7 @@ import {
 	EXCLUDE_CHECK_HINT,
 } from "../src/shared/hook-headers.js";
 import { expectClaudeHooksCarrySkip } from "./claude-hook-assertions.js";
+import { fakeBun, stubDir as makeStubDir, pathWithout } from "./lib/installer-test-utils.ts";
 
 const { config } = await import("../src/server/config.js");
 const { setup } = await import("../src/server/routes/setup.js");
@@ -176,8 +177,6 @@ async function modeOf(path: string) {
 
 beforeAll(async () => {
 	root = await mkdtemp(join(tmpdir(), "ap-installers-run-"));
-	stubDir = join(root, "stubs");
-	await mkdir(stubDir);
 	const realCurl = Bun.which("curl");
 	if (!realCurl) throw new Error("curl isn't on PATH");
 	const stubs: Record<string, string> = {
@@ -198,11 +197,7 @@ beforeAll(async () => {
 		uname:
 			'if [ $# -eq 0 ] || [ "$1" = "-s" ]; then echo "$AP_TEST_UNAME"; else exec /usr/bin/env -i PATH=/usr/bin:/bin uname "$@"; fi',
 	};
-	for (const [name, body] of Object.entries(stubs)) {
-		const file = join(stubDir, name);
-		await writeFile(file, `#!/bin/sh\n${body}\n`);
-		await chmod(file, 0o755);
-	}
+	stubDir = makeStubDir([], stubs, root);
 	authServer = Bun.serve({
 		port: 0,
 		fetch(req) {
@@ -226,37 +221,10 @@ beforeAll(async () => {
 	openUrl = `http://127.0.0.1:${openServer.port}`;
 
 	// D8: the Copilot detection-gated tests need "copilot not on PATH" to be
-	// deterministic regardless of what's actually installed on the machine
-	// running this suite (this repo's own Phase 0 spike installed a real
-	// `copilot` CLI via Homebrew on at least one dev machine, in the same
-	// directory as that machine's own python3/curl/etc — dropping the whole
-	// directory broke unrelated tests that need those). Mirror each PATH
-	// directory that contains a `copilot` binary into a symlink-only copy
-	// with just that one entry omitted, so every other binary in it still
-	// resolves from its original real path/behavior.
-	const inherited = (process.env.PATH ?? "/usr/bin:/bin").split(":").filter(Boolean);
-	const mirrorRoot = await mkdtemp(join(tmpdir(), "ap-installers-path-mirror-"));
-	const sanitizedDirs: string[] = [];
-	for (const [i, dir] of inherited.entries()) {
-		const hasCopilot = await Bun.file(join(dir, "copilot")).exists();
-		if (!hasCopilot) {
-			sanitizedDirs.push(dir);
-			continue;
-		}
-		const mirror = join(mirrorRoot, String(i));
-		await mkdir(mirror, { recursive: true });
-		for (const entry of await readdir(dir)) {
-			if (entry === "copilot") continue;
-			try {
-				await symlink(join(dir, entry), join(mirror, entry));
-			} catch {
-				// A dangling/unreadable entry (permissions, a broken symlink in
-				// the source dir) — skip it rather than fail the whole mirror.
-			}
-		}
-		sanitizedDirs.push(mirror);
-	}
-	sanitizedPath = sanitizedDirs.join(":");
+	// deterministic regardless of what's installed on the machine running this
+	// suite; pathWithout mirrors each PATH directory holding a `copilot` so the
+	// other binaries in it (python3, curl…) still resolve.
+	sanitizedPath = pathWithout(["copilot"], undefined, root);
 });
 
 /**
@@ -743,15 +711,6 @@ describe("F184: curl | bash", () => {
 		RUN_TIMEOUT,
 	);
 });
-
-/** A `bun` that only answers --version; the service is stubbed, so it never runs. */
-async function fakeBun(dir: string, version: string) {
-	await mkdir(dir, { recursive: true });
-	const file = join(dir, "bun");
-	await writeFile(file, `#!/bin/sh\n[ "$1" = "--version" ] && echo "${version}"\nexit 0\n`);
-	await chmod(file, 0o755);
-	return file;
-}
 
 describe("F190: the relay service runs on a Bun that keeps its files private", () => {
 	test(

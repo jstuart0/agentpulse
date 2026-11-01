@@ -36,19 +36,9 @@ import { join } from "node:path";
 // dynamically imports src/server/routes/setup.ts (which statically imports
 // config.js) via renderedSetupSh() below, so keep it self-sufficient too.
 import "../src/server/db/__test_db.js";
+import { extractMarkerBlock, renderedSetupSh } from "./lib/installer-test-utils.ts";
 
 const ROOT = join(import.meta.dir, "..");
-
-function extractMarkerBlock(source: string): string {
-	const startMarker = "# >>> agentpulse-hook-cmd";
-	const endMarker = "# <<< agentpulse-hook-cmd";
-	const start = source.indexOf(startMarker);
-	const end = source.indexOf(endMarker);
-	if (start === -1 || end === -1) {
-		throw new Error("agentpulse-hook-cmd markers not found");
-	}
-	return source.slice(start, end + endMarker.length);
-}
 
 /**
  * Slices out just `fnName`'s own body (from its `fnName() {` line through
@@ -66,34 +56,18 @@ function extractFunctionBody(block: string, fnName: string): string {
 	return block.slice(start, closeIdx + 2);
 }
 
-async function renderedSetupSh(): Promise<string> {
-	const { Hono } = await import("hono");
-	const { setup } = await import("../src/server/routes/setup.ts");
-	const app = new Hono().route("/", setup);
-	const res = await app.request("http://localhost/setup.sh", {
-		headers: { Host: "localhost:3000" },
-	});
-	return res.text();
-}
+type Site = { name: string; marker: string; source: () => Promise<string> };
 
-type Site = { name: string; block: () => Promise<string> };
+const HOOK_CMD = "agentpulse-hook-cmd";
+const fromFile = (path: string) => async () => readFileSync(join(ROOT, path), "utf-8");
 
 const SITES: Site[] = [
-	{
-		name: "scripts/setup-hooks.sh",
-		block: async () =>
-			extractMarkerBlock(readFileSync(join(ROOT, "scripts/setup-hooks.sh"), "utf-8")),
-	},
-	{
-		name: "scripts/setup-relay.sh",
-		block: async () =>
-			extractMarkerBlock(readFileSync(join(ROOT, "scripts/setup-relay.sh"), "utf-8")),
-	},
-	{
-		name: "rendered GET /setup.sh",
-		block: async () => extractMarkerBlock(await renderedSetupSh()),
-	},
+	{ name: "scripts/setup-hooks.sh", marker: HOOK_CMD, source: fromFile("scripts/setup-hooks.sh") },
+	{ name: "scripts/setup-relay.sh", marker: HOOK_CMD, source: fromFile("scripts/setup-relay.sh") },
+	{ name: "rendered GET /setup.sh", marker: HOOK_CMD, source: renderedSetupSh },
 ];
+
+const blockOf = async (site: Site) => extractMarkerBlock(await site.source(), site.marker);
 
 async function runWritePrivateNoFollow(
 	block: string,
@@ -185,7 +159,7 @@ for (const site of SITES) {
 				symlinkSync(realDir, fakeAgentpulseDir);
 				const target = join(fakeAgentpulseDir, "hook-auth-header");
 
-				const block = await site.block();
+				const block = await blockOf(site);
 				const result = await runWritePrivateNoFollow(
 					block,
 					target,
@@ -207,7 +181,7 @@ for (const site of SITES) {
 				const target = join(dir, "hook-auth-header");
 				symlinkSync(real, target);
 
-				const block = await site.block();
+				const block = await blockOf(site);
 				const result = await runWritePrivateNoFollow(
 					block,
 					target,
@@ -226,7 +200,7 @@ for (const site of SITES) {
 			try {
 				const target = join(dir, "agentpulse", "hook-auth-header");
 
-				const block = await site.block();
+				const block = await blockOf(site);
 				const result = await runWritePrivateNoFollow(
 					block,
 					target,
@@ -241,7 +215,7 @@ for (const site of SITES) {
 		});
 
 		test("the function body no longer uses the predictable ${path}.$$.tmp temp name", async () => {
-			const block = await site.block();
+			const block = await blockOf(site);
 			const fnBody = extractFunctionBody(block, "ap_write_private_no_follow");
 			expect(fnBody).not.toMatch(/\$\{?path\}?\.\$\$\.tmp/);
 			expect(fnBody).toContain("mktemp");
@@ -252,7 +226,7 @@ for (const site of SITES) {
 			try {
 				const target = join(dir, "hook-auth-header");
 
-				const block = await site.block();
+				const block = await blockOf(site);
 				const result = await runWritePrivateNoFollowWithPredictableNameDecoy(
 					block,
 					target,
@@ -283,7 +257,7 @@ for (const site of SITES) {
 			try {
 				const target = join(dir, "hook-auth-header");
 
-				const block = await site.block();
+				const block = await blockOf(site);
 				await runWritePrivateNoFollow(block, target, "Authorization: Bearer ap_real_key\n");
 
 				const { readdirSync } = await import("node:fs");
