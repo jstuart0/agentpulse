@@ -1201,7 +1201,9 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 // via the cascade FK. The explicit `events` delete is belt-and-braces for
 // older SQLite installs that haven't yet rebuilt FKs. ai_session_summaries
 // is an eighth child with the same cascade (born with its FK on both dialects,
-// not in the rebuild list), so a session's summary goes with it.
+// not in the rebuild list), so a session's summary goes with it. So is
+// managed_delivery_receipts (AGEN-83), the ninth: a deleted session's delivery
+// receipts go with it.
 //
 // We wrap the deletes in withTransaction() so any failure leaves the row
 // in place rather than partially deleted.

@@ -39,6 +39,8 @@ describeSqliteOnly("initializeDatabase", () => {
 				// Born with its cascade FK on both dialects; deliberately not in
 				// rebuildSessionChildFks (TC-1.15).
 				"ai_session_summaries",
+				// Same: born with its FK (AGEN-83).
+				"managed_delivery_receipts",
 			];
 			for (const table of childTables) {
 				const fkRows = raw.prepare(`PRAGMA foreign_key_list('${table}')`).all() as Array<{

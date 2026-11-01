@@ -916,6 +916,8 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		// already declares it; this ALTER is the idempotent upgrade path for
 		// pre-existing installs).
 		"ALTER TABLE events ADD COLUMN dedup_key TEXT",
+		// Migration 0018: when a managed event happened (display only), nullable.
+		"ALTER TABLE events ADD COLUMN occurred_at TEXT",
 		"CREATE INDEX IF NOT EXISTS idx_events_session_id_id ON events(session_id, id)",
 		"CREATE UNIQUE INDEX IF NOT EXISTS uq_events_session_dedup_key ON events(session_id, dedup_key)",
 		"ALTER TABLE session_templates ADD COLUMN description TEXT",
@@ -1088,6 +1090,18 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 			summary TEXT,
 			provenance TEXT
 		)`,
+		// Migration 0018: one row per accepted managed-events delivery that carried
+		// a delivery id. Born with its cascade FK (like ai_session_summaries), so it
+		// is deliberately not in rebuildSessionChildFks. Same columns, index names
+		// and column order as the Drizzle schema and the migration.
+		`CREATE TABLE IF NOT EXISTS managed_delivery_receipts (
+			id INTEGER PRIMARY KEY NOT NULL,
+			session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+			receipt_key TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_managed_delivery_receipts_session_key ON managed_delivery_receipts(session_id, receipt_key)",
+		"CREATE INDEX IF NOT EXISTS idx_managed_delivery_receipts_created_at ON managed_delivery_receipts(created_at)",
 		// Mobile pairing: single-use codes (only the hash is stored). Same columns
 		// as the Drizzle schema and migration 0013.
 		`CREATE TABLE IF NOT EXISTS pairing_codes (

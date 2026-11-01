@@ -212,6 +212,7 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 				"ai_pending_project_drafts",
 				"ai_qa_cache",
 				"ai_session_summaries",
+				"managed_delivery_receipts",
 				"pairing_codes",
 				"mobile_devices",
 				"mobile_device_activities",
@@ -772,7 +773,7 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 import { describePostgresOnly } from "../test-utils/backend.js";
 
 describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
-	test("TC-1.3 fresh Postgres install creates every table (pairing_codes, ai_session_summaries and ai_watcher_reports among them) + 11 cascade FKs", async () => {
+	test("TC-1.3 fresh Postgres install creates every table (pairing_codes, ai_session_summaries and ai_watcher_reports among them) + 12 cascade FKs", async () => {
 		// Requires DATABASE_URL to point at an empty test database.
 		// Run with: AGENTPULSE_TEST_BACKEND=postgres DATABASE_URL=postgres://... bun test
 		const { default: postgres } = await import("postgres");
@@ -813,6 +814,7 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				"ai_pending_project_drafts",
 				"ai_qa_cache",
 				"ai_session_summaries",
+				"managed_delivery_receipts",
 				"pairing_codes",
 				"mobile_devices",
 				"mobile_device_activities",
@@ -865,7 +867,7 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				  AND rc.delete_rule = 'CASCADE'
 			`) as Array<{ table_name: string; delete_rule: string }>;
 
-			expect(cascadeFks.length, "expected 11 cascade FKs on sessions(session_id)").toBe(11);
+			expect(cascadeFks.length, "expected 12 cascade FKs on sessions(session_id)").toBe(12);
 			expect(
 				cascadeFks.map((r) => r.table_name),
 				"the summaries table is one of the cascade children",
@@ -878,6 +880,10 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				cascadeFks.map((r) => r.table_name),
 				"and so is a decided proposal's delivery",
 			).toContain("ai_hitl_deliveries");
+			expect(
+				cascadeFks.map((r) => r.table_name),
+				"and a managed events delivery's receipts",
+			).toContain("managed_delivery_receipts");
 			expect(
 				cascadeFks.map((r) => r.table_name),
 				"the reports table is one of the cascade children",

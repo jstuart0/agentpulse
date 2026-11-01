@@ -21,6 +21,7 @@ export type {
 // ── core/ ─────────────────────────────────────────────────────────────────────
 export { sessionsSqlite as sessions } from "./core/sessions.js";
 export { eventsSqlite as events } from "./core/events.js";
+export { managedDeliveryReceiptsSqlite as managedDeliveryReceipts } from "./core/managed-delivery-receipts.js";
 export { usersSqlite as users } from "./core/users.js";
 export { authSessionsSqlite as authSessions } from "./core/auth-sessions.js";
 export { apiKeysSqlite as apiKeys } from "./core/api-keys.js";

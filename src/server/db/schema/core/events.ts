@@ -49,6 +49,10 @@ export const eventsSqlite = sqliteTable(
 		toolResponse: text("tool_response"),
 		rawPayload: jsonColumn<Record<string, unknown>>("sqlite", "raw_payload").notNull(),
 		dedupKey: text("dedup_key"),
+		// Display only: when the sender says the event happened, set only for a
+		// managed event whose time was inside the accepted window. Never read
+		// for ordering, retention, liveness, ownership or auth.
+		occurredAt: text("occurred_at"),
 		createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	},
 	(t) => ({
@@ -83,6 +87,7 @@ export const eventsPg = pgTable(
 		toolResponse: pgText("tool_response"),
 		rawPayload: jsonColumn<Record<string, unknown>>("postgres", "raw_payload").notNull(),
 		dedupKey: pgText("dedup_key"),
+		occurredAt: pgText("occurred_at"),
 		createdAt: tsColumn("postgres", "created_at"),
 	},
 	(t) => ({

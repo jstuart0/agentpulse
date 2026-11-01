@@ -103,6 +103,12 @@ const MOBILE_COMPANION_SQL = [
 	"ALTER TABLE sessions DROP COLUMN current_turn_started_at",
 ];
 
+/** What migration 0018 added (AGEN-83): the delivery-receipts table (and its indexes with it) and events.occurred_at. */
+const MANAGED_DELIVERY_SQL = [
+	"DROP TABLE IF EXISTS managed_delivery_receipts",
+	"ALTER TABLE events DROP COLUMN occurred_at",
+];
+
 describe("legacy SQLite init parity with Drizzle migrations", () => {
 	const open: Database[] = [];
 	afterAll(() => {
@@ -134,6 +140,26 @@ describe("legacy SQLite init parity with Drizzle migrations", () => {
 			expect(
 				(legacy.prepare("PRAGMA table_info('launch_requests')").all() as Row[]).map((c) => c.name),
 			).toContain("idempotency_key");
+		},
+	);
+
+	itSqliteOnly(
+		"an install that predates managed delivery receipts (0018) gets the table, its indexes and events.occurred_at",
+		async () => {
+			const legacy = preexistingInstall();
+			const born = await drizzleBorn();
+			open.push(legacy, born);
+			await initializeDatabase(legacy);
+			for (const statement of MANAGED_DELIVERY_SQL) legacy.exec(statement);
+			// The drop list is real: the shape really lacks what it names.
+			const gap = missingFrom(shapeOf(legacy), shapeOf(born));
+			expect(gap).toContain("tables: managed_delivery_receipts");
+			expect(gap).toContain("columns: events.occurred_at TEXT");
+			expect(gap.some((item) => item.startsWith("indexes: managed_delivery_receipts("))).toBe(true);
+
+			await initializeDatabase(legacy);
+
+			expect(missingFrom(shapeOf(legacy), shapeOf(born))).toEqual([]);
 		},
 	);
 
