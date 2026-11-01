@@ -10,6 +10,7 @@
  * and any Bun download (F190), so no test fetches Bun from the network.
  */
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
 	chmod,
 	lstat,
@@ -33,7 +34,19 @@ import {
 	EXCLUDE_CHECK_HINT,
 } from "../src/shared/hook-headers.js";
 import { expectClaudeHooksCarrySkip } from "./claude-hook-assertions.js";
-import { fakeBun, stubDir as makeStubDir, pathWithout } from "./lib/installer-test-utils.ts";
+import {
+	HAS_ICONV,
+	MESSAGES,
+	extractMarkerBlock,
+	fakeBun,
+	lsStub,
+	makeFakeBunZip,
+	stubDir as makeStubDir,
+	pathWithout,
+	run as runBash,
+	shellQuote,
+	spawnChecked,
+} from "./lib/installer-test-utils.ts";
 
 const { config } = await import("../src/server/config.js");
 const { setup } = await import("../src/server/routes/setup.js");
@@ -44,10 +57,14 @@ const { buildCodexHooksFile, buildCopilotHooksFile } = await import(
 const INSTALLER = join(import.meta.dir, "setup-relay.sh");
 const RELAY_SRC = join(import.meta.dir, "relay.ts");
 const STATUSLINE_SRC = join(import.meta.dir, "statusline.sh");
-const BUN_DIR = dirname(process.execPath);
+// F46: the real Bun is reached through a symlink in a private directory of its own, so the
+// owner and mode rules judge Bun itself and not whatever directory it was installed into.
+let bunLinkDir: string;
 // Each case runs a real installer in a subprocess; several take most of the 5 s default on a loaded machine.
 setDefaultTimeout(30_000);
 const RUN_TIMEOUT = 60_000;
+/** Under RUN_TIMEOUT, so a hung installer is killed before its test gives up. */
+const INSTALLER_TIMEOUT = 50_000;
 
 const INGEST_ONLY_KEY = "ap_test_ingest_only";
 const RELAY_KEY = "ap_test_relay_key";
@@ -124,6 +141,8 @@ async function runInstaller(
 		pipeFrom?: string;
 		/** Directories searched before the stubs and the real Bun. */
 		pathPrefix?: string;
+		/** Replaces the real Bun's directory and the inherited PATH after the stubs. */
+		basePath?: string;
 	} = {},
 ): Promise<RunResult> {
 	const stubLog = join(home, "..", `stub-${relative(root, home)}.log`);
@@ -136,8 +155,11 @@ async function runInstaller(
 	const proc = Bun.spawn(cmd, {
 		stdout: "pipe",
 		stderr: "pipe",
+		// A test that times out kills its installer instead of leaving it running.
+		timeout: INSTALLER_TIMEOUT,
+		killSignal: "SIGKILL",
 		env: {
-			PATH: `${opts.pathPrefix ? `${opts.pathPrefix}:` : ""}${stubDir}:${BUN_DIR}:${sanitizedPath}`,
+			PATH: `${opts.pathPrefix ? `${opts.pathPrefix}:` : ""}${stubDir}:${opts.basePath ?? `${bunLinkDir}:${sanitizedPath}`}`,
 			HOME: home,
 			TMPDIR: tmp,
 			// Apple's python3 shim writes a bytecode cache under HOME, which the "writes nothing" cases would count.
@@ -155,6 +177,8 @@ async function runInstaller(
 		new Response(proc.stderr).text(),
 	]);
 	await proc.exited;
+	if (proc.signalCode === "SIGKILL")
+		throw new Error(`the installer ran past ${INSTALLER_TIMEOUT} ms`);
 	return { code: proc.exitCode, out: stdout + stderr, stubLog: await readFile(stubLog, "utf-8") };
 }
 
@@ -185,6 +209,16 @@ beforeAll(async () => {
 		curl: [
 			'for a in "$@"; do',
 			'  case "$a" in',
+			// A test that sets AP_FAKE_ZIP gets it in place of the pinned Bun release. The stub
+			// ignores --proto: it stands for GitHub, and the zip's hash is what the script checks.
+			"    https://github.com/oven-sh/bun/releases/download/bun-v1.3.12/bun-*.zip)",
+			'      if [ -n "${AP_FAKE_ZIP-}" ]; then',
+			'        echo "curl served $a" >> "$AP_STUB_LOG"',
+			'        out=""; prev=""',
+			'        for b in "$@"; do if [ "$prev" = "-o" ]; then out="$b"; fi; prev="$b"; done',
+			'        cp "$AP_FAKE_ZIP" "$out"; exit 0',
+			"      fi",
+			'      echo "curl blocked $a" >> "$AP_STUB_LOG"; exit 7 ;;',
 			"    *://127.0.0.1:4000|*://127.0.0.1:4000/*|*://localhost:4000|*://localhost:4000/*|https://bun.sh/*|https://github.com/oven-sh/*)",
 			'      echo "curl blocked $a" >> "$AP_STUB_LOG"; exit 7 ;;',
 			"  esac",
@@ -198,6 +232,9 @@ beforeAll(async () => {
 			'if [ $# -eq 0 ] || [ "$1" = "-s" ]; then echo "$AP_TEST_UNAME"; else exec /usr/bin/env -i PATH=/usr/bin:/bin uname "$@"; fi',
 	};
 	stubDir = makeStubDir([], stubs, root);
+	bunLinkDir = join(root, "real-bun");
+	await mkdir(bunLinkDir, { mode: 0o700 });
+	await symlink(process.execPath, join(bunLinkDir, "bun"));
 	authServer = Bun.serve({
 		port: 0,
 		fetch(req) {
@@ -712,28 +749,121 @@ describe("F184: curl | bash", () => {
 	);
 });
 
+/** The relay installer's shared Bun block, as the script carries it. */
+const BUN_BLOCK = extractMarkerBlock(readFileSync(INSTALLER, "utf-8"), "agentpulse-bun");
+const HINT_BLOCK = extractMarkerBlock(readFileSync(INSTALLER, "utf-8"), "agentpulse-pkg-hint");
+const RELEASE_URL_RE = /curl blocked https:\/\/github\.com\/oven-sh/;
+
+/** The pinned asset and install hint the script would compute here, under the same stubbed uname. */
+function inScript(uname: "Darwin" | "Linux", body: string) {
+	return runBash("bash", `${BUN_BLOCK}\n${HINT_BLOCK}\n${body}`, [], {
+		PATH: `${stubDir}:${sanitizedPath}`,
+		AP_TEST_UNAME: uname,
+	});
+}
+
+type FakeRelease = { zip: string; script: string; asset: string; scriptDir: string };
+const fakeReleases = new Map<string, FakeRelease>();
+
+/**
+ * A fake Bun release zip for this host's asset, and a copy of the installer
+ * whose pinned hash for that asset is the zip's (the only line that differs).
+ * The negative control runs the unmodified script against the same zip.
+ */
+async function fakeRelease(uname: "Darwin" | "Linux"): Promise<FakeRelease> {
+	const cached = fakeReleases.get(uname);
+	if (cached) return cached;
+	const asset = inScript(uname, "ap_bun_asset").out;
+	expect(asset).not.toBe("");
+	const dir = join(root, `fake-release-${uname}`);
+	await mkdir(dir, { recursive: true });
+	const { zip, sha } = makeFakeBunZip(dir, asset);
+
+	const original = await readFile(INSTALLER, "utf-8");
+	const lines = original.split("\n");
+	const pinned = lines.filter((l) => l.startsWith(`    ${asset}) echo "`));
+	expect(pinned).toHaveLength(1);
+	const modified = lines.map((l) => (l === pinned[0] ? `    ${asset}) echo "${sha}" ;;` : l));
+	expect(modified.filter((l, i) => l !== lines[i])).toHaveLength(1);
+	const scriptDir = join(dir, "scripts");
+	await mkdir(scriptDir, { recursive: true });
+	const script = join(scriptDir, "setup-relay.sh");
+	await writeFile(script, modified.join("\n"));
+	await writeFile(join(scriptDir, "relay.ts"), await readFile(RELAY_SRC));
+	await writeFile(join(scriptDir, "statusline.sh"), await readFile(STATUSLINE_SRC));
+	const release = { zip, script, asset, scriptDir };
+	fakeReleases.set(uname, release);
+	return release;
+}
+
+let noBunBase: string | undefined;
+/** The inherited PATH minus every `bun`, so nothing on this machine can be chosen. */
+function pathNoBun() {
+	noBunBase ??= pathWithout(["bun"], sanitizedPath, root);
+	return noBunBase;
+}
+
+async function plistProgramArguments(plist: string): Promise<string[]> {
+	const proc = spawnChecked([
+		"python3",
+		"-I",
+		"-c",
+		"import json, plistlib, sys\nprint(json.dumps(plistlib.load(open(sys.argv[1], 'rb'))['ProgramArguments']))",
+		plist,
+	]);
+	expect(proc.exitCode).toBe(0);
+	return JSON.parse(proc.stdout.toString());
+}
+
+const plistPath = (home: string) =>
+	join(home, "Library", "LaunchAgents", "dev.agentpulse.relay.plist");
+const unitPath = (home: string) =>
+	join(home, ".config", "systemd", "user", "agentpulse-relay.service");
+
+/** A home at an exact name under root, for the cases whose HOME has to hold odd characters. */
+async function namedHome(name: string) {
+	const home = join(root, name);
+	await mkdir(home, { recursive: true });
+	return home;
+}
+
+/** A directory laid out like Homebrew's bin: a good Bun in a group-writable (775) directory. */
+async function groupWritableBunDir(label: string) {
+	const dir = join(root, `${label}-${homeCounter}`);
+	const bun = await fakeBun(dir, "1.3.12");
+	await chmod(dir, 0o775);
+	return { dir, bun };
+}
+
 describe("F190: the relay service runs on a Bun that keeps its files private", () => {
+	const relayArgs = (port: number) => [
+		"--url",
+		authUrl,
+		"--key",
+		RELAY_KEY,
+		"--port",
+		String(port),
+	];
+
 	test(
-		"a Bun older than the floor on PATH is skipped for one that meets it",
+		"a Bun older than the floor in ~/.bun is named and skipped for the good one on PATH",
 		async () => {
 			const home = await newHome();
 			const port = await freePort();
-			const oldBin = join(root, `old-bun-${homeCounter}`);
-			const oldBun = await fakeBun(oldBin, "1.1.30");
-			const newBun = await fakeBun(join(home, ".bun", "bin"), "1.3.12");
-			const res = await runInstaller(
-				home,
-				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)],
-				{ uname: "Darwin", pathPrefix: oldBin },
-			);
+			const oldBun = await fakeBun(join(home, ".bun", "bin"), "1.1.30");
+			const goodBin = join(root, `good-bun-${homeCounter}`);
+			const goodBun = await fakeBun(goodBin, "1.3.12");
+			const res = await runInstaller(home, relayArgs(port), {
+				uname: "Darwin",
+				pathPrefix: goodBin,
+			});
 			expect(res.code).toBe(0);
-			expect(res.out).toContain("1.1.30");
-			const plist = await readFile(
-				join(home, "Library", "LaunchAgents", "dev.agentpulse.relay.plist"),
-				"utf-8",
+			expect(res.out).toContain(
+				MESSAGES.notUsing(shellQuote("bash", oldBun), MESSAGES.reason.older("1.1.30")),
 			);
-			expect(plist).toContain(`<string>${newBun}</string>`);
-			expect(plist).not.toContain(oldBun);
+			const args = await plistProgramArguments(plistPath(home));
+			expect(args[0]).toBe(goodBun);
+			expect(await readFile(plistPath(home), "utf-8")).not.toContain(oldBun);
 		},
 		RUN_TIMEOUT,
 	);
@@ -745,11 +875,7 @@ describe("F190: the relay service runs on a Bun that keeps its files private", (
 			const port = await freePort();
 			const oldBin = join(root, `old-bun-${homeCounter}`);
 			await fakeBun(oldBin, "1.1.30");
-			const res = await runInstaller(
-				home,
-				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)],
-				{ uname: "Linux", pathPrefix: oldBin },
-			);
+			const res = await runInstaller(home, relayArgs(port), { uname: "Linux", pathPrefix: oldBin });
 			// The download is refused by the curl stub, so the install stops there.
 			// F197: the pinned download is now the release zip itself, not the
 			// bun.sh installer script.
@@ -757,10 +883,342 @@ describe("F190: the relay service runs on a Bun that keeps its files private", (
 				"curl blocked https://github.com/oven-sh/bun/releases/download/bun-v1.3.12/bun-",
 			);
 			expect(res.code).not.toBe(0);
-			await expect(
-				stat(join(home, ".config", "systemd", "user", "agentpulse-relay.service")),
-			).rejects.toThrow();
+			await expect(stat(unitPath(home))).rejects.toThrow();
 			await expect(stat(join(home, ".agentpulse", "config.json"))).rejects.toThrow();
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"a missing unzip is refused with the fix, before the key is asked for or anything is downloaded",
+		async () => {
+			const home = await newHome();
+			const noUnzipPath = pathWithout(["bun", "unzip"], sanitizedPath, root);
+			const probe = runBash("bash", "command -v unzip", [], { PATH: noUnzipPath });
+			expect(probe.code).toBe(1);
+			const tty = join(root, `tty-nounzip-${homeCounter}`);
+			await writeFile(tty, `${RELAY_KEY}\n`);
+			seenAuthHeaders = [];
+			// A stub brew is first on PATH, so the hint is the literal Homebrew command on any machine.
+			const res = await runInstaller(home, ["--url", authUrl], {
+				uname: "Darwin",
+				basePath: noUnzipPath,
+				pathPrefix: makeStubDir([], { brew: "exit 0" }, root),
+				env: { AGENTPULSE_TTY: tty },
+			});
+			expect(res.code).toBe(1);
+			expect(res.out).toContain(MESSAGES.fetch.tool("unzip", "brew install unzip"));
+			expect(res.out).not.toContain(KEY_PROMPT);
+			expect(seenAuthHeaders).toEqual([]);
+			expect(res.stubLog).not.toMatch(RELEASE_URL_RE);
+			expect(await listTree(home)).toEqual([]);
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"a first run under umask 002 has ~/.agentpulse at 700 before Bun is fetched, and after",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const rel = await fakeRelease("Linux");
+			const relayDir = join(home, ".agentpulse");
+			const seen = join(root, `relay-dir-at-fetch-${homeCounter}`);
+			const wrapper = join(root, `umask-002-${homeCounter}.sh`);
+			await writeFile(wrapper, `umask 002\nexec bash '${rel.script}' "$@"\n`);
+			// Records the mode of the relay directory at the moment the Bun release is requested.
+			const recorder = makeStubDir(
+				[],
+				{
+					curl: [
+						'case "$*" in *github.com/oven-sh/*)',
+						`  ls -ldn '${relayDir}' > '${seen}' 2>&1 ;;`,
+						"esac",
+						`exec '${join(stubDir, "curl")}' "$@"`,
+					].join("\n"),
+				},
+				root,
+			);
+			await expect(stat(relayDir)).rejects.toThrow();
+			const res = await runInstaller(home, relayArgs(port), {
+				uname: "Linux",
+				script: wrapper,
+				pathPrefix: recorder,
+				basePath: pathNoBun(),
+				env: { AP_FAKE_ZIP: rel.zip },
+			});
+			expect(res.code).toBe(0);
+			expect(res.stubLog).toContain("curl served https://github.com/oven-sh/");
+			const atFetch = await readFile(seen, "utf-8");
+			expect(atFetch.startsWith("drwx------")).toBe(true);
+			expect(await modeOf(relayDir)).toBe(0o700);
+		},
+		RUN_TIMEOUT,
+	);
+
+	for (const uname of ["Darwin", "Linux"] as const) {
+		test(
+			`${uname}: with no Bun anywhere, the pinned release is fetched, checked, installed and used`,
+			async () => {
+				const home = await newHome();
+				const port = await freePort();
+				const rel = await fakeRelease(uname);
+				const res = await runInstaller(home, relayArgs(port), {
+					uname,
+					script: rel.script,
+					basePath: pathNoBun(),
+					env: { AP_FAKE_ZIP: rel.zip },
+				});
+				expect(res.code).toBe(0);
+				const bun = join(home, ".agentpulse", "bun", "bin", "bun");
+				expect(res.out).toContain(
+					`Installing Bun 1.3.12 for the relay into ${join(home, ".agentpulse", "bun")}`,
+				);
+				expect(res.out).toContain(`✓ Bun: ${bun} (1.3.12)`);
+				expect(await modeOf(bun)).toBe(0o755);
+				if (uname === "Darwin") {
+					expect((await plistProgramArguments(plistPath(home)))[0]).toBe(bun);
+				} else {
+					expect(await readFile(unitPath(home), "utf-8")).toContain(`ExecStart="${bun}" `);
+				}
+				const leftovers = (await listTree(join(root, `tmp-${relative(root, home)}`))).filter(
+					(p) => p.includes("agentpulse-relay-setup") || p.includes(".bun."),
+				);
+				expect(leftovers).toEqual([]);
+				expect((await listTree(join(home, ".agentpulse", "bun", "bin"))).sort()).toEqual(["bun"]);
+			},
+			RUN_TIMEOUT,
+		);
+	}
+
+	test(
+		"negative control: the unmodified script refuses the same fake zip on its checksum and installs nothing",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const rel = await fakeRelease("Linux");
+			const res = await runInstaller(home, relayArgs(port), {
+				uname: "Linux",
+				basePath: pathNoBun(),
+				env: { AP_FAKE_ZIP: rel.zip },
+			});
+			expect(res.code).toBe(1);
+			expect(res.out).toContain(MESSAGES.fetch.checksum);
+			await expect(stat(join(home, ".agentpulse", "bun", "bin", "bun"))).rejects.toThrow();
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"Darwin: a good Bun in a Homebrew-style 775 directory owned by admin (gid 80) is used as it is",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const { dir, bun } = await groupWritableBunDir("brew-bin");
+			const lsDir = makeStubDir([], { ls: lsStub(process.getuid?.() ?? 0, 80, dir) }, root);
+			const res = await runInstaller(home, relayArgs(port), {
+				uname: "Darwin",
+				pathPrefix: `${lsDir}:${dir}`,
+			});
+			expect(res.code).toBe(0);
+			expect(res.out).not.toContain("Not using");
+			expect((await plistProgramArguments(plistPath(home)))[0]).toBe(bun);
+			await expect(stat(join(home, ".bun"))).rejects.toThrow();
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"Linux: the same Bun in a group-writable directory is refused, and the private copy is installed and used",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const { dir, bun } = await groupWritableBunDir("group-bin");
+			const rel = await fakeRelease("Linux");
+			const res = await runInstaller(home, relayArgs(port), {
+				uname: "Linux",
+				pathPrefix: dir,
+				env: { AP_FAKE_ZIP: rel.zip },
+				script: rel.script,
+			});
+			expect(res.code).toBe(0);
+			expect(res.out).toContain(
+				MESSAGES.notUsing(shellQuote("bash", bun), MESSAGES.reason.groupWritable),
+			);
+			expect(await readFile(unitPath(home), "utf-8")).toContain(
+				`ExecStart="${join(home, ".agentpulse", "bun", "bin", "bun")}" `,
+			);
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"a fresh relay with no Bun anywhere gets past the early Bun check to the key check (set -u)",
+		async () => {
+			const home = await newHome();
+			seenAuthHeaders = [];
+			const res = await runInstaller(home, ["--url", authUrl, "--key", RELAY_KEY], {
+				uname: "Linux",
+				basePath: pathNoBun(),
+			});
+			expect(res.out).not.toContain("unbound variable");
+			expect(seenAuthHeaders).toEqual([`Bearer ${RELAY_KEY}`]);
+		},
+		RUN_TIMEOUT,
+	);
+
+	for (const [label, dirName] of [
+		["a space", "my home"],
+		["non-ASCII", "hömé"],
+	] as const) {
+		for (const uname of ["Darwin", "Linux"] as const) {
+			const run = dirName === "hömé" && !HAS_ICONV ? test.skip : test;
+			run(
+				`${uname}: a HOME with ${label} installs, writes exact service paths, and isn't downloaded for twice`,
+				async () => {
+					const home = await namedHome(`${dirName}-${uname}`);
+					const port = await freePort();
+					const rel = await fakeRelease(uname);
+					const opts = {
+						uname,
+						script: rel.script,
+						basePath: pathNoBun(),
+						env: { AP_FAKE_ZIP: rel.zip },
+					};
+					const first = await runInstaller(home, relayArgs(port), opts);
+					expect(first.code).toBe(0);
+					const bun = join(home, ".agentpulse", "bun", "bin", "bun");
+					const relay = join(home, ".agentpulse", "relay.ts");
+					const config = join(home, ".agentpulse", "config.json");
+					if (uname === "Darwin") {
+						expect(await plistProgramArguments(plistPath(home))).toEqual([
+							bun,
+							relay,
+							"--config",
+							config,
+						]);
+					} else {
+						expect(await readFile(unitPath(home), "utf-8")).toContain(
+							`ExecStart="${bun}" "${relay}" --config "${config}"\n`,
+						);
+					}
+					const second = await runInstaller(home, relayArgs(port), opts);
+					expect(second.code).toBe(0);
+					expect(second.stubLog).not.toContain("github.com/oven-sh");
+					expect(second.out).not.toContain("Installing Bun");
+				},
+				RUN_TIMEOUT,
+			);
+		}
+	}
+
+	for (const [label, dirName] of [
+		["%", "h%x"],
+		["$", "h$x"],
+	] as const) {
+		test(
+			`a HOME with ${label} is refused up front with the exact line, before the key prompt, writing nothing`,
+			async () => {
+				const home = await namedHome(dirName);
+				const tty = join(root, `tty-refuse-${homeCounter}-${dirName.length}`);
+				await writeFile(tty, `${RELAY_KEY}\n`);
+				seenAuthHeaders = [];
+				const res = await runInstaller(home, ["--url", authUrl], { env: { AGENTPULSE_TTY: tty } });
+				expect(res.code).toBe(1);
+				expect(res.out).toContain(
+					MESSAGES.relayHome(shellQuote("bash", home), MESSAGES.reason.badChars),
+				);
+				expect(res.out).not.toContain(KEY_PROMPT);
+				expect(seenAuthHeaders).toEqual([]);
+				expect(await listTree(home)).toEqual([]);
+			},
+			RUN_TIMEOUT,
+		);
+	}
+
+	for (const uname of ["Darwin", "Linux"] as const) {
+		test(
+			`${uname}: a re-run over group-writable (775) private Bun directories repairs them, accepts the Bun and downloads nothing`,
+			async () => {
+				const home = await newHome();
+				const port = await freePort();
+				const agentpulse = join(home, ".agentpulse");
+				const bunDir = join(agentpulse, "bun");
+				const bun = await fakeBun(join(bunDir, "bin"), "1.3.12");
+				for (const d of [agentpulse, bunDir, join(bunDir, "bin")]) await chmod(d, 0o775);
+				const res = await runInstaller(home, relayArgs(port), {
+					uname,
+					basePath: pathNoBun(),
+				});
+				expect(res.code).toBe(0);
+				expect(res.stubLog).not.toMatch(RELEASE_URL_RE);
+				expect(res.out).not.toContain("Installing Bun");
+				expect(res.out).not.toContain("Not using");
+				expect(res.out).toContain(`✓ Bun: ${bun} (1.3.12)`);
+				for (const d of [bunDir, join(bunDir, "bin")]) expect(await modeOf(d)).toBe(0o755);
+			},
+			RUN_TIMEOUT,
+		);
+	}
+
+	test(
+		"a fresh relay with a pre-existing group-writable ~/.agentpulse installs the private Bun",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			await mkdir(join(home, ".agentpulse"));
+			await chmod(join(home, ".agentpulse"), 0o775);
+			const rel = await fakeRelease("Linux");
+			const res = await runInstaller(home, relayArgs(port), {
+				uname: "Linux",
+				script: rel.script,
+				basePath: pathNoBun(),
+				env: { AP_FAKE_ZIP: rel.zip },
+			});
+			expect(res.code).toBe(0);
+			expect(res.out).toContain(
+				`✓ Bun: ${join(home, ".agentpulse", "bun", "bin", "bun")} (1.3.12)`,
+			);
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"a trailing slash on HOME gives the same service paths as none",
+		async () => {
+			const home = await namedHome("h-slash");
+			const port = await freePort();
+			const rel = await fakeRelease("Linux");
+			const res = await runInstaller(`${home}/`, relayArgs(port), {
+				uname: "Linux",
+				script: rel.script,
+				basePath: pathNoBun(),
+				env: { AP_FAKE_ZIP: rel.zip },
+			});
+			expect(res.code).toBe(0);
+			const bun = join(home, ".agentpulse", "bun", "bin", "bun");
+			const unit = await readFile(unitPath(home), "utf-8");
+			expect(unit).toContain(`ExecStart="${bun}" "${home}/.agentpulse/relay.ts" `);
+			expect(unit).not.toContain("//.agentpulse");
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"when the download fails, no Bun, stage file or temporary directory is left behind",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const res = await runInstaller(home, relayArgs(port), {
+				uname: "Linux",
+				basePath: pathNoBun(),
+			});
+			expect(res.code).not.toBe(0);
+			expect(res.stubLog).toMatch(RELEASE_URL_RE);
+			const homeTree = await listTree(home);
+			expect(homeTree.filter((p) => p.endsWith("/bun") || p.includes(".bun."))).toEqual([]);
+			const tmpTree = await listTree(join(root, `tmp-${relative(root, home)}`));
+			expect(tmpTree.filter((p) => p.includes("agentpulse-relay-setup"))).toEqual([]);
 		},
 		RUN_TIMEOUT,
 	);

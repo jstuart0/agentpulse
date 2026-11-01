@@ -4,12 +4,15 @@
  * pipefail` with an explicit environment, building a stub PATH, and the exact
  * installer message catalogue (the plan's P8) so no test copies a string.
  */
+import { createHash } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	readdirSync,
+	realpathSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -63,10 +66,25 @@ export function fn(source: string, name: string, check: BlockCheck = {}): string
 	return assertBlock(`function ${name}`, match[0], check);
 }
 
+/** How long any helper subprocess may run before the test fails instead of hanging. */
+export const SPAWN_TIMEOUT_MS = 20_000;
+
+/** Bun.spawnSync with a timeout; a hung child throws a clear error rather than freezing the suite. */
+export function spawnChecked(cmd: string[], opts: Parameters<typeof Bun.spawnSync>[1] = {}) {
+	const proc = Bun.spawnSync(cmd, { timeout: SPAWN_TIMEOUT_MS, ...opts });
+	if (proc.exitedDueToTimeout) {
+		throw new Error(`timed out after ${SPAWN_TIMEOUT_MS} ms: ${cmd.slice(0, 3).join(" ")}`);
+	}
+	return proc;
+}
+
+/** Whether iconv is available; the wide-mode UTF-8 cases name-skip without it. */
+export const HAS_ICONV = Bun.which("iconv") !== null;
+
 export type BashEntry = { bash: string; label: string; skip?: string };
 
 function bashVersion(bash: string): string {
-	const proc = Bun.spawnSync([bash, "--version"]);
+	const proc = spawnChecked([bash, "--version"]);
 	const first = proc.stdout.toString().split("\n")[0] ?? "";
 	return /version (\S+)/.exec(first)?.[1] ?? "unknown";
 }
@@ -74,7 +92,8 @@ function bashVersion(bash: string): string {
 /** The bashes a test runs under: the one on PATH, and /bin/bash (macOS's 3.2) when it exists. */
 export const BASHES: BashEntry[] = [
 	{ bash: "bash", label: `bash ${bashVersion("bash")}` },
-	...(existsSync("/bin/bash")
+	...(existsSync("/bin/bash") &&
+	realpathSync("/bin/bash") !== realpathSync(Bun.which("bash") ?? "/bin/bash")
 		? [{ bash: "/bin/bash", label: `bash ${bashVersion("/bin/bash")}` }]
 		: []),
 ];
@@ -100,10 +119,17 @@ export function run(
 	args: string[] = [],
 	env: Record<string, string> = {},
 ) {
-	const proc = Bun.spawnSync([bash, "-c", `set -euo pipefail\n${body}`, "test", ...args], {
-		env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...env },
-	});
-	return { code: proc.exitCode, out: proc.stdout.toString().trim(), err: proc.stderr.toString() };
+	const proc = spawnChecked(
+		[Bun.which(bash) ?? bash, "-c", `set -euo pipefail\n${body}`, "test", ...args],
+		{
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...env },
+		},
+	);
+	return {
+		code: proc.exitCode,
+		out: proc.stdout.toString().trimEnd(),
+		err: proc.stderr.toString(),
+	};
 }
 
 /**
@@ -178,17 +204,59 @@ export function stubDir(
  * `<mode> <links> <uid> <gid> <size> <mon> <day> <time> <path>`; any other
  * call runs the real `ls`.
  */
-export function lsStub(fakeUid: number | string, fakeGid: number | string, path: string): string {
+export function lsStub(
+	fakeUid: number | string,
+	fakeGid: number | string,
+	path: string | string[],
+): string {
 	const realLs = Bun.which("ls");
 	if (!realLs) throw new Error("lsStub: ls doesn't resolve on PATH");
+	const paths = (Array.isArray(path) ? path : [path])
+		.map((p) => `'${p.replace(/'/g, "'\\''")}'`)
+		.join("|");
 	return [
 		'for a in "$@"; do last="$a"; done',
-		`if [ "\${last-}" = '${path.replace(/'/g, "'\\''")}' ]; then`,
-		`  "${realLs}" "$@" | awk -v u='${fakeUid}' -v g='${fakeGid}' '{ $3 = u; $4 = g; print }'`,
-		"else",
-		`  exec "${realLs}" "$@"`,
-		"fi",
+		`case "\${last-}" in ${paths})`,
+		`  "${realLs}" "$@" | awk -v u='${fakeUid}' -v g='${fakeGid}' '{ $3 = u; $4 = g; print }' ;;`,
+		"*)",
+		`  exec "${realLs}" "$@" ;;`,
+		"esac",
 	].join("\n");
+}
+
+/**
+ * A fake Bun release zip with one member, bun-<asset>/bun: a script answering
+ * --version (kind "file"), a symlink (kind "symlink"), or no zip at all
+ * (kind "corrupt"). Returns the zip path and its SHA256.
+ */
+export function makeFakeBunZip(
+	dir: string,
+	asset: string,
+	kind: "file" | "symlink" | "corrupt" = "file",
+	version = "1.3.12",
+) {
+	mkdirSync(dir, { recursive: true });
+	const zip = join(dir, "bun.zip");
+	if (kind === "corrupt") {
+		writeFileSync(zip, "this is not a zip file");
+	} else {
+		const attr = kind === "file" ? "0o100755" : "0o120777";
+		const content =
+			kind === "file"
+				? `#!/bin/sh\n[ "$1" = "--version" ] && echo ${version}\nexit 0\n`
+				: "/bin/sh";
+		const made = spawnChecked([
+			"python3",
+			"-I",
+			"-c",
+			`import sys, zipfile\nz = zipfile.ZipFile(sys.argv[1], 'w')\ni = zipfile.ZipInfo('bun-' + sys.argv[2] + '/bun')\ni.external_attr = ${attr} << 16\nz.writestr(i, sys.argv[3])\nz.close()`,
+			zip,
+			asset,
+			content,
+		]);
+		if (made.exitCode !== 0) throw new Error(made.stderr.toString());
+	}
+	return { zip, sha: createHash("sha256").update(readFileSync(zip)).digest("hex") };
 }
 
 /** A `bun` that only answers --version. The mode is always applied, whatever the umask. */
@@ -201,8 +269,14 @@ export async function fakeBun(dir: string, version: string, mode = 0o755): Promi
 }
 
 /** `printf %q` of `value` under the same bash that will print the message (3.2 and 5.x differ). */
-export function shellQuote(bash: string, value: string): string {
-	const proc = Bun.spawnSync([bash, "-c", 'printf %q "$1"', "test", value]);
+export function shellQuote(
+	bash: string,
+	value: string,
+	env: Record<string, string> = { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+): string {
+	const proc = spawnChecked([Bun.which(bash) ?? bash, "-c", 'printf %q "$1"', "test", value], {
+		env,
+	});
 	return proc.stdout.toString();
 }
 
@@ -227,8 +301,12 @@ export const MESSAGES = {
 	notUsing: (p: string, reason: string) => `  ! Not using ${p}: ${reason}`,
 	bunInstallBad: (p: string, reason: string) =>
 		`  ✗ BUN_INSTALL points at a Bun this installer can't use: ${p} (${reason}). Fix it or unset BUN_INSTALL.`,
+	/** The target path itself can't be used. */
 	targetBad: (p: string, reason: string) =>
-		`  ✗ Can't install Bun at ${p}: ${reason}. Set BUN_INSTALL to an absolute path of letters, digits and / . _ + - @ that you own.`,
+		`  ✗ Can't install Bun at ${p}: ${reason}. Install Bun 1.3.12 or newer yourself and set BUN_INSTALL to where it is.`,
+	/** The nearest existing directory above the target is the problem (\`dir\` is %q-quoted). */
+	targetDirBad: (p: string, reason: string, dir: string) =>
+		`  ✗ Can't install Bun at ${p}: ${reason}. Run chmod go-w on ${dir} if you own it, or install Bun 1.3.12 or newer yourself and set BUN_INSTALL to where it is.`,
 	fetch: {
 		tool: (tool: "unzip" | "sha256sum", hint: string | null) =>
 			hint
@@ -250,8 +328,8 @@ export const MESSAGES = {
 	argBad: (flag: string, reason: string) => `  ✗ ${flag} ${reason}`,
 	unitDir: (dir: string) =>
 		`  ✗ ${dir} is a symbolic link; the installer won't write service files through it. Nothing was installed.`,
-	relayHome: (home: string, reason?: string) =>
-		`  ✗ The relay keeps its files and Bun under ${home}/.agentpulse, and that path has characters its service file can't hold (%, $, quotes, backslashes or control characters). Run the installer as a user whose home path has none of them.${reason ? ` (${reason})` : ""}`,
+	relayHome: (home: string, reason: string) =>
+		`  ✗ The relay keeps its files and Bun under ${home}/.agentpulse, and that path can't be used (${reason}). It may hold only letters, digits, spaces, UTF-8 text and / . _ + - @. Run the installer as a user whose home path fits.`,
 	tmp: (p: string) => `  ✗ couldn't create a temporary directory under ${p}`,
 	/** The reasons the not-using and path-bad lines carry. */
 	reason: {
