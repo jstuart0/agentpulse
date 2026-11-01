@@ -8,7 +8,7 @@ import type {
 	SessionEvent,
 } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { events, sessions } from "../db/schema/index.js";
+import { events, managedDeliveryReceipts, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import {
 	incrementIngestForeignKeyDropped,
@@ -32,6 +32,7 @@ import {
 	type InsertPlan,
 	type PlannedRow,
 	type RecentEventRow,
+	computeManagedReceiptKey,
 	contentWindowKey,
 	planEventInsert,
 	recordDrops,
@@ -61,11 +62,19 @@ import {
 	sessionCreationLimitSubject,
 	tryConsumeSessionCreation,
 } from "./session-creation-limit.js";
+import { toDbTimestamp } from "./util/db-time.js";
 
 const RECENT_ROWS_FOR_DEDUP = 50;
 
-async function loadRecentRows(sessionId: string): Promise<RecentEventRow[]> {
-	return getDb()
+// The handle a statement runs on: the shared database, or a transaction's `tx`.
+// biome-ignore lint/suspicious/noExplicitAny: dialect-portable, same shape as withTransaction's tx
+type DbHandle = any;
+
+async function loadRecentRows(
+	sessionId: string,
+	db: DbHandle = getDb(),
+): Promise<RecentEventRow[]> {
+	return db
 		.select({
 			id: events.id,
 			eventType: events.eventType,
@@ -113,13 +122,17 @@ function matchKey(row: {
  * trigger the delete it would have earned had it been stored. Returns DTO
  * rows (Decision 16; dedup_key never leaves this function) sorted by id.
  */
-async function persistEvents(sessionId: string, plan: InsertPlan): Promise<SessionEvent[]> {
+async function persistEvents(
+	sessionId: string,
+	plan: InsertPlan,
+	db: DbHandle = getDb(),
+): Promise<SessionEvent[]> {
 	if (plan.retained.length === 0) {
 		recordDrops(plan.drops);
 		return [];
 	}
 
-	const insertedRows: StoredEventRow[] = await getDb()
+	const insertedRows: StoredEventRow[] = await db
 		.insert(events)
 		.values(
 			plan.retained.map((row) => ({
@@ -135,6 +148,7 @@ async function persistEvents(sessionId: string, plan: InsertPlan): Promise<Sessi
 				toolResponse: row.toolResponse,
 				rawPayload: row.rawPayload,
 				dedupKey: row.dedupKey,
+				occurredAt: row.occurredAt ?? null,
 			})),
 		)
 		.onConflictDoNothing()
@@ -176,17 +190,15 @@ async function persistEvents(sessionId: string, plan: InsertPlan): Promise<Sessi
 		// authority-superseded row that was since deleted).
 		for (let i = 0; i < plan.retained.length; i++) bump(kind);
 		if (stored.length > 0) {
-			await getDb()
-				.delete(events)
-				.where(
-					and(
-						eq(events.sessionId, sessionId),
-						inArray(
-							events.id,
-							stored.map(({ dbRow }) => dbRow.id),
-						),
+			await db.delete(events).where(
+				and(
+					eq(events.sessionId, sessionId),
+					inArray(
+						events.id,
+						stored.map(({ dbRow }) => dbRow.id),
 					),
-				);
+				),
+			);
 		}
 		stored = [];
 	} else {
@@ -198,7 +210,7 @@ async function persistEvents(sessionId: string, plan: InsertPlan): Promise<Sessi
 
 	const deleteIds = new Set(stored.flatMap(({ planned }) => planned.deletesIfStored));
 	if (deleteIds.size > 0) {
-		await getDb()
+		await db
 			.delete(events)
 			.where(and(eq(events.sessionId, sessionId), inArray(events.id, Array.from(deleteIds))));
 	}
@@ -251,6 +263,92 @@ export async function insertHookEvents(
 	});
 
 	return persistEvents(sessionId, plan);
+}
+
+/** What identifies one managed-events delivery: who sent it, its id, and a digest of the raw body text. */
+export interface ManagedDeliveryIdentity {
+	/** The authenticated supervisor that sent it. */
+	senderId: string;
+	deliveryId: string;
+	bodyDigest: string;
+}
+
+export interface ManagedInsertResult {
+	events: SessionEvent[];
+	/** True when this delivery was already received: nothing was stored. */
+	replay: boolean;
+}
+
+/**
+ * Seams for the one transaction in insertManagedEvents. Production uses the
+ * defaults; a test replaces `persist` to force a failure after the receipt is
+ * written (the receipt must roll back with it) and `insertReceipt` to run the
+ * same scenario without the receipt (proving the receipt is what dedupes).
+ */
+export interface ManagedInsertDeps {
+	persist: (sessionId: string, plan: InsertPlan, tx: DbHandle) => Promise<SessionEvent[]>;
+	insertReceipt: (
+		tx: DbHandle,
+		sessionId: string,
+		receiptKey: string,
+		createdAt: string,
+	) => Promise<boolean>;
+}
+
+/** Writes the receipt; false when the same delivery already has one (a replay). */
+async function insertDeliveryReceipt(
+	tx: DbHandle,
+	sessionId: string,
+	receiptKey: string,
+	createdAt: string,
+): Promise<boolean> {
+	const written: Array<{ id: number }> = await tx
+		.insert(managedDeliveryReceipts)
+		.values({ sessionId, receiptKey, createdAt })
+		.onConflictDoNothing()
+		.returning({ id: managedDeliveryReceipts.id });
+	return written.length > 0;
+}
+
+const DEFAULT_MANAGED_INSERT_DEPS: ManagedInsertDeps = {
+	persist: persistEvents,
+	insertReceipt: insertDeliveryReceipt,
+};
+
+/**
+ * Managed-session events that arrived with a delivery id. One transaction, every
+ * statement on `tx`: the receipt first (a conflict means this delivery was
+ * already received, so nothing is stored and a replay is counted once), then the
+ * same content-window plan and insert as insertNormalizedEvents. The receipt is
+ * written even when the window then drops every row, which is what lets a later
+ * replay be recognised after the originals have left the 50-row window; a
+ * failure of the insert rolls the receipt back, so a retry still stores the rows.
+ */
+export async function insertManagedEvents(
+	sessionId: string,
+	normalizedEvents: NormalizedEvent[],
+	delivery: ManagedDeliveryIdentity,
+	seams: Partial<ManagedInsertDeps> = {},
+): Promise<ManagedInsertResult> {
+	if (normalizedEvents.length === 0) return { events: [], replay: false };
+	const deps: ManagedInsertDeps = { ...DEFAULT_MANAGED_INSERT_DEPS, ...seams };
+
+	const receiptKey = computeManagedReceiptKey(delivery);
+	return withTransaction(async (tx) => {
+		const now = new Date();
+		const fresh = await deps.insertReceipt(tx, sessionId, receiptKey, toDbTimestamp(now));
+		if (!fresh) {
+			recordDrops({ deliveryRetry: 1 });
+			return { events: [], replay: true };
+		}
+		const plan = planEventInsert({
+			policy: { kind: "content_window" },
+			recent: await loadRecentRows(sessionId, tx),
+			incoming: normalizedEvents,
+			nowIso: now.toISOString(),
+		});
+		return { events: await deps.persist(sessionId, plan, tx), replay: false };
+	});
 }
 
 // Detect agent type from the X-Agent-Type header. The payload argument is

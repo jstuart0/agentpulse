@@ -22,6 +22,11 @@ export interface NormalizedEvent {
 	toolInput: Record<string, unknown> | null;
 	toolResponse: string | null;
 	rawPayload: Record<string, unknown>;
+	/**
+	 * When the sender says the event happened (managed events only). Already
+	 * checked against the accepted window; display only, never used for a decision.
+	 */
+	occurredAt?: string | null;
 }
 
 // Hook-body char caps (F29, F40, F56, F76). The stored `toolResponse`

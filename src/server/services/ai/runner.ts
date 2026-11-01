@@ -142,7 +142,11 @@ export class WatcherRunner {
 	private readonly onSessionEvent = ({
 		sessionId,
 		event,
-	}: { sessionId: string; event: SessionEvent }) => {
+		late,
+	}: { sessionId: string; event: SessionEvent; late?: true }) => {
+		// A report delivered late from a supervisor's offline queue happened some
+		// time ago: it must not wake the watcher or count as a fresh user prompt.
+		if (late) return;
 		// Stamp user prompts immediately so race-control can see them even
 		// if the watcher was mid-call when the prompt landed.
 		if (event.category === "prompt") {

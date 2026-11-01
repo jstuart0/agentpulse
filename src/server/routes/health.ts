@@ -94,7 +94,8 @@ export function computeClientChecksums(): Promise<Record<string, string>> {
 //  - dbReady: true only after initializeDatabase() completes (S-24).
 //  - clients (D3/F20): relay/statusline script checksums (computeClientChecksums).
 //  - retention (AGEN-24): last retention pass (rowsDeleted for events,
-//    summariesDeleted for expired session summaries, durationMs, disabled) and
+//    summariesDeleted for expired session summaries, receiptsDeleted for
+//    managed-delivery receipts, durationMs, disabled) and
 //    the next scheduled tick — see services/retention-service.ts.
 //  - searchIndexes (AGEN-27 / percy TB17): Postgres trigram search-index
 //    presence ({ present, missing[] }), checked once at boot; null on

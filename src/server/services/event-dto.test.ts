@@ -74,4 +74,13 @@ describe("toSessionEventDto (DTO-1)", () => {
 		expect(dto.toolInput).toBeNull();
 		expect(dto.rawPayload).toEqual({});
 	});
+
+	test("occurredAt is omitted when null or absent, and present verbatim when set", () => {
+		for (const occurredAt of [null, undefined, ""]) {
+			const dto = toSessionEventDto({ ...FULL_ROW, occurredAt });
+			expect("occurredAt" in dto).toBe(false);
+		}
+		const dto = toSessionEventDto({ ...FULL_ROW, occurredAt: "2026-09-28T11:00:00.000Z" });
+		expect(dto.occurredAt).toBe("2026-09-28T11:00:00.000Z");
+	});
 });

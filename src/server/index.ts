@@ -7,7 +7,7 @@ import { markDbReady } from "./routes/health.js";
 import { getInFlightCount } from "./routes/ingest-counters.js";
 import { handleServerRequest } from "./server-fetch.js";
 import { startEmbeddingBackfillSchedule } from "./services/ai/embeddings/embedding-schedule.js";
-import { embedEvent } from "./services/ai/embeddings/embedding-service.js";
+import { embedLiveSessionEvent } from "./services/ai/embeddings/embedding-service.js";
 import { validateAiStartupConfig } from "./services/ai/feature.js";
 import { isAiBuildEnabled } from "./services/ai/feature.js";
 import { maybeStartWatcherRunner } from "./services/ai/runner.js";
@@ -244,9 +244,7 @@ void (async () => {
 // events that do reach it at once. Both no-op when AGENTPULSE_VECTOR_SEARCH
 // is unset, so this is safe to call unconditionally.
 startEmbeddingBackfillSchedule();
-sessionBus.on("session_event", ({ event }) => {
-	if (event.id > 0) void embedEvent(event.id);
-});
+sessionBus.on("session_event", (payload) => embedLiveSessionEvent(payload));
 void ensureBootstrapAdmin();
 // Warm the Telegram credential cache so getTelegramBotToken() /
 // getTelegramWebhookSecret() return the DB-stored value (not the env

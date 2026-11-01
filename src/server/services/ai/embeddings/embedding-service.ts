@@ -219,6 +219,18 @@ export async function embedEvent(eventId: number): Promise<void> {
 }
 
 /**
+ * The session-bus listener (server/index.ts): embeds a live event at once. A `late` event, one a
+ * supervisor replayed from its offline queue, is left to the paced backfill, so a host reconnecting
+ * with a long queue doesn't fan out into one embedding call per event.
+ */
+export function embedLiveSessionEvent(
+	payload: { event: { id: number }; late?: boolean },
+	embed: (eventId: number) => Promise<void> = embedEvent,
+): void {
+	if (payload.event.id > 0 && !payload.late) void embed(payload.event.id);
+}
+
+/**
  * Snapshot of indexing progress for the Settings UI. Counts cheap to
  * compute (sqlite COUNT scans index pages, not data).
  */

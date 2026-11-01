@@ -33,6 +33,15 @@ export const CODEX_NATIVE_MARKER_DIR = ".agentpulse/codex-native";
 export const HOST_HEADER = "X-AgentPulse-Host";
 
 /**
+ * REPLAY_HEADER: set to "1" by a supervisor on a report it is sending late,
+ * from its offline outbox or bridge spool. The server treats such a delivery
+ * as `late` (no watcher wake, no inline embed, a coalesced Live Activity
+ * refresh) and caps how many are admitted at once. Only the authenticated
+ * sender's own queueing decides it, never an event's own time.
+ */
+export const REPLAY_HEADER = "X-AgentPulse-Replay";
+
+/**
  * Exclude-rule literals: a user can list directories whose sessions should
  * never be reported, checked locally on their own machine before anything
  * is sent. Every evaluator (src/shared/exclude-rules.ts, the generated

@@ -27,6 +27,7 @@ export interface EventDtoSourceRow {
 	toolResponse: string | null;
 	rawPayload: unknown;
 	createdAt: string;
+	occurredAt?: string | null;
 	// Extra/unknown columns (dedupKey, or anything added later) are ignored.
 	[key: string]: unknown;
 }
@@ -46,6 +47,8 @@ export function toSessionEventDto(row: EventDtoSourceRow): SessionEvent {
 		toolResponse: row.toolResponse,
 		rawPayload: (row.rawPayload as Record<string, unknown>) ?? {},
 		createdAt: row.createdAt,
+		// Omitted, not null, when unknown: most events never carry one.
+		...(row.occurredAt ? { occurredAt: row.occurredAt } : {}),
 	};
 }
 

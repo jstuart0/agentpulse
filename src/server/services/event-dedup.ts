@@ -230,6 +230,20 @@ export function computeDedupKey(args: DedupKeyArgs): string {
 	return `${args.kind}:${sha256Hex(lengthPrefixed(fields)).slice(0, 32)}`;
 }
 
+/**
+ * The key of a managed-events delivery receipt: the first 32 hex chars of a
+ * sha256 over the length-prefixed supervisor id, delivery id and a digest of the
+ * raw body text. Keyed on the body as well, so a reused id with different
+ * content is a new delivery, not a replay.
+ */
+export function computeManagedReceiptKey(args: {
+	senderId: string;
+	deliveryId: string;
+	bodyDigest: string;
+}): string {
+	return sha256Hex(lengthPrefixed([args.senderId, args.deliveryId, args.bodyDigest])).slice(0, 32);
+}
+
 const DELIVERY_ID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
 
 /** Validates the `X-AgentPulse-Delivery-Id` header. Malformed → null (D3). */

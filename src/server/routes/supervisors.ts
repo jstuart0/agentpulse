@@ -1,10 +1,12 @@
 import { Hono } from "hono";
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { DELIVERY_ID_HEADER, REPLAY_HEADER } from "../../shared/hook-headers.js";
 import { privilegeCliArgs } from "../../shared/launch-privileges.js";
 import type {
 	ManagedSessionEventInput,
 	ManagedSessionStateInput,
+	SessionEvent,
 	SupervisorRegistrationInput,
 } from "../../shared/types.js";
 import type { AuthUser } from "../auth/middleware.js";
@@ -30,16 +32,19 @@ import {
 	isHostTokenCreatorStillAllowed,
 } from "../services/authorization.js";
 import { claimNextControlAction, updateControlAction } from "../services/control-actions.js";
+import { parseDeliveryId } from "../services/event-dedup.js";
 import { claimNextLaunchRequest, updateLaunchDispatchStatus } from "../services/launch-dispatch.js";
 import { associateObservedSession } from "../services/launch-dispatch.js";
 import { cleanMachineName } from "../services/machine-name.js";
 import {
 	ReservedEventTypeError,
+	appendManagedSessionDelivery,
 	appendManagedSessionEvents,
 	listManagedSessionsNeedingSync,
 	upsertManagedSessionState,
 } from "../services/managed-session-state.js";
 import { notifySessionEvents, notifySessionUpdated } from "../services/notifier.js";
+import { REPLAY_RETRY_AFTER_SECONDS, tryAcquireReplay } from "../services/replay-limiter.js";
 import { SessionOwnershipError } from "../services/session-ownership.js";
 import { getSession } from "../services/session-tracker.js";
 import { parseRegistrationShape } from "../services/supervisor-capabilities.js";
@@ -53,6 +58,7 @@ import {
 	revokeHost,
 	setSupervisorOwner,
 } from "../services/supervisor-registry.js";
+import { sha256Hex } from "../services/util/hash.js";
 
 // ── Dashboard-management router (requireAuth) ─────────────────────────────────
 // Mounted at /api/v1/admin/supervisors — falls through to the forwardauth
@@ -380,12 +386,55 @@ supervisorsAgentRouter.post(
 	},
 );
 
+/** A report body is a status line or a batch of events: 2 MiB is far above any real one. */
+const MANAGED_REPORT_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
+const managedReportBodyLimit = bodyLimit({
+	maxSize: MANAGED_REPORT_BODY_LIMIT_BYTES,
+	onError: (c) => c.json({ error: "payload_too_large" }, 413),
+});
+
+/**
+ * A report sent late, from a supervisor's offline queue, carries the replay header. At most
+ * MAX_CONCURRENT_REPLAYS are worked on at once per process; the rest are told to come back, which a
+ * supervisor treats as a server hiccup and retries. Live reports are never refused here. Runs after
+ * the credential check, so an unauthenticated caller can't hold a slot.
+ */
+const replayCap: MiddlewareHandler = async (c, next) => {
+	if (c.req.header(REPLAY_HEADER) !== "1") return next();
+	const release = tryAcquireReplay();
+	if (!release) {
+		c.header("Retry-After", String(REPLAY_RETRY_AFTER_SECONDS));
+		return c.json({ error: "busy" }, 503);
+	}
+	try {
+		await next();
+	} finally {
+		release();
+	}
+};
+
+/** The parsed JSON object, or null when the text isn't a JSON object. */
+function parseJsonObject(text: string): Record<string, unknown> | null {
+	try {
+		const parsed: unknown = JSON.parse(text);
+		return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: null;
+	} catch {
+		return null;
+	}
+}
+
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-session-state",
 	requireSupervisorAuth(),
+	replayCap,
+	managedReportBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
-		const body = await c.req.json<ManagedSessionStateInput>();
+		const late = c.req.header(REPLAY_HEADER) === "1";
+		const body = parseJsonObject(await c.req.text()) as ManagedSessionStateInput | null;
+		if (!body) return c.json({ error: "invalid_body" }, 400);
 		if (!body.sessionId) return c.json({ error: "sessionId is required" }, 400);
 		try {
 			const result = await upsertManagedSessionState(supervisorId, body);
@@ -396,7 +445,7 @@ supervisorsAgentRouter.post(
 			// broadcasting so both carry the owner this same call set.
 			const freshSession = await getSession(body.sessionId);
 			const freshResult = freshSession ? { ...result, session: freshSession } : result;
-			notifySessionUpdated(freshResult.session);
+			notifySessionUpdated(freshResult.session, { late });
 			return c.json(freshResult);
 		} catch (err) {
 			if (err instanceof SessionOwnershipError) {
@@ -415,16 +464,44 @@ supervisorsAgentRouter.post(
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-sessions/:sessionId/events",
 	requireSupervisorAuth(),
+	replayCap,
+	managedReportBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
 		const sessionId = c.req.param("sessionId") ?? "";
-		const body = await c.req.json<{ events: ManagedSessionEventInput[] }>();
+		const late = c.req.header(REPLAY_HEADER) === "1";
+		const text = await c.req.text();
+		const body = parseJsonObject(text) as { events?: unknown } | null;
+		const batch = body?.events ?? [];
+		if (
+			!body ||
+			!Array.isArray(batch) ||
+			batch.some((e) => typeof e !== "object" || e === null || Array.isArray(e))
+		) {
+			return c.json({ error: "invalid_body" }, 400);
+		}
+		const incoming = batch as ManagedSessionEventInput[];
+		// A well-formed delivery id makes the batch idempotent (a receipt is written with
+		// the rows); without one, or with a malformed one, the batch is handled as it
+		// always was.
+		const deliveryId = parseDeliveryId(c.req.header(DELIVERY_ID_HEADER));
 		try {
-			const inserted = await appendManagedSessionEvents(supervisorId, sessionId, body.events ?? []);
+			let inserted: SessionEvent[];
+			if (deliveryId) {
+				const result = await appendManagedSessionDelivery(supervisorId, sessionId, incoming, {
+					deliveryId,
+					bodyDigest: sha256Hex(text),
+				});
+				// A delivery already received changed nothing: there is nothing to announce.
+				if (result.replay) return c.json({ events: [] });
+				inserted = result.events;
+			} else {
+				inserted = await appendManagedSessionEvents(supervisorId, sessionId, incoming);
+			}
 			const session = await getSession(sessionId);
 			if (session) {
-				notifySessionUpdated(session);
-				notifySessionEvents(sessionId, inserted);
+				notifySessionUpdated(session, { late });
+				notifySessionEvents(sessionId, inserted, { late });
 			}
 			return c.json({ events: inserted });
 		} catch (err) {

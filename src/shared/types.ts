@@ -557,6 +557,8 @@ export interface SessionEvent {
 	toolResponse: string | null;
 	rawPayload: Record<string, unknown>;
 	createdAt: string;
+	/** When the sender says the event happened; display only, omitted when unknown. */
+	occurredAt?: string;
 }
 
 export interface LiveSessionEvent {
@@ -573,6 +575,8 @@ export interface LiveSessionEvent {
 	toolResponse: string | null;
 	rawPayload: Record<string, unknown>;
 	createdAt: string;
+	/** When the sender says the event happened; display only, omitted when unknown. */
+	occurredAt?: string;
 }
 
 // API key info (never includes the actual key)
@@ -1128,6 +1132,12 @@ export interface ManagedSessionEventInput {
 	isNoise?: boolean;
 	providerEventType?: string | null;
 	rawPayload?: Record<string, unknown>;
+	/**
+	 * When the event happened, set by the supervisor when it replays a report it
+	 * could not deliver at the time. Display only: the server keeps it only
+	 * inside a plausible window and never uses it for ordering or any decision.
+	 */
+	occurredAt?: string | null;
 }
 
 export interface SupervisorRegistrationInput {

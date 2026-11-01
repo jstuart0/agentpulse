@@ -275,6 +275,8 @@ export interface SessionEvent {
 	toolResponse: string | null;
 	rawPayload: Record<string, unknown>;
 	createdAt: string;
+	/** When the sender says the event happened; display only, omitted when unknown. */
+	occurredAt?: string;
 }
 
 /**
