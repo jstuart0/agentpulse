@@ -344,6 +344,29 @@ Agents post hooks to a relay on the same machine (`scripts/relay.ts`, listening 
 - **Multi-replica**: rolling updates on the Postgres overlay are safe for migrations only. The hook rate limiter, the per-owner session-creation limit, the key-mint limit, the password-change failure limit, the own-turn scan queue, in-flight coalescing and the session-summary breaker (per caller: three maximum-charged provider failures within `breakerWindowMs()` (10 minutes at the floor, 27 at the default call limit) refuse that caller `busy` for 5, 10, 20, 40, then 60 minutes on each consecutive re-open, reset by a success) and its daily ceiling (unknown-outcome maximum charges reaching 25% of the cap in a local day refuse every summary request with the budget refusal until the day rolls over; N replicas give N quarters), the two summary generation slots (`MAX_CONCURRENT_GENERATIONS`; N replicas give 2N), the per-caller summary request limit (6 a minute) and the one-generation-per-caller rule in team mode, and the push health/digest triggers (each replica runs its own scheduler, so N replicas send N copies of a `stuck`/`risky` push, which the relay-side collapse id merges on the phone, and may each send a digest before the first one's marker lands) are per-process memory (reset on restart, N times looser with N replicas). `AGENTPULSE_SESSION_SUMMARY_TIMEOUT_SECONDS` must be the same on every replica because the lease is derived in each process, not stored per row: a replica with a shorter limit can take over another's live attempt (a duplicate run and double spend), and its retention pass can delete a row a longer-limit replica is still generating, so that replica's `writeAttempt` matches nothing and the summary is lost while its spend is still settled; the watchdog is per process too. Instance mode and ownership are read from the database every request. Keep the single-replica recommendation until process-local state is externalised.
 - Three `packages/agentpulse-mcp/src/`-scoped architecture guards, chained into `check:architecture`: `check:no-console-log-mcp` fails on any `console.log`/`console.debug`/raw `process.stdout.write` under the package's `src/` (outside `log.ts`/`cli.ts`) — the stdio transport owns stdout for the JSON-RPC stream, so diagnostics must go through `log.ts`'s stderr-only logger instead; `check:mcp-no-raw-register-tool` fails on any `.registerTool(` call outside `server.ts` — every tool must register via `registerReadTool()`/`registerMutatingTool()` so output caps, error mapping, and rUI stamping stay structural; `check:mcp-no-cross-boundary-import` fails on any import reaching back into the main app's `src/server/`/`src/shared/` — the package must stay self-contained (it's extracted to a standalone npm package). A fourth guard, `check:mcp-tarball` (not chained into the fast `check:architecture` — it needs a real build + `npm pack`), audits the actual published tarball: path allowlist, zero sourcemaps (or `sourcesContent` if any leak through), zero npm lifecycle scripts, and a content scan for secret/internal shapes.
 
+## Feature parity across clients
+
+Every new feature, and every change to an existing one, must address parity across all AgentPulse clients. Do this in the plan, before implementation. A feature isn't done when only the server and the web dashboard have it.
+
+| Client | Where | What parity means |
+|---|---|---|
+| Web dashboard | `src/web/` | Every user-visible capability is reachable from the UI. |
+| MCP server | `packages/agentpulse-mcp/` | Read and act through tools where the scope model allows. The wire types are vendored, so keep the copy and its parity tests in step. |
+| iOS companion app | Separate, closed-source repository (not in this repo) | It consumes the REST/WebSocket/push contract. A feature a phone user would use or need to see gets an iOS implementation, either in the same campaign or as a linked follow-up ticket. |
+| Telegram / Ask | `src/server/services/channels/`, `services/ask/` | Only where the feature is something a person would ask for or be notified about. |
+
+Rules:
+
+- **Every plan has a `Client parity` section.** For each client above, it gives one of three verdicts:
+  - **implemented in this campaign**, with the phase named;
+  - **follow-up**, with the ticket ID;
+  - **not applicable**, with a one-line reason.
+
+  An empty section, or silence about a client, doesn't count.
+- **Contract changes are parity changes even when nothing new is visible.** That covers a DTO field added, renamed or removed, a new or changed WebSocket broadcast, a new refusal code, push payloads, pagination, and scope classification. The iOS app decodes these. Name the iOS impact, and keep additive changes backward compatible for an app version that's already installed.
+- **Server-internal features still get the check.** Examples: supervisor, relay, retention. If the feature changes what a user can observe (a new state, a count, a host condition), every client that shows that thing needs it.
+- **Follow-up tickets go in the AGEN Plane project** (see Plane Project below) and are linked from the feature's ticket.
+
 ## Deployment
 
 - **Local (SQLite default):** `docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true` (use `127.0.0.1:` prefix to avoid publishing auth-disabled server on all host interfaces)
