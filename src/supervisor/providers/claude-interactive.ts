@@ -1,12 +1,16 @@
 import { spawn } from "node:child_process";
-import type { Stats } from "node:fs";
-import { chmod, lstat, mkdir } from "node:fs/promises";
+import { chmod, mkdir } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { privilegeMetadata } from "../../shared/launch-privileges.js";
 import type { LaunchRequest } from "../../shared/types.js";
 import { loadSupervisorConfig, resolveHomeDir } from "../config.js";
+import {
+	SESSION_ID_PATTERN,
+	isPrivateOwnEntry,
+	isPrivateOwnStat,
+} from "../services/private-store.js";
 import type {
 	ClaudePromptAction,
 	InteractiveBridge,
@@ -24,37 +28,16 @@ import {
 	quoteShell,
 } from "./claude-shared.js";
 
+export { isPrivateOwnStat };
+
 const bridgeScriptPath = fileURLToPath(
 	new URL("../../../scripts/claude_terminal_bridge.py", import.meta.url),
 );
 
-const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const OWNER_FILE = "owner.json";
 
 function bridgeDirFor(sessionId: string) {
 	return join(resolveHomeDir(), ".agentpulse", "interactive", sessionId);
-}
-
-/** The bridge this supervisor created for the session, or null when it didn't (or the id isn't one of ours). */
-/** What lstat says about an entry that may hold a bridge: this user's, private, and the right kind (never a symlink). */
-export function isPrivateOwnStat(
-	info: Pick<Stats, "uid" | "mode" | "isSymbolicLink" | "isDirectory" | "isSocket">,
-	kind: "directory" | "socket",
-	uid: number | null,
-): boolean {
-	if (info.isSymbolicLink()) return false;
-	if (kind === "directory" ? !info.isDirectory() : !info.isSocket()) return false;
-	if (uid !== null && info.uid !== uid) return false;
-	return (info.mode & 0o077) === 0;
-}
-
-async function isPrivateOwnEntry(path: string, kind: "directory" | "socket"): Promise<boolean> {
-	try {
-		const uid = typeof process.getuid === "function" ? process.getuid() : null;
-		return isPrivateOwnStat(await lstat(path), kind, uid);
-	} catch {
-		return false;
-	}
 }
 
 /**

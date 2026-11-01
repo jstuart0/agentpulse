@@ -25,7 +25,7 @@ const runtimes = new Map<string, ManagedCodexRuntime>();
  * the app-server control channel, kills its process) before the process
  * itself exits.
  */
-function disposeAllManagedCodexRuntimes(): void {
+export function disposeAllManagedCodexRuntimes(): void {
 	for (const runtime of runtimes.values()) {
 		try {
 			runtime.dispose();

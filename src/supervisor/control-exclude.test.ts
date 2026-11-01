@@ -287,6 +287,7 @@ describe("the supervisor's own knowledge of a session wins over the server's", (
 				events: [
 					{
 						eventType: "ManagedSessionStopped",
+						occurredAt: expect.any(String),
 						category: "system_event",
 						content: "Managed session stopped by operator.",
 					},

@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { DELIVERY_ID_HEADER, REPLAY_HEADER } from "../shared/hook-headers.js";
 import type { ControlAction, LaunchRequest, ManagedSession } from "../shared/types.js";
 import {
 	ensureSupervisorConfigPrivate,
@@ -29,12 +30,19 @@ import { parseErrorBodyField, sanitizeForLog } from "./services/log-sanitize.js"
 import { executePrelaunchActions } from "./services/prelaunch-actions.js";
 import { retryWithBackoff } from "./services/registration-retry.js";
 import { createReportGate, heartbeatBody } from "./services/report-gate.js";
-import { SupervisorRequestError } from "./services/report-resilience.js";
+import {
+	SupervisorNetworkError,
+	SupervisorRequestError,
+	parseRetryAfterMs,
+} from "./services/report-resilience.js";
 import { assertTrustedRootsExcludeAgentpulseDir } from "./services/spawn-cwd.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 /** How often the exclude rules are re-read for a changed symlink, the stamp is refreshed and sessions a new rule covers are closed. */
 const EXCLUDE_SCAN_MS = 15_000;
+
+/** The only headers a caller may add to a request: the delivery id and the replay marker. Everything else is the transport's own. */
+const CALLER_HEADERS = [DELIVERY_ID_HEADER, REPLAY_HEADER];
 
 async function request(path: string, options?: RequestInit) {
 	const config = await loadSupervisorConfig();
@@ -44,12 +52,23 @@ async function request(path: string, options?: RequestInit) {
 	if (config.supervisorCredential)
 		headers["X-AgentPulse-Supervisor-Token"] = config.supervisorCredential;
 	if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
+	const callerHeaders = new Headers(options?.headers);
+	for (const name of CALLER_HEADERS) {
+		const value = callerHeaders.get(name);
+		if (value) headers[name] = value;
+	}
 
-	const res = await fetch(`${config.serverUrl}/api/v1${path}`, {
-		...options,
-		headers,
-		signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-	});
+	let res: Response;
+	try {
+		res = await fetch(`${config.serverUrl}/api/v1${path}`, {
+			...options,
+			headers,
+			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+		});
+	} catch (cause) {
+		// No answer at all (unreachable, reset, timed out): a different thing from an HTTP error.
+		throw new SupervisorNetworkError(cause);
+	}
 	if (!res.ok) {
 		// Best-effort: carry the server's own error string (F43) alongside the
 		// raw status for logging. F49: both the body and statusText are
@@ -58,7 +77,12 @@ async function request(path: string, options?: RequestInit) {
 		// the body read and strip control/ANSI characters before either ever
 		// reaches a log line.
 		const bodyError = await parseErrorBodyField(res);
-		throw new SupervisorRequestError(res.status, sanitizeForLog(res.statusText), bodyError);
+		throw new SupervisorRequestError(
+			res.status,
+			sanitizeForLog(res.statusText),
+			bodyError,
+			parseRetryAfterMs(res.headers.get("retry-after"), Date.now()),
+		);
 	}
 	return res.json();
 }

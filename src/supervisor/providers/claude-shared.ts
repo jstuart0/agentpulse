@@ -28,7 +28,7 @@ export type LaunchCallbacks = {
 	reportState: (
 		input: ManagedSessionStateInput,
 	) => Promise<{ session: Session; managedSession: ManagedSession }>;
-	reportEvents: (events: ManagedSessionEventInput[]) => Promise<void>;
+	reportEvents: (events: ManagedSessionEventInput[]) => Promise<unknown>;
 };
 
 export type ClaudePromptAction = {

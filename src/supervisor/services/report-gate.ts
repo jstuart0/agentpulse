@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 /**
  * The one place a supervisor report about a session leaves the machine.
  *
@@ -44,24 +45,18 @@
  * The supervisor does not see AGENTPULSE_SKIP of the agent it launched; the path
  * rules are what cover it.
  */
-import {
-	constants,
-	closeSync,
-	existsSync,
-	fstatSync,
-	lstatSync,
-	openSync,
-	readFileSync,
-	realpathSync,
-} from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
 	type LoadExcludeRulesResult,
 	MAX_CWD_LENGTH,
-	checkWindowsSecurityAt,
 	evaluateExclusion,
 } from "../../shared/exclude-rules.js";
-import { SUPERVISOR_EXCLUDE_STATE_STAMP_RELATIVE_PATH } from "../../shared/hook-headers.js";
+import {
+	DELIVERY_ID_HEADER,
+	REPLAY_HEADER,
+	SUPERVISOR_EXCLUDE_STATE_STAMP_RELATIVE_PATH,
+} from "../../shared/hook-headers.js";
 import { writePrivateFileAtomicNoFollow } from "../../shared/private-file.js";
 import type {
 	ManagedSession,
@@ -70,6 +65,11 @@ import type {
 	Session,
 } from "../../shared/types.js";
 import { type RulesWatch, createRulesWatch } from "./exclude-rules-watch.js";
+import {
+	readPrivateFileNoFollow,
+	isTrustedStateFileStat as storeIsTrustedStateFileStat,
+	trustedDirectory,
+} from "./private-store.js";
 
 /** The one sentence a refused launch or control action reports, whatever the reason. */
 export const LAUNCH_REFUSED_MESSAGE = "This host doesn't allow launches in that directory.";
@@ -83,7 +83,6 @@ const GATE_STATE_VERSION = 1;
 /** A state file larger than this is not read (the bound on entries and on a directory's length is far below it). */
 const MAX_GATE_STATE_BYTES = 32 * 1024 * 1024;
 const MAX_SESSION_ID_LENGTH = 1_024;
-const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
 /** What the gate knows about one session id. */
 type SessionRecord = {
@@ -112,6 +111,18 @@ export type ControlStatusBody = {
 };
 
 export type StateReportResult = { session: Session; managedSession: ManagedSession };
+
+/**
+ * What became of a report handed to the gate: `sent` (the server took it), `queued` (kept for later
+ * delivery), `excluded` (a rule covers the session: nothing left the host) or `blocked` (the rules or the
+ * gate's saved state can't be trusted: nothing left, and nothing was kept). A caller that must tell "held
+ * back, try again once the rules are valid" from "dropped for good" reads this.
+ */
+export type ReportOutcome = "sent" | "queued" | "excluded" | "blocked";
+
+/** Options for events: a stable delivery id (generated when omitted) the server dedupes on, and whether this is a late replay. */
+export type ReportEventsOptions = { deliveryId?: string; replay?: boolean };
+export type ReportStateOptions = { replay?: boolean };
 
 export interface ReportGateDeps {
 	/** The supervisor's request function: the gate's only way out. */
@@ -156,8 +167,15 @@ export interface ReportGate {
 	/** For an action that is not about a session: judged by the directory it names alone. */
 	verdictForDirectory(cwd: string | undefined): ReportVerdict;
 	rulesState(): "none" | "ok" | "invalid";
-	reportState(body: ManagedSessionStateInput): Promise<StateReportResult>;
-	reportEvents(sessionId: string, events: ManagedSessionEventInput[]): Promise<void>;
+	reportState(
+		body: ManagedSessionStateInput,
+		opts?: ReportStateOptions,
+	): Promise<StateReportResult & { outcome: ReportOutcome }>;
+	reportEvents(
+		sessionId: string,
+		events: ManagedSessionEventInput[],
+		opts?: ReportEventsOptions,
+	): Promise<ReportOutcome>;
 	reportLaunchStatus(launchId: string, body: LaunchStatusBody): Promise<void>;
 	/** The one fixed status for a launch this host will not start, sent whatever the reason and whatever the rules say. */
 	refuseLaunch(launchId: string): Promise<void>;
@@ -214,11 +232,6 @@ function closingStateBody(sessionId: string) {
 	};
 }
 
-function isMissing(error: unknown): boolean {
-	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return code === "ENOENT" || code === "ENOTDIR";
-}
-
 /** A state report that says the session has ended. */
 function isTerminalReport(body: ManagedSessionStateInput): boolean {
 	return (
@@ -230,36 +243,15 @@ function isTerminalReport(body: ManagedSessionStateInput): boolean {
 	);
 }
 
-type DirectoryStat = { isDirectory(): boolean; uid: number; mode: number };
-type FileStat = { isFile(): boolean; nlink: number; size: number; uid: number; mode: number };
-
 /** A directory this account owns that nobody else can write into (POSIX; Windows is judged by its ACL instead). */
-export function isTrustedDirectoryStat(st: DirectoryStat, uid: number | undefined): boolean {
-	if (!st.isDirectory()) return false;
-	if (uid !== undefined && st.uid !== uid) return false;
-	return (st.mode & 0o022) === 0;
-}
+export { isTrustedDirectoryStat } from "./private-store.js";
 
-/** A plain file with one link, within the size bound, that only this account can read or write (POSIX). */
-export function isTrustedStateFileStat(st: FileStat, uid: number | undefined): boolean {
-	return (
-		st.isFile() &&
-		st.nlink === 1 &&
-		st.size <= MAX_GATE_STATE_BYTES &&
-		(uid === undefined || st.uid === uid) &&
-		(st.mode & 0o077) === 0
-	);
-}
-
-function trustedDirectory(dir: string): boolean {
-	try {
-		const st = lstatSync(dir);
-		if (process.platform === "win32")
-			return st.isDirectory() && checkWindowsSecurityAt(dir) === null;
-		return isTrustedDirectoryStat(st, process.getuid?.());
-	} catch {
-		return false;
-	}
+/** A plain file with one link, within the gate's state-file size bound, that only this account can read or write (POSIX). */
+export function isTrustedStateFileStat(
+	st: Parameters<typeof storeIsTrustedStateFileStat>[0],
+	uid: number | undefined,
+): boolean {
+	return storeIsTrustedStateFileStat(st, uid, MAX_GATE_STATE_BYTES);
 }
 
 /**
@@ -298,8 +290,16 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	let persistWarned = false;
 	let skipWarned = false;
 
-	const post = (path: string, body: unknown) =>
-		deps.request(`${base}${path}`, { method: "POST", body: JSON.stringify(body) });
+	/** Every request that leaves the gate. `headers` is only ever the delivery id and replay marker. */
+	const sendText = (path: string, text: string, headers?: Record<string, string>) =>
+		deps.request(`${base}${path}`, {
+			method: "POST",
+			body: text,
+			...(headers ? { headers } : {}),
+		});
+	const post = (path: string, body: unknown) => sendText(path, JSON.stringify(body));
+	const replayHeader = (replay: boolean | undefined): Record<string, string> =>
+		replay ? { [REPLAY_HEADER]: "1" } : {};
 
 	const isLive = (rec: SessionRecord) =>
 		rec.reported === true && rec.closed !== true && rec.done !== true;
@@ -411,49 +411,15 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		| { kind: "ok"; entries: [string, SessionRecord][] }
 		| { kind: "untrusted"; why: string } {
 		if (!deps.home) return { kind: "absent" };
-		const dir = dirname(statePath);
+		const found = readPrivateFileNoFollow(statePath, MAX_GATE_STATE_BYTES);
+		if (found.kind !== "ok") return found;
 		try {
-			lstatSync(dir);
-		} catch (error) {
-			return isMissing(error)
-				? { kind: "absent" }
-				: { kind: "untrusted", why: "its directory cannot be inspected" };
-		}
-		if (!trustedDirectory(dir)) {
-			// Nothing in a directory others can write into is believed; no file there is no problem (nothing is saved there either).
-			try {
-				lstatSync(statePath);
-			} catch (error) {
-				return isMissing(error)
-					? { kind: "absent" }
-					: { kind: "untrusted", why: "its directory is not private to this account" };
-			}
-			return { kind: "untrusted", why: "its directory is not private to this account" };
-		}
-		let fd: number;
-		try {
-			fd = openSync(statePath, constants.O_RDONLY | O_NOFOLLOW);
-		} catch (error) {
-			return isMissing(error)
-				? { kind: "absent" }
-				: { kind: "untrusted", why: "it cannot be opened as a plain file" };
-		}
-		try {
-			const st = fstatSync(fd);
-			const trusted =
-				process.platform === "win32"
-					? st.isFile() && st.nlink === 1 && st.size <= MAX_GATE_STATE_BYTES
-					: isTrustedStateFileStat(st, process.getuid?.());
-			if (!trusted)
-				return { kind: "untrusted", why: "it is not a private plain file of this account" };
-			const entries = readSavedSessions(JSON.parse(readFileSync(fd, "utf-8")));
+			const entries = readSavedSessions(JSON.parse(found.text));
 			return entries === null
 				? { kind: "untrusted", why: "it is not a state file this version understands" }
 				: { kind: "ok", entries };
 		} catch {
 			return { kind: "untrusted", why: "it could not be read" };
-		} finally {
-			closeSync(fd);
 		}
 	}
 
@@ -669,26 +635,44 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		verdictForDirectory: decideDirectory,
 		rulesState: () => currentRules().state,
 
-		async reportState(body) {
+		async reportState(body, opts) {
 			const id = body.sessionId;
 			const verdict = decide(id);
 			if (verdict === "send") {
-				const result = (await post("/managed-session-state", body)) as StateReportResult;
+				const headers = replayHeader(opts?.replay);
+				const result = (await sendText(
+					"/managed-session-state",
+					JSON.stringify(body),
+					Object.keys(headers).length > 0 ? headers : undefined,
+				)) as StateReportResult;
 				markReported(id, isTerminalReport(body));
-				return result;
+				return { ...result, outcome: "sent" };
 			}
 			if (verdict === "excluded") await closeIfNeeded(id);
-			return DROPPED_STATE_RESULT;
+			// A copy: the shared dropped result is never written to.
+			return { ...DROPPED_STATE_RESULT, outcome: verdict === "excluded" ? "excluded" : "blocked" };
 		},
 
-		async reportEvents(sessionId, events) {
+		async reportEvents(sessionId, events, opts) {
 			const verdict = decide(sessionId);
 			if (verdict === "send") {
-				await post(`/managed-sessions/${sessionId}/events`, { events });
+				// One body, built once: a resend of the same delivery id carries the same bytes.
+				const stampedAt = new Date(now()).toISOString();
+				const text = JSON.stringify({
+					events: events.map((event) => ({ ...event, occurredAt: event.occurredAt ?? stampedAt })),
+				});
+				await sendText(`/managed-sessions/${sessionId}/events`, text, {
+					[DELIVERY_ID_HEADER]: opts?.deliveryId ?? randomUUID(),
+					...replayHeader(opts?.replay),
+				});
 				markReported(sessionId);
-			} else if (verdict === "excluded") {
-				await closeIfNeeded(sessionId);
+				return "sent";
 			}
+			if (verdict === "excluded") {
+				await closeIfNeeded(sessionId);
+				return "excluded";
+			}
+			return "blocked";
 		},
 
 		async reportLaunchStatus(launchId, body) {

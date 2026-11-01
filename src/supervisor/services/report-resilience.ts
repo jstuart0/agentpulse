@@ -24,14 +24,135 @@ export class SupervisorRequestError extends Error {
 	readonly status: number;
 	readonly statusText: string;
 	readonly error?: string;
+	/** The server's `Retry-After`, in milliseconds (at most an hour), when it sent a usable one. */
+	readonly retryAfterMs?: number;
 
-	constructor(status: number, statusText: string, error?: string) {
+	constructor(status: number, statusText: string, error?: string, retryAfterMs?: number) {
 		super(`Supervisor request failed: ${status} ${statusText}`);
 		this.name = "SupervisorRequestError";
 		this.status = status;
 		this.statusText = statusText;
 		this.error = error;
+		this.retryAfterMs = retryAfterMs;
 	}
+}
+
+/**
+ * The request never got an answer: the connection failed, was reset or timed out. Not an HTTP
+ * response, so it carries no status; it says the server (or the path to it) is unreachable.
+ */
+export class SupervisorNetworkError extends Error {
+	constructor(cause?: unknown) {
+		super(
+			`Supervisor request failed: network error${
+				cause instanceof Error && cause.name ? ` (${cause.name})` : ""
+			}`,
+		);
+		this.name = "SupervisorNetworkError";
+		this.cause = cause;
+	}
+}
+
+const MAX_RETRY_AFTER_MS = 60 * 60 * 1000;
+
+/**
+ * A `Retry-After` header value (delta-seconds or an HTTP date) as milliseconds from `nowMs`, or
+ * undefined when it is missing, unusable or negative. Capped at an hour so a hostile or broken server
+ * can't park a session's queue for longer.
+ */
+export function parseRetryAfterMs(
+	value: string | null | undefined,
+	nowMs: number,
+): number | undefined {
+	if (!value) return undefined;
+	const text = value.trim();
+	let ms: number;
+	if (/^\d+$/.test(text)) ms = Number(text) * 1000;
+	else {
+		const date = Date.parse(text);
+		if (Number.isNaN(date)) return undefined;
+		ms = date - nowMs;
+	}
+	if (!Number.isFinite(ms) || ms < 0) return undefined;
+	return Math.min(ms, MAX_RETRY_AFTER_MS);
+}
+
+/**
+ * How a failed report should be treated (plan D8):
+ *  - `network`: the server is unreachable. Global: stop sending, keep what is queued.
+ *  - `server`: a transient server answer (408, 425, 429, 5xx). This session backs off and the failure counts.
+ *  - `backoff`: the server's own back-pressure (a 503 carrying Retry-After, as the replay cap sends). This
+ *    session waits as told; it is not a failure and must never count toward the poison rule.
+ *  - `credential`: the supervisor's credential was rejected, in exactly the server's three wordings.
+ *  - `session`: the session is not this supervisor's (403 session_not_owned). Drop its queue.
+ *  - `entry`: this one report is malformed or forbidden (400 with a known code). Drop it.
+ *  - `stop`: anything else the server refused (404, 413, other 4xx, any other 401/403). This session backs
+ *    off like `server` and the failure counts.
+ *  - `other`: not a delivery failure at all (an error raised outside the request, a SyntaxError after a 2xx).
+ */
+export type ReportFailureClass =
+	| "network"
+	| "server"
+	| "backoff"
+	| "credential"
+	| "session"
+	| "entry"
+	| "stop"
+	| "other";
+
+const CREDENTIAL_401_ERRORS = new Set([
+	"Missing supervisor credential",
+	"Invalid supervisor credential",
+]);
+const CREDENTIAL_403_ERROR = "Supervisor credential does not match target supervisor";
+const ENTRY_400_ERRORS = new Set(["reserved_event_type", "invalid_body", "sessionId is required"]);
+
+export function classifyReportFailure(error: unknown): ReportFailureClass {
+	if (error instanceof SupervisorNetworkError) return "network";
+	if (!(error instanceof SupervisorRequestError)) return "other";
+	const { status } = error;
+	if (status === 401 && error.error !== undefined && CREDENTIAL_401_ERRORS.has(error.error)) {
+		return "credential";
+	}
+	if (status === 403 && error.error === CREDENTIAL_403_ERROR) return "credential";
+	if (status === 403 && error.error === "session_not_owned") return "session";
+	if (status === 400 && error.error !== undefined && ENTRY_400_ERRORS.has(error.error)) {
+		return "entry";
+	}
+	if (status === 503 && error.retryAfterMs !== undefined) return "backoff";
+	if (status === 408 || status === 425 || status === 429 || status >= 500) return "server";
+	return "stop";
+}
+
+/**
+ * Tells a real credential rejection from a transient one (a proxy's stray 401). The first rejection
+ * only records when it happened; a second at least `minGapMs` later confirms it. A success in between
+ * (`reset`) forgets the first.
+ */
+export interface CredentialTripwire {
+	record(): "first" | "confirmed";
+	reset(): void;
+}
+
+export function createCredentialTripwire(opts: {
+	now: () => number;
+	minGapMs?: number;
+}): CredentialTripwire {
+	const minGapMs = opts.minGapMs ?? 10_000;
+	let firstAt: number | null = null;
+	return {
+		record() {
+			const at = opts.now();
+			if (firstAt === null) {
+				firstAt = at;
+				return "first";
+			}
+			return at - firstAt >= minGapMs ? "confirmed" : "first";
+		},
+		reset() {
+			firstAt = null;
+		},
+	};
 }
 
 /** True when the supervisor's credential was rejected outright (401). */

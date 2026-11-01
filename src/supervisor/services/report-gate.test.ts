@@ -75,6 +75,8 @@ type Call = { path: string; method: string; body: unknown };
 
 function recorder(fail?: (call: Call) => Error | null) {
 	const calls: Call[] = [];
+	/** The headers each request in `calls` carried (parallel to it); undefined when it carried none. */
+	const headers: Array<Record<string, string> | undefined> = [];
 	const request = async (path: string, options?: RequestInit) => {
 		const call: Call = {
 			path,
@@ -84,9 +86,10 @@ function recorder(fail?: (call: Call) => Error | null) {
 		const error = fail?.(call);
 		if (error) throw error;
 		calls.push(call);
+		headers.push(options?.headers as Record<string, string> | undefined);
 		return { session: { displayName: "from-server" }, managedSession: {}, events: [] };
 	};
-	return { calls, request };
+	return { calls, headers, request };
 }
 
 function makeGate(
@@ -99,7 +102,7 @@ function makeGate(
 		logs?: string[];
 	} = {},
 ) {
-	const { calls, request } = opts.shared ?? recorder(opts.fail);
+	const { calls, headers, request } = opts.shared ?? recorder(opts.fail);
 	const gate = createReportGate({
 		request,
 		supervisorId: SUPERVISOR_ID,
@@ -109,7 +112,7 @@ function makeGate(
 		log: (line) => opts.logs?.push(line),
 		maxTrackedSessions: opts.maxTrackedSessions,
 	});
-	return { gate, calls };
+	return { gate, calls, headers };
 }
 
 const stateBody = (sessionId: string, cwd: string, extra: Record<string, unknown> = {}) => ({
@@ -159,7 +162,10 @@ describe("with no rules at all the gate is invisible", () => {
 			`POST ${BASE}/control-actions/act-1/status`,
 		]);
 		expect(calls[1]?.body).toEqual(stateBody("sess-1", work));
-		expect(calls[2]?.body).toEqual({ events: eventsFor() });
+		// events carry the time the gate sent them (its clock), and nothing else is added
+		expect(calls[2]?.body).toEqual({
+			events: eventsFor().map((e) => ({ ...e, occurredAt: new Date(clock).toISOString() })),
+		});
 		expect(calls[3]?.body).toEqual({ status: "succeeded" });
 	});
 
@@ -1595,6 +1601,112 @@ describe("what a report costs the filesystem", () => {
 		expect(rules.current().rules[0]?.resolved).toBe(elsewhere);
 		expect(rules.rescan().rules[0]?.resolved).toBe(work);
 		expect(rules.counters().loads).toBe(1);
+	});
+});
+
+describe("what became of a report (outcome), delivery ids and the replay marker (AGEN-83)", () => {
+	const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+	/** Puts the gate in each of the three situations: no rules (send), a rule over `work` (excluded), an invalid rules file (blocked). */
+	function situation(kind: "send" | "excluded" | "blocked") {
+		const made = makeGate();
+		made.gate.noteCwd("sess-1", work);
+		if (kind === "excluded") writeRules([work]);
+		if (kind === "blocked") writeRules(["not/an/absolute/path"]);
+		return made;
+	}
+
+	for (const kind of ["send", "excluded", "blocked"] as const) {
+		const outcome = kind === "send" ? "sent" : kind;
+		test(`reportEvents resolves "${outcome}" when the verdict is ${kind}`, async () => {
+			const { gate } = situation(kind);
+			expect(await gate.reportEvents("sess-1", eventsFor())).toBe(outcome);
+		});
+
+		test(`reportState resolves outcome "${outcome}" when the verdict is ${kind}, and a send keeps the server's answer`, async () => {
+			const { gate } = situation(kind);
+			const result = await gate.reportState(stateBody("sess-1", work));
+			expect(result.outcome).toBe(outcome);
+			if (kind === "send") expect(result.session.displayName).toBe("from-server");
+			else expect(result.session.displayName).toBe("");
+		});
+	}
+
+	test("a dropped state report is a fresh object each time: the shared dropped result is never written to", async () => {
+		const excluded = situation("excluded");
+		const first = await excluded.gate.reportState(stateBody("sess-1", work));
+		const again = await excluded.gate.reportState(stateBody("sess-1", work));
+		expect(first).not.toBe(again);
+		expect(first.outcome).toBe("excluded");
+		// the same gate later judging by an invalid file: the earlier "excluded" must not leak into it
+		const blocked = situation("blocked");
+		const dropped = await blocked.gate.reportState(stateBody("sess-1", work));
+		expect(dropped.outcome).toBe("blocked");
+		expect(first.outcome).toBe("excluded");
+		first.outcome = "sent";
+		const later = await blocked.gate.reportState(stateBody("sess-2", work));
+		expect(later.outcome).toBe("blocked");
+	});
+
+	test("events carry a UUID delivery id, distinct per send, and a given deliveryId is kept", async () => {
+		const { gate, headers } = makeGate();
+		await gate.reportEvents("sess-1", eventsFor());
+		await gate.reportEvents("sess-1", eventsFor("another"));
+		await gate.reportEvents("sess-1", eventsFor("third"), { deliveryId: "fixed-id-12345" });
+		const ids = headers.map((h) => h?.["X-AgentPulse-Delivery-Id"]);
+		expect(ids[0]).toMatch(UUID);
+		expect(ids[1]).toMatch(UUID);
+		expect(ids[0]).not.toBe(ids[1]);
+		expect(ids[2]).toBe("fixed-id-12345");
+		expect(headers.every((h) => h?.["X-AgentPulse-Replay"] === undefined)).toBe(true);
+	});
+
+	test("replay sets the replay header on events and on state, and only then", async () => {
+		const { gate, headers, calls } = makeGate();
+		await gate.reportEvents("sess-1", eventsFor(), { replay: true });
+		await gate.reportState(stateBody("sess-1", work), { replay: true });
+		await gate.reportState(stateBody("sess-1", work));
+		expect(calls.map((c) => c.path)).toEqual([
+			`${BASE}/managed-sessions/sess-1/events`,
+			`${BASE}/managed-session-state`,
+			`${BASE}/managed-session-state`,
+		]);
+		expect(headers[0]?.["X-AgentPulse-Replay"]).toBe("1");
+		expect(headers[1]).toEqual({ "X-AgentPulse-Replay": "1" });
+		expect(headers[2]).toBeUndefined();
+	});
+
+	test("occurredAt is stamped with the gate's clock on events that have none, and a preset one is kept", async () => {
+		const { gate, calls } = makeGate();
+		await gate.reportEvents("sess-1", [
+			...eventsFor("plain"),
+			{ ...eventsFor("old")[0], occurredAt: "2025-12-31T23:00:00.000Z" } as never,
+			{ ...eventsFor("nulled")[0], occurredAt: null } as never,
+		]);
+		const sent = (calls[0]?.body as { events: Array<{ content: string; occurredAt: string }> })
+			.events;
+		const at = new Date(clock).toISOString();
+		expect(sent.map((e) => [e.content, e.occurredAt])).toEqual([
+			["plain", at],
+			["old", "2025-12-31T23:00:00.000Z"],
+			["nulled", at],
+		]);
+	});
+
+	test("no other kind of request carries the delivery id or the replay marker", async () => {
+		const { gate, headers } = makeGate();
+		gate.noteCwd("launch-1", work);
+		gate.noteCwd("sess-1", work);
+		await gate.reportLaunchStatus("launch-1", { status: "running" });
+		await gate.reportState(stateBody("sess-1", work));
+		await gate.reportControlStatus("act-1", "sess-1", { status: "succeeded" });
+		await gate.refuseLaunch("launch-2");
+		await gate.refuseControlAction("act-2");
+		// the closing report of a newly excluded session
+		writeRules([work]);
+		await gate.scan();
+		expect(headers.length).toBeGreaterThanOrEqual(6);
+		expect(headers.every((h) => h === undefined || Object.keys(h).length === 0)).toBe(true);
 	});
 });
 
