@@ -286,6 +286,13 @@ def main() -> int:
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
 
+    def remove_liveness_markers() -> None:
+        pid_file.remove()
+        try:
+            os.unlink(socket_path)
+        except FileNotFoundError:
+            pass
+
     pid_file.write()
     signal.signal(signal.SIGHUP, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
@@ -404,9 +411,12 @@ def main() -> int:
                     if not output:
                         break
                     os.write(stdout_fd, output)
+    except BaseException:
+        # No final reports will follow an unexpected failure: the markers must not outlive it.
+        remove_liveness_markers()
+        raise
     finally:
         running = False
-        pid_file.remove()
         try:
             termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_tty)
         except termios.error:
@@ -419,12 +429,18 @@ def main() -> int:
             os.close(master_fd)
         except OSError:
             pass
-        try:
-            os.unlink(socket_path)
-        except FileNotFoundError:
-            pass
 
     exit_code = child.wait()
+    try:
+        _spool_final_reports(spool, session_id, socket_path, child, exit_code)
+    finally:
+        # The markers that say the bridge is alive go last: the supervisor drops a directory whose bridge
+        # is gone and whose reports/ is empty, so the final reports must already be on disk.
+        remove_liveness_markers()
+    return exit_code
+
+
+def _spool_final_reports(spool, session_id, socket_path, child, exit_code) -> None:
     spool.spool(
         "state",
         {
@@ -457,7 +473,6 @@ def main() -> int:
             ]
         },
     )
-    return exit_code
 
 
 if __name__ == "__main__":

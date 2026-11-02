@@ -82,11 +82,11 @@ const MIB = 1024 * 1024;
 /** Room kept free in an entry for its envelope (ids, timestamps) when splitting a body by size. */
 const ENVELOPE_RESERVE_BYTES = 4_096;
 export const OUTBOX_LIMITS: OutboxLimits = {
-	// A report the server takes live must be one the outbox can keep: the biggest body, plus its envelope.
-	// (The body is stored as a JSON string, so one full of quotes or control characters is larger on disk
-	// than on the wire; such a batch is split rather than lost.) The session and total bounds are unchanged:
-	// at most 64 MiB of entries, and a session's 8 MiB holds three of these.
-	entryBytes: MANAGED_REPORT_BODY_LIMIT_BYTES + ENVELOPE_RESERVE_BYTES,
+	// A report the server takes live must be one the outbox can keep, whole: the body is stored as a JSON
+	// string, which at worst doubles it (every character a quote or a backslash), so twice the biggest body
+	// the server takes, plus the envelope. The session and total bounds are unchanged: at most 64 MiB of
+	// entries in all (plus under 1 MiB of session.json files), and an 8 MiB session always takes one of these.
+	entryBytes: 2 * MANAGED_REPORT_BODY_LIMIT_BYTES + ENVELOPE_RESERVE_BYTES,
 	sessionBytes: 8 * MIB,
 	sessionEntries: 2_000,
 	totalBytes: 64 * MIB,
@@ -749,7 +749,11 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 		const budget = limits.entryBytes - ENVELOPE_RESERVE_BYTES;
 		const push = (chunk: unknown[]) => {
 			const text = JSON.stringify({ events: chunk });
-			if (chunk.length > 1 && storedBytes(text) > budget) {
+			// a piece must be something the server takes (within its body limit) and something an entry holds
+			const tooLarge =
+				byteLength(text) > MANAGED_REPORT_BODY_LIMIT_BYTES - ENVELOPE_RESERVE_BYTES ||
+				storedBytes(text) > budget;
+			if (chunk.length > 1 && tooLarge) {
 				const mid = Math.ceil(chunk.length / 2);
 				push(chunk.slice(0, mid));
 				push(chunk.slice(mid));
@@ -907,11 +911,17 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 			e.deliveryId && DELIVERY_ID_PATTERN.test(e.deliveryId) ? e.deliveryId : undefined;
 		const tooBig = storedBytes(e.body) > limits.entryBytes - ENVELOPE_RESERVE_BYTES;
 		const tooMany = total > limits.eventsPerEntry;
-		// An entry that was already sent as one request keeps its body and delivery id when it can: splitting
-		// it makes the server see different deliveries, and a lost acknowledgement could then store it twice.
-		// But one that cannot be kept whole is split anyway: a possible duplicate beats a certain loss.
-		const keepWhole = e.attempted && givenId !== undefined && !tooBig;
-		const pieces = (tooBig || tooMany) && !keepWhole ? (splitEvents(e.body) ?? [e.body]) : [e.body];
+		// An entry that was already sent as one request keeps its body and delivery id whenever the server
+		// could have taken it (it is within the server's body limit): the server may have committed it, and
+		// split pieces under new ids could not be matched to its receipt, so a lost acknowledgement would store
+		// the events twice. One over the limit cannot have been stored (the server refuses it), so splitting
+		// it is safe.
+		const overServer = byteLength(e.body) > MANAGED_REPORT_BODY_LIMIT_BYTES;
+		const keepWhole = e.attempted && givenId !== undefined && !overServer;
+		const pieces =
+			(tooBig || tooMany || overServer) && !keepWhole
+				? (splitEvents(e.body) ?? [e.body])
+				: [e.body];
 		let queued = 0;
 		let droppedUnits = 0;
 		for (const piece of pieces) {

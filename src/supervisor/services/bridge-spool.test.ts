@@ -13,6 +13,7 @@ import {
 	readFileSync,
 	readdirSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	utimesSync,
 	writeFileSync,
@@ -1211,7 +1212,8 @@ describe("idle ceilings", () => {
 		clock += SCAN_INTERVAL_MS + 1_000;
 		await drain.drain();
 		expect(counts.readFile, "no bridge.json is read again").toBe(0);
-		expect(counts.stat).toBeLessThanOrEqual(10_000);
+		// at most two lstats each: the directory, and reports/ for one that was dead and empty
+		expect(counts.stat).toBeLessThanOrEqual(20_000);
 		expect(counts.readdir).toBe(1);
 		expect(drain.stats().followed).toBe(0);
 	}, 60_000);
@@ -1701,44 +1703,111 @@ describe("what the spool will not keep for ever (AGEN-83 final review)", () => {
 		expect(logs.some((l) => l.includes("isn't a private plain file"))).toBe(true);
 	});
 
-	test("a report held longer than the server keeps a receipt (72 h) is dropped as lost, by its file time after a restart", async () => {
+	test("R1: nothing is dropped for its age: a 73 h old state file and a 73 h old events file are both delivered", async () => {
 		makeBridge("old");
-		put("old", 1, envelope("events", eventBody()));
+		put(
+			"old",
+			1,
+			envelope(
+				"state",
+				stateBody("old", {
+					status: "completed",
+					managedState: "completed",
+					metadata: endedMetadata("old"),
+				}),
+			),
+		);
+		put("old", 2, envelope("events", eventBody({ content: "late" })));
 		const aged = new Date(clock - 73 * 3_600_000);
-		utimesSync(seqFile("old", 1), aged, aged);
+		for (const seq of [1, 2]) utimesSync(seqFile("old", seq), aged, aged);
 		const { gate, calls } = recorder();
 		const { drain } = makeDrain(gate);
 		drain.admit("old");
 		await drain.drain();
-		expect(calls).toHaveLength(0);
+		expect(calls.map((c) => c.kind)).toEqual(["state", "events"]);
 		expect(remaining("old")).toEqual([]);
-		expect(drain.stats().lost).toBe(1);
+		expect(drain.stats().lost).toBe(0);
 	});
 
-	test("one held 71 h is still sent", async () => {
-		makeBridge("fresh");
-		put("fresh", 1, envelope("events", eventBody()));
-		const aged = new Date(clock - 71 * 3_600_000);
-		utimesSync(seqFile("fresh", 1), aged, aged);
-		const { gate, calls } = recorder();
-		const { drain } = makeDrain(gate);
-		drain.admit("fresh");
-		await drain.drain();
-		expect(calls).toHaveLength(1);
-	});
-
-	test("a report this process has held 72 h (the server was unreachable) is dropped by the process's own count", async () => {
+	test("R1: one this process has held 73 h (the server was unreachable) is still there and goes out when the server answers", async () => {
 		makeBridge("held");
 		put("held", 1, envelope("events", eventBody()));
-		const { gate, calls } = recorder(() => new Error("down"));
+		let down = true;
+		const { gate, calls } = recorder(() => (down ? new Error("down") : "sent"));
 		const { drain } = makeDrain(gate);
 		drain.admit("held");
 		await drain.drain();
-		expect(calls).toHaveLength(1);
 		clock += 73 * 3_600_000;
+		down = false;
 		await drain.drain();
-		expect(calls).toHaveLength(1); // not sent again
+		expect(calls.length).toBeGreaterThanOrEqual(2);
 		expect(remaining("held")).toEqual([]);
-		expect(drain.stats().lost).toBe(1);
+		expect(drain.stats().lost).toBe(0);
+	});
+});
+
+describe("a bridge's final reports are not stranded (AGEN-83 final review)", () => {
+	test("C2: a directory dropped while its reports/ was empty is looked at again when files appear in reports/ (the parent's mtime does not move)", async () => {
+		makeBridge("ending");
+		const { gate, calls } = recorder();
+		const { drain } = makeDrain(gate);
+		// the bridge has died (no pid file) and has not written its final reports yet: nothing to follow
+		await drain.drain();
+		expect(calls).toHaveLength(0);
+		expect(drain.stats().followed).toBe(0);
+		const parentBefore = statSync(bridgeDir("ending")).mtimeMs;
+		// the final state and the end event land inside reports/, which does not touch the directory above it
+		put(
+			"ending",
+			1,
+			envelope(
+				"state",
+				stateBody("ending", {
+					status: "completed",
+					managedState: "completed",
+					metadata: endedMetadata("ending"),
+				}),
+			),
+		);
+		put("ending", 2, envelope("events", eventBody({ content: "ended" })));
+		expect(statSync(bridgeDir("ending")).mtimeMs).toBe(parentBefore);
+		clock += SCAN_INTERVAL_MS + 1_000;
+		await drain.drain();
+		expect(calls.map((c) => c.kind)).toEqual(["state", "events"]);
+		expect(remaining("ending")).toEqual([]);
+	});
+
+	test("a quiet dead directory costs one extra stat of reports/ per scan, and is not read or listed again", async () => {
+		makeBridge("quiet");
+		const { gate } = recorder();
+		const { drain } = makeDrain(gate);
+		await drain.drain();
+		clock += SCAN_INTERVAL_MS + 1_000;
+		await drain.drain();
+		clock += SCAN_INTERVAL_MS + 1_000;
+		await drain.drain();
+		expect(drain.stats().followed).toBe(0);
+	});
+
+	test("the bridge writes its final reports before it removes the markers that say it is alive", () => {
+		const text = readFileSync(
+			join(import.meta.dir, "../../../scripts/claude_terminal_bridge.py"),
+			"utf-8",
+		);
+		const after = text.slice(text.indexOf("exit_code = child.wait()"));
+		const spooled = after.indexOf("_spool_final_reports(spool");
+		const removed = after.indexOf("remove_liveness_markers()");
+		expect(spooled).toBeGreaterThan(-1);
+		expect(removed).toBeGreaterThan(spooled);
+		// the cleanup that runs before the child is waited for removes neither marker
+		const cleanup = text.slice(
+			text.lastIndexOf("    finally:", text.indexOf("exit_code = child.wait()")),
+			text.indexOf("exit_code = child.wait()"),
+		);
+		expect(cleanup).not.toContain("pid_file.remove()");
+		expect(cleanup).not.toContain("remove_liveness_markers()");
+		expect(cleanup).not.toContain("os.unlink(socket_path)");
+		// an unexpected failure still removes them
+		expect(text).toMatch(/except BaseException:\s+#[^\n]*\n\s+remove_liveness_markers\(\)\s+raise/);
 	});
 });

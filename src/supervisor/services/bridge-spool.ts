@@ -33,7 +33,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, statSync, unlinkSync } from "node:fs";
 import { lstat as fsLstat, readdir as fsReaddir } from "node:fs/promises";
 import { join } from "node:path";
-import { DELIVERY_RECEIPT_RETENTION_MS, LATE_ARRIVAL_MS } from "../../shared/late-arrival.js";
+import { LATE_ARRIVAL_MS } from "../../shared/late-arrival.js";
 import { writePrivateFileAtomicNoFollow } from "../../shared/private-file.js";
 import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type { ManagedSessionEventInput, ManagedSessionStateInput } from "../../shared/types.js";
@@ -260,8 +260,8 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 	const privateDir = (st: SpoolStat) => isPrivateOwnStat(st, "directory", uid);
 
 	const followed = new Map<string, Followed>();
-	/** Names seen by the parent scan, with the directory's mtime when last examined. */
-	const known = new Map<string, number>();
+	/** Names seen by the parent scan: the directory's mtime when last examined, and reports/'s too when it was dead and empty. */
+	const known = new Map<string, { dir: number; reports?: number }>();
 	/** Directories the scan found that wait for room among the followed ones: name, mtime, probed nonce. */
 	const pendingAdmit = new Map<string, { mtimeMs: number; nonce: string }>();
 	/** The first pass after the drain starts treats every file it finds as a replay: it was written before this process existed. */
@@ -384,17 +384,6 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 		if (deps.credentialTripwire.record() === "confirmed") await onCredentialRejected();
 	}
 
-	function heldTooLong(entry: Followed, name: string, path: string): boolean {
-		const seen = entry.firstSeen.get(name);
-		let age = seen === undefined ? 0 : now() - seen;
-		try {
-			age = Math.max(age, now() - lstatSync(path).mtimeMs);
-		} catch {
-			// no file time to go by (a test double, or the file just went): this process's own count stands
-		}
-		return age > DELIVERY_RECEIPT_RETENTION_MS;
-	}
-
 	/** Whether the file is a private plain file of this account whose only fault is being over the size limit. */
 	function isTooLarge(path: string): boolean {
 		try {
@@ -428,14 +417,6 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 				name,
 				`[supervisor] a bridge report isn't a private plain file and was left alone: ${entry.id}`,
 			);
-			return "next";
-		}
-		// Held longer than the server keeps a receipt, a file could be stored a second time if it were sent
-		// now (a crash between the server's answer and the removal, then a long outage). It is dropped as
-		// lost instead. Its age is the longer of how long this process has had it and its file time: a
-		// restart forgets the first, and a writer able to age the file by touching it could equally delete it.
-		if (heldTooLong(entry, name, path)) {
-			discard(entry, name, true);
 			return "next";
 		}
 		let envelope: unknown;
@@ -700,19 +681,39 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 			} catch {
 				continue;
 			}
-			if (known.get(name) === st.mtimeMs) continue;
-			known.set(name, st.mtimeMs);
+			const before = known.get(name);
+			if (before !== undefined && before.dir === st.mtimeMs) {
+				// Examined and unchanged. One that was dead with nothing in reports/ is checked once more
+				// through reports/'s own mtime: a file written inside it does not move the directory above.
+				if (before.reports === undefined) continue;
+				try {
+					if ((await stat(join(root, name, "reports"))).mtimeMs === before.reports) continue;
+				} catch {
+					continue;
+				}
+			}
+			known.set(name, { dir: st.mtimeMs });
 			if (!privateDir(st)) continue;
 			const probe = newFollowed(name);
 			const live = await bridgeAlive(probe);
 			if (!live) {
+				let reportsMtime: number | undefined;
+				try {
+					reportsMtime = (await stat(probe.reportsDir)).mtimeMs;
+				} catch {
+					// no reports/ to watch
+				}
 				let inside: string[];
 				try {
 					inside = await readdir(probe.reportsDir);
 				} catch {
 					continue;
 				}
-				if (!inside.slice(0, MAX_LISTED_NAMES).some((n) => ENTRY_PATTERN.test(n))) continue;
+				if (!inside.slice(0, MAX_LISTED_NAMES).some((n) => ENTRY_PATTERN.test(n))) {
+					// Dead and empty now: remember reports/'s time, so files that appear in it are noticed.
+					known.set(name, { dir: st.mtimeMs, reports: reportsMtime });
+					continue;
+				}
 			}
 			const nonce = nonceOf(probe);
 			if (nonce === null) continue;

@@ -403,7 +403,7 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	const chains = new Map<string, Promise<unknown>>();
 	/** Network failures on replay sends so far in this pass: the first backs its session off, a second means the server is gone. */
 	let passNetworkFailures = 0;
-	/** Moves on whenever the server took a request or answered a heartbeat; a stuck head counts only if it moved since it failed. */
+	/** Moves on whenever the server took a send; a stuck head counts only if it moved since the head last failed. A heartbeat answering proves nothing about the sends. */
 	let successEpoch = 0;
 	const networkFailEpochs = new Map<string, number>();
 
@@ -996,8 +996,8 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			backoffBudgets.set(id, { seq: head.seq, waitedMs: spent });
 			counts = spent > BACKOFF_BUDGET_MS;
 			if (network) {
-				// Counts only if the server took something (a send or a heartbeat) since this head last failed:
-				// otherwise it is the outage, not the entry.
+				// Counts only if the server took a send since this head last failed: a heartbeat can answer while
+				// every replay times out, which is the host's connection, not this entry.
 				const movedOn = successEpoch > (networkFailEpochs.get(id) ?? -1);
 				networkFailEpochs.set(id, successEpoch);
 				counts = counts && movedOn;
@@ -1094,6 +1094,9 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		for (const dir of outbox.unknownDirs()) outbox.purgeDir(dir);
 		const budget = { left: FLUSH_MAX_PER_PASS };
 		passNetworkFailures = 0;
+		for (const id of [...networkFailEpochs.keys()]) {
+			if (!outbox.hasPending(id)) networkFailEpochs.delete(id);
+		}
 		for (const id of outbox.sessions()) {
 			if (budget.left <= 0 || offline) break;
 			if ((await flushSession(id, budget)) === "all") break;
@@ -1235,7 +1238,6 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		flush,
 		noteServerUnreachable: markOffline,
 		noteServerReachable() {
-			successEpoch++;
 			tripwire?.reset();
 			markReachable();
 		},

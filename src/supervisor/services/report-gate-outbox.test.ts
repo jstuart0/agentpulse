@@ -1416,24 +1416,44 @@ describe("one entry that never gets an answer does not stall everyone else", () 
 		expect(w.outbox.hasPending("B")).toBe(false);
 	});
 
-	test("a stuck head is not counted before six hours of waiting, and then is, once the server has taken something since it failed", async () => {
+	test("a stuck head is not counted before six hours of waiting, and then is, while the server keeps taking other sends", async () => {
 		const w = await queued([["A", "SLOW"]]);
 		w.setScript(SLOW);
 		const head = () => w.outbox.head("A") as { failures?: number } | null;
-		// five hours of retries, a heartbeat each time: the server is up, the entry just never answers
-		for (let i = 0; i < 280; i++) {
-			w.gate.noteServerReachable();
+		w.gate.noteServerReachable();
+		let n = 0;
+		// other sessions' reports go through all the time: the server is up, this entry just never answers
+		const step = async () => {
+			await w.gate.reportEvents("B", probe(`b${n++}`));
 			await w.gate.flush();
 			clock += 61_000;
-		}
+		};
+		for (let i = 0; i < 280; i++) await step();
 		expect(head()?.failures).toBeUndefined();
-		// well past the budget, with heartbeats answering: it counts and is removed as lost
-		for (let i = 0; i < 400 && head() !== null; i++) {
-			w.gate.noteServerReachable();
+		for (let i = 0; i < 400 && head() !== null; i++) await step();
+		expect(head()).toBeNull();
+	});
+
+	test("R2: heartbeats answering while every replay times out loses nothing over a day", async () => {
+		const outbox = createReportOutbox({
+			home,
+			supervisorId: "sup-1",
+			now: () => clock,
+			limits: { ageMs: 1e12 },
+		});
+		await outbox.ready();
+		const w = await world({ script: () => network(), outbox });
+		await w.gate.reportEvents("A", probe("a1"));
+		await w.gate.reportEvents("A", probe("a2"));
+		await w.gate.reportEvents("B", probe("b1"));
+		for (let i = 0; i < 1500; i++) {
+			w.gate.noteServerReachable(); // the heartbeat gets through every time
 			await w.gate.flush();
 			clock += 61_000;
 		}
-		expect(head()).toBeNull();
+		expect(clock - T0).toBeGreaterThan(24 * HOUR);
+		expect(w.pending()).toBe(3);
+		expect(w.outbox.summary().lastFlushLost).toBe(0);
 	});
 
 	test("past the budget but with no success in between (a genuine outage) it still does not count", async () => {

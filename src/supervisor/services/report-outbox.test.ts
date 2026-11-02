@@ -1654,9 +1654,9 @@ describe("an entry can hold what the server takes (AGEN-83 final review)", () =>
 			})),
 		});
 
-	test("the limits: an entry holds the server's 2 MiB body and its envelope; a session still holds several; the total is unchanged", () => {
-		expect(OUTBOX_LIMITS.entryBytes).toBeGreaterThanOrEqual(2 * MIB + 4_096);
-		expect(OUTBOX_LIMITS.sessionBytes).toBeGreaterThanOrEqual(3 * OUTBOX_LIMITS.entryBytes);
+	test("the limits: an entry holds the worst-case stored form of the server's 2 MiB body plus its envelope; a session holds at least one; the total is unchanged", () => {
+		expect(OUTBOX_LIMITS.entryBytes).toBeGreaterThanOrEqual(2 * 2 * MIB + 4_096);
+		expect(OUTBOX_LIMITS.sessionBytes).toBeGreaterThanOrEqual(OUTBOX_LIMITS.entryBytes);
 		// worst case on disk: the 64 MiB of entries plus a small session.json (under 4 KiB) for each of 256 sessions
 		expect(OUTBOX_LIMITS.totalBytes).toBe(64 * MIB);
 		expect(OUTBOX_LIMITS.sessions * 4_096).toBeLessThanOrEqual(MIB);
@@ -1678,21 +1678,70 @@ describe("an entry can hold what the server takes (AGEN-83 final review)", () =>
 		expect(out[0]?.body).toBe(body);
 	});
 
-	test("an attempted batch that cannot fit as one entry is split anyway: a possible duplicate beats a certain loss", async () => {
+	test("C1: an attempted all-quotes body the server accepts is kept whole, with its delivery id (the server may have committed it)", async () => {
 		const box = open();
 		await box.ready();
-		// quotes double again when the body is stored as a JSON string: 1.5 MiB on the wire, over 3 MiB stored
+		// 1.5 MiB on the wire; quotes double again when stored as a JSON string, so over 2 MiB on disk
 		const body = events(6, '"'.repeat(130_000));
 		expect(Buffer.byteLength(body)).toBeLessThan(2 * MIB);
+		expect(Buffer.byteLength(JSON.stringify(body))).toBeGreaterThan(2 * MIB);
+		expect(
+			box.append("s1", { kind: "events", body, attempted: true, deliveryId: "abcdefgh-1234" }),
+		).toBe("queued");
+		const out = drain(box, "s1");
+		expect(out).toHaveLength(1);
+		expect(out[0]?.deliveryId).toBe("abcdefgh-1234");
+		expect(out[0]?.attempted).toBe(true);
+		expect(out[0]?.body).toBe(body);
+	});
+
+	test("R3: a single all-quotes event at the content cap, which the server accepts, is kept whole whether or not it was attempted", async () => {
+		const box = open();
+		await box.ready();
+		const body = JSON.stringify({
+			events: [
+				{ eventType: "ManagedProbe", category: "system_event", content: '"'.repeat(1_000_000) },
+			],
+		});
+		expect(Buffer.byteLength(body)).toBeLessThanOrEqual(2 * MIB);
+		expect(Buffer.byteLength(JSON.stringify(body))).toBeGreaterThan(3 * MIB);
+		expect(
+			box.append("a", { kind: "events", body, attempted: true, deliveryId: "abcdefgh-0001" }),
+		).toBe("queued");
+		expect(box.append("b", { kind: "events", body, attempted: false })).toBe("queued");
+		const kept = box.head("a") as OutboxEntry;
+		expect(kept.deliveryId).toBe("abcdefgh-0001");
+		expect(kept.body).toBe(body);
+	});
+
+	test("an attempted body over the server's limit is split: the server cannot have stored it", async () => {
+		const box = open();
+		await box.ready();
+		const body = events(6, "y".repeat(450_000)); // about 2.7 MiB
+		expect(Buffer.byteLength(body)).toBeGreaterThan(2 * MIB);
 		expect(
 			box.append("s1", { kind: "events", body, attempted: true, deliveryId: "abcdefgh-1234" }),
 		).toBe("queued");
 		const out = drain(box, "s1");
 		expect(out.length).toBeGreaterThan(1);
-		expect(out.every((e) => e.attempted === false)).toBe(true);
 		expect(out.every((e) => e.deliveryId !== "abcdefgh-1234")).toBe(true);
 		const kept = out.flatMap((e) => (JSON.parse(e.body) as { events: unknown[] }).events);
 		expect(kept).toHaveLength(6);
+	});
+
+	test("a maximum-size entry is never refused by the session limit on its own", async () => {
+		const box = open();
+		await box.ready();
+		const body = JSON.stringify({
+			events: [
+				{ eventType: "ManagedProbe", category: "system_event", content: '"'.repeat(1_000_000) },
+			],
+		});
+		expect(OUTBOX_LIMITS.sessionBytes).toBeGreaterThan(OUTBOX_LIMITS.entryBytes);
+		// an empty session takes one; the next one makes room by the usual rules rather than being refused
+		for (let i = 0; i < 5; i++) {
+			expect(box.append("s1", { kind: "events", body, attempted: false })).toBe("queued");
+		}
 	});
 
 	test("a single 1.9 MB event that the server takes is kept (it was lost at the old 1 MiB limit)", async () => {
