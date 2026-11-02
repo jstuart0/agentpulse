@@ -3,6 +3,10 @@ import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { DELIVERY_ID_HEADER, REPLAY_HEADER } from "../../shared/hook-headers.js";
 import { privilegeCliArgs } from "../../shared/launch-privileges.js";
+import {
+	MANAGED_REPORT_BODY_LIMIT_BYTES,
+	MAX_EVENT_CONTENT_CHARS,
+} from "../../shared/managed-report-limits.js";
 import type {
 	ManagedSessionEventInput,
 	ManagedSessionStateInput,
@@ -392,7 +396,6 @@ supervisorsAgentRouter.post(
 );
 
 /** A report body is a status line or a batch of events: 2 MiB is far above any real one. */
-const MANAGED_REPORT_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 const managedReportBodyLimit = bodyLimit({
 	maxSize: MANAGED_REPORT_BODY_LIMIT_BYTES,
 	onError: (c) => c.json({ error: "payload_too_large" }, 413),
@@ -416,7 +419,6 @@ function replayBusy(c: Context) {
 }
 
 const MAX_EVENT_TYPE_CHARS = 256;
-const MAX_EVENT_CONTENT_CHARS = 1_000_000;
 const MAX_EVENT_SHORT_FIELD_CHARS = 256;
 const MAX_SESSION_ID_CHARS = 1024;
 

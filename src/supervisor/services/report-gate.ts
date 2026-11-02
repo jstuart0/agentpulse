@@ -59,6 +59,7 @@ import {
 	REPLAY_HEADER,
 	SUPERVISOR_EXCLUDE_STATE_STAMP_RELATIVE_PATH,
 } from "../../shared/hook-headers.js";
+import { clampEventContent } from "../../shared/managed-report-limits.js";
 import { writePrivateFileAtomicNoFollow } from "../../shared/private-file.js";
 import type {
 	ManagedSession,
@@ -252,6 +253,8 @@ export interface ReportGate {
 	noteServerUnreachable(): void;
 	/** The server answered (a heartbeat, a send): reports go to it again, and the credential tripwire is cleared. */
 	noteServerReachable(): void;
+	/** The server answered with an error status (a heartbeat or a send): it can be reached, so the offline latch clears; the credential tripwire is not reset. */
+	noteServerContact(): void;
 	isOffline(): boolean;
 }
 
@@ -398,6 +401,11 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	/** How long a queue head has waited on the server's back-pressure in all. */
 	const backoffBudgets = new Map<string, { seq: number; waitedMs: number }>();
 	const chains = new Map<string, Promise<unknown>>();
+	/** Network failures on replay sends so far in this pass: the first backs its session off, a second means the server is gone. */
+	let passNetworkFailures = 0;
+	/** Moves on whenever the server took a request or answered a heartbeat; a stuck head counts only if it moved since it failed. */
+	let successEpoch = 0;
+	const networkFailEpochs = new Map<string, number>();
 
 	function markOffline() {
 		offline = true;
@@ -409,6 +417,7 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	}
 	/** The server was reached and took a request: the credential is good and the path is open. */
 	function onContact() {
+		successEpoch++;
 		tripwire?.reset();
 		markReachable();
 	}
@@ -437,6 +446,9 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			onContact();
 			return result;
 		} catch (error) {
+			// An answer of any kind (an error status included) shows the server can be reached; only a 2xx
+			// shows the credential is good.
+			if (error instanceof SupervisorRequestError) markReachable();
 			if (classifyReportFailure(error) === "credential") await handleCredential(error);
 			throw error;
 		}
@@ -480,11 +492,14 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		return rec.interactive === true && deps.isBridgeActive?.(id) === true;
 	}
 
+	/** A session with reports queued is not forgotten: its rules and its closing report still need the gate's memory. */
+	const hasQueued = (id: string) => outbox?.hasPending(id) === true;
+
 	/** Makes room for one more session by forgetting one that no longer needs the gate (never one in `keep`); false when there is none. */
 	function evictOne(keep: readonly string[]): boolean {
 		let fallback: string | undefined;
 		for (const [id, rec] of sessions) {
-			if (isLive(rec) || keep.includes(id) || protectedBridge(id, rec)) continue;
+			if (isLive(rec) || keep.includes(id) || protectedBridge(id, rec) || hasQueued(id)) continue;
 			if (!rec.excluded) {
 				sessions.delete(id);
 				return true;
@@ -511,7 +526,7 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 				if (liveCount() >= maxTracked) return undefined;
 			} else {
 				const oldest = [...sessions].find(
-					([key, rec]) => !keep.includes(key) && !protectedBridge(key, rec),
+					([key, rec]) => !keep.includes(key) && !protectedBridge(key, rec) && !hasQueued(key),
 				)?.[0];
 				if (oldest !== undefined) sessions.delete(oldest);
 			}
@@ -923,10 +938,7 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	): Promise<"continue" | "next" | "all"> {
 		if (!outbox) return "next";
 		const failure = classifyReportFailure(error);
-		if (failure === "network") {
-			markOffline();
-			return "all";
-		}
+		let network = failure === "network";
 		if (failure === "credential") {
 			// A rejection the tripwire has not confirmed (the first, or any over plain http to a non-local server,
 			// where none is ever acted on): the entry stays and is not counted against, and the session waits out
@@ -957,25 +969,39 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			const creator = outbox.queuedStates(id)[0];
 			if (creator) {
 				const result = await sendCreator(id, creator);
-				if (result === "network") return "all";
 				if (result === "sent") return "continue";
+				if (result === "network") network = true;
 			}
+		}
+		// No answer to a replay send. One stuck entry must not stall everyone else's replay, and a genuine
+		// outage must cost nothing: the first such failure in a pass backs this session off without counting
+		// it and moves on; a second means the server is gone, so the pass ends and the gate goes offline.
+		if (network && ++passNetworkFailures >= 2) {
+			markOffline();
+			return "all";
 		}
 		// A 401 or 403 that isn't the server's own credential wording comes from something in front of it (a
 		// proxy, an auth edge, a captive portal) and says nothing about this report.
 		const edge = failure === "stop" && isEdgeRejection(error);
 		// The server's own back-pressure, those, and a row-less 500 are waiting, not failing. They count only
 		// once a head has waited longer than the budget.
-		const waiting = failure === "backoff" || missingRow || edge;
+		const waiting = network || failure === "backoff" || missingRow || edge;
 		let counts = !waiting;
 		if (counts) {
 			noteSessionFailure(id, error, true);
 		} else {
-			const wait = noteSessionFailure(id, error, missingRow || edge);
+			const wait = noteSessionFailure(id, error, network || missingRow || edge);
 			const budget = backoffBudgets.get(id);
 			const spent = (budget?.seq === head.seq ? budget.waitedMs : 0) + wait;
 			backoffBudgets.set(id, { seq: head.seq, waitedMs: spent });
 			counts = spent > BACKOFF_BUDGET_MS;
+			if (network) {
+				// Counts only if the server took something (a send or a heartbeat) since this head last failed:
+				// otherwise it is the outage, not the entry.
+				const movedOn = successEpoch > (networkFailEpochs.get(id) ?? -1);
+				networkFailEpochs.set(id, successEpoch);
+				counts = counts && movedOn;
+			}
 			// The edge is in front of every session: the whole pass waits, not just this one.
 			if (edge) edgeHoldUntilMs = now() + wait;
 		}
@@ -1067,6 +1093,7 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		}
 		for (const dir of outbox.unknownDirs()) outbox.purgeDir(dir);
 		const budget = { left: FLUSH_MAX_PER_PASS };
+		passNetworkFailures = 0;
 		for (const id of outbox.sessions()) {
 			if (budget.left <= 0 || offline) break;
 			if ((await flushSession(id, budget)) === "all") break;
@@ -1136,6 +1163,8 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 					const text = JSON.stringify({
 						events: events.map((event) => ({
 							...event,
+							// What the server would refuse (an over-long content) is cut here, not lost with its batch.
+							content: clampEventContent(event.content),
 							occurredAt: event.occurredAt ?? stampedAt,
 						})),
 					});
@@ -1206,9 +1235,11 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		flush,
 		noteServerUnreachable: markOffline,
 		noteServerReachable() {
+			successEpoch++;
 			tripwire?.reset();
 			markReachable();
 		},
+		noteServerContact: markReachable,
 		isOffline: () => offline,
 	};
 }

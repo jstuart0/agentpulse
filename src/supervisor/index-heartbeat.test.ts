@@ -142,7 +142,9 @@ describe("src/supervisor/index.ts keeps the host alive and offline-aware (AGEN-8
 		);
 		expect(beat).toContain("gate.noteServerReachable()");
 		expect(beat).toContain("classifyReportFailure(error)");
-		expect(beat).toMatch(/failure === "network"\) gate\.noteServerUnreachable\(\)/);
+		expect(beat).toMatch(/failure === "network"\) \{\s*gate\.noteServerUnreachable\(\)/);
+		// any answer, an error status included, shows the server can be reached
+		expect(beat).toMatch(/error instanceof SupervisorRequestError\) gate\.noteServerContact\(\)/);
 		expect(beat).toMatch(
 			/failure === "credential" && credentialTripwire\.record\(\) === "confirmed"/,
 		);

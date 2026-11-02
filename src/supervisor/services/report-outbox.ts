@@ -1,3 +1,7 @@
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { lstatSync, mkdirSync, readdirSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
+import { lstat, readdir } from "node:fs/promises";
+import { join } from "node:path";
 /**
  * The supervisor's offline outbox: a bounded, private, per-session queue of the session reports it could
  * not deliver, kept on disk so it survives a restart. This module only STORES. It knows nothing about the
@@ -35,10 +39,7 @@
  * Units: `pending` counts queued reports (entries). `delivered` and `lost` count events for an events
  * entry and one for a state entry; a gap entry delivers nothing of the user's.
  */
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
-import { lstat, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { MANAGED_REPORT_BODY_LIMIT_BYTES } from "../../shared/managed-report-limits.js";
 import { writePrivateFileAtomicNoFollow } from "../../shared/private-file.js";
 import type { ManagedSessionEventInput, ManagedSessionStateInput } from "../../shared/types.js";
 import { isPrivateOwnStat, readPrivateFileNoFollow, trustedDirectory } from "./private-store.js";
@@ -78,8 +79,14 @@ export interface OutboxLimits {
 }
 
 const MIB = 1024 * 1024;
+/** Room kept free in an entry for its envelope (ids, timestamps) when splitting a body by size. */
+const ENVELOPE_RESERVE_BYTES = 4_096;
 export const OUTBOX_LIMITS: OutboxLimits = {
-	entryBytes: MIB,
+	// A report the server takes live must be one the outbox can keep: the biggest body, plus its envelope.
+	// (The body is stored as a JSON string, so one full of quotes or control characters is larger on disk
+	// than on the wire; such a batch is split rather than lost.) The session and total bounds are unchanged:
+	// at most 64 MiB of entries, and a session's 8 MiB holds three of these.
+	entryBytes: MANAGED_REPORT_BODY_LIMIT_BYTES + ENVELOPE_RESERVE_BYTES,
 	sessionBytes: 8 * MIB,
 	sessionEntries: 2_000,
 	totalBytes: 64 * MIB,
@@ -95,8 +102,6 @@ const OUTBOX_RELATIVE_ROOT = join(".agentpulse", "supervisor-outbox");
 const META_FILE = "outbox-meta.json";
 const SESSION_FILE = "session.json";
 const MAX_SESSION_ID_LENGTH = 1_024;
-/** Room kept free in an entry for its envelope (ids, timestamps) when splitting a body by size. */
-const ENVELOPE_RESERVE_BYTES = 4_096;
 const DIR_PATTERN = /^s-[0-9a-f]{32}$/;
 const ENTRY_PATTERN = /^(\d{16})\.json$/;
 const TMP_PATTERN = /^\..*\.tmp$/;
@@ -733,6 +738,9 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 
 	// ── append ──
 
+	/** What a body costs inside an entry file: it is stored as a JSON string, so quotes and control characters grow. */
+	const storedBytes = (body: string) => byteLength(JSON.stringify(body));
+
 	function splitEvents(body: string): string[] | null {
 		const parsed = parseObject(body);
 		const list = parsed?.events;
@@ -741,7 +749,7 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 		const budget = limits.entryBytes - ENVELOPE_RESERVE_BYTES;
 		const push = (chunk: unknown[]) => {
 			const text = JSON.stringify({ events: chunk });
-			if (chunk.length > 1 && byteLength(text) > budget) {
+			if (chunk.length > 1 && storedBytes(text) > budget) {
 				const mid = Math.ceil(chunk.length / 2);
 				push(chunk.slice(0, mid));
 				push(chunk.slice(mid));
@@ -897,13 +905,13 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 		const total = parsed.events.length;
 		const givenId =
 			e.deliveryId && DELIVERY_ID_PATTERN.test(e.deliveryId) ? e.deliveryId : undefined;
-		const oversize =
-			total > limits.eventsPerEntry ||
-			byteLength(e.body) > limits.entryBytes - ENVELOPE_RESERVE_BYTES;
-		// An entry that was already sent as one request keeps its body and delivery id: splitting it would
-		// make the server see a different delivery, and a lost acknowledgement could then store it twice.
-		const pieces =
-			oversize && !(e.attempted && givenId) ? (splitEvents(e.body) ?? [e.body]) : [e.body];
+		const tooBig = storedBytes(e.body) > limits.entryBytes - ENVELOPE_RESERVE_BYTES;
+		const tooMany = total > limits.eventsPerEntry;
+		// An entry that was already sent as one request keeps its body and delivery id when it can: splitting
+		// it makes the server see different deliveries, and a lost acknowledgement could then store it twice.
+		// But one that cannot be kept whole is split anyway: a possible duplicate beats a certain loss.
+		const keepWhole = e.attempted && givenId !== undefined && !tooBig;
+		const pieces = (tooBig || tooMany) && !keepWhole ? (splitEvents(e.body) ?? [e.body]) : [e.body];
 		let queued = 0;
 		let droppedUnits = 0;
 		for (const piece of pieces) {
@@ -1210,7 +1218,13 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 		}
 		// The oldest state report is left as it is (it may create the session on the server, see foldOne).
 		const agedStates = loaded.filter((x) => x.entry.kind === "state").slice(1);
-		const agedOther = loaded.filter((x) => x.entry.kind !== "state");
+		// A gap that has been sent (attempted) keeps its delivery id and flag: the server may have stored it, and
+		// a new id would store a second ManagedEventsLost row. Only a gap not yet sent may absorb more, and a
+		// lone gap needs nothing done to it, so a pass over an already-aged gap changes nothing on disk.
+		const agedOther = loaded.filter(
+			(x) => x.entry.kind !== "state" && !(x.entry.kind === "gap" && x.entry.attempted),
+		);
+		const onlyAGap = agedOther.length === 1 && agedOther[0]?.entry.kind === "gap";
 		if (agedStates.length > 1) {
 			const [first, ...rest] = agedStates as [(typeof agedStates)[number], ...typeof agedStates];
 			let folded = parseObject(first.entry.body) as unknown as ManagedSessionStateInput | null;
@@ -1234,7 +1248,7 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 				}
 			}
 		}
-		if (agedOther.length > 0) {
+		if (agedOther.length > 0 && !onlyAGap) {
 			const units = agedOther.reduce(
 				(sum, x) => sum + (x.entry.kind === "gap" ? (x.entry.lost ?? 0) : eventCount(x.entry)),
 				0,

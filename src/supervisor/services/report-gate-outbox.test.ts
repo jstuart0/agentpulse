@@ -83,6 +83,7 @@ function buildWorld(
 		withTripwire?: boolean;
 		random?: () => number;
 		outbox?: ReturnType<typeof createReportOutbox>;
+		maxTrackedSessions?: number;
 	} = {},
 ) {
 	const calls: Call[] = [];
@@ -123,6 +124,7 @@ function buildWorld(
 		now: () => clock,
 		log: (l) => logs.push(l),
 		outbox,
+		maxTrackedSessions: over.maxTrackedSessions,
 		...credentials,
 		random: over.random ?? (() => 0.5),
 		schedule: (fn, ms) => {
@@ -405,15 +407,17 @@ describe("sending what was kept", () => {
 		expect(await flushed(w)).toHaveLength(1);
 	});
 
-	test("a network failure in a flush latches offline, keeps everything and ends the pass", async () => {
+	test("a second network failure in a flush latches offline, keeps everything and ends the pass", async () => {
 		const w = await world({ script: () => network() });
 		await w.gate.reportEvents("s1", probe("a"));
 		await w.gate.reportEvents("s2", probe("b"));
+		await w.gate.reportEvents("s3", probe("c"));
 		w.gate.noteServerReachable();
 		const sent = await flushed(w);
-		expect(sent).toHaveLength(1);
+		// the first session backed off and the pass moved on; the second failure ended it
+		expect(sent).toHaveLength(2);
 		expect(w.gate.isOffline()).toBe(true);
-		expect(w.pending()).toBe(2);
+		expect(w.pending()).toBe(3);
 	});
 
 	test(`a flush sends at most ${FLUSH_MAX_PER_SESSION} for one session and ${FLUSH_MAX_PER_PASS} in all`, async () => {
@@ -1307,5 +1311,222 @@ describe("the Phase 5 review fixes", () => {
 		clock += 5 * MINUTE;
 		expect(await flushed(w)).toHaveLength(1);
 		expect(w.pending()).toBe(0);
+	});
+});
+
+// ── the final review's fixes (AGEN-83) ───────────────────────────────────────────────────────
+
+const deliveryIdOf = (call: Call) =>
+	Object.entries(call.headers ?? {}).find(
+		([k]) => k.toLowerCase() === "x-agentpulse-delivery-id",
+	)?.[1];
+
+describe("an aged gap that was sent is not stored twice", () => {
+	test("a lost acknowledgement for the gap is replayed under the same delivery id on the next pass", async () => {
+		const outbox = createReportOutbox({
+			home,
+			supervisorId: "sup-1",
+			now: () => clock,
+			limits: { ageMs: 1_000 },
+		});
+		await outbox.ready();
+		const w = await world({ script: () => network(), outbox });
+		await w.gate.reportEvents("s1", probe("a")); // timed out live: queued, attempted
+		clock += 5_000;
+		w.gate.noteServerReachable();
+		await w.gate.flush(); // aged into a gap and sent; the answer is lost
+		clock += 10_000;
+		w.setScript(() => SERVER_OK);
+		w.gate.noteServerReachable();
+		await w.gate.flush();
+		const gaps = w.calls.filter((c) => c.rawBody.includes("ManagedEventsLost"));
+		expect(gaps).toHaveLength(2);
+		expect(deliveryIdOf(gaps[0] as Call)).toBeDefined();
+		expect(deliveryIdOf(gaps[1] as Call)).toBe(deliveryIdOf(gaps[0] as Call));
+		expect(w.pending()).toBe(0);
+	});
+});
+
+describe("one entry that never gets an answer does not stall everyone else", () => {
+	const SLOW = (call: Call) => (call.rawBody.includes("SLOW") ? network() : SERVER_OK);
+
+	async function queued(ids: Array<[string, string]>) {
+		const w = await world({ script: () => network() });
+		for (const [id, content] of ids) await w.gate.reportEvents(id, probe(content));
+		return w;
+	}
+
+	test("a full outage counts nothing and loses nothing: the second failure latches the host and the pass ends", async () => {
+		const w = await queued([
+			["A", "a"],
+			["B", "b"],
+			["C", "c"],
+		]);
+		w.gate.noteServerReachable();
+		const first = await flushed(w);
+		expect(first).toHaveLength(2); // the first backed its session off; the second ended the pass
+		expect(w.gate.isOffline()).toBe(true);
+		// the outage goes on: every heartbeat fails, so the latch stays and nothing is sent
+		const callsBefore = w.calls.length;
+		for (let i = 0; i < 100; i++) {
+			clock += 10 * MINUTE;
+			await w.gate.flush();
+		}
+		expect(w.calls.length).toBe(callsBefore);
+		expect(w.pending()).toBe(3);
+		for (const id of ["A", "B", "C"]) {
+			expect((w.outbox.head(id) as { failures?: number }).failures).toBeUndefined();
+		}
+		expect(w.outbox.summary().lastFlushLost).toBe(0);
+		// and when the server returns everything is delivered
+		w.setScript(() => SERVER_OK);
+		w.gate.noteServerReachable();
+		await w.gate.flush();
+		expect(w.pending()).toBe(0);
+	});
+
+	test("a flapping network (heartbeats answer, sends time out) with nobody else delivering loses nothing for a day", async () => {
+		const w = await queued([["A", "a"]]);
+		for (let i = 0; i < 140; i++) {
+			w.gate.noteServerReachable();
+			await w.gate.flush();
+			clock += 10 * MINUTE;
+		}
+		// a lone failure per pass never latches, and what it waits is far short of the six-hour budget
+		expect(w.pending()).toBe(1);
+		expect((w.outbox.head("A") as { failures?: number }).failures).toBeUndefined();
+		expect(w.outbox.summary().lastFlushLost).toBe(0);
+	});
+
+	test("one stuck head: the other sessions deliver in the same pass and in every pass after", async () => {
+		const w = await queued([
+			["A", "SLOW"],
+			["B", "b"],
+			["C", "c"],
+		]);
+		w.setScript(SLOW);
+		w.gate.noteServerReachable();
+		await w.gate.flush();
+		expect(w.outbox.hasPending("B")).toBe(false);
+		expect(w.outbox.hasPending("C")).toBe(false);
+		expect(w.outbox.hasPending("A")).toBe(true);
+		expect(w.gate.isOffline()).toBe(false);
+		// later arrivals for the others still go through while A stays stuck
+		await w.gate.reportEvents("B", probe("b2"));
+		expect(w.outbox.hasPending("B")).toBe(false);
+	});
+
+	test("a stuck head is not counted before six hours of waiting, and then is, once the server has taken something since it failed", async () => {
+		const w = await queued([["A", "SLOW"]]);
+		w.setScript(SLOW);
+		const head = () => w.outbox.head("A") as { failures?: number } | null;
+		// five hours of retries, a heartbeat each time: the server is up, the entry just never answers
+		for (let i = 0; i < 280; i++) {
+			w.gate.noteServerReachable();
+			await w.gate.flush();
+			clock += 61_000;
+		}
+		expect(head()?.failures).toBeUndefined();
+		// well past the budget, with heartbeats answering: it counts and is removed as lost
+		for (let i = 0; i < 400 && head() !== null; i++) {
+			w.gate.noteServerReachable();
+			await w.gate.flush();
+			clock += 61_000;
+		}
+		expect(head()).toBeNull();
+	});
+
+	test("past the budget but with no success in between (a genuine outage) it still does not count", async () => {
+		const w = await queued([["A", "SLOW"]]);
+		w.setScript(SLOW);
+		// one heartbeat to start, then none: the sends time out and nothing else is ever taken
+		w.gate.noteServerReachable();
+		for (let i = 0; i < 700; i++) {
+			await w.gate.flush();
+			clock += 61_000;
+			if (w.gate.isOffline()) break;
+		}
+		const head = w.outbox.head("A") as { failures?: number } | null;
+		expect(head).not.toBeNull();
+		expect(head?.failures).toBeUndefined();
+	});
+
+	test("the live path's latch still works: a send that gets no answer queues the report and goes offline", async () => {
+		const w = await world({ script: () => network() });
+		expect(await w.gate.reportEvents("A", probe("a"))).toBe("queued");
+		expect(w.gate.isOffline()).toBe(true);
+		expect(await w.gate.reportEvents("B", probe("b"))).toBe("queued");
+		// the second report was queued without a call: it never tried the server
+		expect(w.calls).toHaveLength(1);
+	});
+});
+
+describe("the gate's memory of a session with queued reports", () => {
+	test("it is not forgotten to make room, so the rules still know it when the queue is sent", async () => {
+		const w = await world({ script: () => network(), maxTrackedSessions: 2 });
+		writeRules([join(home, "elsewhere")]);
+		w.gate.noteCwd("A", work);
+		await w.gate.reportEvents("A", probe("a"));
+		expect(w.outbox.hasPending("A")).toBe(true);
+		// two more sessions arrive: with room for two, the oldest idle one used to be the one forgotten
+		w.gate.noteCwd("B", work);
+		w.gate.noteCwd("C", work);
+		w.setScript(() => SERVER_OK);
+		w.gate.noteServerReachable();
+		await w.gate.flush();
+		// forgotten, A would be "unknown while rules exist" and its queue purged unsent
+		expect(w.calls.some((c) => c.path.includes("/A/events"))).toBe(true);
+		expect(w.outbox.hasPending("A")).toBe(false);
+	});
+});
+
+describe("contact with the server", () => {
+	test("any answer clears the offline latch, and does not reset the credential tripwire", async () => {
+		const w = await world({ script: () => CREDENTIAL() });
+		w.gate.noteServerUnreachable();
+		expect(w.gate.isOffline()).toBe(true);
+		w.gate.noteServerContact();
+		expect(w.gate.isOffline()).toBe(false);
+		// the tripwire still holds one rejection: a second one 10 s later confirms
+		w.tripwire.record();
+		clock += 11_000;
+		w.gate.noteServerContact();
+		expect(w.tripwire.record()).toBe("confirmed");
+	});
+
+	test("a reachable heartbeat does reset the tripwire (the existing rule)", async () => {
+		const w = await world({ script: () => SERVER_OK });
+		w.tripwire.record();
+		w.gate.noteServerReachable();
+		clock += 11_000;
+		expect(w.tripwire.record()).not.toBe("confirmed");
+	});
+
+	test("an error status from the server during a send clears the latch too", async () => {
+		const w = await world({ script: () => http(503, "busy") });
+		w.gate.noteCwd("A", work);
+		await w.gate.reportState(stateOf("A"));
+		w.gate.noteServerUnreachable();
+		w.gate.noteServerContact();
+		expect(w.gate.isOffline()).toBe(false);
+	});
+});
+
+describe("event content the server would refuse is cut, not lost with its batch", () => {
+	test("content over 1,000,000 characters goes out at 1,000,000", async () => {
+		const w = await world();
+		await w.gate.reportEvents("A", probe("x".repeat(1_000_100)));
+		const sent = (w.calls[0]?.body as { events: Array<{ content: string }> }).events[0];
+		expect(sent?.content).toHaveLength(1_000_000);
+	});
+
+	test("a cut never splits a surrogate pair", async () => {
+		const w = await world();
+		await w.gate.reportEvents("A", probe(`${"x".repeat(999_999)}\u{1F600}tail`));
+		const sent = (w.calls[0]?.body as { events: Array<{ content: string }> }).events[0]
+			?.content as string;
+		expect(sent.length).toBeLessThanOrEqual(1_000_000);
+		const last = sent.charCodeAt(sent.length - 1);
+		expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
 	});
 });

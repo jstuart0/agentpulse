@@ -30,10 +30,10 @@
  * bridges costs one directory listing and one `lstat` each per minute, and no reads.
  */
 import { createHash } from "node:crypto";
-import { statSync, unlinkSync } from "node:fs";
+import { lstatSync, statSync, unlinkSync } from "node:fs";
 import { lstat as fsLstat, readdir as fsReaddir } from "node:fs/promises";
 import { join } from "node:path";
-import { LATE_ARRIVAL_MS } from "../../shared/late-arrival.js";
+import { DELIVERY_RECEIPT_RETENTION_MS, LATE_ARRIVAL_MS } from "../../shared/late-arrival.js";
 import { writePrivateFileAtomicNoFollow } from "../../shared/private-file.js";
 import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type { ManagedSessionEventInput, ManagedSessionStateInput } from "../../shared/types.js";
@@ -42,6 +42,7 @@ import {
 	type PrivateFileRead,
 	SESSION_ID_PATTERN,
 	isPrivateOwnStat,
+	isTrustedStateFileStat,
 	readPrivateFileNoFollow,
 } from "./private-store.js";
 import type { ReportGate } from "./report-gate.js";
@@ -383,6 +384,30 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 		if (deps.credentialTripwire.record() === "confirmed") await onCredentialRejected();
 	}
 
+	function heldTooLong(entry: Followed, name: string, path: string): boolean {
+		const seen = entry.firstSeen.get(name);
+		let age = seen === undefined ? 0 : now() - seen;
+		try {
+			age = Math.max(age, now() - lstatSync(path).mtimeMs);
+		} catch {
+			// no file time to go by (a test double, or the file just went): this process's own count stands
+		}
+		return age > DELIVERY_RECEIPT_RETENTION_MS;
+	}
+
+	/** Whether the file is a private plain file of this account whose only fault is being over the size limit. */
+	function isTooLarge(path: string): boolean {
+		try {
+			const st = lstatSync(path);
+			return (
+				isTrustedStateFileStat(st, process.getuid?.(), Number.MAX_SAFE_INTEGER) &&
+				st.size > MAX_FILE_BYTES
+			);
+		} catch {
+			return false;
+		}
+	}
+
 	/** Reads, checks and sends one report file. */
 	async function sendFile(entry: Followed, name: string, nonce: string): Promise<FileVerdict> {
 		const path = join(entry.reportsDir, name);
@@ -392,11 +417,25 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 			return "next";
 		}
 		if (found.kind === "untrusted") {
+			// A report this account wrote privately but that is larger than the bridge ever writes can never
+			// be sent: it is removed and counted lost, not kept for ever as if it might be tampered with.
+			if (isTooLarge(path)) {
+				discard(entry, name, true);
+				return "next";
+			}
 			warnOnce(
 				entry,
 				name,
 				`[supervisor] a bridge report isn't a private plain file and was left alone: ${entry.id}`,
 			);
+			return "next";
+		}
+		// Held longer than the server keeps a receipt, a file could be stored a second time if it were sent
+		// now (a crash between the server's answer and the removal, then a long outage). It is dropped as
+		// lost instead. Its age is the longer of how long this process has had it and its file time: a
+		// restart forgets the first, and a writer able to age the file by touching it could equally delete it.
+		if (heldTooLong(entry, name, path)) {
+			discard(entry, name, true);
 			return "next";
 		}
 		let envelope: unknown;

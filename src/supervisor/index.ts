@@ -346,9 +346,14 @@ async function main() {
 		} catch (error) {
 			console.error("[supervisor] heartbeat failed", error);
 			const failure = classifyReportFailure(error);
-			if (failure === "network") gate.noteServerUnreachable();
-			else if (failure === "credential" && credentialTripwire.record() === "confirmed") {
-				await disposeRuntimesAndExit();
+			if (failure === "network") {
+				gate.noteServerUnreachable();
+			} else {
+				// Any answer from the server, even a refusal, shows it can be reached.
+				if (error instanceof SupervisorRequestError) gate.noteServerContact();
+				if (failure === "credential" && credentialTripwire.record() === "confirmed") {
+					await disposeRuntimesAndExit();
+				}
 			}
 		} finally {
 			heartbeatInFlight = false;

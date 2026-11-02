@@ -5,3 +5,10 @@
  * an event's own timestamp.
  */
 export const LATE_ARRIVAL_MS = 60_000;
+
+/**
+ * How long the server remembers a delivery id (a receipt). A report older than this can no longer be told
+ * apart from a new one if it is sent again, so a sender that has held one this long drops it as lost rather
+ * than risk storing it twice.
+ */
+export const DELIVERY_RECEIPT_RETENTION_MS = 72 * 60 * 60 * 1000;

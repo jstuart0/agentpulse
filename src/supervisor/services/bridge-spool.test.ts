@@ -1674,3 +1674,71 @@ describe("following and letting go", () => {
 		expect(maxGap).toBeLessThan(150);
 	}, 60_000);
 });
+
+describe("what the spool will not keep for ever (AGEN-83 final review)", () => {
+	test("a private report over the size limit is removed and counted lost, not kept as if it were tampered with", async () => {
+		makeBridge("big");
+		put("big", 1, `${"x".repeat(1024 * 1024)}more`);
+		const { gate, calls } = recorder();
+		const { drain } = makeDrain(gate);
+		drain.admit("big");
+		await drain.drain();
+		expect(remaining("big")).toEqual([]);
+		expect(drain.stats().lost).toBe(1);
+		expect(calls).toHaveLength(0);
+	});
+
+	test("a report that is not private is still left alone and said so, not removed", async () => {
+		makeBridge("open");
+		put("open", 1, envelope("events", eventBody()));
+		chmodSync(seqFile("open", 1), 0o644);
+		const logs: string[] = [];
+		const { gate } = recorder();
+		const { drain } = makeDrain(gate, { logs });
+		drain.admit("open");
+		await drain.drain();
+		expect(remaining("open")).toHaveLength(1);
+		expect(logs.some((l) => l.includes("isn't a private plain file"))).toBe(true);
+	});
+
+	test("a report held longer than the server keeps a receipt (72 h) is dropped as lost, by its file time after a restart", async () => {
+		makeBridge("old");
+		put("old", 1, envelope("events", eventBody()));
+		const aged = new Date(clock - 73 * 3_600_000);
+		utimesSync(seqFile("old", 1), aged, aged);
+		const { gate, calls } = recorder();
+		const { drain } = makeDrain(gate);
+		drain.admit("old");
+		await drain.drain();
+		expect(calls).toHaveLength(0);
+		expect(remaining("old")).toEqual([]);
+		expect(drain.stats().lost).toBe(1);
+	});
+
+	test("one held 71 h is still sent", async () => {
+		makeBridge("fresh");
+		put("fresh", 1, envelope("events", eventBody()));
+		const aged = new Date(clock - 71 * 3_600_000);
+		utimesSync(seqFile("fresh", 1), aged, aged);
+		const { gate, calls } = recorder();
+		const { drain } = makeDrain(gate);
+		drain.admit("fresh");
+		await drain.drain();
+		expect(calls).toHaveLength(1);
+	});
+
+	test("a report this process has held 72 h (the server was unreachable) is dropped by the process's own count", async () => {
+		makeBridge("held");
+		put("held", 1, envelope("events", eventBody()));
+		const { gate, calls } = recorder(() => new Error("down"));
+		const { drain } = makeDrain(gate);
+		drain.admit("held");
+		await drain.drain();
+		expect(calls).toHaveLength(1);
+		clock += 73 * 3_600_000;
+		await drain.drain();
+		expect(calls).toHaveLength(1); // not sent again
+		expect(remaining("held")).toEqual([]);
+		expect(drain.stats().lost).toBe(1);
+	});
+});

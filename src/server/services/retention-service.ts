@@ -76,6 +76,7 @@ import {
 	or,
 	sql,
 } from "drizzle-orm";
+import { DELIVERY_RECEIPT_RETENTION_MS } from "../../shared/late-arrival.js";
 import { config } from "../config.js";
 import { getDb, getSqlite } from "../db/client.js";
 import {
@@ -380,7 +381,7 @@ export async function deleteExpiredSummaries(
  * How long a managed-delivery receipt is kept: the supervisor outbox keeps an entry at most 24 h,
  * so a replay can arrive up to a day after the original; the rest is margin.
  */
-export const RECEIPT_RETENTION_MS = 72 * 60 * 60 * 1000;
+export const RECEIPT_RETENTION_MS = DELIVERY_RECEIPT_RETENTION_MS;
 
 /**
  * The prune's batch select, exported so the plan test explains the very statement the prune runs.

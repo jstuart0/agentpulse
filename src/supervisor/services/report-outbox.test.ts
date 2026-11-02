@@ -1543,12 +1543,13 @@ describe("a failure of the real writer", () => {
 });
 
 describe("module boundaries", () => {
-	test("the store is a leaf: it imports only private-store, private-file and shared types, and has no network or endpoint in it", () => {
+	test("the store is a leaf: it imports only private-store, private-file, the shared report limits and shared types, and has no network or endpoint in it", () => {
 		const source = readFileSync(join(import.meta.dir, "report-outbox.ts"), "utf-8");
 		const imports = [...source.matchAll(/from "([^"]+)"/g)].map((m) => m[1]);
 		expect(imports.sort()).toEqual(
 			[
 				"./private-store.js",
+				"../../shared/managed-report-limits.js",
 				"../../shared/private-file.js",
 				"../../shared/types.js",
 				"node:crypto",
@@ -1568,5 +1569,140 @@ describe("module boundaries", () => {
 		for (const match of source.matchAll(/writePrivateFileAtomicNoFollow\(([^)]*)\)/g)) {
 			expect((match[1] ?? "").split(",").length, match[0]).toBeLessThanOrEqual(2);
 		}
+	});
+});
+
+describe("an aged gap is not rewritten (AGEN-83 final review)", () => {
+	const SHORT_AGE = { ageMs: 1_000 };
+
+	test("a pass over an already-aged gap changes nothing: same delivery id, same file", async () => {
+		const box = open({ limits: SHORT_AGE });
+		await box.ready();
+		putEvents(box, "s1", 1, "a", true);
+		clock += 5_000;
+		box.ageOut(clock);
+		const first = box.head("s1") as OutboxEntry;
+		expect(first.kind).toBe("gap");
+		const file = readFileSync(entryFile("s1", first.seq), "utf-8");
+		clock += 3_000;
+		box.ageOut(clock);
+		const second = box.head("s1") as OutboxEntry;
+		expect(second.deliveryId).toBe(first.deliveryId);
+		expect(second.attempted).toBe(first.attempted);
+		expect(readFileSync(entryFile("s1", second.seq), "utf-8")).toBe(file);
+	});
+
+	test("a gap that has been sent keeps its id and its attempted flag through every later pass", async () => {
+		const box = open({ limits: SHORT_AGE });
+		await box.ready();
+		putEvents(box, "s1", 1, "a", true);
+		clock += 5_000;
+		box.ageOut(clock);
+		const gap = box.head("s1") as OutboxEntry;
+		expect(box.markAttempted("s1", gap.seq)).toBe(true);
+		for (let i = 0; i < 3; i++) {
+			clock += 3_000;
+			box.ageOut(clock);
+		}
+		const after = box.head("s1") as OutboxEntry;
+		expect(after.deliveryId).toBe(gap.deliveryId);
+		expect(after.attempted).toBe(true);
+	});
+
+	test("an aged events entry behind a sent gap is not folded into it: the gap stays as sent", async () => {
+		const box = open({ limits: SHORT_AGE });
+		await box.ready();
+		putEvents(box, "s1", 1, "a", true);
+		clock += 5_000;
+		box.ageOut(clock);
+		const gap = box.head("s1") as OutboxEntry;
+		box.markAttempted("s1", gap.seq);
+		putEvents(box, "s1", 2, "b");
+		clock += 5_000;
+		box.ageOut(clock);
+		const out = drain(box, "s1");
+		expect(out).toHaveLength(2);
+		expect(out[0]?.deliveryId).toBe(gap.deliveryId);
+		expect(out[0]?.attempted).toBe(true);
+		expect(out[1]?.kind).toBe("gap");
+		expect(out[1]?.deliveryId).not.toBe(gap.deliveryId);
+	});
+
+	test("an unsent gap still absorbs a newer aged events entry", async () => {
+		const box = open({ limits: SHORT_AGE });
+		await box.ready();
+		putEvents(box, "s1", 1, "a");
+		clock += 5_000;
+		box.ageOut(clock);
+		putEvents(box, "s1", 2, "b");
+		clock += 5_000;
+		box.ageOut(clock);
+		const out = drain(box, "s1");
+		expect(out).toHaveLength(1);
+		expect(out[0]?.lost).toBe(3);
+	});
+});
+
+describe("an entry can hold what the server takes (AGEN-83 final review)", () => {
+	const MIB = 1024 * 1024;
+	const events = (count: number, content: string) =>
+		JSON.stringify({
+			events: Array.from({ length: count }, (_, i) => ({
+				eventType: "ManagedProbe",
+				category: "system_event",
+				content: `${content}${i}`,
+			})),
+		});
+
+	test("the limits: an entry holds the server's 2 MiB body and its envelope; a session still holds several; the total is unchanged", () => {
+		expect(OUTBOX_LIMITS.entryBytes).toBeGreaterThanOrEqual(2 * MIB + 4_096);
+		expect(OUTBOX_LIMITS.sessionBytes).toBeGreaterThanOrEqual(3 * OUTBOX_LIMITS.entryBytes);
+		// worst case on disk: the 64 MiB of entries plus a small session.json (under 4 KiB) for each of 256 sessions
+		expect(OUTBOX_LIMITS.totalBytes).toBe(64 * MIB);
+		expect(OUTBOX_LIMITS.sessions * 4_096).toBeLessThanOrEqual(MIB);
+	});
+
+	test("an attempted batch of 1.5 MiB is kept whole, with its id and flag", async () => {
+		const box = open();
+		await box.ready();
+		const body = events(200, "y".repeat(7_500));
+		expect(Buffer.byteLength(body)).toBeGreaterThan(MIB);
+		expect(Buffer.byteLength(body)).toBeLessThan(2 * MIB);
+		expect(
+			box.append("s1", { kind: "events", body, attempted: true, deliveryId: "abcdefgh-1234" }),
+		).toBe("queued");
+		const out = drain(box, "s1");
+		expect(out).toHaveLength(1);
+		expect(out[0]?.deliveryId).toBe("abcdefgh-1234");
+		expect(out[0]?.attempted).toBe(true);
+		expect(out[0]?.body).toBe(body);
+	});
+
+	test("an attempted batch that cannot fit as one entry is split anyway: a possible duplicate beats a certain loss", async () => {
+		const box = open();
+		await box.ready();
+		// quotes double again when the body is stored as a JSON string: 1.5 MiB on the wire, over 3 MiB stored
+		const body = events(6, '"'.repeat(130_000));
+		expect(Buffer.byteLength(body)).toBeLessThan(2 * MIB);
+		expect(
+			box.append("s1", { kind: "events", body, attempted: true, deliveryId: "abcdefgh-1234" }),
+		).toBe("queued");
+		const out = drain(box, "s1");
+		expect(out.length).toBeGreaterThan(1);
+		expect(out.every((e) => e.attempted === false)).toBe(true);
+		expect(out.every((e) => e.deliveryId !== "abcdefgh-1234")).toBe(true);
+		const kept = out.flatMap((e) => (JSON.parse(e.body) as { events: unknown[] }).events);
+		expect(kept).toHaveLength(6);
+	});
+
+	test("a single 1.9 MB event that the server takes is kept (it was lost at the old 1 MiB limit)", async () => {
+		const box = open();
+		await box.ready();
+		const body = JSON.stringify({
+			events: [
+				{ eventType: "ManagedProbe", category: "system_event", content: "z".repeat(1_900_000) },
+			],
+		});
+		expect(box.append("s1", { kind: "events", body, attempted: false })).toBe("queued");
 	});
 });
