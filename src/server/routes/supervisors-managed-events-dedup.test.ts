@@ -590,6 +590,27 @@ describe("statement budget", () => {
 		);
 		expect(Number.isFinite(plain) && Number.isFinite(receipted)).toBe(true);
 	});
+
+	test("the sha256 of a 2 MiB body (what a delivery id costs on the largest body) is logged, not asserted", async () => {
+		const { sha256Hex } = await import("../services/util/hash.js");
+		const body = JSON.stringify({ events: [{ content: "x".repeat(2 * 1024 * 1024 - 64) }] });
+		const samples: number[] = [];
+		for (let i = 0; i < 20; i++) {
+			const start = performance.now();
+			sha256Hex(body);
+			samples.push(performance.now() - start);
+		}
+		samples.sort((x, y) => x - y);
+		const p95 = samples[Math.floor(samples.length * 0.95) - 1] as number;
+		console.log(
+			JSON.stringify({
+				kind: "managed_events_sha256_2mib_p95_ms",
+				bytes: body.length,
+				p95: Math.round(p95 * 10) / 10,
+			}),
+		);
+		expect(Number.isFinite(p95)).toBe(true);
+	});
 });
 
 /** The statements of a no-header, single-event events request, measured at this commit. */
