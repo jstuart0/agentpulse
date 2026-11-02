@@ -35,8 +35,8 @@
  * Units: `pending` counts queued reports (entries). `delivered` and `lost` count events for an events
  * entry and one for a state entry; a gap entry delivers nothing of the user's.
  */
-import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { lstatSync, mkdirSync, readdirSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { writePrivateFileAtomicNoFollow } from "../../shared/private-file.js";
@@ -102,6 +102,13 @@ const ENTRY_PATTERN = /^(\d{16})\.json$/;
 const TMP_PATTERN = /^\..*\.tmp$/;
 const DELIVERY_ID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
 const LSTAT_BATCH = 256;
+/** At most this many session directories are examined at load; the rest are purged, and the unknown set is held to the same size. */
+const MAX_LOAD_DIRS = 1_024;
+/** Names beyond the entry cap that a directory may hold at load before the rest is purged. */
+const EXTRA_NAMES_ALLOWED = 16;
+/** A counter read from disk is clamped to this. */
+const MAX_COUNTER = 10_000_000;
+const PURGE_PATTERN = /^\.purge-[0-9a-f]{16}$/;
 const GAP_TAIL =
 	" while this machine was offline: its offline queue was full or the events were more than a day old.";
 
@@ -185,6 +192,12 @@ export function foldStateReports(
 		if (value !== undefined) out[key] = value;
 	}
 	return out as unknown as ManagedSessionStateInput;
+}
+
+/** A counter read back from disk, as an integer in [0, 10,000,000]. */
+function clampCounter(value: number): number {
+	if (!Number.isFinite(value)) return 0;
+	return Math.min(MAX_COUNTER, Math.max(0, Math.trunc(value)));
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -421,28 +434,48 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 	}
 
 	/**
-	 * Unlinks every name in a session directory (a link is removed, never followed; a real subdirectory
-	 * makes the final rmdir fail and is left), then the directory. Returns how many queued entries went.
+	 * Removes a session directory. It is first renamed to a name only this process knows (`.purge-<random>`),
+	 * so what is examined and emptied afterwards cannot be swapped for a link behind our back. Then every name
+	 * in it is unlinked (a link is removed, never followed; a real subdirectory makes the final rmdir fail and
+	 * is left) and the directory removed. `removed` is how many queued entries went; `gone` is false when
+	 * something is still there, in which case the leftover is reported by name so it is retried.
 	 */
-	function purgeDirectory(dirName: string): number {
-		if (!DIR_PATTERN.test(dirName)) return 0;
-		const path = join(root, dirName);
+	function purgeDirectory(dirName: string): { removed: number; gone: boolean; leftover?: string } {
+		const alreadyRenamed = PURGE_PATTERN.test(dirName);
+		if (!alreadyRenamed && !DIR_PATTERN.test(dirName)) return { removed: 0, gone: true };
+		let path = join(root, dirName);
+		let leftover = dirName;
+		if (!alreadyRenamed) {
+			leftover = `.purge-${randomBytes(8).toString("hex")}`;
+			const renamed = join(root, leftover);
+			try {
+				renameSync(path, renamed);
+			} catch (error) {
+				return {
+					removed: 0,
+					gone: isMissing(error),
+					leftover: isMissing(error) ? undefined : dirName,
+				};
+			}
+			path = renamed;
+		}
 		let st: ReturnType<typeof lstatSync>;
 		try {
 			st = lstatSync(path);
 		} catch {
-			return 0;
+			return { removed: 0, gone: true };
 		}
 		if (st.isSymbolicLink() || !st.isDirectory()) {
-			unlinkQuiet(path);
-			return 0;
+			return unlinkQuietSilent(path)
+				? { removed: 0, gone: true }
+				: { removed: 0, gone: false, leftover };
 		}
 		let removed = 0;
 		let names: string[] = [];
 		try {
 			names = readdirSync(path);
 		} catch {
-			return 0;
+			return { removed: 0, gone: false, leftover };
 		}
 		for (const name of names) {
 			if (unlinkQuietSilent(join(path, name)) && ENTRY_PATTERN.test(name)) removed++;
@@ -450,9 +483,22 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 		try {
 			rmdirSync(path);
 		} catch {
-			// left behind (not empty): nothing more is done to it
+			return { removed, gone: false, leftover };
 		}
-		return removed;
+		return { removed, gone: true };
+	}
+
+	/** Purges a directory and counts what it held; a leftover is remembered by name so a later pass retries it. */
+	function purgeAndRemember(dirName: string, countLost: boolean): number {
+		const result = purgeDirectory(dirName);
+		if (countLost) countLoss(result.removed);
+		if (!result.gone && result.leftover) {
+			if (unknown.size < MAX_LOAD_DIRS) unknown.add(result.leftover);
+			log(
+				"[supervisor] an offline outbox directory couldn't be fully removed; it will be tried again",
+			);
+		} else unknown.delete(dirName);
+		return result.removed;
 	}
 
 	function unlinkQuietSilent(path: string): boolean {
@@ -495,8 +541,8 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 			body: raw.body,
 		};
 		if (typeof raw.deliveryId === "string") entry.deliveryId = raw.deliveryId;
-		if (typeof raw.lost === "number") entry.lost = raw.lost;
-		if (typeof raw.failures === "number") entry.failures = raw.failures;
+		if (typeof raw.lost === "number") entry.lost = clampCounter(raw.lost);
+		if (typeof raw.failures === "number") entry.failures = clampCounter(raw.failures);
 		if (typeof raw.firstFailureAt === "string") entry.firstFailureAt = raw.firstFailureAt;
 		return entry;
 	}
@@ -882,18 +928,34 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 	}
 
 	/** Decides what a listed directory is, given its entry names. Pure bookkeeping; no further I/O but cleanup. */
-	function adopt(dirName: string, names: string[]) {
+	function adopt(dirName: string, namesIn: string[]) {
+		let names = namesIn;
 		const dir = join(root, dirName);
 		const info = readSessionFile(dir);
 		if (!info || outboxDirName(info.sessionId) !== dirName) {
-			unknown.add(dirName);
+			if (unknown.size < MAX_LOAD_DIRS) unknown.add(dirName);
 			return;
 		}
 		if (info.supervisorId !== opts.supervisorId) {
-			countLoss(purgeDirectory(dirName));
+			purgeAndRemember(dirName, true);
 			return;
 		}
 		const state = newState(info.sessionId);
+		// A directory holding far more than it is allowed to is not trusted to be ours: only the names up to
+		// the cap are looked at, and the surplus entries are removed and counted lost.
+		const surplus: string[] = [];
+		if (names.length > limits.sessionEntries + EXTRA_NAMES_ALLOWED) {
+			names = [...names].sort();
+			surplus.push(
+				...names
+					.slice(limits.sessionEntries + EXTRA_NAMES_ALLOWED)
+					.filter((n) => n !== SESSION_FILE),
+			);
+			names = names.slice(0, limits.sessionEntries + EXTRA_NAMES_ALLOWED);
+		}
+		for (const name of surplus) {
+			if (unlinkQuietSilent(join(dir, name)) && ENTRY_PATTERN.test(name)) countLoss(1);
+		}
 		for (const name of names) {
 			if (TMP_PATTERN.test(name)) {
 				unlinkQuietSilent(join(dir, name));
@@ -906,8 +968,11 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 			state.nextSeq = Math.max(state.nextSeq, seq + 1);
 		}
 		state.entries.sort((x, y) => x.seq - y.seq);
+		for (const extra of state.entries.splice(limits.sessionEntries)) {
+			if (unlinkQuietSilent(join(dir, seqName(extra.seq)))) countLoss(1);
+		}
 		if (state.entries.length === 0) {
-			purgeDirectory(dirName);
+			purgeAndRemember(dirName, false);
 			return;
 		}
 		track(state);
@@ -953,22 +1018,34 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 				return;
 			}
 			rootChecked = true;
+			let examined = 0;
+			let purgedExtra = 0;
 			for (const name of names) {
 				if (name === META_FILE) {
 					readMeta();
 					continue;
 				}
+				if (PURGE_PATTERN.test(name)) {
+					// left by an earlier run that was interrupted, or by a purge that couldn't finish
+					purgeAndRemember(name, false);
+					continue;
+				}
 				if (!DIR_PATTERN.test(name) || sessionsByDir.has(name) || unknown.has(name)) continue;
+				if (++examined > MAX_LOAD_DIRS) {
+					// More session directories than this outbox ever follows: the surplus is not ours to keep.
+					if (purgedExtra++ < MAX_LOAD_DIRS) purgeAndRemember(name, true);
+					continue;
+				}
 				const dir = join(root, name);
 				let entries: string[];
 				try {
 					if (!isPrivateDirectory(dir)) {
-						unknown.add(name);
+						if (unknown.size < MAX_LOAD_DIRS) unknown.add(name);
 						continue;
 					}
 					entries = await readdir(dir);
 				} catch {
-					unknown.add(name);
+					if (unknown.size < MAX_LOAD_DIRS) unknown.add(name);
 					continue;
 				}
 				if (sessionsByDir.has(name)) continue; // appended to meanwhile and adopted synchronously
@@ -1098,7 +1175,9 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 		for (const meta of aged) {
 			const read = readEntry(state, meta);
 			if (read === "held") continue;
-			if (read) loaded.push({ meta, entry: read });
+			// Reading gives the time the entry was really queued, which replaces the file's mtime it was
+			// judged by until now: an entry that turns out to be recent stays.
+			if (read && meta.queuedAtMs <= nowMs - limits.ageMs) loaded.push({ meta, entry: read });
 		}
 		const agedStates = loaded.filter((x) => x.entry.kind === "state");
 		const agedOther = loaded.filter((x) => x.entry.kind !== "state");
@@ -1173,15 +1252,20 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 		const state = sessions.get(sessionId);
 		const dirName = state?.dirName ?? outboxDirName(sessionId);
 		const queued = state?.entries.length ?? 0;
-		const removed = purgeDirectory(dirName);
-		if (options?.countLost) countLoss(Math.max(queued, removed));
+		const result = purgeDirectory(dirName);
+		if (options?.countLost) countLoss(Math.max(queued, result.removed));
+		if (!result.gone && result.leftover) {
+			if (unknown.size < MAX_LOAD_DIRS) unknown.add(result.leftover);
+			log(
+				"[supervisor] an offline outbox directory couldn't be fully removed; it will be tried again",
+			);
+		}
 		if (state) untrack(state);
 	}
 
 	function purgeDir(dirName: string) {
-		if (!DIR_PATTERN.test(dirName)) return;
-		countLoss(purgeDirectory(dirName));
-		unknown.delete(dirName);
+		if (!DIR_PATTERN.test(dirName) && !PURGE_PATTERN.test(dirName)) return;
+		purgeAndRemember(dirName, true);
 	}
 
 	function endFlush(nowIso: string) {

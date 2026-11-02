@@ -15,10 +15,12 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writePrivateFileAtomicNoFollow } from "../../shared/private-file.js";
 import type { ManagedSessionStateInput } from "../../shared/types.js";
 import {
 	OUTBOX_LIMITS,
@@ -924,7 +926,7 @@ describe("purge", () => {
 		expect(box.hasPending("keepcount")).toBe(true);
 	});
 
-	test("purge unlinks a planted link and never follows it or recurses into a planted directory", async () => {
+	test("purge unlinks a planted link and never follows it or recurses into a planted directory; what it can't remove is retried by name, with no path in the log", async () => {
 		const box = open();
 		await box.ready();
 		putEvents(box, "s1");
@@ -935,9 +937,52 @@ describe("purge", () => {
 		writeFileSync(join(sessionDir("s1"), "nested", "f.txt"), "inner");
 		box.purge("s1");
 		expect(readFileSync(outside, "utf-8")).toBe("precious");
-		expect(existsSync(join(sessionDir("s1"), "nested", "f.txt")), "no recursion").toBe(true);
-		expect(existsSync(join(sessionDir("s1"), "evil.json"))).toBe(false);
+		expect(existsSync(sessionDir("s1")), "the session's own name is free again").toBe(false);
 		expect(box.hasPending("s1")).toBe(false);
+		// the directory could not be emptied (a planted subdirectory): it was renamed and is remembered by that name
+		const [leftover] = box.unknownDirs();
+		expect(leftover).toMatch(/^\.purge-[0-9a-f]{16}$/);
+		expect(existsSync(join(rootDir(), leftover as string, "nested", "f.txt")), "no recursion").toBe(
+			true,
+		);
+		expect(existsSync(join(rootDir(), leftover as string, "evil.json"))).toBe(false);
+		expect(logs.filter((l) => l.includes("tried again"))).toHaveLength(1);
+		expect(logs.join("\n")).not.toContain(home);
+		// once the obstacle is gone, the retry (what the flush does for every unknown directory) finishes it
+		rmSync(join(rootDir(), leftover as string, "nested"), { recursive: true });
+		box.purgeDir(leftover as string);
+		expect(existsSync(join(rootDir(), leftover as string))).toBe(false);
+		expect(box.unknownDirs()).toEqual([]);
+	});
+
+	test("a purge renames the directory first: the name is free at once and a link planted in its place is not followed", async () => {
+		const box = open();
+		await box.ready();
+		putEvents(box, "s1");
+		box.purge("s1");
+		expect(readdirSync(rootDir()).filter((n) => n.startsWith("."))).toEqual([]);
+		// a symlink under the session's name, as an attacker could swap in: removed as a link, target untouched
+		const target = join(home, "victim");
+		mkdirSync(target);
+		writeFileSync(join(target, "keep.txt"), "x");
+		symlinkSync(target, sessionDir("s1"));
+		box.purgeDir(outboxDirName("s1"));
+		expect(existsSync(join(target, "keep.txt"))).toBe(true);
+		expect(lstatSync(sessionDir("s1"), { throwIfNoEntry: false })).toBeUndefined();
+		expect(readdirSync(rootDir()).filter((n) => n.startsWith("."))).toEqual([]);
+	});
+
+	test("a half-finished purge left by an earlier run is finished at load", async () => {
+		const first = open();
+		await first.ready();
+		putEvents(first, "keep");
+		const stale = join(rootDir(), ".purge-0123456789abcdef");
+		mkdirSync(stale, { mode: 0o700 });
+		writeFileSync(join(stale, "0000000000000001.json"), "old");
+		const box = open();
+		await box.ready();
+		expect(existsSync(stale)).toBe(false);
+		expect(box.hasPending("keep")).toBe(true);
 	});
 
 	test("purging a session the outbox doesn't track still removes a directory left on disk", async () => {
@@ -1140,6 +1185,342 @@ describe("load budget", () => {
 		expect(took).toBeLessThan(1_000);
 		expect(maxGap).toBeLessThan(50);
 	}, 30_000);
+});
+
+describe("load caps and clamps", () => {
+	test("more session directories than the cap are not all examined: the surplus is purged and counted, the unknown set is held to the cap", async () => {
+		const total = 1_030;
+		for (let i = 0; i < total; i++) {
+			const dir = join(rootDir(), `s-${i.toString(16).padStart(32, "0")}`);
+			mkdirSync(dir, { recursive: true, mode: 0o700 });
+			chmodSync(dir, 0o700);
+			writeFileSync(join(dir, "0000000000000001.json"), "x", { mode: 0o600 });
+		}
+		chmodSync(join(home, ".agentpulse"), 0o700);
+		chmodSync(rootDir(), 0o700);
+		const box = open();
+		await box.ready();
+		expect(box.unknownDirs()).toHaveLength(1_024);
+		const left = readdirSync(rootDir()).filter((n) => /^s-/.test(n));
+		expect(left, "the six past the cap were purged").toHaveLength(1_024);
+		box.beginFlush();
+		box.endFlush("2026-11-01T17:00:00.000Z");
+		expect(box.summary().lastFlushLost).toBe(total - 1_024);
+	}, 60_000);
+
+	test("a directory holding far more names than it may is cut back at load: the surplus entries go, counted lost, and session.json stays", async () => {
+		for (let seq = 1; seq <= 40; seq++) plant("s1", seq, { seq });
+		const box = open({ limits: { sessionEntries: 5 } });
+		await box.ready();
+		expect(box.hasPending("s1")).toBe(true);
+		expect(box.summary().pending).toBe(5);
+		expect(existsSync(join(sessionDir("s1"), "session.json"))).toBe(true);
+		expect(readdirSync(sessionDir("s1")).filter((n) => /^\d{16}\.json$/.test(n))).toHaveLength(5);
+		box.beginFlush();
+		box.endFlush("2026-11-01T17:00:00.000Z");
+		expect(box.summary().lastFlushLost).toBe(35);
+		expect(drain(box, "s1").map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
+	});
+
+	test("lost and failures read back from disk are clamped to integers in [0, 10,000,000]", async () => {
+		plant("s1", 1, { kind: "gap", lost: 1e12, failures: -5 });
+		plant("s2", 1, { lost: 3.9, failures: 2.7 });
+		plant("s3", 1, { lost: -1, failures: 1e30 });
+		const box = open();
+		await box.ready();
+		const a = box.head("s1") as OutboxEntry;
+		expect([a.lost, a.failures]).toEqual([10_000_000, 0]);
+		const b = box.head("s2") as OutboxEntry;
+		expect([b.lost, b.failures]).toEqual([3, 2]);
+		const c = box.head("s3") as OutboxEntry;
+		expect([c.lost, c.failures]).toEqual([0, 10_000_000]);
+	});
+});
+
+describe("ageing by mtime until an entry is read", () => {
+	const old = (path: string, ageMs: number) => {
+		const at = new Date(clock - ageMs);
+		utimesSync(path, at, at);
+	};
+	const stateEnvelope = (id: string, extra: Record<string, unknown> = {}) => ({
+		kind: "state",
+		body: JSON.stringify({ sessionId: id, status: "active", ...extra }),
+		deliveryId: undefined,
+	});
+
+	test("an unread entry whose mtime is 25 h old (and whose envelope agrees) ages out after a restart: [state, gap]", async () => {
+		const longAgo = new Date(T0 - 25 * HOUR).toISOString();
+		plant("s1", 1, { ...stateEnvelope("s1"), queuedAt: longAgo });
+		plant("s1", 2, { queuedAt: longAgo });
+		plant("s1", 3, { queuedAt: longAgo });
+		for (const seq of [1, 2, 3]) old(entryFile("s1", seq), 25 * HOUR);
+		const box = open();
+		await box.ready();
+		box.ageOut(clock);
+		expect(drain(box, "s1").map((e) => e.kind)).toEqual(["state", "gap"]);
+	});
+
+	test("a fresh entry and an entry with a future mtime are not aged", async () => {
+		plant("fresh", 1, {});
+		plant("future", 1, {});
+		const ahead = new Date(clock + 30 * HOUR);
+		utimesSync(entryFile("future", 1), ahead, ahead);
+		const box = open();
+		await box.ready();
+		box.ageOut(clock + 2 * HOUR);
+		expect((box.head("fresh") as OutboxEntry).kind).toBe("events");
+		expect((box.head("future") as OutboxEntry).kind).toBe("events");
+	});
+
+	test("once an entry is read, its envelope queuedAt replaces the mtime: an old mtime on a recent entry does not age it", async () => {
+		plant("s1", 1, { queuedAt: new Date(T0 - HOUR).toISOString() });
+		old(entryFile("s1", 1), 25 * HOUR);
+		const box = open();
+		await box.ready();
+		box.ageOut(clock);
+		const head = box.head("s1") as OutboxEntry;
+		expect(head.kind, "the envelope says it is an hour old").toBe("events");
+		// and the other way: a recent mtime does not save an entry whose envelope says it is old, once read
+		plant("s2", 1, { queuedAt: new Date(T0 - 26 * HOUR).toISOString() });
+		const again = open();
+		await again.ready();
+		expect(again.head("s2")).toMatchObject({ kind: "events" });
+		again.ageOut(clock);
+		expect((again.head("s2") as OutboxEntry).kind).toBe("gap");
+	});
+
+	test("markAttempted and recordFailure rewrite the entry but keep its original queuedAt", async () => {
+		const box = open();
+		await box.ready();
+		putEvents(box, "s1");
+		const original = (box.head("s1") as OutboxEntry).queuedAt;
+		clock += 3 * HOUR;
+		expect(box.markAttempted("s1", 1)).toBe(true);
+		box.recordFailure("s1", 1, clock);
+		expect(JSON.parse(readFileSync(entryFile("s1", 1), "utf-8")).queuedAt).toBe(original);
+		const again = open();
+		await again.ready();
+		expect((again.head("s1") as OutboxEntry).queuedAt).toBe(original);
+		// so the rewrite's new mtime does not make it young
+		clock = T0 + 25 * HOUR;
+		again.ageOut(clock);
+		expect((again.head("s1") as OutboxEntry).kind).toBe("gap");
+	});
+});
+
+describe("nothing is lost without being counted (conservation)", () => {
+	function prng(seed: number) {
+		let x = seed;
+		return () => {
+			x = (x * 1_664_525 + 1_013_904_223) % 4_294_967_296;
+			return x / 4_294_967_296;
+		};
+	}
+
+	for (const seed of [1, 7, 42, 2026]) {
+		test(`events appended = delivered + still queued + counted lost, over a mixed sequence with small caps (seed ${seed})`, async () => {
+			const rand = prng(seed);
+			const box = open({
+				limits: {
+					sessionEntries: 6,
+					sessionBytes: 6_000,
+					totalBytes: 14_000,
+					entryBytes: 3_000,
+					sessions: 4,
+				},
+			});
+			await box.ready();
+			const ids = ["a", "b", "c", "d", "e", "f"];
+			let appendedEvents = 0;
+			let deliveredEvents = 0;
+			let lostCounted = 0;
+			let stateLostAppends = 0;
+			let stateDelivered = 0;
+			let deliveredGapLost = 0;
+
+			const flushCounters = () => {
+				box.beginFlush();
+				box.endFlush(new Date(clock).toISOString());
+				lostCounted += box.summary().lastFlushLost;
+			};
+
+			for (let step = 0; step < 400; step++) {
+				const id = ids[Math.floor(rand() * ids.length)] as string;
+				const roll = rand();
+				if (roll < 0.45) {
+					const n = 1 + Math.floor(rand() * 4);
+					appendedEvents += n;
+					box.append(id, {
+						kind: "events",
+						body: eventsBody(n, `x${step}`),
+						attempted: rand() < 0.2,
+						deliveryId: undefined,
+					});
+				} else if (roll < 0.6) {
+					if (
+						box.append(id, { kind: "state", body: stateBody(id, { step }), attempted: false }) ===
+						"lost"
+					)
+						stateLostAppends++;
+				} else if (roll < 0.85) {
+					const h = box.head(id);
+					if (h && h !== "held") {
+						box.beginFlush();
+						box.remove(id, h.seq, "delivered");
+						box.endFlush(new Date(clock).toISOString());
+						deliveredEvents += h.kind === "events" ? JSON.parse(h.body).events.length : 0;
+						if (h.kind === "state") stateDelivered++;
+						if (h.kind === "gap") deliveredGapLost += h.lost ?? 0;
+						lostCounted += box.summary().lastFlushLost;
+						// the summary's delivered figure matches what the caller sees (gap delivers nothing)
+					}
+				} else if (roll < 0.95) {
+					clock += 30 * 60_000;
+					box.ageOut(clock);
+				} else {
+					clock += 40 * HOUR;
+					box.ageOut(clock);
+				}
+			}
+			// drain everything that is left
+			let queuedGapLost = 0;
+			for (const id of ids) {
+				for (;;) {
+					const h = box.head(id);
+					if (!h || h === "held") break;
+					box.remove(id, h.seq, "delivered");
+					deliveredEvents += h.kind === "events" ? JSON.parse(h.body).events.length : 0;
+					if (h.kind === "gap") queuedGapLost += h.lost ?? 0;
+				}
+			}
+			flushCounters();
+			const lostEvents = lostCounted - stateLostAppends;
+			expect(deliveredEvents + lostEvents, `seed ${seed}`).toBe(appendedEvents);
+			// every event in a gap was counted lost when it became one, never twice
+			expect(queuedGapLost + deliveredGapLost).toBeLessThanOrEqual(lostEvents);
+			void stateDelivered;
+		});
+	}
+});
+
+describe("a write that fails never removes anything first", () => {
+	/** A writer that fails when it would overwrite an existing file (a rewrite), while `failing` is set. */
+	function flaky() {
+		const state = { failing: false };
+		const writer = (path: string, text: string) => {
+			if (state.failing && existsSync(path)) throw new Error("ENOSPC: no space left on device");
+			writePrivateFileAtomicNoFollow(path, text);
+		};
+		return { state, writer };
+	}
+
+	test("a fold whose rewrite fails removes no state entry; the append is lost as before; it works once writes do", async () => {
+		const { state, writer } = flaky();
+		const box = open({ writer, limits: { sessionEntries: 4 } });
+		await box.ready();
+		for (let i = 1; i <= 4; i++) putState(box, "s1", { cwd: `/c${i}` });
+		state.failing = true;
+		expect(putState(box, "s1", { cwd: "/c5" })).toBe("lost");
+		expect(box.summary().pending).toBe(4);
+		expect(readdirSync(sessionDir("s1")).filter((n) => /^\d{16}\.json$/.test(n))).toHaveLength(4);
+		state.failing = false;
+		expect(putState(box, "s1", { cwd: "/c5" })).toBe("queued");
+		expect(box.summary().pending).toBe(4);
+	});
+
+	test("a gap whose rewrite fails removes no events entry and counts nothing lost for it", async () => {
+		const { state, writer } = flaky();
+		const box = open({ writer, limits: { sessionEntries: 3 } });
+		await box.ready();
+		putEvents(box, "s1", 1, "head");
+		putEvents(box, "s1", 2, "b");
+		putEvents(box, "s1", 3, "c");
+		state.failing = true;
+		box.beginFlush();
+		expect(putEvents(box, "s1", 1, "d")).toBe("lost");
+		const files = readdirSync(sessionDir("s1")).filter((n) => /^\d{16}\.json$/.test(n));
+		expect(files, "all three original entries are still there").toHaveLength(3);
+		expect(
+			files.map((f) => JSON.parse(readFileSync(join(sessionDir("s1"), f), "utf-8")).kind),
+		).toEqual(["events", "events", "events"]);
+		state.failing = false;
+		expect(putEvents(box, "s1", 1, "e")).toBe("queued");
+	});
+
+	test("an age-out whose rewrite fails removes nothing and tries again next pass", async () => {
+		const { state, writer } = flaky();
+		const box = open({ writer });
+		await box.ready();
+		putState(box, "s1", { status: "active" });
+		putEvents(box, "s1", 2, "old");
+		clock = T0 + 25 * HOUR;
+		state.failing = true;
+		box.ageOut(clock);
+		expect(drainKinds(box)).toEqual(["state", "events"]);
+		state.failing = false;
+		box.ageOut(clock);
+		expect(drainKinds(box)).toEqual(["state", "gap"]);
+
+		function drainKinds(b: ReportOutbox) {
+			const kinds: string[] = [];
+			let at = 0;
+			for (;;) {
+				const head = b.head("s1");
+				if (!head || head === "held") return kinds;
+				kinds.push(head.kind);
+				if (++at > 10) return kinds;
+				// look without removing: walk by reading the files
+				return readdirSync(sessionDir("s1"))
+					.filter((n) => /^\d{16}\.json$/.test(n))
+					.sort()
+					.map((f) => JSON.parse(readFileSync(join(sessionDir("s1"), f), "utf-8")).kind);
+			}
+		}
+	});
+});
+
+describe("what a restart does not carry", () => {
+	test("losses since the last flush are not persisted: after a restart the lost count is a lower bound (the gap in the queue still says how many)", async () => {
+		const a = open({ limits: { sessionEntries: 3 } });
+		await a.ready();
+		for (let i = 0; i < 6; i++) putEvents(a, "s1", 1, `m${i}`);
+		a.beginFlush();
+		a.endFlush(new Date(clock).toISOString());
+		expect(a.summary().lastFlushLost, "before the restart the count is there").toBeGreaterThan(0);
+		// a second overflow after that flush, and then the restart before the next one
+		for (let i = 0; i < 3; i++) putEvents(a, "s1", 1, `n${i}`);
+		const b = open({ limits: { sessionEntries: 3 } });
+		await b.ready();
+		b.beginFlush();
+		b.endFlush("2026-11-01T18:00:00.000Z");
+		expect(b.summary().lastFlushLost, "the restart forgot the unflushed count").toBe(0);
+		// what was lost is still visible where it matters: in the queued gap
+		const queuedGap = drain(b, "s1").find((e) => e.kind === "gap");
+		expect(queuedGap?.lost).toBeGreaterThan(0);
+	});
+});
+
+describe("a failure of the real writer", () => {
+	test("a directory where the next entry belongs makes the rename fail: the append is lost and counted, no temp file is left, the head is intact", async () => {
+		const box = open();
+		await box.ready();
+		putEvents(box, "s1", 1, "first");
+		mkdirSync(entryFile("s1", 2));
+		writeFileSync(join(entryFile("s1", 2), "blocker"), "x");
+		expect(putEvents(box, "s1", 2, "second")).toBe("lost");
+		const names = readdirSync(sessionDir("s1"));
+		expect(
+			names.filter((n) => n.endsWith(".tmp")),
+			"the temp file was cleaned up",
+		).toEqual([]);
+		expect(statSync(entryFile("s1", 2)).isDirectory(), "the planted directory is untouched").toBe(
+			true,
+		);
+		expect((box.head("s1") as OutboxEntry).seq).toBe(1);
+		box.beginFlush();
+		box.endFlush("2026-11-01T18:30:00.000Z");
+		expect(box.summary().lastFlushLost).toBeGreaterThanOrEqual(2);
+	});
 });
 
 describe("module boundaries", () => {

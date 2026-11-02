@@ -83,18 +83,22 @@ function isMissing(error: unknown): boolean {
 }
 
 /**
- * Reads an open file as text, at most `maxBytes`: it asks for one byte more and answers null if that
- * byte arrives, so a file that grew after its size was checked is rejected rather than read whole.
+ * Reads an open file as text, at most `maxBytes`, and no more than `size` (what the file was measured
+ * at, when known): it asks for one byte more and answers null if that byte arrives, so a file that grew
+ * after its size was checked is rejected rather than read whole, and a small file never costs a large buffer.
  */
-export function readBoundedText(fd: number, maxBytes: number): string | null {
-	const buffer = Buffer.alloc(maxBytes + 1);
+export function readBoundedText(fd: number, maxBytes: number, size?: number): string | null {
+	// Never more than the file was measured at (or the bound): a small file costs a small buffer, and one
+	// that grew since it was measured is rejected like one that is too big.
+	const limit = size === undefined ? maxBytes : Math.min(maxBytes, size);
+	const buffer = Buffer.alloc(limit + 1);
 	let length = 0;
 	while (length < buffer.length) {
 		const got = readSync(fd, buffer, length, buffer.length - length, null);
 		if (got === 0) break;
 		length += got;
 	}
-	return length > maxBytes ? null : buffer.toString("utf-8", 0, length);
+	return length > limit ? null : buffer.toString("utf-8", 0, length);
 }
 
 export type PrivateFileRead =
@@ -143,7 +147,7 @@ export function readPrivateFileNoFollow(path: string, maxBytes: number): Private
 				: isTrustedStateFileStat(st, process.getuid?.(), maxBytes);
 		if (!trusted)
 			return { kind: "untrusted", why: "it is not a private plain file of this account" };
-		const text = readBoundedText(fd, maxBytes);
+		const text = readBoundedText(fd, maxBytes, st.size);
 		return text === null
 			? { kind: "untrusted", why: "it is larger than allowed" }
 			: { kind: "ok", text };
