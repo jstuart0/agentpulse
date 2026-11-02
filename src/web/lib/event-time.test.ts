@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { LATE_ARRIVAL_MS } from "../../shared/late-arrival.js";
-import { eventDisplayTime, lateArrival, lateRunStarts, lateSuffix } from "./event-time.js";
+import {
+	eventDisplayTime,
+	lateArrival,
+	lateDetail,
+	lateRunStarts,
+	lateSuffix,
+	timeAttribute,
+} from "./event-time.js";
 
 const STORED = "2026-11-01T12:00:00.000Z";
 const storedMs = Date.parse(STORED);
@@ -49,11 +56,29 @@ describe("eventDisplayTime", () => {
 });
 
 describe("lateSuffix", () => {
-	test("minutes up to 90, then hours", () => {
-		expect(lateSuffix(1)).toBe("arrived 1 min later");
-		expect(lateSuffix(90)).toBe("arrived 90 min later");
-		expect(lateSuffix(91)).toBe("arrived 2 h later");
-		expect(lateSuffix(300)).toBe("arrived 5 h later");
+	test("minutes, then hours and minutes, in the relative times' units (floored)", () => {
+		expect(lateSuffix(1)).toBe("arrived 1m late");
+		expect(lateSuffix(7)).toBe("arrived 7m late");
+		expect(lateSuffix(59)).toBe("arrived 59m late");
+		expect(lateSuffix(60)).toBe("arrived 1h late");
+		expect(lateSuffix(91)).toBe("arrived 1h 31m late");
+		expect(lateSuffix(300)).toBe("arrived 5h late");
+		expect(lateSuffix(24 * 60 + 3 * 60 + 5)).toBe("arrived 1d 3h late");
+		expect(lateSuffix(2 * 24 * 60)).toBe("arrived 2d late");
+	});
+});
+
+describe("lateDetail and timeAttribute", () => {
+	test("the two times in words for a late event, nothing for one on time", () => {
+		const detail = lateDetail(late(10 * 60_000)) as string;
+		expect(detail).toMatch(/^Happened .+ · reached AgentPulse .+$/);
+		expect(lateDetail({ createdAt: STORED })).toBeNull();
+	});
+
+	test("the stored form (no T, no Z) is normalized to ISO for <time dateTime>; unparseable passes through", () => {
+		expect(timeAttribute("2026-11-01 12:00:00")).toBe("2026-11-01T12:00:00.000Z");
+		expect(timeAttribute("2026-11-01T12:00:00.000Z")).toBe("2026-11-01T12:00:00.000Z");
+		expect(timeAttribute("soon")).toBe("soon");
 	});
 });
 

@@ -41,7 +41,7 @@ const outbox = (over: Partial<NonNullable<Props["outbox"]>> = {}) => ({
 describe("HostOutboxNotice", () => {
 	test("catching up: the sentence, an icon that screen readers skip, no amber", () => {
 		const html = render({ outbox: outbox({ pending: 12 }) });
-		expect(html).toContain("Catching up: 12 events from while this host was offline.");
+		expect(html).toContain("Catching up: sending 12 events saved while this host was offline.");
 		expect(html).toContain('aria-hidden="true"');
 		expect(html).not.toContain("amber");
 	});
@@ -51,13 +51,13 @@ describe("HostOutboxNotice", () => {
 			"amber",
 		);
 		const calm = render({ outbox: outbox({ lastFlushDelivered: 3 }) });
-		expect(calm).toContain("3 late events delivered.");
+		expect(calm).toContain("Sent 3 events saved while offline.");
 		expect(calm).not.toContain("amber");
 	});
 
 	test("offline: the keep-and-send sentence", () => {
 		expect(render({ heartbeatLeaseExpiresAt: iso(NOW - 1_000) })).toContain(
-			"This host keeps its sessions&#x27; events while it&#x27;s offline and sends them when it reconnects.",
+			"Offline. Events from its running sessions are kept on this host and sent when it reconnects.",
 		);
 	});
 

@@ -16,6 +16,7 @@ import { assignablePeople, withCurrentOwner } from "../lib/people.js";
 import { useDbFingerprintStore } from "../stores/db-fingerprint-store.js";
 import { useUserStore } from "../stores/user-store.js";
 import { useUsersStore } from "../stores/users-store.js";
+import { HOSTS_TICK_MS, OUTBOX_POLL_MS, shouldPollHosts } from "./host-outbox-view-state.js";
 import {
 	deriveHostAccess,
 	deriveHostsViewState,
@@ -82,24 +83,50 @@ export function HostsPage() {
 		hostName?: string | null;
 	} | null>(null);
 
-	async function loadSupervisors(showInitialLoader = false) {
+	/** `quiet` is the background refetch while a host catches up: no spinner, and a failure waits for the next one. */
+	async function loadSupervisors(showInitialLoader = false, quiet = false) {
 		if (showInitialLoader) {
 			setLoading(true);
-		} else {
+		} else if (!quiet) {
 			setRefreshing(true);
 		}
 		try {
 			const result = (await api.getSupervisors()) as { supervisors: SupervisorRecord[] };
 			setSupervisors(result.supervisors ?? []);
 			setLoadError(null);
+			setNow(Date.now());
 		} catch (err) {
 			console.error("Failed to load supervisors:", err);
-			setLoadError(formatLoadError(err));
+			if (!quiet) setLoadError(formatLoadError(err));
 		} finally {
 			setLoading(false);
 			setRefreshing(false);
 		}
 	}
+
+	// Redraw every 30 s so a lease that runs out shows the offline notice without a refresh, and refetch
+	// every 15 s while a host is catching up (and the tab is in view) so its count and "Caught up." arrive.
+	const [now, setNow] = useState(() => Date.now());
+	const [tabHidden, setTabHidden] = useState(() => document.hidden);
+	useEffect(() => {
+		const tick = setInterval(() => setNow(Date.now()), HOSTS_TICK_MS);
+		const onVisibility = () => {
+			setTabHidden(document.hidden);
+			if (!document.hidden) setNow(Date.now());
+		};
+		document.addEventListener("visibilitychange", onVisibility);
+		return () => {
+			clearInterval(tick);
+			document.removeEventListener("visibilitychange", onVisibility);
+		};
+	}, []);
+	const polling = shouldPollHosts(supervisors, now, tabHidden);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: loadSupervisors is redefined each render; only the rule's outcome starts and stops the interval
+	useEffect(() => {
+		if (!polling) return;
+		const poll = setInterval(() => void loadSupervisors(false, true), OUTBOX_POLL_MS);
+		return () => clearInterval(poll);
+	}, [polling]);
 
 	useEffect(() => {
 		loadSupervisors(true);
@@ -450,8 +477,8 @@ export function HostsPage() {
 										</div>
 									</div>
 
-									<HostExcludeNotice supervisor={supervisor} />
-									<HostOutboxNotice supervisor={supervisor} />
+									<HostExcludeNotice supervisor={supervisor} now={now} />
+									<HostOutboxNotice supervisor={supervisor} now={now} />
 
 									<div className="mt-4 space-y-3 text-xs">
 										{access.ownerText !== null && (

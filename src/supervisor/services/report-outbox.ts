@@ -109,8 +109,6 @@ const EXTRA_NAMES_ALLOWED = 16;
 /** A counter read from disk is clamped to this. */
 const MAX_COUNTER = 10_000_000;
 const PURGE_PATTERN = /^\.purge-[0-9a-f]{16}$/;
-const GAP_TAIL =
-	" while this machine was offline: its offline queue was full or the events were more than a day old.";
 
 export interface ReportOutbox {
 	/** False when the root is not private to this account: nothing is read or written and `append` loses. */
@@ -250,8 +248,11 @@ function eventCount(entry: Pick<OutboxEntry, "kind" | "body">): number {
 	return Array.isArray(parsed?.events) ? (parsed.events as unknown[]).length : 1;
 }
 
+/** The sentence a ManagedEventsLost event carries; the web and the apps show it as it is. */
 function lostPhrase(lost: number): string {
-	return `${lost === 1 ? "1 event from this session wasn't" : `${lost} events from this session weren't`} delivered${GAP_TAIL}`;
+	const subject =
+		lost === 1 ? "1 event from this session was" : `${lost} events from this session were`;
+	return `${subject} lost while offline: the offline queue was full, or ${lost === 1 ? "it was" : "they were"} more than a day old.`;
 }
 
 function gapBody(lost: number, firstLossAt: string): string {

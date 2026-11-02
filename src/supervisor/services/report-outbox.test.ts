@@ -504,14 +504,14 @@ describe("bounds", () => {
 		expect(gap.deliveryId).toMatch(/^[A-Za-z0-9-]{8,64}$/);
 		const event = JSON.parse(gap.body).events[0];
 		expect(event).toMatchObject({ eventType: "ManagedEventsLost", category: "system_event" });
-		expect(event.content).toContain("while this machine was offline");
+		expect(event.content).toContain("lost while offline: the offline queue was full, or ");
 		expect(event.rawPayload.lost).toBe(gap.lost);
 		box.beginFlush();
 		box.endFlush("2026-11-01T14:00:00.000Z");
 		expect(box.summary().lastFlushLost).toBe(gap.lost as number);
 	});
 
-	test("the gap says '1 event ... wasn't' for one and 'N events ... weren't' for more", async () => {
+	test("the gap says '1 event ... was lost' for one and 'N events ... were lost' for more", async () => {
 		const box = open();
 		await box.ready();
 		putEvents(box, "one", 1, "a");
@@ -519,13 +519,13 @@ describe("bounds", () => {
 		clock = T0 + 25 * HOUR;
 		box.ageOut(clock);
 		const one = box.head("one") as OutboxEntry;
-		expect(JSON.parse(one.body).events[0].content).toMatch(
-			/^1 event from this session wasn't delivered while this machine was offline/,
+		expect(JSON.parse(one.body).events[0].content).toBe(
+			"1 event from this session was lost while offline: the offline queue was full, or it was more than a day old.",
 		);
 		const many = box.head("many") as OutboxEntry;
 		expect(many.lost).toBe(3);
-		expect(JSON.parse(many.body).events[0].content).toMatch(
-			/^3 events from this session weren't delivered while this machine was offline/,
+		expect(JSON.parse(many.body).events[0].content).toBe(
+			"3 events from this session were lost while offline: the offline queue was full, or they were more than a day old.",
 		);
 	});
 

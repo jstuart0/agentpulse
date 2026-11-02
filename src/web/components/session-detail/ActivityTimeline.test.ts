@@ -44,7 +44,7 @@ describe("ActivityTimeline late arrivals", () => {
 	test("the time is when it happened, in a <time> element", () => {
 		const occurredAt = minutesAgo(30);
 		const html = render([event({ occurredAt, content: "replayed" })]);
-		expect(html).toContain(`<time dateTime="${occurredAt}">`);
+		expect(html).toContain(`<time dateTime="${occurredAt}" title="Happened `);
 		expect(html).toContain("30m ago");
 	});
 
@@ -57,7 +57,7 @@ describe("ActivityTimeline late arrivals", () => {
 	test("the note goes on the first row of a late run only", () => {
 		const late = () => event({ occurredAt: minutesAgo(10) });
 		const html = render([event({}), late(), late(), late(), event({}), late()]);
-		expect(count(html, "arrived 10 min later")).toBe(2);
+		expect(count(html, "arrived 10m late")).toBe(2);
 	});
 
 	test("it is computed over the rows given: take away the on-time row between two runs and they are one", () => {
@@ -68,8 +68,31 @@ describe("ActivityTimeline late arrivals", () => {
 		expect(count(render([a, b]), "arrived")).toBe(1);
 	});
 
-	test("hours past 90 minutes", () => {
-		expect(render([event({ occurredAt: minutesAgo(240) })])).toContain("arrived 4 h later");
+	test("hours and minutes beyond the first hour", () => {
+		expect(render([event({ occurredAt: minutesAgo(91) })])).toContain("arrived 1h 31m late");
+	});
+
+	test("every late row is marked and says both times, on screen and to a screen reader; only the first of a run carries the note", () => {
+		const late = () => event({ occurredAt: minutesAgo(10) });
+		const html = render([event({}), late(), late(), event({})]);
+		expect(count(html, "border-dashed")).toBe(2);
+		expect(count(html, 'title="Happened ')).toBe(2);
+		expect(count(html, 'class="sr-only"> Happened ')).toBe(2);
+		expect(count(html, "reached AgentPulse")).toBe(4);
+		expect(count(html, "arrived 10m late")).toBe(1);
+		// the separator before the note is not read out
+		expect(html).toContain('<span aria-hidden="true"> · </span>');
+	});
+
+	test("an on-time row has no marker, no title and no extra text", () => {
+		const html = render([event({})]);
+		expect(html).not.toContain("border-dashed");
+		expect(html).not.toContain("Happened");
+	});
+
+	test("the <time> value is ISO even when the stored time is the SQLite form", () => {
+		const html = render([event({ createdAt: "2026-11-01 12:00:00" })]);
+		expect(html).toContain('dateTime="2026-11-01T12:00:00.000Z"');
 	});
 
 	test("rows keep the order they were given, even when occurrence times run backwards", () => {
@@ -92,6 +115,11 @@ describe("ManagedEventsLost", () => {
 		expect(html).toContain("&lt;b&gt;x&lt;/b&gt;");
 		expect(html).not.toContain("<strong>");
 		expect(html).not.toContain("<b>x</b>");
+	});
+
+	test("the row is amber", () => {
+		const html = render([event({ eventType: "ManagedEventsLost", content: "3 events were lost" })]);
+		expect(html).toContain("border-amber-500/20");
 	});
 
 	test("another event's content still goes through Markdown", () => {

@@ -5,7 +5,7 @@ import {
 	type HostOutboxNotice as Notice,
 	deriveHostOutboxNotice,
 	outboxAnnouncement,
-} from "../pages/hosts-view-state.js";
+} from "../pages/host-outbox-view-state.js";
 
 type NoticeSupervisor = Pick<
 	SupervisorRecord,
@@ -28,13 +28,24 @@ export function HostOutboxNotice({
 	const [announcement, setAnnouncement] = useState("");
 	const previous = useRef<{ id: string; notice: Notice | null } | null>(null);
 
+	// The effect runs on a change of branch (or host), not on every render: the notice object is new each time.
+	const current = useRef(notice);
+	current.current = notice;
+	const kind = notice?.kind ?? null;
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `kind` is what makes this run, on a change of branch
 	useEffect(() => {
+		const now = current.current;
 		const before = previous.current?.id === supervisor.id ? previous.current.notice : undefined;
-		previous.current = { id: supervisor.id, notice };
+		previous.current = { id: supervisor.id, notice: now };
 		if (before === undefined) return; // the first look at a host announces nothing
-		const said = outboxAnnouncement(before, notice);
-		if (said) setAnnouncement(said);
-	}, [supervisor.id, notice]);
+		const said = outboxAnnouncement(before, now);
+		if (!said) return;
+		// Cleared first, so the same words again are a change a screen reader reads out.
+		setAnnouncement("");
+		const timer = setTimeout(() => setAnnouncement(said), 50);
+		return () => clearTimeout(timer);
+	}, [supervisor.id, kind]);
 
 	const Icon = notice ? (notice.lost > 0 ? AlertTriangle : ICONS[notice.kind]) : null;
 	return (

@@ -7,6 +7,7 @@ import {
 	normalizeComparableContent,
 } from "../../../shared/event-authority.js";
 import type { EventCategory, EventSource, SessionEvent } from "../../../shared/types.js";
+import { timeAttribute } from "../../lib/event-time.js";
 import { cn, formatTimeAgo } from "../../lib/utils.js";
 import { MarkdownContent } from "../MarkdownContent.js";
 
@@ -86,11 +87,23 @@ function SourceBadge({ source }: { source: EventSource }) {
 }
 
 /** The relative time of an event as a <time> element, with the late-arrival note when it starts a late run. */
-function EventTime({ time, lateNote }: { time: string; lateNote?: string }) {
+function EventTime({
+	time,
+	lateNote,
+	lateDetail,
+}: { time: string; lateNote?: string; lateDetail?: string }) {
 	return (
 		<>
-			<time dateTime={time}>{formatTimeAgo(time)}</time>
-			{lateNote ? <span> · {lateNote}</span> : null}
+			<time dateTime={timeAttribute(time)} title={lateDetail}>
+				{formatTimeAgo(time)}
+				{lateDetail ? <span className="sr-only"> {lateDetail}</span> : null}
+			</time>
+			{lateNote ? (
+				<>
+					<span aria-hidden="true"> · </span>
+					<span>{lateNote}</span>
+				</>
+			) : null}
 		</>
 	);
 }
@@ -100,11 +113,13 @@ export function PromptBubble({
 	time,
 	source,
 	lateNote,
+	lateDetail,
 }: {
 	text: string;
 	time: string;
 	source?: EventSource;
 	lateNote?: string;
+	lateDetail?: string;
 }) {
 	return (
 		<div className="flex justify-end">
@@ -115,7 +130,7 @@ export function PromptBubble({
 				<div className="mt-1 flex items-center justify-end gap-2">
 					{source ? <SourceBadge source={source} /> : null}
 					<p className="text-[10px] text-muted-foreground text-right">
-						<EventTime time={time} lateNote={lateNote} />
+						<EventTime time={time} lateNote={lateNote} lateDetail={lateDetail} />
 					</p>
 				</div>
 			</div>
@@ -128,11 +143,13 @@ export function AssistantBubble({
 	time,
 	source,
 	lateNote,
+	lateDetail,
 }: {
 	text: string;
 	time: string;
 	source?: EventSource;
 	lateNote?: string;
+	lateDetail?: string;
 }) {
 	return (
 		<div className="flex justify-start">
@@ -142,7 +159,7 @@ export function AssistantBubble({
 				</div>
 				<div className="mt-1 flex items-center gap-2">
 					<p className="text-[10px] text-muted-foreground">
-						<EventTime time={time} lateNote={lateNote} />
+						<EventTime time={time} lateNote={lateNote} lateDetail={lateDetail} />
 					</p>
 					{source ? <SourceBadge source={source} /> : null}
 				</div>
@@ -158,6 +175,7 @@ export function TimelineCard({
 	tone = "default",
 	source,
 	lateNote,
+	lateDetail,
 	plainText,
 }: {
 	text: string;
@@ -166,6 +184,7 @@ export function TimelineCard({
 	tone?: "default" | "emerald" | "amber" | "muted";
 	source?: EventSource;
 	lateNote?: string;
+	lateDetail?: string;
 	/** Shown as text, never as Markdown (for content that is not the user's or the agent's own writing). */
 	plainText?: boolean;
 }) {
@@ -186,7 +205,7 @@ export function TimelineCard({
 					{source ? <SourceBadge source={source} /> : null}
 				</div>
 				<span className="text-[10px] text-muted-foreground">
-					<EventTime time={time} lateNote={lateNote} />
+					<EventTime time={time} lateNote={lateNote} lateDetail={lateDetail} />
 				</span>
 			</div>
 			<div className="mt-1.5">

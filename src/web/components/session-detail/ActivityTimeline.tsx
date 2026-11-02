@@ -1,6 +1,12 @@
 import { type ReactNode, type RefObject, forwardRef } from "react";
 import type { SessionEvent } from "../../../shared/types.js";
-import { eventDisplayTime, lateArrival, lateRunStarts, lateSuffix } from "../../lib/event-time.js";
+import {
+	eventDisplayTime,
+	lateArrival,
+	lateDetail,
+	lateRunStarts,
+	lateSuffix,
+} from "../../lib/event-time.js";
 import {
 	AssistantBubble,
 	PromptBubble,
@@ -59,18 +65,21 @@ ActivityTimeline.displayName = "ActivityTimeline";
  * `data-event-key` attribute instead — search hits always reference persisted
  * rows so they will always find the id-stamped element.
  */
-function stampedItem(event: SessionEvent, child: ReactNode) {
+/** The quiet mark on a row that reached the server late: its time is when it happened, not where it sits. */
+const LATE_ROW_CLASS = "border-l-2 border-dashed border-muted-foreground/40 pl-2";
+
+function stampedItem(event: SessionEvent, child: ReactNode, late = false) {
 	if (child === null) return null;
 	const key = eventKey(event);
 	if (event.id) {
 		return (
-			<div key={key} id={`event-${event.id}`}>
+			<div key={key} id={`event-${event.id}`} className={late ? LATE_ROW_CLASS : undefined}>
 				{child}
 			</div>
 		);
 	}
 	return (
-		<div key={key} data-event-key={key}>
+		<div key={key} data-event-key={key} className={late ? LATE_ROW_CLASS : undefined}>
 			{child}
 		</div>
 	);
@@ -106,25 +115,33 @@ function renderTerminalEvent(event: SessionEvent) {
 	);
 }
 
-/** The late-arrival note goes on the first row of each late run, judged over the rows on screen. */
+/**
+ * Every late row carries a quiet marker and the two times in words; the "arrived … late" note goes on the
+ * first row of each late run, judged over the rows on screen.
+ */
 function renderBubbles(visibleEvents: SessionEvent[], mode: TimelineMode) {
 	const starts = lateRunStarts(visibleEvents);
 	return visibleEvents.map((event, index) => {
-		const minutes = starts.has(index) ? lateArrival(event) : null;
-		return stampedItem(
-			event,
-			renderBubbleEvent(event, mode, minutes === null ? undefined : lateSuffix(minutes)),
-		);
+		const minutes = lateArrival(event);
+		const detail = lateDetail(event) ?? undefined;
+		const note = minutes !== null && starts.has(index) ? lateSuffix(minutes) : undefined;
+		return stampedItem(event, renderBubbleEvent(event, mode, note, detail), minutes !== null);
 	});
 }
 
-function renderBubbleEvent(event: SessionEvent, mode: TimelineMode, lateNote?: string) {
+function renderBubbleEvent(
+	event: SessionEvent,
+	mode: TimelineMode,
+	lateNote?: string,
+	lateDetail?: string,
+) {
 	if (event.category === "prompt" && event.content) {
 		return (
 			<PromptBubble
 				text={event.content}
 				time={eventDisplayTime(event)}
 				lateNote={lateNote}
+				lateDetail={lateDetail}
 				source={mode === "debug" ? event.source : undefined}
 			/>
 		);
@@ -135,6 +152,7 @@ function renderBubbleEvent(event: SessionEvent, mode: TimelineMode, lateNote?: s
 				text={event.content}
 				time={eventDisplayTime(event)}
 				lateNote={lateNote}
+				lateDetail={lateDetail}
 				source={mode === "debug" ? event.source : undefined}
 			/>
 		);
@@ -147,6 +165,7 @@ function renderBubbleEvent(event: SessionEvent, mode: TimelineMode, lateNote?: s
 				text={detail}
 				time={eventDisplayTime(event)}
 				lateNote={lateNote}
+				lateDetail={lateDetail}
 				tone={event.isNoise ? "muted" : "amber"}
 				source={mode === "debug" ? event.source : undefined}
 			/>
@@ -159,12 +178,15 @@ function renderBubbleEvent(event: SessionEvent, mode: TimelineMode, lateNote?: s
 			text={event.content}
 			time={eventDisplayTime(event)}
 			lateNote={lateNote}
+			lateDetail={lateDetail}
 			tone={
-				event.category === "status_update"
-					? "emerald"
-					: event.category === "permission_event"
-						? "amber"
-						: "default"
+				event.eventType === "ManagedEventsLost"
+					? "amber"
+					: event.category === "status_update"
+						? "emerald"
+						: event.category === "permission_event"
+							? "amber"
+							: "default"
 			}
 			source={mode === "debug" ? event.source : undefined}
 			plainText={event.eventType === "ManagedEventsLost"}
