@@ -40,18 +40,6 @@ function outboxField(row: object): { outbox?: SupervisorOutboxState } {
 	return outbox ? { outbox } : {};
 }
 
-/** The column's new value when the heartbeat's outbox differs from the stored one, else nothing. */
-function outboxUpdate(
-	existing: object,
-	change: OutboxChange | undefined,
-): { outboxState?: string | null } {
-	if (!change || change.kind === "leave") return {};
-	const stored = outboxStateOf(existing);
-	const next = change.kind === "set" ? change.value : null;
-	if (sameOutboxState(stored, next)) return {};
-	return { outboxState: next ? JSON.stringify(next) : null };
-}
-
 function mapSupervisor(row: typeof supervisors.$inferSelect, nowMs = Date.now()): SupervisorRecord {
 	return {
 		id: row.id,
@@ -203,7 +191,49 @@ async function writeSupervisor(
 	};
 }
 
-export async function heartbeatSupervisor(id: string, outbox?: OutboxChange) {
+/** How the outbox column is written; replaceable so a test can make the write fail. */
+type OutboxWriter = (id: string, text: string | null) => Promise<void>;
+
+async function writeOutboxState(id: string, text: string | null) {
+	await getDb().update(supervisors).set({ outboxState: text }).where(eq(supervisors.id, id));
+}
+
+let outboxWriteWarned = false;
+
+/**
+ * Stores the host's outbox when it differs from what the row holds (compared in JS), as its own statement:
+ * a failure to write it is logged once and swallowed, because a heartbeat that fails makes the supervisor exit.
+ */
+async function recordOutboxState(
+	id: string,
+	existing: object,
+	change: OutboxChange | undefined,
+	write: OutboxWriter,
+) {
+	if (!change || change.kind === "leave") return;
+	const stored = outboxStateOf(existing);
+	const next = change.kind === "set" ? change.value : null;
+	if (sameOutboxState(stored, next)) return;
+	try {
+		await write(id, next ? JSON.stringify(next) : null);
+	} catch (error) {
+		if (outboxWriteWarned) return;
+		outboxWriteWarned = true;
+		console.warn(
+			JSON.stringify({
+				kind: "heartbeat_outbox_state_failed",
+				level: "warn",
+				error: error instanceof Error ? error.message : String(error),
+			}),
+		);
+	}
+}
+
+export async function heartbeatSupervisor(
+	id: string,
+	outbox?: OutboxChange,
+	writeOutbox: OutboxWriter = writeOutboxState,
+) {
 	const timestamp = nowIso();
 	const leaseExpiry = leaseExpiryIso();
 	const [existing] = await getDb()
@@ -220,11 +250,9 @@ export async function heartbeatSupervisor(id: string, outbox?: OutboxChange) {
 			lastHeartbeatAt: timestamp,
 			heartbeatLeaseExpiresAt: leaseExpiry,
 			updatedAt: timestamp,
-			// Compared with what the row already holds, in JS: a heartbeat that says nothing new adds
-			// nothing to the statement it was already making.
-			...outboxUpdate(existing, outbox),
 		})
 		.where(eq(supervisors.id, id));
+	await recordOutboxState(id, existing, outbox, writeOutbox);
 
 	const [row] = await getDb().select().from(supervisors).where(eq(supervisors.id, id)).limit(1);
 	return row ? mapSupervisor(row) : null;

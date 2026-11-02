@@ -329,6 +329,7 @@ describeSqliteOnly("a healthy host's heartbeat writes what it always did", () =>
 
 // ── the offline outbox on the heartbeat (AGEN-83) ────────────────────────────────────────────
 
+const { heartbeatSupervisor } = await import("../services/supervisor-registry.js");
 const { countDbCalls } = await import("../test-utils/db-call-counter.js");
 const { installStatementMeter } = await import("../test-utils/statement-meter.js");
 
@@ -484,20 +485,55 @@ describe("the offline outbox state", () => {
 		expect(await storedOutbox(id)).toBeNull();
 	});
 
-	test("an outbox body costs no more statements than a bare heartbeat", async () => {
+	test("statements: an unchanged beat costs what a bare one does, a changed one exactly one more", async () => {
 		const a = await registerFreshSupervisor();
 		const b = await registerFreshSupervisor();
 		const bare = await countDbCalls(async () => {
 			await heartbeat(a.id, a.credential, JSON.stringify({ excludeRulesState: "none" }));
 		});
-		const withOutbox = await countDbCalls(async () => {
-			await heartbeat(
-				b.id,
-				b.credential,
-				JSON.stringify({ excludeRulesState: "none", outbox: OUTBOX }),
-			);
+		const body = JSON.stringify({ excludeRulesState: "none", outbox: OUTBOX });
+		const changed = await countDbCalls(async () => {
+			await heartbeat(b.id, b.credential, body);
 		});
-		expect(withOutbox).toBe(bare);
+		const unchanged = await countDbCalls(async () => {
+			await heartbeat(b.id, b.credential, body);
+		});
+		expect(changed).toBe(bare + 1);
+		expect(unchanged).toBe(bare);
+	});
+
+	test("outbox: null clears the stored value", async () => {
+		const { id, credential } = await registerFreshSupervisor();
+		await heartbeat(id, credential, JSON.stringify({ excludeRulesState: "none", outbox: OUTBOX }));
+		expect(await storedOutbox(id)).not.toBeNull();
+		const res = await heartbeat(
+			id,
+			credential,
+			JSON.stringify({ excludeRulesState: "none", outbox: null }),
+		);
+		expect(res.status).toBe(200);
+		expect(await storedOutbox(id)).toBeNull();
+	});
+
+	test("a failure to write the outbox is swallowed: the heartbeat still answers and the lease is renewed", async () => {
+		const { id } = await registerFreshSupervisor();
+		await executeRows(
+			getDb(),
+			sql`UPDATE supervisors SET heartbeat_lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ${id}`,
+		);
+		const attempts: Array<string | null> = [];
+		const result = await heartbeatSupervisor(
+			id,
+			{ kind: "set", value: OUTBOX },
+			async (_id, text) => {
+				attempts.push(text);
+				throw new Error("the column is not there");
+			},
+		);
+		expect(attempts).toHaveLength(1);
+		expect(result).not.toBeNull();
+		expect(Date.parse(result?.heartbeatLeaseExpiresAt as string)).toBeGreaterThan(Date.now());
+		expect("outbox" in (result ?? {})).toBe(false);
 	});
 });
 
@@ -513,6 +549,25 @@ describeSqliteOnly("the outbox column is written only when the heartbeat changes
 			meter.restore();
 		}
 	}
+
+	test("the lease update never carries the outbox: it is its own statement", async () => {
+		const { id, credential } = await registerFreshSupervisor();
+		const meter = installStatementMeter();
+		try {
+			await heartbeat(
+				id,
+				credential,
+				JSON.stringify({ excludeRulesState: "none", outbox: OUTBOX }),
+			);
+			const lease = meter
+				.matching(/update\s+"?supervisors"?\s+set/i)
+				.filter((e) => e.sql.includes("heartbeat_lease_expires_at"));
+			expect(lease.length).toBeGreaterThan(0);
+			for (const e of lease) expect(e.sql).not.toContain("outbox_state");
+		} finally {
+			meter.restore();
+		}
+	});
 
 	test("the first report writes it, the same report again does not, a different one does, and clearing does", async () => {
 		const { id, credential } = await registerFreshSupervisor();

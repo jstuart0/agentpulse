@@ -64,6 +64,7 @@ export function parseOutboxObject(
 export function parseOutboxState(body: HeartbeatBody, nowMs = Date.now()): OutboxChange {
 	if (body.kind === "unreadable") return { kind: "leave" };
 	if (body.kind === "empty" || !Object.hasOwn(body.value, "outbox")) return { kind: "clear" };
+	if (body.value.outbox === null) return { kind: "clear" };
 	const parsed = parseOutboxObject(body.value.outbox, nowMs);
 	return parsed ? { kind: "set", value: parsed } : { kind: "leave" };
 }
