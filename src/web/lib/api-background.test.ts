@@ -4,7 +4,9 @@
  * still reloads. Every other caller is unchanged.
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { useReachabilityStore } from "../stores/reachability-store.js";
 import { api, resetAuthBounceForTests, setNetworkHandler } from "./api.js";
+import { runRetryProbe } from "./retry-probe.js";
 
 const realFetch = globalThis.fetch;
 const g = globalThis as unknown as Record<string, unknown>;
@@ -87,5 +89,62 @@ describe("an answer that is an expired sign-in", () => {
 		await reloadSoon();
 		expect(reloads).toBe(1);
 		expect(failed).toBe(0);
+	});
+});
+
+describe("the outage notice's probe and the fingerprint poll never reload the page", () => {
+	test("W8: /health that gets no answer reports an outage and does not reload (it is never behind forwardauth, so it can't be an auth bounce)", async () => {
+		throwing();
+		await expect(api.getHealth()).rejects.toBeInstanceOf(TypeError);
+		await reloadSoon();
+		expect(reloads).toBe(0);
+		expect(failed).toBe(1);
+	});
+
+	test("W8: nor does the identity check the notice's retry may use instead of /health", async () => {
+		throwing();
+		await expect(api.getAuthMe()).rejects.toBeInstanceOf(TypeError);
+		await reloadSoon();
+		expect(reloads).toBe(0);
+		expect(failed).toBe(1);
+	});
+
+	test("a failed probe counts once against the retry backoff, however many ways it is reported", async () => {
+		useReachabilityStore.setState({ unreachable: true, attempt: 0 });
+		// the wiring the app has: a request that gets no answer reports a failure to the store
+		setNetworkHandler({
+			failed: () => useReachabilityStore.getState().reportFailure(),
+			ok: () => {},
+		});
+		throwing();
+		await runRetryProbe({
+			identityPending: false,
+			loadIdentity: async () => {},
+			identityConfirmed: () => true,
+			health: () => api.getHealth(),
+			onFail: () => useReachabilityStore.getState().reportProbeFailure(),
+		});
+		await reloadSoon();
+		expect(useReachabilityStore.getState().attempt).toBe(1);
+		expect(useReachabilityStore.getState().unreachable).toBe(true);
+		expect(reloads).toBe(0);
+		useReachabilityStore.setState({ unreachable: false, attempt: 0 });
+	});
+
+	test("the notice and the fingerprint poll go through api.getHealth, not a request of their own", async () => {
+		const { readFileSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const notice = readFileSync(
+			join(import.meta.dir, "../components/ServerUnreachableNotice.tsx"),
+			"utf-8",
+		);
+		const app = readFileSync(join(import.meta.dir, "../App.tsx"), "utf-8");
+		expect(notice).toContain("health: () => api.getHealth()");
+		expect(app).toContain("await api.getHealth()");
+		const apiSource = readFileSync(join(import.meta.dir, "api.ts"), "utf-8");
+		expect(apiSource).toMatch(/\}>\("\/health", undefined, \{ background: true \}\)/);
+		expect(apiSource).toContain(
+			'request<AuthMeResponse>("/auth/me", undefined, { background: true })',
+		);
 	});
 });

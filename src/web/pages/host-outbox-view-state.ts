@@ -120,6 +120,21 @@ export function outboxAnnouncement(
 	return null;
 }
 
+/**
+ * The line the Hosts page shows when its quiet refetch has failed since the last answer it took: the cards
+ * are what the server last said, and nothing else on screen would say so. Null when the last refetch worked
+ * (or there has not been an answer yet to point at).
+ */
+export function hostsRefreshNotice(
+	refreshFailed: boolean,
+	lastHeardAtMs: number | null,
+	now: number,
+): string | null {
+	if (!refreshFailed || lastHeardAtMs === null) return null;
+	const at = formatOutboxTime(new Date(lastHeardAtMs).toISOString(), now);
+	return `Couldn't refresh hosts. Showing what we last heard at ${at}.`;
+}
+
 /** How often the page refetches hosts while one is catching up, and how often it redraws so leases run out. */
 export const OUTBOX_POLL_MS = 15_000;
 export const HOSTS_TICK_MS = 30_000;

@@ -5,6 +5,7 @@ import {
 	type OutboxNoticeHost,
 	deriveHostOutboxNotice,
 	formatOutboxTime,
+	hostsRefreshNotice,
 	outboxAnnouncement,
 	shouldPollHosts,
 } from "./host-outbox-view-state.js";
@@ -273,5 +274,26 @@ describe("outboxAnnouncement", () => {
 			outboxAnnouncement(notice("catching-up", "3 events."), notice("catching-up", "2 events.")),
 		).toBeNull();
 		expect(outboxAnnouncement(null, null)).toBeNull();
+	});
+});
+
+describe("hostsRefreshNotice", () => {
+	const heard = at(5, 14, 2);
+
+	test("says so, with the time of the last answer, only while the quiet refetch is failing", () => {
+		expect(hostsRefreshNotice(true, heard, NOW)).toBe(
+			`Couldn't refresh hosts. Showing what we last heard at ${clock(heard)}.`,
+		);
+		expect(hostsRefreshNotice(false, heard, NOW)).toBeNull();
+	});
+
+	test("an answer from another day names the day", () => {
+		expect(hostsRefreshNotice(true, at(2, 14, 2), NOW)).toBe(
+			`Couldn't refresh hosts. Showing what we last heard at ${dayAndClock(at(2, 14, 2))}.`,
+		);
+	});
+
+	test("nothing to point at yet, nothing said", () => {
+		expect(hostsRefreshNotice(true, null, NOW)).toBeNull();
 	});
 });

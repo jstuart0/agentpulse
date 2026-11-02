@@ -840,14 +840,17 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 
+	// /health and /auth/me are not behind forwardauth, so neither can ever come back as an auth bounce: a
+	// fetch that fails there is an outage, never an expired sign-in, and must not reload the page (that
+	// would throw away a shown-once token or a typed name). Both are always background requests.
 	getHealth: () =>
 		request<{
 			status: string;
 			version?: string;
 			instance?: { dbFingerprint: string; dialect: "sqlite" | "postgres" };
-		}>("/health"),
+		}>("/health", undefined, { background: true }),
 
-	getAuthMe: () => request<AuthMeResponse>("/auth/me"),
+	getAuthMe: () => request<AuthMeResponse>("/auth/me", undefined, { background: true }),
 
 	// --- Notification channels (Telegram, etc.) ---
 	getChannels: () =>

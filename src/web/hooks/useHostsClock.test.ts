@@ -229,6 +229,13 @@ describe("the page uses the clock and keeps no clock of its own", () => {
 		expect(page).toContain("now={now}");
 	});
 
+	test("W9: a quiet failure raises a flag, a success clears it, and the line is shown above the cards", () => {
+		expect(page).toMatch(/if \(quiet\) setRefreshFailed\(true\);\s*else setLoadError/);
+		expect(page).toMatch(/setRefreshFailed\(false\);\s*setLastHeardAt\(Date\.now\(\)\)/);
+		expect(page).toContain("hostsRefreshNotice(refreshFailed, lastHeardAt, now)");
+		expect(page).toContain("{refreshNotice}");
+	});
+
 	test("a load that fails reports false and does not mark the page fresh", () => {
 		const load = page.slice(
 			page.indexOf("async function loadSupervisors"),
