@@ -48,7 +48,11 @@ import { REPLAY_RETRY_AFTER_SECONDS, tryAcquireReplay } from "../services/replay
 import { SessionOwnershipError } from "../services/session-ownership.js";
 import { getSession } from "../services/session-tracker.js";
 import { parseRegistrationShape } from "../services/supervisor-capabilities.js";
-import { recordHeartbeatExcludeState } from "../services/supervisor-exclude-state.js";
+import {
+	readHeartbeatBody,
+	recordHeartbeatExcludeState,
+} from "../services/supervisor-exclude-state.js";
+import { parseOutboxState } from "../services/supervisor-outbox-state.js";
 import {
 	enrollSupervisor,
 	getSupervisor,
@@ -334,8 +338,9 @@ supervisorsAgentRouter.post("/supervisors/register", registerBodyLimit, async (c
 
 supervisorsAgentRouter.post("/supervisors/:id/heartbeat", requireSupervisorAuth(), async (c) => {
 	const supervisorId = c.req.param("id") ?? "";
-	await recordHeartbeatExcludeState(c, supervisorId);
-	const supervisor = await heartbeatSupervisor(supervisorId);
+	const body = await readHeartbeatBody(c);
+	await recordHeartbeatExcludeState(supervisorId, body);
+	const supervisor = await heartbeatSupervisor(supervisorId, parseOutboxState(body));
 	if (!supervisor) return c.json({ error: "Supervisor not found" }, 404);
 	return c.json({ supervisor });
 });

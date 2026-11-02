@@ -2,7 +2,11 @@
 // no json_extract, no datetime('now') literals. The heartbeat-lease timestamp
 // (Date.now() + ms).toISOString() is pure JS — fully portable to Postgres.
 import { desc, eq, sql } from "drizzle-orm";
-import type { SupervisorRecord, SupervisorRegistrationInput } from "../../shared/types.js";
+import type {
+	SupervisorOutboxState,
+	SupervisorRecord,
+	SupervisorRegistrationInput,
+} from "../../shared/types.js";
 import { assertOwnerActive, assertOwnerAssignable } from "../auth/owner-state.js";
 import {
 	prepareSupervisorCredential,
@@ -20,6 +24,7 @@ import {
 	deriveSupervisorStatus,
 	isSupervisorLive,
 } from "./supervisor-liveness.js";
+import { type OutboxChange, outboxStateOf, sameOutboxState } from "./supervisor-outbox-state.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -27,6 +32,24 @@ function nowIso() {
 
 function leaseExpiryIso(base = Date.now()) {
 	return new Date(base + HEARTBEAT_LEASE_MS).toISOString();
+}
+
+/** The outbox state, present only when the row holds one. */
+function outboxField(row: object): { outbox?: SupervisorOutboxState } {
+	const outbox = outboxStateOf(row);
+	return outbox ? { outbox } : {};
+}
+
+/** The column's new value when the heartbeat's outbox differs from the stored one, else nothing. */
+function outboxUpdate(
+	existing: object,
+	change: OutboxChange | undefined,
+): { outboxState?: string | null } {
+	if (!change || change.kind === "leave") return {};
+	const stored = outboxStateOf(existing);
+	const next = change.kind === "set" ? change.value : null;
+	if (sameOutboxState(stored, next)) return {};
+	return { outboxState: next ? JSON.stringify(next) : null };
 }
 
 function mapSupervisor(row: typeof supervisors.$inferSelect, nowMs = Date.now()): SupervisorRecord {
@@ -44,6 +67,7 @@ function mapSupervisor(row: typeof supervisors.$inferSelect, nowMs = Date.now())
 		lastHeartbeatAt: row.lastHeartbeatAt,
 		heartbeatLeaseExpiresAt: row.heartbeatLeaseExpiresAt,
 		excludeRulesState: excludeRulesStateOf(row),
+		...outboxField(row),
 		enrollmentState: (row.enrollmentState as SupervisorRecord["enrollmentState"]) ?? "active",
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
@@ -166,6 +190,7 @@ async function writeSupervisor(
 				// statement (not a second connection) so it holds inside the admin-lock
 				// transaction too.
 				excludeRulesState: null,
+				outboxState: null,
 			},
 		});
 
@@ -178,7 +203,7 @@ async function writeSupervisor(
 	};
 }
 
-export async function heartbeatSupervisor(id: string) {
+export async function heartbeatSupervisor(id: string, outbox?: OutboxChange) {
 	const timestamp = nowIso();
 	const leaseExpiry = leaseExpiryIso();
 	const [existing] = await getDb()
@@ -195,6 +220,9 @@ export async function heartbeatSupervisor(id: string) {
 			lastHeartbeatAt: timestamp,
 			heartbeatLeaseExpiresAt: leaseExpiry,
 			updatedAt: timestamp,
+			// Compared with what the row already holds, in JS: a heartbeat that says nothing new adds
+			// nothing to the statement it was already making.
+			...outboxUpdate(existing, outbox),
 		})
 		.where(eq(supervisors.id, id));
 

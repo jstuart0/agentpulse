@@ -206,7 +206,8 @@ describeSqliteOnly("supervisors.exclude_rules_state — SQLite", () => {
 		expect(at).toBeGreaterThan(enrollment);
 		// the next statement after it is not another supervisors one that came before it in the group
 		const nextLine = source.slice(at).split("\n")[1] ?? "";
-		expect(nextLine).not.toContain("ALTER TABLE supervisors");
+		// (the column added after this one, outbox_state, follows it in the same group)
+		if (nextLine.includes("ALTER TABLE supervisors")) expect(nextLine).toContain("outbox_state");
 		expect(at - enrollment).toBeLessThan(400);
 	});
 });

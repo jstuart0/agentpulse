@@ -522,6 +522,32 @@ describe("list_hosts passes a host's exclude-file state through unchanged", () =
 	});
 });
 
+describe("list_hosts passes a host's offline outbox through unchanged", () => {
+	test("with an outbox and without one", async () => {
+		const outbox = {
+			pending: 4,
+			oldestPendingAt: "2026-11-01T12:00:00.000Z",
+			lastFlushAt: null,
+			lastFlushDelivered: 0,
+			lastFlushLost: 1,
+		};
+		const hosts: SupervisorRecord[] = [
+			{ ...FAKE_SUPERVISOR, id: "h-catching-up", outbox },
+			{ ...FAKE_SUPERVISOR, id: "h-quiet" },
+		];
+		const ctx = newContext(
+			fakeClient({ listHosts: async () => ({ supervisors: hosts, total: 2 }) }),
+		);
+		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "list_hosts", arguments: {} });
+		const parsed = JSON.parse(textOf(result)) as { supervisors: Record<string, unknown>[] };
+		const byId = Object.fromEntries(parsed.supervisors.map((h) => [h.id, h]));
+		expect(byId["h-catching-up"]?.outbox).toEqual(outbox);
+		expect("outbox" in (byId["h-quiet"] ?? {})).toBe(false);
+	});
+});
+
 /**
  * dexter L (mid-build review): fixture round-trip guarding the
  * toSessionTemplateInput/toPartialSessionTemplateInput/toLaunchSpec

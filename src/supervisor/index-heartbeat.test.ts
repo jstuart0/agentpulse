@@ -12,7 +12,15 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { heartbeatBody } from "./services/report-gate.js";
+import { heartbeatBody, heartbeatOutbox } from "./services/report-gate.js";
+
+const SUMMARY = {
+	pending: 4,
+	oldestPendingAt: "2026-11-01T12:00:00.000Z",
+	lastFlushAt: "2026-11-01T13:00:00.000Z",
+	lastFlushDelivered: 2,
+	lastFlushLost: 1,
+};
 
 const SOURCE = readFileSync(join(import.meta.dir, "index.ts"), "utf-8");
 
@@ -21,9 +29,47 @@ describe("what the heartbeat carries", () => {
 		expect(heartbeatBody("invalid")).toBe('{"excludeRulesState":"invalid"}');
 	});
 
-	test("none and ok send no body at all", () => {
+	test("none and ok with nothing queued send no body at all", () => {
 		expect(heartbeatBody("none")).toBeUndefined();
 		expect(heartbeatBody("ok")).toBeUndefined();
+	});
+
+	test("with an outbox to report, every state sends a body that says excludeRulesState (none, never ok)", () => {
+		for (const state of ["none", "ok", "invalid"] as const) {
+			const body = JSON.parse(heartbeatBody(state, SUMMARY) as string) as Record<string, unknown>;
+			expect(body.excludeRulesState).toBe(state === "invalid" ? "invalid" : "none");
+			expect(body.outbox).toEqual(SUMMARY);
+		}
+	});
+
+	test("the largest body is no more than 1024 bytes", () => {
+		const largest = heartbeatBody("invalid", {
+			pending: 10_000_000,
+			oldestPendingAt: "2026-11-01T12:00:00.000Z",
+			lastFlushAt: "2026-11-01T12:00:00.000Z",
+			lastFlushDelivered: 10_000_000,
+			lastFlushLost: 10_000_000,
+		}) as string;
+		expect(Buffer.byteLength(largest)).toBeLessThanOrEqual(1024);
+	});
+});
+
+describe("when the outbox is reported", () => {
+	const NOW = Date.parse("2026-11-02T12:00:00Z");
+	const base = { ...SUMMARY, pending: 0, lastFlushAt: null };
+
+	test("while it holds anything", () => {
+		expect(heartbeatOutbox({ ...base, pending: 3 }, NOW)).toBeDefined();
+	});
+
+	test("within a day of a flush, and not after", () => {
+		const at = (ms: number) => new Date(NOW - ms).toISOString();
+		expect(heartbeatOutbox({ ...base, lastFlushAt: at(23 * 3_600_000) }, NOW)).toBeDefined();
+		expect(heartbeatOutbox({ ...base, lastFlushAt: at(25 * 3_600_000) }, NOW)).toBeUndefined();
+	});
+
+	test("never flushed and empty: nothing", () => {
+		expect(heartbeatOutbox(base, NOW)).toBeUndefined();
 	});
 });
 
@@ -33,7 +79,9 @@ describe("src/supervisor/index.ts heartbeat", () => {
 
 	test("posts the gate's rules state through heartbeatBody, and nothing else rides along", () => {
 		expect(call).toContain('method: "POST"');
-		expect(call).toContain("body: heartbeatBody(gate.rulesState())");
+		expect(call).toContain(
+			"heartbeatBody(gate.rulesState(), heartbeatOutbox(outbox.summary(), Date.now()))",
+		);
 		expect(call).not.toContain("JSON.stringify(");
 		expect(call).not.toContain("cwd");
 		expect(call).not.toContain("trustedRoots");

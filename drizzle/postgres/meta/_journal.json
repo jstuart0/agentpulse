@@ -134,6 +134,13 @@
 			"when": 1793558797536,
 			"tag": "0018_managed_delivery",
 			"breakpoints": true
+		},
+		{
+			"idx": 19,
+			"version": "7",
+			"when": 1793601825383,
+			"tag": "0019_supervisor_outbox_state",
+			"breakpoints": true
 		}
 	]
 }

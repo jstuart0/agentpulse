@@ -38,7 +38,7 @@ import {
 import { parseErrorBodyField, sanitizeForLog } from "./services/log-sanitize.js";
 import { executePrelaunchActions } from "./services/prelaunch-actions.js";
 import { retryWithBackoff } from "./services/registration-retry.js";
-import { createReportGate, heartbeatBody } from "./services/report-gate.js";
+import { createReportGate, heartbeatBody, heartbeatOutbox } from "./services/report-gate.js";
 import { createReportOutbox } from "./services/report-outbox.js";
 import {
 	SupervisorNetworkError,
@@ -337,7 +337,7 @@ async function main() {
 			// Optional on the wire: a server that predates the field ignores the body.
 			await request(`/supervisors/${registration.supervisor.id}/heartbeat`, {
 				method: "POST",
-				body: heartbeatBody(gate.rulesState()),
+				body: heartbeatBody(gate.rulesState(), heartbeatOutbox(outbox.summary(), Date.now())),
 			});
 			lastHeartbeatOkAt = Date.now();
 			staleLogged = false;

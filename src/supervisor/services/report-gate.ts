@@ -72,7 +72,7 @@ import {
 	isTrustedStateFileStat as storeIsTrustedStateFileStat,
 	trustedDirectory,
 } from "./private-store.js";
-import type { OutboxEntry, ReportOutbox } from "./report-outbox.js";
+import type { OutboxEntry, OutboxSummary, ReportOutbox } from "./report-outbox.js";
 import {
 	BACKOFF_BUDGET_MS,
 	type CredentialTripwire,
@@ -261,14 +261,36 @@ const DROPPED_STATE_RESULT = {
 	managedSession: {},
 } as unknown as StateReportResult;
 
+/** How long after a flush the host keeps saying what it delivered and lost. */
+const OUTBOX_REPORT_AFTER_FLUSH_MS = 24 * 60 * 60 * 1000;
+
 /**
- * The body of a heartbeat, given what the gate says about the rules: only "invalid" is said (it is the one
- * state somebody has to act on). Every other state sends no body, so the wire never tells the server
- * whether a host uses exclusion; the server reads a heartbeat with no body as "nothing to act on" and
- * clears an earlier warning.
+ * What the heartbeat says about the offline outbox: only while it holds something, or within a day of a
+ * flush (so a person can see a host has caught up). Otherwise nothing, and the server clears what it had.
  */
-export function heartbeatBody(state: "none" | "ok" | "invalid"): string | undefined {
-	return state === "invalid" ? JSON.stringify({ excludeRulesState: "invalid" }) : undefined;
+export function heartbeatOutbox(summary: OutboxSummary, nowMs: number): OutboxSummary | undefined {
+	if (summary.pending > 0) return summary;
+	const flushedAt = summary.lastFlushAt ? Date.parse(summary.lastFlushAt) : Number.NaN;
+	return Number.isFinite(flushedAt) && nowMs - flushedAt <= OUTBOX_REPORT_AFTER_FLUSH_MS
+		? summary
+		: undefined;
+}
+
+/**
+ * The body of a heartbeat. Exclusion says only "invalid" (the one state somebody has to act on); every other
+ * state is "none", so the wire never tells the server whether a host uses exclusion. With nothing to say
+ * about either, there is no body, which the server reads as "nothing to act on" and clears earlier ones.
+ * A body always carries `excludeRulesState`, so an older flag is cleared by a newer body too.
+ */
+export function heartbeatBody(
+	state: "none" | "ok" | "invalid",
+	outbox?: OutboxSummary,
+): string | undefined {
+	if (state !== "invalid" && !outbox) return undefined;
+	return JSON.stringify({
+		excludeRulesState: state === "invalid" ? "invalid" : "none",
+		...(outbox ? { outbox } : {}),
+	});
 }
 
 export function launchRefusalBody() {

@@ -26,7 +26,9 @@ const { sql } = await import("drizzle-orm");
 const { Hono } = await import("hono");
 const { supervisorsAgentRouter } = await import("./supervisors.js");
 const { createSupervisorEnrollmentToken } = await import("../auth/supervisor-auth.js");
-const { recordHeartbeatExcludeState } = await import("../services/supervisor-exclude-state.js");
+const { readHeartbeatBody, recordHeartbeatExcludeState } = await import(
+	"../services/supervisor-exclude-state.js"
+);
 
 const app = new Hono().route("/api/v1", supervisorsAgentRouter);
 const originalDisableAuth = config.disableAuth;
@@ -273,7 +275,7 @@ describe("a failure to write the flag is swallowed (an injected failing write, s
 		throw new Error("the column is not there");
 	};
 	const probe = new Hono().post("/hb/:id", async (c) => {
-		await recordHeartbeatExcludeState(c, c.req.param("id"), failingWrite);
+		await recordHeartbeatExcludeState(c.req.param("id"), await readHeartbeatBody(c), failingWrite);
 		return c.json({ ok: true });
 	});
 
@@ -322,5 +324,208 @@ describeSqliteOnly("a healthy host's heartbeat writes what it always did", () =>
 		await heartbeat(id, credential);
 		expect(rowsWritten() - before).toBe(LEASE_AND_LAST_USED + 1);
 		expect(await storedState(id)).toBeNull();
+	});
+});
+
+// ── the offline outbox on the heartbeat (AGEN-83) ────────────────────────────────────────────
+
+const { countDbCalls } = await import("../test-utils/db-call-counter.js");
+const { installStatementMeter } = await import("../test-utils/statement-meter.js");
+
+const OUTBOX = {
+	pending: 12,
+	oldestPendingAt: new Date(Date.now() - 3_600_000).toISOString(),
+	lastFlushAt: new Date(Date.now() - 600_000).toISOString(),
+	lastFlushDelivered: 30,
+	lastFlushLost: 2,
+};
+
+async function storedOutbox(id: string): Promise<unknown> {
+	const rows = await executeRows<{ state: string | null }>(
+		getDb(),
+		sql`SELECT outbox_state AS state FROM supervisors WHERE id = ${id}`,
+	);
+	const text = rows[0]?.state ?? null;
+	return text === null ? null : JSON.parse(text);
+}
+
+type HeartbeatReply = { supervisor: { outbox?: unknown; excludeRulesState?: string | null } };
+
+describe("the offline outbox state", () => {
+	test("set: stored, and the heartbeat's supervisor carries it", async () => {
+		const { id, credential } = await registerFreshSupervisor();
+		const res = await heartbeat(
+			id,
+			credential,
+			JSON.stringify({ excludeRulesState: "none", outbox: OUTBOX }),
+		);
+		expect(res.status).toBe(200);
+		const reply = (await res.json()) as HeartbeatReply;
+		expect(reply.supervisor.outbox).toEqual({
+			...OUTBOX,
+			oldestPendingAt: new Date(OUTBOX.oldestPendingAt).toISOString(),
+			lastFlushAt: new Date(OUTBOX.lastFlushAt).toISOString(),
+		});
+		expect(await storedOutbox(id)).toEqual(reply.supervisor.outbox);
+	});
+
+	test("a host that has never said anything has no outbox key at all", async () => {
+		const { id, credential } = await registerFreshSupervisor();
+		const reply = (await (await heartbeat(id, credential)).json()) as HeartbeatReply;
+		expect("outbox" in reply.supervisor).toBe(false);
+	});
+
+	for (const [label, body] of [
+		["no body", undefined],
+		["an empty body", ""],
+		[
+			"a body without outbox (an older supervisor, or a host with nothing queued)",
+			'{"excludeRulesState":"none"}',
+		],
+	] as [string, BodyInit | undefined][]) {
+		test(`clear: ${label} removes what was stored`, async () => {
+			const { id, credential } = await registerFreshSupervisor();
+			await heartbeat(
+				id,
+				credential,
+				JSON.stringify({ excludeRulesState: "none", outbox: OUTBOX }),
+			);
+			expect(await storedOutbox(id)).not.toBeNull();
+			const reply = (await (await heartbeat(id, credential, body)).json()) as HeartbeatReply;
+			expect(await storedOutbox(id)).toBeNull();
+			expect("outbox" in reply.supervisor).toBe(false);
+		});
+	}
+
+	test("an outbox-only body (no excludeRulesState) leaves the exclude flag as it was", async () => {
+		const { id, credential } = await registerFreshSupervisor();
+		await heartbeat(id, credential, JSON.stringify({ excludeRulesState: "invalid" }));
+		await heartbeat(id, credential, JSON.stringify({ outbox: OUTBOX }));
+		expect(await storedState(id)).toBe("invalid");
+		expect(await storedOutbox(id)).not.toBeNull();
+	});
+
+	test("a new body (excludeRulesState none) clears a stale invalid flag, whatever the outbox says", async () => {
+		const { id, credential } = await registerFreshSupervisor();
+		await heartbeat(id, credential, JSON.stringify({ excludeRulesState: "invalid" }));
+		await heartbeat(id, credential, JSON.stringify({ excludeRulesState: "none", outbox: OUTBOX }));
+		expect(await storedState(id)).toBeNull();
+	});
+
+	test("counts are clamped to 0..10,000,000 and truncated; a time outside the believed window is dropped to null", async () => {
+		const { id, credential } = await registerFreshSupervisor();
+		await heartbeat(
+			id,
+			credential,
+			JSON.stringify({
+				excludeRulesState: "none",
+				outbox: {
+					pending: 99_999_999_999,
+					oldestPendingAt: new Date(Date.now() - 40 * 86_400_000).toISOString(),
+					lastFlushAt: new Date(Date.now() + 3_600_000).toISOString(),
+					lastFlushDelivered: -5,
+					lastFlushLost: 7.9,
+				},
+			}),
+		);
+		expect(await storedOutbox(id)).toEqual({
+			pending: 10_000_000,
+			oldestPendingAt: null,
+			lastFlushAt: null,
+			lastFlushDelivered: 0,
+			lastFlushLost: 7,
+		});
+	});
+
+	for (const [label, body] of [
+		["unparseable JSON", "{not json"],
+		["a body over 1 KiB", JSON.stringify({ outbox: OUTBOX, pad: "x".repeat(2000) })],
+		["a JSON array", "[1,2]"],
+		[
+			"an outbox that is not an object",
+			JSON.stringify({ excludeRulesState: "none", outbox: "lots" }),
+		],
+		["a count that is not a number", JSON.stringify({ outbox: { ...OUTBOX, pending: "12" } })],
+		["a missing field", JSON.stringify({ outbox: { pending: 3 } })],
+		["a time that is not a string", JSON.stringify({ outbox: { ...OUTBOX, lastFlushAt: 5 } })],
+	] as [string, string][]) {
+		test(`${label}: 200, and the stored outbox is left as it was`, async () => {
+			const { id, credential } = await registerFreshSupervisor();
+			await heartbeat(
+				id,
+				credential,
+				JSON.stringify({ excludeRulesState: "none", outbox: OUTBOX }),
+			);
+			const before = await storedOutbox(id);
+			const res = await heartbeat(id, credential, body);
+			expect(res.status).toBe(200);
+			expect(await storedOutbox(id)).toEqual(before);
+		});
+	}
+
+	test("registering again starts from nothing", async () => {
+		const { id, credential } = await registerFreshSupervisor();
+		await heartbeat(id, credential, JSON.stringify({ excludeRulesState: "none", outbox: OUTBOX }));
+		expect(await storedOutbox(id)).not.toBeNull();
+		const res = await app.request("/api/v1/supervisors/register", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "X-AgentPulse-Supervisor-Token": credential },
+			body: JSON.stringify({
+				hostName: "heartbeat-test-host",
+				platform: "linux",
+				arch: "x64",
+				version: "1.0.0",
+				id,
+			}),
+		});
+		expect(res.status).toBe(200);
+		const json = (await res.json()) as { supervisor: { outbox?: unknown } };
+		expect("outbox" in json.supervisor).toBe(false);
+		expect(await storedOutbox(id)).toBeNull();
+	});
+
+	test("an outbox body costs no more statements than a bare heartbeat", async () => {
+		const a = await registerFreshSupervisor();
+		const b = await registerFreshSupervisor();
+		const bare = await countDbCalls(async () => {
+			await heartbeat(a.id, a.credential, JSON.stringify({ excludeRulesState: "none" }));
+		});
+		const withOutbox = await countDbCalls(async () => {
+			await heartbeat(
+				b.id,
+				b.credential,
+				JSON.stringify({ excludeRulesState: "none", outbox: OUTBOX }),
+			);
+		});
+		expect(withOutbox).toBe(bare);
+	});
+});
+
+describeSqliteOnly("the outbox column is written only when the heartbeat changes it", () => {
+	async function updatesMentioningOutbox(run: () => unknown) {
+		const meter = installStatementMeter();
+		try {
+			await run();
+			return meter
+				.matching(/update\s+"?supervisors"?\s+set/i)
+				.filter((e) => e.sql.includes("outbox_state")).length;
+		} finally {
+			meter.restore();
+		}
+	}
+
+	test("the first report writes it, the same report again does not, a different one does, and clearing does", async () => {
+		const { id, credential } = await registerFreshSupervisor();
+		const send = (outbox?: unknown) =>
+			heartbeat(
+				id,
+				credential,
+				JSON.stringify({ excludeRulesState: "none", ...(outbox ? { outbox } : {}) }),
+			);
+		expect(await updatesMentioningOutbox(() => send(OUTBOX))).toBe(1);
+		expect(await updatesMentioningOutbox(() => send(OUTBOX)), "unchanged: no write").toBe(0);
+		expect(await updatesMentioningOutbox(() => send({ ...OUTBOX, pending: 11 }))).toBe(1);
+		expect(await updatesMentioningOutbox(() => send()), "cleared").toBe(1);
+		expect(await updatesMentioningOutbox(() => send()), "already clear: no write").toBe(0);
 	});
 });
