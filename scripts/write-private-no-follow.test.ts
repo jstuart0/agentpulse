@@ -65,6 +65,11 @@ const SITES: Site[] = [
 	{ name: "scripts/setup-hooks.sh", marker: HOOK_CMD, source: fromFile("scripts/setup-hooks.sh") },
 	{ name: "scripts/setup-relay.sh", marker: HOOK_CMD, source: fromFile("scripts/setup-relay.sh") },
 	{ name: "rendered GET /setup.sh", marker: HOOK_CMD, source: renderedSetupSh },
+	{
+		name: "scripts/install-local.sh",
+		marker: "agentpulse-private-write",
+		source: fromFile("scripts/install-local.sh"),
+	},
 ];
 
 const blockOf = async (site: Site) => extractMarkerBlock(await site.source(), site.marker);

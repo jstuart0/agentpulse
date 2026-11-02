@@ -6,8 +6,7 @@
  * Every case runs the REAL block under each bash in BASHES (macOS's 3.2 is
  * skipped by name where /bin/bash is something else), with a PATH built from
  * symlinks and stubs so nothing on the developer's machine decides the result.
- * install-local.sh and its served copy join the parity sites when that script
- * adopts the blocks (the next phase).
+ * scripts/install-local.sh and its served copy are parity sites too.
  */
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
@@ -53,9 +52,17 @@ const BLOCKS = [
 	{ name: "agentpulse-bun", minLines: 200, sentinel: "ap_install_pinned_bun() {" },
 	{ name: "agentpulse-pkg-hint", minLines: 30, sentinel: "ap_install_hint() {" },
 ] as const;
+const INSTALL_LOCAL = readFileSync(join(import.meta.dir, "install-local.sh"), "utf-8");
+const { Hono } = await import("hono");
+const { setup } = await import("../src/server/routes/setup.ts");
+const servedLocal = await new Hono()
+	.route("/", setup)
+	.request("http://localhost/install-local.sh", { headers: { Host: "localhost:3000" } });
 const SITES = [
 	{ site: "scripts/setup-relay.sh", source: RELAY },
 	{ site: "the served /setup-relay.sh", source: served.script },
+	{ site: "scripts/install-local.sh", source: INSTALL_LOCAL },
+	{ site: "the served /install-local.sh", source: await servedLocal.text() },
 ];
 const blockAt = (source: string, b: (typeof BLOCKS)[number]) =>
 	extractMarkerBlock(source, b.name, { minLines: b.minLines, sentinel: b.sentinel });
@@ -140,6 +147,46 @@ describe("the blocks are byte-equal across sites", () => {
 			}
 		});
 	}
+
+	test("install-local.sh is served by the real route, not an empty or error body", () => {
+		expect(servedLocal.status).toBe(200);
+		expect(SITES.map((x) => x.site)).toHaveLength(4);
+	});
+
+	describe("install-local.sh names the default Bun directory only where it means to", () => {
+		/** The lines outside the shared block that spell HOME ($HOME, ${HOME}, ${HOME%/}, ~) followed by /.bun. */
+		const spellings = (source: string, block: string) =>
+			source
+				.replace(block, "")
+				.split("\n")
+				.map((l) => l.trim())
+				.filter((l) => /(\$HOME|\$\{HOME[^}]*\}|~)\/\.bun/.test(l));
+		/** The exact lines allowed to: the D18 comparison and the one place the service PATH default is derived. */
+		const ALLOWED = [
+			'if [[ "$base" == "${HOME%/}/.bun" ]]; then',
+			'AP_DEFAULT_BUN_BIN="${HOME%/}/.bun/bin"',
+		];
+		const offenders = (source: string) =>
+			spellings(source, BUN_BLOCK).filter((l) => !ALLOWED.includes(l));
+
+		test("every spelling outside the block is one of the intended lines, and those lines exist", () => {
+			expect(offenders(INSTALL_LOCAL)).toEqual([]);
+			expect(spellings(INSTALL_LOCAL, BUN_BLOCK).sort()).toEqual([...ALLOWED].sort());
+		});
+		for (const bad of [
+			'"${HOME%/}/.bun/bin/bun" install',
+			'x="$HOME/.bun/bin/bun"',
+			'x="${HOME}/.bun/bin/bun"',
+			"x=~/.bun/bin/bun",
+		]) {
+			test(`a new line ${JSON.stringify(bad)} is caught`, () => {
+				expect(offenders(`${INSTALL_LOCAL}\n${bad}\n`)).toEqual([bad]);
+			});
+		}
+		test("bun.sh/install is gone", () => {
+			expect(INSTALL_LOCAL).not.toContain("bun.sh/install");
+		});
+	});
 
 	test("a missing block throws instead of returning an empty one", () => {
 		expect(() => extractMarkerBlock("no markers here", "agentpulse-bun")).toThrow();
@@ -766,6 +813,21 @@ describe("ap_bun_acceptable and ap_resolve_bun: which Bun may run in a service",
 				`BIN=${join(home, ".agentpulse", "bun", "bin", "bun")} NEEDS=1 DIR=${join(home, ".agentpulse", "bun", "bin")}`,
 			);
 		});
+
+		for (const suffix of ["", "/"]) {
+			each(
+				`BUN_INSTALL=$HOME/.bun${suffix} (what bun.sh writes to a profile) with an old Bun there: not-using, then the private copy`,
+				async (bash) => {
+					const home = scratch("order");
+					const old = await fakeBun(join(home, ".bun", "bin"), "1.1.30");
+					const res = resolveWith(bash, { home, installEnv: `${home}/.bun${suffix}` });
+					expect(res.out.split("\n")).toEqual([
+						refusal(bash, old, MESSAGES.reason.older("1.1.30"), res.env),
+						`BIN=${join(home, ".agentpulse", "bun", "bin", "bun")} NEEDS=1 DIR=${join(home, ".agentpulse", "bun", "bin")}`,
+					]);
+				},
+			);
+		}
 
 		each("a candidate reached twice is judged and reported once", async (bash) => {
 			const home = scratch("order");

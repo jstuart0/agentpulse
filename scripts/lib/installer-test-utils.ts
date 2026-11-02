@@ -326,11 +326,39 @@ export const MESSAGES = {
 	overlap: (bun: string, what: string, p: string) =>
 		`  ✗ Bun would live at ${bun}, inside ${what} ${p}, which this installer may delete. Choose another --dir or set BUN_INSTALL.`,
 	argBad: (flag: string, reason: string) => `  ✗ ${flag} ${reason}`,
+	/** install-local: --dir exists, isn't a git checkout, and isn't an older AgentPulse copy (p is %q-quoted). */
+	installDirForeign: (p: string) =>
+		`  ✗ --dir ${p} already exists and isn't an AgentPulse checkout; the installer won't delete it. Move it or choose another --dir.`,
+	/** install-local: ~/.bun/bin exists but is left off the service PATH (p is %q-quoted). */
+	notAddingToPath: (p: string, reason: string) =>
+		`  ! Not adding ${p} to the service PATH: ${reason}`,
+	/** install-local: a --dir that is, or contains, something the installer keeps (dir and other are %q-quoted). */
+	dirHolds: (dir: string, what: string, other: string) =>
+		`  ✗ --dir ${dir} would hold or replace ${what} ${other}, and the installer deletes --dir when it isn't a git checkout. Choose another --dir.`,
 	unitDir: (dir: string) =>
 		`  ✗ ${dir} is a symbolic link; the installer won't write service files through it. Nothing was installed.`,
 	relayHome: (home: string, reason: string) =>
 		`  ✗ The relay keeps its files and Bun under ${home}/.agentpulse, and that path can't be used (${reason}). It may hold only letters, digits, spaces, UTF-8 text and / . _ + - @. Run the installer as a user whose home path fits.`,
 	tmp: (p: string) => `  ✗ couldn't create a temporary directory under ${p}`,
+	/** install-local's "can be read by other users" note for a user-supplied --data-dir (p is %q-quoted). */
+	dataDirReadable: (p: string) =>
+		`  ! ${p} can be read by other users; run chmod 700 ${p} to keep AgentPulse's data private.`,
+	/** The reasons an arg-bad line carries. */
+	argReason: {
+		port: "must be a number from 1 to 65535",
+		bool: "must be true or false",
+		charset: "can only contain letters, digits, '.', '_' and '-'",
+		controls: "can't contain control characters",
+		url: "must be an http:// or https:// URL without spaces, quotes or <>",
+		needsValue: "needs a value",
+	},
+	/** The reasons a path-bad line carries. */
+	pathReason: {
+		empty: "it's empty",
+		notAbsolute: "it isn't absolute",
+		component: "it has an empty, . or .. component",
+		badChars: "it has characters a service file can't hold",
+	},
 	/** The reasons the not-using and path-bad lines carry. */
 	reason: {
 		notAbsolute: "its path isn't absolute",
