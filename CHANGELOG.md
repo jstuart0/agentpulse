@@ -207,17 +207,18 @@ section with a `⚠ breaking` prefix so they're easy to spot.
     directory; and refuses to delete a `--dir` that exists, isn't a git checkout and isn't an older copy of AgentPulse;
   - answers `--dir` (or any option that takes a value) with nothing after it with "needs a value" instead of a shell error;
   - runs git, `bun install` and the build under a umask that keeps the checkout from being group-writable. Before it runs
-    git in an existing default checkout it removes group/other write from the checkout and its `.git`, and it refuses (for
-    a `--dir` you chose too) a checkout, or `.git`, that belongs to another user;
+    git in an existing default checkout (`~/.agentpulse/app`) it removes group/other write from everything in it, including
+    `.git/config` and the hooks, without following links, and it refuses the run if any file in it belongs to another user.
+    A checkout in a `--dir` you chose is not changed, but one (or its `.git`) owned by another user is refused too;
   - refuses a `~/.agentpulse`, `~/.agentpulse/bun` or `~/.agentpulse/bun/bin` that is a symbolic link (it must be a real
-    directory), and never changes the mode of a directory through a link.
+    directory), checking and tightening one level before the next, and never changes the mode of a directory through a link.
 - **`setup-relay.sh`** (#38) shares the same Bun handling:
   - It looks for a Bun of 1.3.12 or newer in `$BUN_INSTALL` (or `~/.bun`) first and then on `PATH`. Before, `PATH` came
     first, so a re-run can switch the relay service to the `~/.bun` Bun and restart it;
   - it skips a Bun that is group-writable or owned by someone else (Homebrew's, in macOS group `admin`, is accepted) and
     uses the private pinned copy instead. For a Bun that is a symbolic link this covers where the link leads too: the
-    directory of every link in the chain, the target's directory and every directory above it must be owned by you or
-    root and not writable by others (a sticky directory such as `/tmp` is fine above the target). Both installers do
+    directory of every link in the chain and of the target, and every directory above each of them, must be owned by you or
+    root and not writable by others (a sticky directory such as `/tmp` is fine above one). Both installers do
     this;
   - it checks for `unzip` and a checksum tool before it asks for the key;
   - it refuses a `~/.agentpulse`, `bun` or `bun/bin` that is a symbolic link, before it asks for the key;
@@ -249,7 +250,7 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   macOS keep running. The dashboard drops its live connections for a moment. Finish or stop managed sessions before you
   re-run it.
 - `install-local.sh` is stricter about what it is given. `--repo` must be an `https://` URL without a user name or token (use a git
-  credential helper), an `ssh://[user@]host[:port]/path` URL, a `user@host:path` address, or an absolute path, so installing
+  credential helper), an `ssh://[user@]host[:port]/path` URL (port 1 to 65535), a `user@host:path` address, or an absolute path, so installing
   from a fork over SSH still works. A leading `-`, `transport::` forms such as `ext::`, and `file://`, `http://` and `git://`
   are refused. `--ref` can only hold letters, digits, `.`, `_`, `/` and `-`, so a name with `@`, `^`, `~` or `+`, a
   `..`, or a leading `-` is refused. `--host` refuses IPv6 zone ids (`%…`), `*` and anything else outside letters, digits,

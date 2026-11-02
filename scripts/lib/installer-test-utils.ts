@@ -2,7 +2,7 @@
  * Shared helpers for the installer shell tests: pulling a marker block or a
  * single function out of a script, running bash on it under `set -euo
  * pipefail` with an explicit environment, building a stub PATH, and the exact
- * installer message catalogue (the plan's P8) so no test copies a string.
+ * installer message catalogue so no test copies a string.
  */
 import { createHash } from "node:crypto";
 import {
@@ -284,7 +284,7 @@ const PYTHON_NOTE =
 	"    (python3 is used by the local supervisor and the agent hooks; --skip-supervisor --skip-hooks installs without it.)";
 
 /**
- * The installers' messages, byte for byte (the plan's P8). Path arguments are
+ * The installers' messages, byte for byte. Path arguments are
  * the `printf %q`-quoted text, from shellQuote under the case's own bash.
  */
 export const MESSAGES = {

@@ -1032,29 +1032,12 @@ ap_refuse_linked_dirs() {
   return 0
 }
 
-# Whether the symbolic link $1 leads somewhere that can be trusted: the directory of every
-# link in the chain (at most 40), the directory of the final target, and every directory
-# above that up to /, each owned by you or root and not writable by others (the same rule as
-# ap_owner_ok; above the target a sticky directory like /tmp passes). The target file itself
-# is judged by the caller. Sets AP_REASON.
-ap_bun_link_ok() {
-  local p="$1" hops=0 d t
+# Whether the directory $1 and every directory above it up to / may be trusted: $1 itself
+# by ap_owner_ok, the ones above it by the same rule except that a sticky directory like /tmp
+# passes. Sets AP_REASON.
+ap_bun_dir_chain_ok() {
+  local d="$1"
   AP_REASON="its symbolic link goes through a directory that is writable by others or isn't owned by you or root"
-  while [[ -L "$p" ]]; do
-    if [[ "$hops" -ge 40 ]]; then AP_REASON="it is a chain of more than 40 symbolic links"; return 1; fi
-    hops=$((hops + 1))
-    d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
-    if ! ap_owner_ok "$d"; then
-      AP_REASON="its symbolic link goes through a directory that is writable by others or isn't owned by you or root"
-      return 1
-    fi
-    t="$(readlink "$p")" || return 1
-    case "$t" in
-      /*) p="$t" ;;
-      *) p="$d/$t" ;;
-    esac
-  done
-  d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
   if ! ap_owner_ok "$d"; then
     AP_REASON="its symbolic link goes through a directory that is writable by others or isn't owned by you or root"
     return 1
@@ -1066,6 +1049,28 @@ ap_bun_link_ok() {
       return 1
     fi
   done
+  AP_REASON=""
+  return 0
+}
+
+# Whether the symbolic link $1 leads somewhere that can be trusted: the directory of every
+# link in the chain (at most 40) and of the final target, each with everything above it up to
+# / (ap_bun_dir_chain_ok). The target file itself is judged by the caller. Sets AP_REASON.
+ap_bun_link_ok() {
+  local p="$1" hops=0 d t
+  while [[ -L "$p" ]]; do
+    if [[ "$hops" -ge 40 ]]; then AP_REASON="it is a chain of more than 40 symbolic links"; return 1; fi
+    hops=$((hops + 1))
+    d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+    ap_bun_dir_chain_ok "$d" || return 1
+    t="$(readlink "$p")" || return 1
+    case "$t" in
+      /*) p="$t" ;;
+      *) p="$d/$t" ;;
+    esac
+  done
+  d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+  ap_bun_dir_chain_ok "$d" || return 1
   AP_REASON=""
   return 0
 }
@@ -1304,11 +1309,17 @@ command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 if ! ap_safe_path "$RELAY_DIR" wide; then
   fail "The relay keeps its files and Bun under $(printf %q "${HOME%/}")/.agentpulse, and that path can't be used ($AP_REASON). It may hold only letters, digits, spaces, UTF-8 text and / . _ + - @. Run the installer as a user whose home path fits."
 fi
-# These are chmod'ed and written into, so a symbolic link in their place is refused first.
-ap_refuse_linked_dirs "$RELAY_DIR" "$PRIVATE_BUN_DIR" "$PRIVATE_BUN_DIR/bin" || exit 1
-# A umask of 002 leaves the directories an earlier run (or the supervisor) made group-writable.
+# These are chmod'ed and written into, so a symbolic link in their place is refused, one level at
+# a time: each is checked only after the one above it has been tightened (a umask of 002 leaves
+# the directories an earlier run, or the supervisor, made group-writable), so nobody who isn't
+# you can swap it for a link in between. What stays open is the top level, whose parent is your
+# home directory: someone who can rename entries there already controls your shell startup
+# files, and closing it would take a chmod that works on an open directory, which bash can't do.
+ap_refuse_linked_dirs "$RELAY_DIR" || exit 1
 ap_tighten_dir "$RELAY_DIR"
+ap_refuse_linked_dirs "$PRIVATE_BUN_DIR" || exit 1
 ap_tighten_dir "$PRIVATE_BUN_DIR"
+ap_refuse_linked_dirs "$PRIVATE_BUN_DIR/bin" || exit 1
 ap_tighten_dir "$PRIVATE_BUN_DIR/bin"
 ap_resolve_bun "$PRIVATE_BUN_DIR" wide
 if [[ "$BUN_NEEDS_INSTALL" == 1 ]]; then

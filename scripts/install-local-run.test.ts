@@ -102,6 +102,7 @@ const CORE_TOOLS = [
 	"cp",
 	"dirname",
 	"env",
+	"find",
 	"grep",
 	"head",
 	"id",
@@ -199,7 +200,7 @@ function buildStubDir(o: Omit<PathOpts, "prefix">): string {
 			: {
 					git: loggingStub(
 						"git",
-						'echo "$(umask)" >> "$AP_STUB_LOG.git-umask"; if [ "${1-}" = -C ]; then ls -ld "$2" "$2/.git" >> "$AP_STUB_LOG.git-modes" 2>&1; fi; if [ "${1-}" = clone ]; then for a in "$@"; do d="$a"; done; mkdir -p "$d/src/deep"; echo \'{"name":"agentpulse"}\' > "$d/package.json"; echo x > "$d/src/deep/a.ts"; fi',
+						'echo "$(umask)" >> "$AP_STUB_LOG.git-umask"; if [ "${1-}" = -C ]; then ls -ld "$2" "$2/.git" >> "$AP_STUB_LOG.git-modes" 2>&1; find "$2" ! -type l \\( -perm -g=w -o -perm -o=w \\) -print >> "$AP_STUB_LOG.git-writable" 2>&1; fi; if [ "${1-}" = clone ]; then for a in "$@"; do d="$a"; done; mkdir -p "$d/src/deep"; echo \'{"name":"agentpulse"}\' > "$d/package.json"; echo x > "$d/src/deep/a.ts"; fi',
 					),
 				}),
 		...o.stubs,
@@ -767,6 +768,11 @@ describe("W15/W17: option values are validated before the banner", () => {
 		{ args: ["--repo", "git://h/x.git"], flag: "--repo", reason: MESSAGES.argReason.repo },
 		{ args: ["--repo", "ssh://-oProxy@h/x"], flag: "--repo", reason: MESSAGES.argReason.repo },
 		{ args: ["--repo", "ssh://h:99999999/x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "ssh://h:0/x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "ssh://h:00/x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "ssh://h:00000/x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "ssh://h:65536/x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "ssh://h:99999/x"], flag: "--repo", reason: MESSAGES.argReason.repo },
 		{ args: ["--repo", "ssh://h/a b"], flag: "--repo", reason: MESSAGES.argReason.repo },
 		{ args: ["--repo", "ssh://h/a;b"], flag: "--repo", reason: MESSAGES.argReason.repo },
 		{ args: ["--repo", "git@h:a b"], flag: "--repo", reason: MESSAGES.argReason.repo },
@@ -2423,6 +2429,8 @@ describe("--repo accepts ssh forms, with git getting them after --", () => {
 	for (const repo of [
 		"git@github.com:o/r.git",
 		"ssh://git@h.example:22/o/r.git",
+		"ssh://h.example:1/o/r.git",
+		"ssh://h.example:65535/o/r.git",
 		"ssh://h.example/o/r.git",
 		"deploy-user@h.example:~/r",
 	]) {
@@ -2464,16 +2472,108 @@ describe("an existing checkout is made safe before git runs in it", () => {
 		},
 	);
 
-	once("a .git that is a file (a worktree) is accepted and left as it is", (bash) => {
+	once(
+		"a .git that is a file (a worktree) still takes the update path, and is narrowed",
+		(bash) => {
+			const home = fresh("home");
+			const app = join(home, ".agentpulse", "app");
+			mkdirSync(app, { recursive: true });
+			writeFileSync(join(app, ".git"), "gitdir: /elsewhere\n");
+			chmodSync(join(app, ".git"), 0o664);
+			const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), home, env: bunEnv() });
+			expect(r.code).toBe(0);
+			expect(r.log).toContain("git -C");
+			expect(r.log).not.toContain("git clone");
+			expect(modeOf(join(app, ".git"))).toBe(0o644);
+			expect(readFileSync(`${r.logFile}.git-writable`, "utf-8")).toBe("");
+		},
+	);
+
+	each(
+		"nothing in the default checkout is group/other-writable when git first runs: config, a hook, a tracked file, the gitfile-less tree",
+		(bash) => {
+			const home = fresh("home");
+			const t = fresh("t");
+			const app = join(home, ".agentpulse", "app");
+			mkdirSync(join(app, ".git", "hooks"), { recursive: true });
+			mkdirSync(join(app, "src", "deep"), { recursive: true });
+			writeFileSync(join(app, ".git", "config"), "[core]\n");
+			writeFileSync(join(app, ".git", "hooks", "pre-commit"), "#!/bin/sh\n");
+			writeFileSync(join(app, "src", "deep", "a.ts"), "x\n");
+			// A link in the tree to somewhere outside it, whose target must not be touched.
+			mkdirSync(join(t, "outside"));
+			writeFileSync(join(t, "outside", "f"), "x");
+			symlinkSync(join(t, "outside"), join(app, "out-link"));
+			for (const d of [join(t, "outside")]) chmodSync(d, 0o775);
+			chmodSync(join(t, "outside", "f"), 0o664);
+			for (const d of [".git", ".git/hooks", "src", "src/deep", ""]) chmodSync(join(app, d), 0o775);
+			for (const f of [".git/config", ".git/hooks/pre-commit", "src/deep/a.ts"]) {
+				chmodSync(join(app, f), 0o775);
+			}
+			const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), home, env: bunEnv() });
+			expect(r.code).toBe(0);
+			// What git's first call could see, listed by the stub at that moment.
+			expect(
+				readFileSync(`${r.logFile}.git-writable`, "utf-8").split("\n").filter(Boolean),
+			).toEqual([]);
+			expect(modeOf(join(app, ".git", "config")) & 0o022).toBe(0);
+			expect(modeOf(join(app, ".git", "hooks", "pre-commit")) & 0o022).toBe(0);
+			// Owner bits are kept: only group/other write goes.
+			expect(modeOf(join(app, ".git", "hooks", "pre-commit")) & 0o700).toBe(0o700);
+			expect(modeOf(join(t, "outside"))).toBe(0o775);
+			expect(modeOf(join(t, "outside", "f"))).toBe(0o664);
+		},
+	);
+
+	each(
+		"a file in the default checkout that belongs to another user is refused before git runs",
+		(bash) => {
+			const home = fresh("home");
+			const app = join(home, ".agentpulse", "app");
+			mkdirSync(join(app, ".git", "hooks"), { recursive: true });
+			writeFileSync(join(app, ".git", "hooks", "evil"), "x");
+			chmodSync(join(app, ".git", "hooks", "evil"), 0o664);
+			const foreignFind = `case "$*" in *"-uid"*) echo "$1/.git/hooks/evil" ;; *) exec "${Bun.which("find")}" "$@" ;; esac`;
+			const r = go(bash, [...PLAIN, "--skip-supervisor"], {
+				path: mkPath({ stubs: { find: foreignFind } }),
+				home,
+				env: bunEnv(),
+			});
+			expect(r.code).toBe(1);
+			expect(r.stderr).toContain(MESSAGES.checkoutForeign(q(bash, app)));
+			expect(r.log).toBe("");
+			// Nothing was narrowed either: the refusal comes first.
+			expect(modeOf(join(app, ".git", "hooks", "evil"))).toBe(0o664);
+		},
+	);
+
+	once("a checkout that can't be read through is refused, not assumed to be yours", (bash) => {
 		const home = fresh("home");
 		const app = join(home, ".agentpulse", "app");
-		mkdirSync(app, { recursive: true });
-		writeFileSync(join(app, ".git"), "gitdir: /elsewhere\n");
-		chmodSync(join(app, ".git"), 0o664);
-		const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), home, env: bunEnv() });
+		mkdirSync(join(app, ".git"), { recursive: true });
+		const failingFind = `case "$*" in *"-uid"*) exit 3 ;; *) exec "${Bun.which("find")}" "$@" ;; esac`;
+		const r = go(bash, [...PLAIN, "--skip-supervisor"], {
+			path: mkPath({ stubs: { find: failingFind } }),
+			home,
+			env: bunEnv(),
+		});
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain(MESSAGES.checkoutForeign(q(bash, app)));
+		expect(r.log).toBe("");
+	});
+
+	once("a chosen --dir checkout is not scanned or narrowed inside", (bash) => {
+		const t = fresh("t");
+		mkdirSync(`${t}/app/.git/hooks`, { recursive: true });
+		writeFileSync(`${t}/app/.git/hooks/h`, "x");
+		chmodSync(`${t}/app/.git/hooks/h`, 0o664);
+		const foreignFind = `case "$*" in *"-uid"*) echo "$1/.git/hooks/h" ;; *) exec "${Bun.which("find")}" "$@" ;; esac`;
+		const r = go(bash, [...PLAIN, "--skip-supervisor", "--dir", `${t}/app`], {
+			path: mkPath({ stubs: { find: foreignFind } }),
+			env: bunEnv(),
+		});
 		expect(r.code).toBe(0);
-		expect(r.log).toContain("git -C");
-		expect(modeOf(join(app, ".git"))).toBe(0o664);
+		expect(modeOf(`${t}/app/.git/hooks/h`)).toBe(0o664);
 	});
 
 	for (const [what, victim] of [
@@ -2562,6 +2662,33 @@ describe("~/.agentpulse and its bun directories must be real directories", () =>
 			expect(r.log).toBe("");
 		});
 	}
+});
+
+describe("the directories are refused and tightened one level at a time", () => {
+	once(
+		"with ~/.agentpulse/bun a link, ~/.agentpulse is already tightened and nothing under the link is",
+		(bash) => {
+			const home = fresh("home");
+			const bunx = fresh("bunx");
+			installBun(bunx);
+			mkdirSync(join(home, ".agentpulse"));
+			chmodSync(join(home, ".agentpulse"), 0o775);
+			const target = fresh("target", 0o775);
+			mkdirSync(join(target, "bin"));
+			chmodSync(join(target, "bin"), 0o775);
+			symlinkSync(target, join(home, ".agentpulse", "bun"));
+			const r = go(bash, [...PLAIN, "--skip-supervisor"], {
+				path: mkPath(),
+				home,
+				env: { BUN_INSTALL: bunx },
+			});
+			expect(r.code).toBe(1);
+			expect(r.stderr).toContain(MESSAGES.linkedDir(q(bash, join(home, ".agentpulse", "bun"))));
+			expect(modeOf(join(home, ".agentpulse")) & 0o022).toBe(0);
+			expect(modeOf(target)).toBe(0o775);
+			expect(modeOf(join(target, "bin"))).toBe(0o775);
+		},
+	);
 });
 
 describe("with neither shasum nor sha256sum, Bun can't be fetched, and that is said before anything else", () => {

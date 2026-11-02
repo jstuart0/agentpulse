@@ -339,29 +339,12 @@ ap_refuse_linked_dirs() {
   return 0
 }
 
-# Whether the symbolic link $1 leads somewhere that can be trusted: the directory of every
-# link in the chain (at most 40), the directory of the final target, and every directory
-# above that up to /, each owned by you or root and not writable by others (the same rule as
-# ap_owner_ok; above the target a sticky directory like /tmp passes). The target file itself
-# is judged by the caller. Sets AP_REASON.
-ap_bun_link_ok() {
-  local p="$1" hops=0 d t
+# Whether the directory $1 and every directory above it up to / may be trusted: $1 itself
+# by ap_owner_ok, the ones above it by the same rule except that a sticky directory like /tmp
+# passes. Sets AP_REASON.
+ap_bun_dir_chain_ok() {
+  local d="$1"
   AP_REASON="its symbolic link goes through a directory that is writable by others or isn't owned by you or root"
-  while [[ -L "$p" ]]; do
-    if [[ "$hops" -ge 40 ]]; then AP_REASON="it is a chain of more than 40 symbolic links"; return 1; fi
-    hops=$((hops + 1))
-    d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
-    if ! ap_owner_ok "$d"; then
-      AP_REASON="its symbolic link goes through a directory that is writable by others or isn't owned by you or root"
-      return 1
-    fi
-    t="$(readlink "$p")" || return 1
-    case "$t" in
-      /*) p="$t" ;;
-      *) p="$d/$t" ;;
-    esac
-  done
-  d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
   if ! ap_owner_ok "$d"; then
     AP_REASON="its symbolic link goes through a directory that is writable by others or isn't owned by you or root"
     return 1
@@ -373,6 +356,28 @@ ap_bun_link_ok() {
       return 1
     fi
   done
+  AP_REASON=""
+  return 0
+}
+
+# Whether the symbolic link $1 leads somewhere that can be trusted: the directory of every
+# link in the chain (at most 40) and of the final target, each with everything above it up to
+# / (ap_bun_dir_chain_ok). The target file itself is judged by the caller. Sets AP_REASON.
+ap_bun_link_ok() {
+  local p="$1" hops=0 d t
+  while [[ -L "$p" ]]; do
+    if [[ "$hops" -ge 40 ]]; then AP_REASON="it is a chain of more than 40 symbolic links"; return 1; fi
+    hops=$((hops + 1))
+    d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+    ap_bun_dir_chain_ok "$d" || return 1
+    t="$(readlink "$p")" || return 1
+    case "$t" in
+      /*) p="$t" ;;
+      *) p="$d/$t" ;;
+    esac
+  done
+  d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+  ap_bun_dir_chain_ok "$d" || return 1
   AP_REASON=""
   return 0
 }
@@ -616,7 +621,7 @@ ap_local_host_ok() {
 }
 
 ap_local_validate_args() {
-  local digits repo_reason repo_name repo_path repo_ssh repo_scp
+  local digits repo_reason repo_name repo_path repo_ssh repo_scp repo_port
   case "$PORT" in
     ''|*[!0-9]*) ap_local_arg_bad --port "must be a number from 1 to 65535" ;;
   esac
@@ -658,7 +663,11 @@ ap_local_validate_args() {
         ap_local_arg_bad --repo "$repo_reason"
       fi ;;
     ssh://*)
-      [[ "$REPO_URL" =~ $repo_ssh ]] || ap_local_arg_bad --repo "$repo_reason" ;;
+      [[ "$REPO_URL" =~ $repo_ssh ]] || ap_local_arg_bad --repo "$repo_reason"
+      repo_port="${BASH_REMATCH[2]#:}"
+      if [[ -n "$repo_port" ]] && (( 10#$repo_port < 1 || 10#$repo_port > 65535 )); then
+        ap_local_arg_bad --repo "$repo_reason"
+      fi ;;
     /*)
       ap_safe_path "$REPO_URL" || ap_local_arg_bad --repo "$repo_reason" ;;
     *)
@@ -783,7 +792,10 @@ ap_local_check_install_dir() {
   # A git checkout (a link to one included) is updated in place, never deleted. git runs
   # in it with your hooks and config, so it and its .git (a directory or a gitfile) must be yours.
   if [[ -d "$d/.git" || -f "$d/.git" ]]; then
-    ap_local_owned_by_me "$d" "$d/.git" && return 0
+    if ap_local_owned_by_me "$d" "$d/.git"; then
+      # In the default checkout the files git reads (config, hooks) must be yours too.
+      if [[ "${INSTALL_DIR_GIVEN}" == "true" ]] || ap_local_tree_owned_by_me "$d"; then return 0; fi
+    fi
     printf "  ✗ %q is owned by another user; the installer won't run git in it. Move it or choose another --dir.\n" "$d" >&2
     return 1
   fi
@@ -793,6 +805,22 @@ ap_local_check_install_dir() {
   fi
   printf "  ✗ --dir %q already exists and isn't an AgentPulse checkout; the installer won't delete it. Move it or choose another --dir.\n" "$d" >&2
   return 1
+}
+
+# Whether nothing under the directory $1 (links are not followed) belongs to another user.
+# A tree that can't be read through counts as not owned.
+ap_local_tree_owned_by_me() {
+  local other
+  other="$(find "$1" ! -uid "$(id -u)" -print -quit 2>/dev/null)" || return 1
+  [[ -z "$other" ]]
+}
+
+# Removes group and other write from everything in the checkout $1 (a directory, not a link),
+# without following links: find lists only what is not a link, and chmod gets those paths.
+ap_local_secure_checkout() {
+  if [[ -L "$1" ]]; then return 0; fi
+  find "$1" ! -type l \( -perm -g=w -o -perm -o=w \) -exec chmod go-w {} + 2>/dev/null || true
+  return 0
 }
 
 # Whether every path given exists and is owned by the current user (a link is judged by what
@@ -1077,10 +1105,16 @@ ap_local_check_paths || exit 1
 ap_local_preflight_services || exit 1
 # A umask of 002 leaves the directories an earlier run made group-writable, which
 # would make this run refuse its own private Bun. Only ours, and only ever narrowed.
-# These are chmod'ed and written into, so a symbolic link in their place is refused first.
-ap_refuse_linked_dirs "${AGENTPULSE_DIR}" "${AGENTPULSE_DIR}/bun" "${AGENTPULSE_DIR}/bun/bin" || exit 1
+# These are chmod'ed and written into, so a symbolic link in their place is refused, one level at
+# a time: each is checked only after the one above it has been tightened, so nobody who isn't
+# you can swap it for a link in between. What stays open is the top level, whose parent is your
+# home directory: someone who can rename entries there already controls your shell startup
+# files, and closing it would take a chmod that works on an open directory, which bash can't do.
+ap_refuse_linked_dirs "${AGENTPULSE_DIR}" || exit 1
 ap_tighten_dir "${AGENTPULSE_DIR}"
+ap_refuse_linked_dirs "${AGENTPULSE_DIR}/bun" || exit 1
 ap_tighten_dir "${AGENTPULSE_DIR}/bun"
+ap_refuse_linked_dirs "${AGENTPULSE_DIR}/bun/bin" || exit 1
 ap_tighten_dir "${AGENTPULSE_DIR}/bun/bin"
 ap_local_choose_bun || exit 1
 ap_local_check_overlap || exit 1
@@ -1137,10 +1171,10 @@ ap_local_mkdir_p "$(dirname "${INSTALL_DIR}")"
 if [[ -d "${INSTALL_DIR}/.git" || -f "${INSTALL_DIR}/.git" ]]; then
   echo "  Updating existing checkout..."
   # A umask of 002 left an earlier clone group-writable; git reads hooks and config from here,
-  # so that goes before git runs. A directory the user chose is theirs to set the mode of.
+  # so everything in it is narrowed before git runs. A directory the user chose is theirs to
+  # set the mode of.
   if [[ "${INSTALL_DIR_GIVEN}" != "true" ]]; then
-    ap_tighten_dir "${INSTALL_DIR}"
-    ap_tighten_dir "${INSTALL_DIR}/.git"
+    ap_local_secure_checkout "${INSTALL_DIR}"
   fi
   ap_local_with_umask git -C "${INSTALL_DIR}" fetch --tags origin </dev/null
   ap_local_with_umask git -C "${INSTALL_DIR}" checkout "${REPO_REF}" -- </dev/null

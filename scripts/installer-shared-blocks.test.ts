@@ -718,6 +718,19 @@ describe("ap_bun_acceptable and ap_resolve_bun: which Bun may run in a service",
 			},
 		);
 
+		each(
+			"a chain is refused when only an ancestor of a middle link's directory is group-writable",
+			async (bash) => {
+				const t = await bunUnder("tgt");
+				const mid = linkTo("mid", t.file);
+				// mid/bin is fine; mid itself, one level up, is group-writable and not sticky.
+				chmodSync(mid.base, 0o775);
+				const { base, link } = linkTo("lnk", mid.link);
+				const res = resolveVia(bash, base);
+				expect(res.out).toContain(refusal(bash, link, untrusted, res.env));
+			},
+		);
+
 		each("a chain through good directories is accepted, path kept as written", async (bash) => {
 			const t = await bunUnder("tgt");
 			const mid = linkTo("mid", t.file);

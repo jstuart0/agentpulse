@@ -973,6 +973,38 @@ describe("F190: the relay service runs on a Bun that keeps its files private", (
 	}
 
 	test(
+		"with ~/.agentpulse/bun a link, ~/.agentpulse is already tightened and nothing under the link is, and the key is not asked for",
+		async () => {
+			const home = await newHome();
+			const target = join(root, `level-target-${homeCounter}`);
+			await mkdir(join(target, "bin"), { recursive: true });
+			await chmod(target, 0o775);
+			await chmod(join(target, "bin"), 0o775);
+			await mkdir(join(home, ".agentpulse"));
+			await chmod(join(home, ".agentpulse"), 0o775);
+			await symlink(target, join(home, ".agentpulse", "bun"));
+			const tty = join(root, `tty-level-${homeCounter}`);
+			await writeFile(tty, `${RELAY_KEY}\n`);
+			seenAuthHeaders = [];
+			const res = await runInstaller(home, ["--url", authUrl], {
+				uname: "Linux",
+				basePath: pathNoBun(),
+				env: { AGENTPULSE_TTY: tty },
+			});
+			expect(res.code).toBe(1);
+			expect(res.out).toContain(
+				MESSAGES.linkedDir(shellQuote("bash", join(home, ".agentpulse", "bun"))),
+			);
+			expect(res.out).not.toContain(KEY_PROMPT);
+			expect(seenAuthHeaders).toEqual([]);
+			expect((await stat(join(home, ".agentpulse"))).mode & 0o022).toBe(0);
+			expect((await stat(target)).mode & 0o777).toBe(0o775);
+			expect((await stat(join(target, "bin"))).mode & 0o777).toBe(0o775);
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
 		"a first run under umask 002 has ~/.agentpulse at 700 before Bun is fetched, and after",
 		async () => {
 			const home = await newHome();
