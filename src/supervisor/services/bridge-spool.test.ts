@@ -546,6 +546,31 @@ describe("what each answer from the gate does to the file", () => {
 			expect(rejected).toBe(1);
 		});
 
+		test("only a report the server took clears the tripwire: queued and excluded outcomes never contacted it", async () => {
+			for (const outcome of ["queued", "excluded"] as const) {
+				one(`reset-${outcome}`);
+				const tripwire = createCredentialTripwire({ now: () => clock });
+				const { gate } = recorder(() => outcome);
+				const { drain } = makeDrain(gate, { tripwire });
+				drain.admit(`reset-${outcome}`);
+				tripwire.record();
+				clock += 11_000;
+				await drain.drain();
+				expect(tripwire.record(), `${outcome} leaves the earlier rejection standing`).toBe(
+					"confirmed",
+				);
+			}
+			one("reset-sent");
+			const tripwire = createCredentialTripwire({ now: () => clock });
+			const { gate } = recorder(() => "sent");
+			const { drain } = makeDrain(gate, { tripwire });
+			drain.admit("reset-sent");
+			tripwire.record();
+			clock += 11_000;
+			await drain.drain();
+			expect(tripwire.record(), "sent clears it").toBe("first");
+		});
+
 		test("a success in between resets the tripwire", async () => {
 			one("c3");
 			let answer: Answer = rejection;

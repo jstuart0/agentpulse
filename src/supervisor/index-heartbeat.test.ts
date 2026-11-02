@@ -44,3 +44,89 @@ describe("src/supervisor/index.ts heartbeat", () => {
 		expect(after).toContain('console.error("[supervisor] heartbeat failed", error)');
 	});
 });
+
+describe("src/supervisor/index.ts keeps the host alive and offline-aware (AGEN-83 phase 5)", () => {
+	const strip = (text: string) =>
+		text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+	const code = strip(SOURCE);
+
+	test("the watchdog's exit is decided by shouldExitOnStaleHeartbeat and nothing else", () => {
+		const watchdog = code.slice(
+			code.indexOf("const watchdogStaleMs"),
+			code.indexOf("let heartbeatInFlight"),
+		);
+		expect(watchdog).toContain("shouldExitOnStaleHeartbeat({");
+		expect(watchdog).toContain("process.exit(1)");
+		// the only exit in the watchdog is inside that decision
+		const decision = watchdog.indexOf("if (shouldExitOnStaleHeartbeat");
+		expect(watchdog.indexOf("process.exit(1)")).toBeGreaterThan(decision);
+		expect(watchdog.match(/process\.exit\(/g)?.length).toBe(1);
+	});
+
+	test("it counts the agents it started first and looks for terminal bridges only for a stale host with none, bounded in time, an error or a timeout meaning unknown", () => {
+		const watchdog = code.slice(
+			code.indexOf("const watchdogStaleMs"),
+			code.indexOf("let heartbeatInFlight"),
+		);
+		expect(watchdog).toContain("managedCodexRuntimeCount()");
+		expect(watchdog).toContain("headlessRuntimeCount()");
+		const stale = watchdog.indexOf("if (staleMs <= watchdogStaleMs) return;");
+		expect(stale).toBeGreaterThan(-1);
+		const counts = watchdog.indexOf("managedCodexRuntimeCount()");
+		const bridges = watchdog.indexOf("liveBridgeCount()");
+		expect(stale).toBeLessThan(counts);
+		expect(counts).toBeLessThan(bridges);
+		expect(watchdog).toMatch(/codex > 0 \|\| headless > 0\s*\?\s*0/);
+		expect(watchdog).toContain("liveBridgeCount().catch(() => null)");
+		expect(watchdog).toContain("BRIDGE_COUNT_TIMEOUT_MS");
+		expect(watchdog).toContain("resolve(null)");
+	});
+
+	test("when it stays up it says so once per stale period, and a good heartbeat starts a new period", () => {
+		expect(code).toContain("keepAliveLine(");
+		expect(code).toMatch(/if \(!staleLogged\) \{\s*staleLogged = true;/);
+		expect(code).toMatch(/lastHeartbeatOkAt = Date\.now\(\);\s*staleLogged = false;/);
+	});
+
+	test("a heartbeat failure on the network marks the host offline; a credential rejection feeds the one tripwire; a success marks it reachable", () => {
+		const beat = code.slice(
+			code.indexOf("async function sendHeartbeat"),
+			code.indexOf("setInterval(() => void sendHeartbeat()"),
+		);
+		expect(beat).toContain("gate.noteServerReachable()");
+		expect(beat).toContain("classifyReportFailure(error)");
+		expect(beat).toMatch(/failure === "network"\) gate\.noteServerUnreachable\(\)/);
+		expect(beat).toMatch(
+			/failure === "credential" && credentialTripwire\.record\(\) === "confirmed"/,
+		);
+		expect(beat).toContain("disposeRuntimesAndExit()");
+	});
+
+	test("while the host is offline the heartbeat is also tried every 10 s, and the queue is flushed every 3 s", () => {
+		expect(code).toMatch(
+			/setInterval\(\(\) => \{\s*if \(gate\.isOffline\(\)\) void sendHeartbeat\(\);\s*\}, OFFLINE_PROBE_MS\)/,
+		);
+		expect(code).toContain("const OFFLINE_PROBE_MS = 10_000;");
+		expect(code).toContain("const OUTBOX_FLUSH_MS = 3_000;");
+		expect(code).toMatch(/gate\.flush\(\)\.catch/);
+	});
+
+	test("the gate gets the outbox, the one tripwire and disposeRuntimesAndExit; the drain and in-session reporting share that tripwire", () => {
+		const gate = code.slice(
+			code.indexOf("const gate = createReportGate({"),
+			code.indexOf("}));", code.indexOf("const gate = createReportGate({")) + 1 || undefined,
+		);
+		expect(gate).toContain("outbox,");
+		expect(gate).toContain("credentialTripwire,");
+		expect(gate).toContain("onCredentialRejected: disposeRuntimesAndExit");
+		expect(code).toContain("createBridgeSpoolDrain({ gate, home, credentialTripwire })");
+		expect(code).toContain("setSharedCredentialTripwire(credentialTripwire)");
+		expect(code.match(/createCredentialTripwire\(/g)?.length, "exactly one tripwire is built").toBe(
+			1,
+		);
+	});
+
+	test("a credential rejection can only end the supervisor when the server is https or local", () => {
+		expect(code).toContain("canConfirm: credentialRejectionMayConfirm(config.serverUrl)");
+	});
+});

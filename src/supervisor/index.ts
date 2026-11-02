@@ -8,6 +8,7 @@ import {
 } from "./config.js";
 import { createControlActionHandler } from "./control-actions.js";
 import { createLaunchDispatcher } from "./launch-dispatch.js";
+import { headlessRuntimeCount } from "./providers/claude-headless.js";
 import {
 	launchClaudeHeadlessRequest,
 	launchClaudeInteractiveRequest,
@@ -16,6 +17,7 @@ import {
 } from "./providers/claude.js";
 import {
 	launchManagedCodexRequest,
+	managedCodexRuntimeCount,
 	reconcileManagedCodexTitles,
 	stopManagedCodexSession,
 } from "./providers/codex-managed.js";
@@ -27,15 +29,21 @@ import {
 	resolveAccountHome,
 	warnIfHomeMismatch,
 } from "./services/exclude-rules-watch.js";
+import { disposeRuntimesAndExit } from "./services/fatal-exit.js";
+import { keepAliveLine, shouldExitOnStaleHeartbeat } from "./services/keep-alive.js";
 import { parseErrorBodyField, sanitizeForLog } from "./services/log-sanitize.js";
 import { executePrelaunchActions } from "./services/prelaunch-actions.js";
 import { retryWithBackoff } from "./services/registration-retry.js";
 import { createReportGate, heartbeatBody } from "./services/report-gate.js";
+import { createReportOutbox } from "./services/report-outbox.js";
 import {
 	SupervisorNetworkError,
 	SupervisorRequestError,
+	classifyReportFailure,
 	createCredentialTripwire,
+	credentialRejectionMayConfirm,
 	parseRetryAfterMs,
+	setSharedCredentialTripwire,
 } from "./services/report-resilience.js";
 import { assertTrustedRootsExcludeAgentpulseDir } from "./services/spawn-cwd.js";
 
@@ -44,6 +52,12 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const EXCLUDE_SCAN_MS = 15_000;
 /** How often the terminal bridges' spooled reports are sent. */
 const BRIDGE_DRAIN_MS = 1_000;
+/** How often queued reports are sent. */
+const OUTBOX_FLUSH_MS = 3_000;
+/** How often the heartbeat is tried while the server is unreachable. */
+const OFFLINE_PROBE_MS = 10_000;
+/** The watchdog does not wait longer than this to learn how many terminal bridges are alive. */
+const BRIDGE_COUNT_TIMEOUT_MS = 2_000;
 
 /** The only headers a caller may add to a request: the delivery id and the replay marker. Everything else is the transport's own. */
 const CALLER_HEADERS = [DELIVERY_ID_HEADER, REPLAY_HEADER];
@@ -177,40 +191,94 @@ async function main() {
 		console.log("[codex-observer] disabled via AGENTPULSE_CODEX_OBSERVER=off");
 	}
 
-	let lastHeartbeatOkAt = Date.now();
-	const watchdogStaleMs = Math.max(registration.heartbeatIntervalMs * 3, 90_000);
-	setInterval(
-		() => {
-			const staleMs = Date.now() - lastHeartbeatOkAt;
-			if (staleMs > watchdogStaleMs) {
-				console.error(
-					`[supervisor] watchdog: no successful heartbeat in ${Math.round(staleMs / 1000)}s — exiting for launchd/systemd restart`,
-				);
-				process.exit(1);
-			}
-		},
-		Math.max(10_000, Math.floor(registration.heartbeatIntervalMs / 2)),
-	).unref();
+	// One tripwire serves every place a rejected credential can show up (the heartbeat, the report gate, the
+	// terminal-bridge drain, in-session reporting), so a stray proxy 401 in one doesn't count as a confirmed
+	// rejection on its own, and over plain HTTP to a non-local server none is ever acted on.
+	const credentialTripwire = createCredentialTripwire({
+		now: Date.now,
+		canConfirm: credentialRejectionMayConfirm(config.serverUrl),
+		log: (line) => console.warn(line),
+	});
+	setSharedCredentialTripwire(credentialTripwire);
 
 	// Every report about a session leaves through this gate (see report-gate.ts): it holds the
 	// directories sessions and launches were started in, and the one closing report a newly
-	// excluded session gets. The rules it reads are the observer's too.
+	// excluded session gets. The rules it reads are the observer's too. Reports it can't deliver while
+	// the server is unreachable are kept in the offline outbox and sent, in order, when it returns.
+	const outbox = createReportOutbox({
+		home,
+		supervisorId: registration.supervisor.id,
+		log: (line) => console.warn(line),
+	});
 	const gate = createReportGate({
 		request,
 		supervisorId: registration.supervisor.id,
 		home,
 		version: config.version,
 		rules,
+		outbox,
+		credentialTripwire,
+		onCredentialRejected: disposeRuntimesAndExit,
 	});
+	setInterval(() => {
+		gate.flush().catch((error) => console.error("[supervisor] outbox flush failed", error));
+	}, OUTBOX_FLUSH_MS).unref();
+
 	// The interactive terminal bridge holds no credential and opens no connection: it writes its reports to
-	// disk and this drain sends them through the gate. One tripwire serves every place a rejected credential
-	// can show up, so a stray proxy 401 in one doesn't count as a confirmed rejection on its own.
-	const credentialTripwire = createCredentialTripwire({ now: Date.now });
+	// disk and this drain sends them through the gate.
 	const bridgeSpool = createBridgeSpoolDrain({ gate, home, credentialTripwire });
 	void bridgeSpool.scrubLegacyBridgeConfigs().catch((error) => {
 		console.error("[supervisor] couldn't scrub old bridge configs", error);
 	});
 	setInterval(() => void bridgeSpool.drain(), BRIDGE_DRAIN_MS).unref();
+
+	// The watchdog: a heartbeat that has not succeeded for a while normally means the server is
+	// unreachable, which is no reason to stop the agents running here. It exits for the service manager to
+	// restart only when it holds nothing to look after (shouldExitOnStaleHeartbeat). Queued reports do not
+	// keep it alive: they are on disk and are replayed after the restart.
+	let lastHeartbeatOkAt = Date.now();
+	let staleLogged = false;
+	const watchdogStaleMs = Math.max(registration.heartbeatIntervalMs * 3, 90_000);
+	setInterval(
+		() => {
+			void (async () => {
+				const staleMs = Date.now() - lastHeartbeatOkAt;
+				if (staleMs <= watchdogStaleMs) return;
+				const codex = managedCodexRuntimeCount();
+				const headless = headlessRuntimeCount();
+				// Only a stale host with no agent of its own looks at the filesystem for live terminal bridges;
+				// not knowing (an error, no answer in time) counts as "something may be running".
+				const bridges =
+					codex > 0 || headless > 0
+						? 0
+						: await Promise.race([
+								bridgeSpool.liveBridgeCount().catch(() => null),
+								new Promise<null>((resolve) =>
+									setTimeout(() => resolve(null), BRIDGE_COUNT_TIMEOUT_MS),
+								),
+							]);
+				if (
+					shouldExitOnStaleHeartbeat({
+						staleMs,
+						thresholdMs: watchdogStaleMs,
+						codex,
+						headless,
+						bridges,
+					})
+				) {
+					console.error(
+						`[supervisor] watchdog: no successful heartbeat in ${Math.round(staleMs / 1000)}s — exiting for launchd/systemd restart`,
+					);
+					process.exit(1);
+				}
+				if (!staleLogged) {
+					staleLogged = true;
+					console.log(`[supervisor] ${keepAliveLine(staleMs, codex + headless + (bridges ?? 0))}`);
+				}
+			})().catch((error) => console.error("[supervisor] watchdog failed", error));
+		},
+		Math.max(10_000, Math.floor(registration.heartbeatIntervalMs / 2)),
+	).unref();
 	const dispatchLaunch = createLaunchDispatcher({
 		gate,
 		bridgeSpool,
@@ -251,7 +319,10 @@ async function main() {
 		}
 	}, 3_000);
 
-	setInterval(async () => {
+	let heartbeatInFlight = false;
+	async function sendHeartbeat() {
+		if (heartbeatInFlight) return;
+		heartbeatInFlight = true;
 		try {
 			// Whether the exclude file on this host is in use, absent or broken, for the Hosts page.
 			// Optional on the wire: a server that predates the field ignores the body.
@@ -260,11 +331,26 @@ async function main() {
 				body: heartbeatBody(gate.rulesState()),
 			});
 			lastHeartbeatOkAt = Date.now();
+			staleLogged = false;
+			gate.noteServerReachable();
 			console.log("[supervisor] heartbeat ok");
 		} catch (error) {
 			console.error("[supervisor] heartbeat failed", error);
+			const failure = classifyReportFailure(error);
+			if (failure === "network") gate.noteServerUnreachable();
+			else if (failure === "credential" && credentialTripwire.record() === "confirmed") {
+				await disposeRuntimesAndExit();
+			}
+		} finally {
+			heartbeatInFlight = false;
 		}
-	}, registration.heartbeatIntervalMs);
+	}
+	setInterval(() => void sendHeartbeat(), registration.heartbeatIntervalMs);
+	// While the server is unreachable a heartbeat is also tried every 10 s, so the first one that gets
+	// through lets queued reports flow again without waiting out the regular interval.
+	setInterval(() => {
+		if (gate.isOffline()) void sendHeartbeat();
+	}, OFFLINE_PROBE_MS).unref();
 
 	setInterval(async () => {
 		try {

@@ -4,6 +4,7 @@ import {
 } from "../../shared/launch-privileges.js";
 import type { LaunchRequest } from "../../shared/types.js";
 import { loadSupervisorConfig } from "../config.js";
+import { disposeRuntimesAndExit } from "../services/fatal-exit.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
 import type {
 	ClaudePromptAction,
@@ -83,6 +84,11 @@ async function killProcessWithGrace(
 	} catch (err) {
 		console.error("[claude-headless] SIGKILL failed during fatal shutdown:", err);
 	}
+}
+
+/** How many headless Claude children this supervisor is running; the keep-alive rule reads it. */
+export function headlessRuntimeCount(): number {
+	return activeRuntimes.size;
 }
 
 /**
@@ -177,14 +183,11 @@ export async function streamHeadlessClaude(opts: {
 	// same crash-loop class this campaign fixes, reintroduced through the
 	// new 403. reportProgress (the launch-status endpoint) is untouched by
 	// the ownership guard, so it keeps its existing behavior. A 401 is
-	// fatal: disposeAllHeadlessRuntimes() kills every held child (this one
-	// included) before reportInSessionSafely's default process.exit(1);
-	// everything else logs and continues.
+	// fatal only once the shared tripwire confirms a credential rejection:
+	// disposeRuntimesAndExit() then kills every held child (this one
+	// included) before exiting; everything else logs and continues.
 	function reportInSession(op: string, fn: () => Promise<unknown>): Promise<void> {
-		return reportInSessionSafely("claude-headless", sessionId, op, fn, async () => {
-			await disposeAllHeadlessRuntimes();
-			process.exit(1);
-		});
+		return reportInSessionSafely("claude-headless", sessionId, op, fn, disposeRuntimesAndExit);
 	}
 
 	const flushProgress = async (force = false) => {

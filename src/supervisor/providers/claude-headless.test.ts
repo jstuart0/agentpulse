@@ -10,8 +10,12 @@
  * CLI spawn needed) — the exported seam this campaign added for exactly
  * this test.
  */
-import { describe, expect, mock, spyOn, test } from "bun:test";
-import { SupervisorRequestError } from "../services/report-resilience.js";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import {
+	SupervisorRequestError,
+	createCredentialTripwire,
+	setSharedCredentialTripwire,
+} from "../services/report-resilience.js";
 import { disposeAllHeadlessRuntimes, streamHeadlessClaude } from "./claude-headless.js";
 
 function fakeProc(
@@ -53,6 +57,8 @@ function fakeMetadata() {
 }
 
 describe("streamHeadlessClaude in-session reporting resilience (F25/F32)", () => {
+	afterEach(() => setSharedCredentialTripwire(null));
+
 	test("a reportState rejection (403-shaped) during streaming doesn't crash monitor, and later reports still fire", async () => {
 		const unhandledReasons: unknown[] = [];
 		const onUnhandledRejection = (reason: unknown) => unhandledReasons.push(reason);
@@ -115,11 +121,21 @@ describe("streamHeadlessClaude in-session reporting resilience (F25/F32)", () =>
 		}
 	});
 
-	// F31/D7: a 401 in-session (credential revoked or rotated) is fatal —
-	// streamHeadlessClaude's flushProgress routes through
-	// reportInSessionSafely with no onFatal override, so the default
-	// (process.exit(1)) applies here.
-	test("a reportState 401 during streaming exits the process instead of continuing", async () => {
+	// F31/D7: a credential rejection in-session (revoked or rotated) is fatal
+	// once the shared tripwire confirms it: a second one at least 10 s after
+	// an earlier one. A single rejection (a proxy's stray 401, say) is not.
+	// streamHeadlessClaude routes through reportInSessionSafely with
+	// disposeRuntimesAndExit, which kills the children and then exits.
+	function armedTripwire() {
+		let clock = 1_000_000;
+		const tripwire = createCredentialTripwire({ now: () => clock });
+		setSharedCredentialTripwire(tripwire);
+		tripwire.record(); // the earlier rejection
+		clock += 11_000;
+		return tripwire;
+	}
+	test("a reportState credential rejection during streaming exits the process once confirmed, instead of continuing", async () => {
+		armedTripwire();
 		const unhandledReasons: unknown[] = [];
 		const onUnhandledRejection = (reason: unknown) => unhandledReasons.push(reason);
 		process.on("unhandledRejection", onUnhandledRejection);
@@ -146,7 +162,11 @@ describe("streamHeadlessClaude in-session reporting resilience (F25/F32)", () =>
 						// Call 1 (bootstrap) succeeds; call 2 (in-session) is the
 						// credential rejection under test.
 						if (reportStateCallCount === 2) {
-							throw new SupervisorRequestError(401, "Unauthorized");
+							throw new SupervisorRequestError(
+								401,
+								"Unauthorized",
+								"Invalid supervisor credential",
+							);
 						}
 						return { session: {} as never, managedSession: {} as never };
 					},
@@ -174,11 +194,58 @@ describe("streamHeadlessClaude in-session reporting resilience (F25/F32)", () =>
 		}
 	});
 
+	test("a single credential rejection during streaming does not end the supervisor (a proxy's stray 401)", async () => {
+		setSharedCredentialTripwire(createCredentialTripwire({ now: () => 1_000_000 }));
+		const exitSpy = spyOn(process, "exit").mockImplementation(
+			(() => undefined) as unknown as typeof process.exit,
+		);
+		let reportStateCallCount = 0;
+		const proc = fakeProc([JSON.stringify({ type: "tool_use", tool_name: "bash", text: "ls" })]);
+		try {
+			const result = await streamHeadlessClaude({
+				sessionId: "stray-401-sess",
+				launchRequestId: "launch-1",
+				cwd: "/tmp",
+				model: null,
+				configCapabilities: {},
+				proc,
+				metadata: fakeMetadata(),
+				reportProgress: async () => {},
+				callbacks: {
+					reportState: async () => {
+						reportStateCallCount++;
+						if (reportStateCallCount === 2) {
+							throw new SupervisorRequestError(
+								401,
+								"Unauthorized",
+								"Invalid supervisor credential",
+							);
+						}
+						return { session: {} as never, managedSession: {} as never };
+					},
+					reportEvents: async () => {},
+				},
+				startEvent: {
+					eventType: "HeadlessTaskStarted",
+					category: "system_event",
+					content: "started",
+					rawPayload: {},
+				},
+				completionEvent: { success: "HeadlessTaskCompleted", failurePrefix: "HeadlessTaskFailed" },
+			});
+			await result.monitor;
+			expect(exitSpy).not.toHaveBeenCalled();
+		} finally {
+			exitSpy.mockRestore();
+		}
+	});
+
 	// D9/F41: before process.exit(1), the fatal-401 path must kill every
 	// claude child this process still holds — otherwise it's orphaned with
 	// a dead supervisor. onFatal (disposeAllHeadlessRuntimes) is exercised
 	// for real here; only process.exit itself is mocked.
-	test("a reportState 401 during streaming sends SIGTERM to the spawned child before exiting (D9/F41)", async () => {
+	test("a confirmed credential rejection during streaming sends SIGTERM to the spawned child before exiting (D9/F41)", async () => {
+		armedTripwire();
 		const unhandledReasons: unknown[] = [];
 		const onUnhandledRejection = (reason: unknown) => unhandledReasons.push(reason);
 		process.on("unhandledRejection", onUnhandledRejection);
@@ -206,7 +273,11 @@ describe("streamHeadlessClaude in-session reporting resilience (F25/F32)", () =>
 					reportState: async () => {
 						reportStateCallCount++;
 						if (reportStateCallCount === 2) {
-							throw new SupervisorRequestError(401, "Unauthorized");
+							throw new SupervisorRequestError(
+								401,
+								"Unauthorized",
+								"Invalid supervisor credential",
+							);
 						}
 						return { session: {} as never, managedSession: {} as never };
 					},

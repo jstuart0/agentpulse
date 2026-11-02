@@ -130,6 +130,45 @@ export function classifyReportFailure(error: unknown): ReportFailureClass {
 }
 
 /**
+ * Whether a credential rejection from `serverUrl` may ever end the supervisor. Over HTTPS the answer is
+ * the server's. Over plain HTTP it is only believed when the server is on this machine: on any other
+ * network path a device in the middle could forge a "credential rejected" and so kill the host.
+ */
+export function credentialRejectionMayConfirm(serverUrl: string | undefined | null): boolean {
+	if (!serverUrl) return false;
+	let url: URL;
+	try {
+		url = new URL(serverUrl);
+	} catch {
+		return false;
+	}
+	if (url.protocol === "https:") return true;
+	if (url.protocol !== "http:") return false;
+	const host = url.hostname.toLowerCase();
+	if (host === "localhost" || host === "[::1]" || host === "::1") return true;
+	return /^127(?:\.\d{1,3}){3}$/.test(host);
+}
+
+/** The most one queue head may wait on a server's back-pressure before each further wait counts as a failure. */
+export const BACKOFF_BUDGET_MS = 6 * 60 * 60 * 1000;
+const SESSION_BACKOFF_BASE_MS = 3_000;
+const SESSION_BACKOFF_MAX_MS = 60_000;
+
+/**
+ * How long a session waits before its next send after the k-th consecutive failure (k from 0): 3 s doubling
+ * to 60 s, jittered by up to 20% either way; a server's Retry-After wins when it asks for longer.
+ */
+export function sessionBackoffMs(
+	k: number,
+	retryAfterMs: number | undefined,
+	random: () => number,
+): number {
+	const base = Math.min(SESSION_BACKOFF_MAX_MS, SESSION_BACKOFF_BASE_MS * 2 ** Math.min(k, 10));
+	const jittered = Math.round(base * (0.8 + random() * 0.4));
+	return Math.max(retryAfterMs ?? 0, jittered);
+}
+
+/**
  * Tells a real credential rejection from a transient one (a proxy's stray 401). The first rejection
  * only records when it happened; a second at least `minGapMs` later confirms it. A success in between
  * (`reset`) forgets the first.
@@ -142,11 +181,27 @@ export interface CredentialTripwire {
 export function createCredentialTripwire(opts: {
 	now: () => number;
 	minGapMs?: number;
+	/**
+	 * False when a rejection must never be acted on (see credentialRejectionMayConfirm): the tripwire then
+	 * never confirms, and says so once through `log`.
+	 */
+	canConfirm?: boolean;
+	log?: (line: string) => void;
 }): CredentialTripwire {
 	const minGapMs = opts.minGapMs ?? 10_000;
 	let firstAt: number | null = null;
+	let warned = false;
 	return {
 		record() {
+			if (opts.canConfirm === false) {
+				if (!warned) {
+					warned = true;
+					opts.log?.(
+						"[supervisor] the server rejected this supervisor's credential, but the connection is plain HTTP to a non-local address, where anything on the path could forge that answer; not acting on it",
+					);
+				}
+				return "first";
+			}
 			const at = opts.now();
 			if (firstAt === null) {
 				firstAt = at;
@@ -160,22 +215,48 @@ export function createCredentialTripwire(opts: {
 	};
 }
 
-/** True when the supervisor's credential was rejected outright (401). */
+/**
+ * True when the server said, in one of its exact wordings, that this supervisor's credential is not
+ * accepted. A bare 401 is not enough: a proxy or gateway in the path can answer 401 for its own reasons.
+ */
 export function isCredentialRejected(error: unknown): boolean {
-	return error instanceof SupervisorRequestError && error.status === 401;
+	return classifyReportFailure(error) === "credential";
+}
+
+/**
+ * Errors the report gate has already counted toward the credential tripwire. reportInSessionSafely
+ * does not count them again.
+ */
+const credentialHandled = new WeakSet<object>();
+export function markCredentialHandled(error: unknown): void {
+	if (typeof error === "object" && error !== null) credentialHandled.add(error);
+}
+export function wasCredentialHandled(error: unknown): boolean {
+	return typeof error === "object" && error !== null && credentialHandled.has(error);
+}
+
+let sharedTripwire: CredentialTripwire | null = null;
+/** The one tripwire the supervisor's heartbeat, report gate, bridge drain and in-session reporting all feed. */
+export function setSharedCredentialTripwire(tripwire: CredentialTripwire | null): void {
+	sharedTripwire = tripwire;
+}
+function sharedCredentialTripwire(): CredentialTripwire {
+	sharedTripwire ??= createCredentialTripwire({ now: Date.now });
+	return sharedTripwire;
 }
 
 /**
  * Run an in-session report call (reportState/reportEvents). On success,
- * resolves normally. On a 401 (credential rejected), logs a clear message
- * and awaits `onFatal` (default: process.exit(1)) — the same controlled
- * exit path a failed registration already takes. `onFatal` may be async
- * (e.g. D9's disposeAllHeadlessRuntimes/disposeAllManagedCodexRuntimes,
- * which must finish killing child processes before the process exits) —
- * it's awaited so process.exit(1) never races ahead of that cleanup. On
- * any other failure (403 session_not_owned, 5xx, network error), logs a
- * session-scoped line and returns normally so the caller's
- * stream/notification loop keeps running.
+ * resolves normally. When the server rejects the supervisor's credential
+ * (one of its exact wordings; a bare 401 from a proxy doesn't count), the
+ * rejection goes through the shared tripwire: only a second one at least
+ * 10 s after the first makes this await `onFatal` (default:
+ * process.exit(1); callers pass disposeRuntimesAndExit, which kills every
+ * child runtime first and is awaited so the exit never races ahead of that
+ * cleanup). A rejection the report gate already counted is only logged
+ * here, so one response is never counted twice. On any other failure (403
+ * session_not_owned, 5xx, network error), logs a session-scoped line and
+ * returns normally so the caller's stream/notification loop keeps running.
  */
 export async function reportInSessionSafely(
 	scope: string,
@@ -188,8 +269,14 @@ export async function reportInSessionSafely(
 		await fn();
 	} catch (error) {
 		if (isCredentialRejected(error)) {
+			if (wasCredentialHandled(error) || sharedCredentialTripwire().record() === "first") {
+				console.error(
+					`[${scope}] credential rejected; waiting for a second rejection before exiting (session=${sessionId}, op=${op})`,
+				);
+				return;
+			}
 			console.error(
-				`[${scope}] credential rejected (401) — supervisor credential revoked or rotated; exiting (session=${sessionId}, op=${op})`,
+				`[${scope}] credential rejected twice: supervisor credential revoked or rotated; exiting (session=${sessionId}, op=${op})`,
 			);
 			await onFatal();
 			return;

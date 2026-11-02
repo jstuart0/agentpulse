@@ -70,6 +70,15 @@ import {
 	isTrustedStateFileStat as storeIsTrustedStateFileStat,
 	trustedDirectory,
 } from "./private-store.js";
+import type { OutboxEntry, ReportOutbox } from "./report-outbox.js";
+import {
+	BACKOFF_BUDGET_MS,
+	type CredentialTripwire,
+	SupervisorRequestError,
+	classifyReportFailure,
+	markCredentialHandled,
+	sessionBackoffMs,
+} from "./report-resilience.js";
 
 /** The one sentence a refused launch or control action reports, whatever the reason. */
 export const LAUNCH_REFUSED_MESSAGE = "This host doesn't allow launches in that directory.";
@@ -138,7 +147,27 @@ export interface ReportGateDeps {
 	rules?: RulesWatch;
 	/** How many sessions are remembered at most; defaults to a generous bound. */
 	maxTrackedSessions?: number;
+	/**
+	 * The offline outbox. Without one the gate behaves exactly as it always has: a report that can't be
+	 * delivered throws. With one, a state or events report the server can't take right now is kept
+	 * (and sent later, in order) instead.
+	 */
+	outbox?: ReportOutbox;
+	/** The one tripwire a rejected credential feeds; shared with the heartbeat and the bridge drain. */
+	credentialTripwire?: CredentialTripwire;
+	/** Called once the tripwire confirms the credential was rejected (the supervisor then disposes its runtimes and exits). */
+	onCredentialRejected?: () => void | Promise<void>;
+	/** Jitter and backoff draw from this; a test passes a fixed one. */
+	random?: () => number;
+	/** Runs `fn` after `ms`. The default is an unref'd timer; a test resolves it at once. */
+	schedule?: (fn: () => void, ms: number) => void;
 }
+
+/** Most queued reports sent for one session, and in all, by one flush. A flush every 3 s makes about 33 requests a second at most. */
+export const FLUSH_MAX_PER_SESSION = 50;
+export const FLUSH_MAX_PER_PASS = 100;
+/** After the server is reachable again a flush waits up to this long (random), so a fleet doesn't reconnect in step. */
+const RECONNECT_JITTER_MS = 5_000;
 
 /** What may leave for an id: "send" it, "excluded" (drop; this session is covered by a rule or its directory is unknown), "blocked" (drop; the rules file is invalid). */
 export type ReportVerdict = "send" | "excluded" | "blocked" | "refused";
@@ -190,6 +219,13 @@ export interface ReportGate {
 	): Promise<void>;
 	/** Refreshes the rules (also following moved symlinks), writes the stamp, and closes any reported session a rule now covers. Called on a timer. */
 	scan(): Promise<void>;
+	/** Sends what the offline outbox holds, oldest first, a bounded amount per call. Called on a timer; a no-op without an outbox or while the server is unreachable. */
+	flush(): Promise<void>;
+	/** The server could not be reached: later reports are queued without trying it. Cleared by the next sign of life. */
+	noteServerUnreachable(): void;
+	/** The server answered (a heartbeat, a send): reports go to it again, and the credential tripwire is cleared. */
+	noteServerReachable(): void;
+	isOffline(): boolean;
 }
 
 /** What a provider reads from a state report that was dropped: nothing it can use, but nothing that makes it throw. */
@@ -290,13 +326,89 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	let persistWarned = false;
 	let skipWarned = false;
 
-	/** Every request that leaves the gate. `headers` is only ever the delivery id and replay marker. */
-	const sendText = (path: string, text: string, headers?: Record<string, string>) =>
-		deps.request(`${base}${path}`, {
-			method: "POST",
-			body: text,
-			...(headers ? { headers } : {}),
+	const outbox = deps.outbox;
+	const tripwire = deps.credentialTripwire;
+	const random = deps.random ?? Math.random;
+	const schedule =
+		deps.schedule ??
+		((fn: () => void, ms: number) => {
+			const timer = setTimeout(fn, ms);
+			timer.unref?.();
 		});
+
+	/** The server could not be reached; reports are queued behind this until something gets through. */
+	let offline = false;
+	/** The server has just come back: the next flush waits a random moment first. */
+	let settling = false;
+	let flushOpen = false;
+	let flushing: Promise<void> | null = null;
+	/** A session whose sends failed waits before the next one: until when, and how many failures in a row. */
+	const backoffs = new Map<string, { untilMs: number; failures: number }>();
+	/** How long a queue head has waited on the server's back-pressure in all. */
+	const backoffBudgets = new Map<string, { seq: number; waitedMs: number }>();
+	const chains = new Map<string, Promise<unknown>>();
+
+	function markOffline() {
+		offline = true;
+	}
+	function markReachable() {
+		if (!offline) return;
+		offline = false;
+		settling = true;
+	}
+	/** The server was reached and took a request: the credential is good and the path is open. */
+	function onContact() {
+		tripwire?.reset();
+		markReachable();
+	}
+
+	async function handleCredential(error: unknown) {
+		markCredentialHandled(error);
+		if (!tripwire) return;
+		if (tripwire.record() === "confirmed") {
+			log("[supervisor] the server rejected this supervisor's credential twice; shutting down");
+			await deps.onCredentialRejected?.();
+		}
+	}
+
+	/**
+	 * Every request that leaves the gate. `headers` is only ever the delivery id and replay marker. A
+	 * success clears the credential tripwire and the offline latch; a credential rejection feeds the
+	 * tripwire (which decides whether it ends the supervisor); with an outbox, a 2xx whose body can't be
+	 * read is a delivery like any other.
+	 */
+	async function sendText(path: string, text: string, headers?: Record<string, string>) {
+		try {
+			const result = await deps.request(`${base}${path}`, {
+				method: "POST",
+				body: text,
+				...(headers ? { headers } : {}),
+			});
+			onContact();
+			return result;
+		} catch (error) {
+			if (outbox && error instanceof SyntaxError) {
+				onContact();
+				return undefined;
+			}
+			if (classifyReportFailure(error) === "credential") await handleCredential(error);
+			throw error;
+		}
+	}
+
+	/** Runs `fn` after everything already running for this session, so its reports, replays and purge never interleave. */
+	function serialize<T>(id: string, fn: () => Promise<T>): Promise<T> {
+		if (!outbox) return fn();
+		const previous = chains.get(id) ?? Promise.resolve();
+		const next = previous.catch(() => undefined).then(fn);
+		chains.set(id, next);
+		const cleanup = () => {
+			if (chains.get(id) === next) chains.delete(id);
+		};
+		next.then(cleanup, cleanup);
+		return next;
+	}
+
 	const post = (path: string, body: unknown) => sendText(path, JSON.stringify(body));
 	const replayHeader = (replay: boolean | undefined): Record<string, string> =>
 		replay ? { [REPLAY_HEADER]: "1" } : {};
@@ -626,6 +738,212 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		await post(`/control-actions/${actionId}/status`, controlRefusalBody());
 	}
 
+	// ── offline outbox ──
+
+	/** A report goes behind what is already queued when the server is unreachable, the session has queued reports (order!), or the outbox has not yet listed what an earlier run left. */
+	function queueBehind(id: string): boolean {
+		if (!outbox?.enabled) return false;
+		return offline || !outbox.listed() || outbox.hasPending(id);
+	}
+
+	function keep(
+		id: string,
+		kind: "state" | "events",
+		text: string,
+		attempted: boolean,
+		deliveryId: string | undefined,
+		cause?: unknown,
+	): { outcome: "queued" } {
+		const kept = outbox?.append(id, { kind, body: text, attempted, deliveryId });
+		if (kept === "queued") return { outcome: "queued" };
+		// Nothing could keep it: the caller is told, as it would be without an outbox.
+		throw cause ?? new Error("The offline outbox couldn't keep this report.");
+	}
+
+	/** The wait before this session's next send after a failure; a non-escalating one (back-pressure) doesn't grow the next wait. */
+	function noteSessionFailure(id: string, error: unknown, escalate: boolean): number {
+		const previous = backoffs.get(id) ?? { untilMs: 0, failures: 0 };
+		const retryAfter = error instanceof SupervisorRequestError ? error.retryAfterMs : undefined;
+		const wait = escalate
+			? sessionBackoffMs(previous.failures, retryAfter, random)
+			: Math.max(retryAfter ?? 0, 1_000);
+		backoffs.set(id, {
+			untilMs: now() + wait,
+			failures: previous.failures + (escalate ? 1 : 0),
+		});
+		return wait;
+	}
+
+	/** Sends a state or events report now, or keeps it when the server can't take it. */
+	async function deliver(
+		id: string,
+		kind: "state" | "events",
+		path: string,
+		text: string,
+		headers: Record<string, string> | undefined,
+		deliveryId?: string,
+	): Promise<{ outcome: "sent"; result: unknown } | { outcome: "queued" }> {
+		if (queueBehind(id)) return keep(id, kind, text, false, deliveryId);
+		try {
+			const result = await sendText(path, text, headers);
+			backoffs.delete(id);
+			return { outcome: "sent", result };
+		} catch (error) {
+			if (!outbox?.enabled) throw error;
+			const failure = classifyReportFailure(error);
+			if (failure !== "network" && failure !== "server" && failure !== "backoff") throw error;
+			if (failure === "network") markOffline();
+			else noteSessionFailure(id, error, failure === "server");
+			return keep(id, kind, text, true, deliveryId, error);
+		}
+	}
+
+	/** Whether the server has a record of this session from us: events for one it has never heard of can't be stored. */
+	const serverKnows = (id: string) => sessions.get(id)?.reported === true;
+
+	/**
+	 * What to do with a queue head whose send failed. `continue` goes on to the next entry, `next` leaves
+	 * this session for the next pass, `all` ends the pass.
+	 */
+	function afterFailure(
+		id: string,
+		head: OutboxEntry,
+		error: unknown,
+	): "continue" | "next" | "all" {
+		if (!outbox) return "next";
+		const failure = classifyReportFailure(error);
+		if (failure === "network") {
+			markOffline();
+			return "all";
+		}
+		if (failure === "credential") return "all";
+		if (failure === "session") {
+			outbox.purge(id, { countLost: true });
+			return "next";
+		}
+		if (failure === "entry") {
+			outbox.remove(id, head.seq, "lost");
+			return "continue";
+		}
+		if (failure === "other") {
+			log(
+				`[supervisor] a queued report couldn't be sent for a local reason; will retry: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return "next";
+		}
+		// The server's own back-pressure, or a 500 for events of a session it has no record of yet (the
+		// state that creates it may still be on its way), is waiting, not failing. It counts only once a
+		// head has waited longer than the budget.
+		const missingRow =
+			failure === "server" &&
+			error instanceof SupervisorRequestError &&
+			error.status === 500 &&
+			head.kind !== "state" &&
+			!serverKnows(id);
+		let counts = failure !== "backoff" && !missingRow;
+		if (counts) {
+			noteSessionFailure(id, error, true);
+		} else {
+			const wait = noteSessionFailure(id, error, missingRow);
+			const budget = backoffBudgets.get(id);
+			const spent = (budget?.seq === head.seq ? budget.waitedMs : 0) + wait;
+			backoffBudgets.set(id, { seq: head.seq, waitedMs: spent });
+			counts = spent > BACKOFF_BUDGET_MS;
+		}
+		const verdict = outbox.recordFailure(id, head.seq, now(), { counts });
+		if (verdict === "poisoned") {
+			log("[supervisor] a queued report kept failing and was dropped");
+			backoffBudgets.delete(id);
+			return "continue";
+		}
+		return "next";
+	}
+
+	function terminalOf(body: string): boolean | undefined {
+		try {
+			return isTerminalReport(JSON.parse(body) as ManagedSessionStateInput);
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** One session's turn in a flush: sends its queue head by head until it runs out, fails, or hits its share. */
+	async function flushSession(id: string, budget: { left: number }): Promise<"next" | "all"> {
+		if (!outbox) return "next";
+		let sentHere = 0;
+		while (sentHere < FLUSH_MAX_PER_SESSION && budget.left > 0) {
+			const verdict = decide(id);
+			if (verdict === "blocked") return "all";
+			if (verdict === "excluded") {
+				outbox.purge(id);
+				await closeIfNeeded(id);
+				return "next";
+			}
+			if (verdict !== "send") return "next";
+			const wait = backoffs.get(id);
+			if (wait && now() < wait.untilMs) return "next";
+			const head = outbox.head(id);
+			if (head === null || head === "held") return "next";
+			if (head.kind !== "state" && !outbox.markAttempted(id, head.seq)) return "next";
+			budget.left--;
+			sentHere++;
+			try {
+				if (head.kind === "state") {
+					await sendText("/managed-session-state", head.body, replayHeader(true));
+				} else {
+					await sendText(`/managed-sessions/${id}/events`, head.body, {
+						...(head.deliveryId ? { [DELIVERY_ID_HEADER]: head.deliveryId } : {}),
+						...replayHeader(true),
+					});
+				}
+			} catch (error) {
+				const next = afterFailure(id, head, error);
+				if (next === "all") return "all";
+				if (next === "next") return "next";
+				continue;
+			}
+			outbox.remove(id, head.seq, "delivered");
+			markReported(id, head.kind === "state" ? terminalOf(head.body) : undefined);
+			backoffs.delete(id);
+			backoffBudgets.delete(id);
+		}
+		return "next";
+	}
+
+	async function flushPass(): Promise<void> {
+		if (!outbox?.enabled || offline) return;
+		if (settling && outbox.sessions().length > 0) {
+			settling = false;
+			await new Promise<void>((resolve) =>
+				schedule(resolve, Math.round(random() * RECONNECT_JITTER_MS)),
+			);
+			if (offline) return;
+		}
+		outbox.ageOut(now());
+		if (!flushOpen) {
+			outbox.beginFlush();
+			flushOpen = true;
+		}
+		for (const dir of outbox.unknownDirs()) outbox.purgeDir(dir);
+		const budget = { left: FLUSH_MAX_PER_PASS };
+		for (const id of outbox.sessions()) {
+			if (budget.left <= 0 || offline) break;
+			if ((await serialize(id, () => flushSession(id, budget))) === "all") break;
+		}
+		if (flushOpen && outbox.summary().pending === 0) {
+			outbox.endFlush(new Date(now()).toISOString());
+			flushOpen = false;
+		}
+	}
+
+	function flush(): Promise<void> {
+		if (flushing) return flushing;
+		flushing = flushPass().finally(() => {
+			flushing = null;
+		});
+		return flushing;
+	}
+
 	checkStateFile();
 
 	return {
@@ -637,42 +955,68 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 
 		async reportState(body, opts) {
 			const id = body.sessionId;
-			const verdict = decide(id);
-			if (verdict === "send") {
-				const headers = replayHeader(opts?.replay);
-				const result = (await sendText(
-					"/managed-session-state",
-					JSON.stringify(body),
-					Object.keys(headers).length > 0 ? headers : undefined,
-				)) as StateReportResult;
-				markReported(id, isTerminalReport(body));
-				return { ...result, outcome: "sent" };
-			}
-			if (verdict === "excluded") await closeIfNeeded(id);
-			// A copy: the shared dropped result is never written to.
-			return { ...DROPPED_STATE_RESULT, outcome: verdict === "excluded" ? "excluded" : "blocked" };
+			return serialize(id, async () => {
+				const verdict = decide(id);
+				if (verdict === "send") {
+					const headers = replayHeader(opts?.replay);
+					const delivery = await deliver(
+						id,
+						"state",
+						"/managed-session-state",
+						JSON.stringify(body),
+						Object.keys(headers).length > 0 ? headers : undefined,
+					);
+					if (delivery.outcome === "queued") return { ...DROPPED_STATE_RESULT, outcome: "queued" };
+					markReported(id, isTerminalReport(body));
+					return {
+						...((delivery.result as StateReportResult | undefined) ?? DROPPED_STATE_RESULT),
+						outcome: "sent",
+					};
+				}
+				if (verdict === "excluded") {
+					if (outbox?.hasPending(id)) outbox.purge(id);
+					await closeIfNeeded(id);
+				}
+				// A copy: the shared dropped result is never written to.
+				return {
+					...DROPPED_STATE_RESULT,
+					outcome: verdict === "excluded" ? "excluded" : "blocked",
+				};
+			});
 		},
 
 		async reportEvents(sessionId, events, opts) {
-			const verdict = decide(sessionId);
-			if (verdict === "send") {
-				// One body, built once: a resend of the same delivery id carries the same bytes.
-				const stampedAt = new Date(now()).toISOString();
-				const text = JSON.stringify({
-					events: events.map((event) => ({ ...event, occurredAt: event.occurredAt ?? stampedAt })),
-				});
-				await sendText(`/managed-sessions/${sessionId}/events`, text, {
-					[DELIVERY_ID_HEADER]: opts?.deliveryId ?? randomUUID(),
-					...replayHeader(opts?.replay),
-				});
-				markReported(sessionId);
-				return "sent";
-			}
-			if (verdict === "excluded") {
-				await closeIfNeeded(sessionId);
-				return "excluded";
-			}
-			return "blocked";
+			return serialize(sessionId, async () => {
+				const verdict = decide(sessionId);
+				if (verdict === "send") {
+					// One body, built once: a resend of the same delivery id carries the same bytes.
+					const stampedAt = new Date(now()).toISOString();
+					const text = JSON.stringify({
+						events: events.map((event) => ({
+							...event,
+							occurredAt: event.occurredAt ?? stampedAt,
+						})),
+					});
+					const deliveryId = opts?.deliveryId ?? randomUUID();
+					const delivery = await deliver(
+						sessionId,
+						"events",
+						`/managed-sessions/${sessionId}/events`,
+						text,
+						{ [DELIVERY_ID_HEADER]: deliveryId, ...replayHeader(opts?.replay) },
+						deliveryId,
+					);
+					if (delivery.outcome === "queued") return "queued";
+					markReported(sessionId);
+					return "sent";
+				}
+				if (verdict === "excluded") {
+					if (outbox?.hasPending(sessionId)) outbox.purge(sessionId);
+					await closeIfNeeded(sessionId);
+					return "excluded";
+				}
+				return "blocked";
+			});
 		},
 
 		async reportLaunchStatus(launchId, body) {
@@ -703,9 +1047,27 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			if (state.state === "invalid") return;
 			for (const [sessionId, rec] of [...sessions]) {
 				if (!isLive(rec)) continue;
-				if (judge(sessionId, state) === "excluded") await closeIfNeeded(sessionId);
+				if (judge(sessionId, state) === "excluded") {
+					await serialize(sessionId, () => closeIfNeeded(sessionId));
+				}
+			}
+			// What the outbox holds for a session a rule now covers goes too, held entries included.
+			for (const sessionId of outbox?.sessions() ?? []) {
+				if (judge(sessionId, state) !== "excluded") continue;
+				await serialize(sessionId, async () => {
+					outbox?.purge(sessionId);
+					await closeIfNeeded(sessionId);
+				});
 			}
 		},
+
+		flush,
+		noteServerUnreachable: markOffline,
+		noteServerReachable() {
+			tripwire?.reset();
+			markReachable();
+		},
+		isOffline: () => offline,
 	};
 }
 

@@ -8,6 +8,7 @@ import {
 	sanitizeReportedByAgent,
 } from "../../shared/launch-privileges.js";
 import type { LaunchRequest, ManagedSession } from "../../shared/types.js";
+import { disposeRuntimesAndExit } from "../services/fatal-exit.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
 import { type JsonRpcNotification, findFreePort, spawnServer, waitForServer } from "./codex-rpc.js";
 import {
@@ -18,6 +19,11 @@ import {
 } from "./codex-shared.js";
 
 const runtimes = new Map<string, ManagedCodexRuntime>();
+
+/** How many managed Codex agents this supervisor is running; the keep-alive rule reads it. */
+export function managedCodexRuntimeCount(): number {
+	return runtimes.size;
+}
 
 /**
  * F31/D7: best-effort cleanup before a fatal (401 credential-rejected) exit
@@ -313,16 +319,14 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		// rotated, F31/D7), or any other non-2xx, mid-session. Logged and
 		// isolated so a rejection here can never become an unhandled
 		// rejection or skip later notification branches — except a 401,
-		// which is fatal (see reportInSessionSafely).
+		// which is fatal only once the credential tripwire confirms it (see
+		// reportInSessionSafely).
 		await reportInSessionSafely(
 			"codex-managed",
 			launch.launchCorrelationId,
 			"notification",
 			() => handleManagedCodexNotification(notification, launch, runtime, threadId, callbacks),
-			() => {
-				disposeAllManagedCodexRuntimes();
-				process.exit(1);
-			},
+			disposeRuntimesAndExit,
 		);
 	});
 
@@ -347,10 +351,7 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 					providerSyncState: "failed",
 					providerSyncError: error?.message ?? "Codex control channel closed",
 				}),
-			() => {
-				disposeAllManagedCodexRuntimes();
-				process.exit(1);
-			},
+			disposeRuntimesAndExit,
 		);
 		runtimes.delete(launch.launchCorrelationId);
 	});

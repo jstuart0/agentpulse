@@ -345,7 +345,9 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 							{ deliveryId: checked.deliveryId, replay },
 						);
 			if (outcome === "blocked") return "stopAll";
-			deps.credentialTripwire.reset();
+			// Only a report the server took proves the credential still works; one that was queued or
+			// excluded never reached it.
+			if (outcome === "sent") deps.credentialTripwire.reset();
 			sent++;
 			discard(entry, name, false);
 			return "next";

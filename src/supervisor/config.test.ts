@@ -337,3 +337,21 @@ describe("supervisor.json permissions (AGEN-21)", () => {
 		expect(readFileSync(decoyTarget, "utf-8")).toBe('{"planted":"should never change"}');
 	});
 });
+
+describe("the offline outbox is advertised", () => {
+	test("both the default config and the capabilities worked out from the executables name offline_outbox", async () => {
+		const previous = process.env.HOME;
+		process.env.HOME = scratchDir;
+		try {
+			const loaded = await loadSupervisorConfig();
+			expect(loaded.capabilities.features).toContain("offline_outbox");
+			const derived = await withExecutableCapabilities({
+				...loaded,
+				capabilities: { ...loaded.capabilities, features: [] },
+			});
+			expect(derived.capabilities.features).toContain("offline_outbox");
+		} finally {
+			process.env.HOME = previous;
+		}
+	});
+});

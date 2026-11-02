@@ -85,6 +85,7 @@ function buildDefaultConfig(): SupervisorConfig {
 				"managed_codex",
 				"headless_claude",
 				"enforces_launch_privileges",
+				"offline_outbox",
 			],
 		},
 	};
@@ -247,6 +248,7 @@ export async function withExecutableCapabilities(
 				"can_cleanup_workarea",
 				"headless_claude",
 				"enforces_launch_privileges",
+				"offline_outbox",
 				...(git.resolvedPath ? ["can_scaffold_workarea", "can_clone_repo"] : []),
 				...(terminalSupport.length > 0 ? ["interactive_terminal"] : []),
 				...(interactiveTerminalControl.available ? ["interactive_terminal_control"] : []),
