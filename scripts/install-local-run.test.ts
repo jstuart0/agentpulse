@@ -2472,22 +2472,127 @@ describe("an existing checkout is made safe before git runs in it", () => {
 		},
 	);
 
-	once(
-		"a .git that is a file (a worktree) still takes the update path, and is narrowed",
-		(bash) => {
+	once("a chosen --dir whose .git is a file (a worktree) still takes the update path", (bash) => {
+		const t = fresh("t");
+		const app = join(t, "app");
+		mkdirSync(app, { recursive: true });
+		writeFileSync(join(app, ".git"), "gitdir: /elsewhere\n");
+		const r = go(bash, [...PLAIN, "--skip-supervisor", "--dir", app], {
+			path: mkPath(),
+			env: bunEnv(),
+		});
+		expect(r.code).toBe(0);
+		expect(r.log).toContain("git -C");
+		expect(r.log).not.toContain("git clone");
+	});
+
+	describe("the default checkout must be a plain clone: no link or git file where git reads its metadata", () => {
+		const outside = (t: string) => {
+			mkdirSync(`${t}/elsewhere/hooks`, { recursive: true });
+			writeFileSync(`${t}/elsewhere/config`, "[core]\n");
+			return `${t}/elsewhere`;
+		};
+		const cases: [string, (app: string, t: string) => string][] = [
+			[
+				".git as a link",
+				(app, t) => {
+					mkdirSync(app, { recursive: true });
+					symlinkSync(outside(t), join(app, ".git"));
+					return join(app, ".git");
+				},
+			],
+			[
+				".git as a git file",
+				(app) => {
+					mkdirSync(app, { recursive: true });
+					writeFileSync(join(app, ".git"), "gitdir: /elsewhere\n");
+					return join(app, ".git");
+				},
+			],
+			[
+				".git/config as a link",
+				(app, t) => {
+					mkdirSync(join(app, ".git", "hooks"), { recursive: true });
+					writeFileSync(`${t}/real-config`, "[core]\n");
+					symlinkSync(`${t}/real-config`, join(app, ".git", "config"));
+					return join(app, ".git", "config");
+				},
+			],
+			[
+				".git/hooks as a link",
+				(app, t) => {
+					mkdirSync(join(app, ".git"), { recursive: true });
+					symlinkSync(outside(t), join(app, ".git", "hooks"));
+					return join(app, ".git", "hooks");
+				},
+			],
+			[
+				"a link deep under .git/objects",
+				(app, t) => {
+					mkdirSync(join(app, ".git", "objects", "pack", "x"), { recursive: true });
+					writeFileSync(`${t}/real-obj`, "x");
+					symlinkSync(`${t}/real-obj`, join(app, ".git", "objects", "pack", "x", "o"));
+					return join(app, ".git", "objects", "pack", "x", "o");
+				},
+			],
+		];
+		for (const [name, make] of cases) {
+			each(`${name} is refused before any git call`, (bash) => {
+				const home = fresh("home");
+				const t = fresh("t");
+				const app = join(home, ".agentpulse", "app");
+				const offender = make(app, t);
+				const r = go(bash, [...PLAIN, "--skip-supervisor"], {
+					path: mkPath(),
+					home,
+					env: bunEnv(),
+				});
+				expect(r.code).toBe(1);
+				expect(r.stderr).toContain(MESSAGES.notPlainCheckout(q(bash, app), q(bash, offender)));
+				expect(r.log).toBe("");
+			});
+		}
+
+		once("a scan of .git that can't finish is refused, not assumed clean", (bash) => {
 			const home = fresh("home");
 			const app = join(home, ".agentpulse", "app");
-			mkdirSync(app, { recursive: true });
-			writeFileSync(join(app, ".git"), "gitdir: /elsewhere\n");
-			chmodSync(join(app, ".git"), 0o664);
+			mkdirSync(join(app, ".git"), { recursive: true });
+			const failing = `case "$*" in *"-type l"*) exit 3 ;; *) exec "${Bun.which("find")}" "$@" ;; esac`;
+			const r = go(bash, [...PLAIN, "--skip-supervisor"], {
+				path: mkPath({ stubs: { find: failing } }),
+				home,
+				env: bunEnv(),
+			});
+			expect(r.code).toBe(1);
+			expect(r.stderr).toContain(
+				MESSAGES.notPlainCheckout(q(bash, app), q(bash, join(app, ".git"))),
+			);
+			expect(r.log).toBe("");
+		});
+
+		once("a plain clone with no links is still updated", (bash) => {
+			const home = fresh("home");
+			const app = join(home, ".agentpulse", "app");
+			mkdirSync(join(app, ".git", "hooks"), { recursive: true });
+			writeFileSync(join(app, ".git", "config"), "[core]\n");
 			const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), home, env: bunEnv() });
 			expect(r.code).toBe(0);
 			expect(r.log).toContain("git -C");
-			expect(r.log).not.toContain("git clone");
-			expect(modeOf(join(app, ".git"))).toBe(0o644);
-			expect(readFileSync(`${r.logFile}.git-writable`, "utf-8")).toBe("");
-		},
-	);
+		});
+
+		once("a chosen --dir with a link under .git is left as it is", (bash) => {
+			const t = fresh("t");
+			const app = join(t, "app");
+			mkdirSync(join(app, ".git"), { recursive: true });
+			symlinkSync(outside(t), join(app, ".git", "hooks"));
+			const r = go(bash, [...PLAIN, "--skip-supervisor", "--dir", app], {
+				path: mkPath(),
+				env: bunEnv(),
+			});
+			expect(r.code).toBe(0);
+			expect(r.log).toContain("git -C");
+		});
+	});
 
 	each(
 		"nothing in the default checkout is group/other-writable when git first runs: config, a hook, a tracked file, the gitfile-less tree",

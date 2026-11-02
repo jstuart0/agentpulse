@@ -347,6 +347,9 @@ export const MESSAGES = {
 	/** install-local: an existing checkout, or its .git, belongs to someone else (p is %q-quoted). */
 	checkoutForeign: (p: string) =>
 		`  ✗ ${p} is owned by another user; the installer won't run git in it. Move it or choose another --dir.`,
+	/** install-local: the default checkout has a link or a git file where a plain .git was expected (both %q-quoted). */
+	notPlainCheckout: (p: string, what: string) =>
+		`  ✗ ${p} isn't a plain git checkout (${what} is a symbolic link or a git file); the installer won't run git in it. Move it or choose another --dir.`,
 	tmp: (p: string) => `  ✗ couldn't create a temporary directory under ${p}`,
 	/** install-local's "can be read by other users" note for a user-supplied --data-dir (p is %q-quoted). */
 	dataDirReadable: (p: string) =>

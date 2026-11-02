@@ -787,14 +787,20 @@ ap_local_preflight_services() {
 # is an empty directory, or is an older copy of AgentPulse itself (its top-level
 # package.json is named agentpulse).
 ap_local_check_install_dir() {
-  local d="${INSTALL_DIR}"
+  local d="${INSTALL_DIR}" bad
   if [[ ! -e "$d" && ! -L "$d" ]]; then return 0; fi
   # A git checkout (a link to one included) is updated in place, never deleted. git runs
   # in it with your hooks and config, so it and its .git (a directory or a gitfile) must be yours.
   if [[ -d "$d/.git" || -f "$d/.git" ]]; then
     if ap_local_owned_by_me "$d" "$d/.git"; then
-      # In the default checkout the files git reads (config, hooks) must be yours too.
-      if [[ "${INSTALL_DIR_GIVEN}" == "true" ]] || ap_local_tree_owned_by_me "$d"; then return 0; fi
+      if [[ "${INSTALL_DIR_GIVEN}" == "true" ]]; then return 0; fi
+      # The default checkout is one this installer cloned: a plain .git directory with no
+      # links in it, which could point git at metadata somewhere else, and files that are yours.
+      if bad="$(ap_local_git_link "$d")"; then
+        printf "  ✗ %q isn't a plain git checkout (%q is a symbolic link or a git file); the installer won't run git in it. Move it or choose another --dir.\n" "$d" "$bad" >&2
+        return 1
+      fi
+      if ap_local_tree_owned_by_me "$d"; then return 0; fi
     fi
     printf "  ✗ %q is owned by another user; the installer won't run git in it. Move it or choose another --dir.\n" "$d" >&2
     return 1
@@ -804,6 +810,17 @@ ap_local_check_install_dir() {
     if ap_local_is_agentpulse_package "$d/package.json"; then return 0; fi
   fi
   printf "  ✗ --dir %q already exists and isn't an AgentPulse checkout; the installer won't delete it. Move it or choose another --dir.\n" "$d" >&2
+  return 1
+}
+
+# Prints the first thing that makes the checkout $1 not a plain clone, and returns 0: its .git
+# is a symbolic link or a file (a gitfile), or anything under .git is a symbolic link. A scan
+# that can't finish counts as a find. Returns 1 when there is none.
+ap_local_git_link() {
+  local g="$1/.git" found
+  if [[ -L "$g" || -f "$g" ]]; then echo "$g"; return 0; fi
+  found="$(find "$g" -type l -print -quit 2>/dev/null)" || { echo "$g"; return 0; }
+  if [[ -n "$found" ]]; then echo "$found"; return 0; fi
   return 1
 }
 

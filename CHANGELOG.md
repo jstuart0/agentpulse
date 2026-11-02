@@ -209,7 +209,9 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   - runs git, `bun install` and the build under a umask that keeps the checkout from being group-writable. Before it runs
     git in an existing default checkout (`~/.agentpulse/app`) it removes group/other write from everything in it, including
     `.git/config` and the hooks, without following links, and it refuses the run if any file in it belongs to another user.
-    A checkout in a `--dir` you chose is not changed, but one (or its `.git`) owned by another user is refused too;
+    It also refuses the default checkout if its `.git` is a symbolic link or a git file, or if there is a symbolic link anywhere under `.git`, since a link could point git at
+    configuration or hooks kept somewhere else. A checkout in a `--dir` you chose is not changed, but one (or its `.git`)
+    owned by another user is refused too;
   - refuses a `~/.agentpulse`, `~/.agentpulse/bun` or `~/.agentpulse/bun/bin` that is a symbolic link (it must be a real
     directory), checking and tightening one level before the next, and never changes the mode of a directory through a link.
 - **`setup-relay.sh`** (#38) shares the same Bun handling:
