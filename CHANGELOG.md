@@ -172,8 +172,10 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 - **`install-local.sh` installs a pinned Bun and checks everything first** (#38). On Fedora and other systems without `unzip`,
   the old script stopped silently at "Installing Bun…". It now:
-  - lists what it needs (`curl`, `git`, `python3` unless the supervisor and hooks are skipped, and `unzip` plus `shasum` or
-    `sha256sum` when it has to install Bun) with the package-manager command, and installs nothing until they're there;
+  - lists what it needs (`curl`, `git`, `python3` when the supervisor or the hooks will be set up, and `unzip` plus `shasum`
+    or `sha256sum` when it has to install Bun) with the package-manager command, and installs nothing until they're there.
+    `python3` isn't needed with `--skip-supervisor --skip-hooks`, or with `--disable-auth false` and no `--api-key`, which
+    skips both;
   - downloads the pinned Bun 1.3.12 release and checks its SHA-256 instead of piping bun.sh's script into bash. It puts it in
     `~/.agentpulse/bun`, or in `$BUN_INSTALL/bin` if `BUN_INSTALL` is set, and no longer edits your shell rc files;
   - uses a Bun of 1.3.12 or newer from `~/.bun` or your `PATH` if it finds one. An older Bun is no longer used: the pinned copy
@@ -204,13 +206,21 @@ section with a `⚠ breaking` prefix so they're easy to spot.
     refuses a `--dir` that is, or contains, your home directory, `~/.agentpulse`, the data directory or the log
     directory; and refuses to delete a `--dir` that exists, isn't a git checkout and isn't an older copy of AgentPulse;
   - answers `--dir` (or any option that takes a value) with nothing after it with "needs a value" instead of a shell error;
-  - runs git, `bun install` and the build under a umask that keeps the checkout from being group-writable.
+  - runs git, `bun install` and the build under a umask that keeps the checkout from being group-writable. Before it runs
+    git in an existing default checkout it removes group/other write from the checkout and its `.git`, and it refuses (for
+    a `--dir` you chose too) a checkout, or `.git`, that belongs to another user;
+  - refuses a `~/.agentpulse`, `~/.agentpulse/bun` or `~/.agentpulse/bun/bin` that is a symbolic link (it must be a real
+    directory), and never changes the mode of a directory through a link.
 - **`setup-relay.sh`** (#38) shares the same Bun handling:
   - It looks for a Bun of 1.3.12 or newer in `$BUN_INSTALL` (or `~/.bun`) first and then on `PATH`. Before, `PATH` came
     first, so a re-run can switch the relay service to the `~/.bun` Bun and restart it;
   - it skips a Bun that is group-writable or owned by someone else (Homebrew's, in macOS group `admin`, is accepted) and
-    uses the private pinned copy instead;
+    uses the private pinned copy instead. For a Bun that is a symbolic link this covers where the link leads too: the
+    directory of every link in the chain, the target's directory and every directory above it must be owned by you or
+    root and not writable by others (a sticky directory such as `/tmp` is fine above the target). Both installers do
+    this;
   - it checks for `unzip` and a checksum tool before it asks for the key;
+  - it refuses a `~/.agentpulse`, `bun` or `bun/bin` that is a symbolic link, before it asks for the key;
   - it refuses a `HOME` whose path holds anything but letters, digits, spaces, UTF-8 text and `/ . _ + - @` (non-ASCII text
     needs `iconv` to be checked);
   - it removes group/other write from its own `~/.agentpulse` directories, and a first-run `~/.agentpulse` is created
@@ -218,6 +228,10 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Fixed
 
+- **`install-local.sh` no longer stops silently at "Installing Bun…" when `unzip` is missing** (#38). It names the missing
+  tools and how to install them, and exits nonzero.
+- **`setup-relay.sh` likewise names a missing `unzip` or checksum tool** (#38), with the install command, before it asks for
+  the key, and exits nonzero.
 - **Backup sidecar:** the probe in `run-backup.sh` that checks the source database can be opened now has a busy timeout. Under
   a concurrent writer it could get `SQLITE_BUSY` and exit 2 ("cannot open source db").
 
@@ -234,9 +248,10 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   sessions on both platforms and, on Linux, terminal sessions it started as its own children. Terminals it opened on
   macOS keep running. The dashboard drops its live connections for a moment. Finish or stop managed sessions before you
   re-run it.
-- `install-local.sh` is stricter about what it is given. `--repo` must be an `https://` URL without a user name or token, or an absolute path (an SSH
-  address such as `git@host:org/repo.git` is refused, which affects anyone installing from a fork over SSH; use the
-  `https://` address). `--ref` can only hold letters, digits, `.`, `_`, `/` and `-`, so a name with `@`, `^`, `~` or `+`, a
+- `install-local.sh` is stricter about what it is given. `--repo` must be an `https://` URL without a user name or token (use a git
+  credential helper), an `ssh://[user@]host[:port]/path` URL, a `user@host:path` address, or an absolute path, so installing
+  from a fork over SSH still works. A leading `-`, `transport::` forms such as `ext::`, and `file://`, `http://` and `git://`
+  are refused. `--ref` can only hold letters, digits, `.`, `_`, `/` and `-`, so a name with `@`, `^`, `~` or `+`, a
   `..`, or a leading `-` is refused. `--host` refuses IPv6 zone ids (`%…`), `*` and anything else outside letters, digits,
   `.`, `:`, `_`, `-` and a bracketed address.
 

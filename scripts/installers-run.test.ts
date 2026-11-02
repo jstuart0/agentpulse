@@ -57,7 +57,7 @@ const { buildCodexHooksFile, buildCopilotHooksFile } = await import(
 const INSTALLER = join(import.meta.dir, "setup-relay.sh");
 const RELAY_SRC = join(import.meta.dir, "relay.ts");
 const STATUSLINE_SRC = join(import.meta.dir, "statusline.sh");
-// F46: the real Bun is reached through a symlink in a private directory of its own, so the
+// The real Bun is reached through a symlink in a private directory of its own, so the
 // owner and mode rules judge Bun itself and not whatever directory it was installed into.
 let bunLinkDir: string;
 // Each case runs a real installer in a subprocess; several take most of the 5 s default on a loaded machine.
@@ -915,6 +915,62 @@ describe("F190: the relay service runs on a Bun that keeps its files private", (
 		},
 		RUN_TIMEOUT,
 	);
+
+	test(
+		"with neither shasum nor sha256sum, the checksum tool is named with the fix, before the key and any download",
+		async () => {
+			const home = await newHome();
+			const noShaPath = pathWithout(["bun", "shasum", "sha256sum"], sanitizedPath, root);
+			const probe = runBash("bash", "command -v shasum sha256sum", [], { PATH: noShaPath });
+			expect(probe.code).toBe(1);
+			const tty = join(root, `tty-nosha-${homeCounter}`);
+			await writeFile(tty, `${RELAY_KEY}\n`);
+			seenAuthHeaders = [];
+			const res = await runInstaller(home, ["--url", authUrl], {
+				uname: "Darwin",
+				basePath: noShaPath,
+				pathPrefix: makeStubDir([], { brew: "exit 0" }, root),
+				env: { AGENTPULSE_TTY: tty },
+			});
+			expect(res.code).toBe(1);
+			expect(res.out).toContain(MESSAGES.fetch.tool("sha256sum", "brew install coreutils"));
+			expect(res.out).not.toContain(KEY_PROMPT);
+			expect(seenAuthHeaders).toEqual([]);
+			expect(res.stubLog).not.toMatch(RELEASE_URL_RE);
+			expect(await listTree(home)).toEqual([]);
+		},
+		RUN_TIMEOUT,
+	);
+
+	for (const layout of [".agentpulse", ".agentpulse/bun", ".agentpulse/bun/bin"]) {
+		test(
+			`a symbolic link at ~/${layout} is refused before the key prompt, and its target is not changed`,
+			async () => {
+				const home = await newHome();
+				const target = join(root, `link-target-${homeCounter}`);
+				await mkdir(target, { recursive: true });
+				await chmod(target, 0o775);
+				const link = join(home, layout);
+				await mkdir(dirname(link), { recursive: true });
+				await symlink(target, link);
+				const tty = join(root, `tty-link-${homeCounter}`);
+				await writeFile(tty, `${RELAY_KEY}\n`);
+				seenAuthHeaders = [];
+				const res = await runInstaller(home, ["--url", authUrl], {
+					uname: "Linux",
+					basePath: pathNoBun(),
+					env: { AGENTPULSE_TTY: tty },
+				});
+				expect(res.code).toBe(1);
+				expect(res.out).toContain(MESSAGES.linkedDir(shellQuote("bash", link)));
+				expect(res.out).not.toContain(KEY_PROMPT);
+				expect(seenAuthHeaders).toEqual([]);
+				expect((await stat(target)).mode & 0o777).toBe(0o775);
+				expect(res.stubLog).not.toMatch(RELEASE_URL_RE);
+			},
+			RUN_TIMEOUT,
+		);
+	}
 
 	test(
 		"a first run under umask 002 has ~/.agentpulse at 700 before Bun is fetched, and after",

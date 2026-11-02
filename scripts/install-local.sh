@@ -177,7 +177,7 @@ version_at_least() {
   return 0
 }
 
-# F197: the Bun release asset for this machine. Args: os (`uname -s`), arch
+# The Bun release asset for this machine. Args: os (`uname -s`), arch
 # (`uname -m`), avx2 (yes/no — CPU supports AVX2), musl (yes/no — musl libc),
 # rosetta (yes/no — x86_64 uname under Rosetta 2 on Apple Silicon). Echoes
 # nothing for a platform with no pinned asset.
@@ -209,7 +209,7 @@ bun_asset_for() {
 # and independently re-verified by downloading and hashing each file.
 # TO UPGRADE: bump BUN_VERSION above and every hash here together, from that
 # release's own SHASUMS256.txt — re-download and re-hash at least one asset
-# yourself rather than trusting the file alone (S-L2).
+# yourself rather than trusting the file alone.
 bun_asset_sha256() {
   case "$1" in
     darwin-aarch64) echo "6c4bb87dd013ed1a8d6a16e357a3d094959fd5530b4d7061f7f3680c3c7cea1c" ;;
@@ -292,6 +292,12 @@ ap_owner_ok() {
   local mode uid gid
   AP_REASON="it or its directory isn't owned by you or root"
   read -r mode _ uid gid _ <<<"$(ls -ldnL "$1" 2>/dev/null)" || return 1
+  # With "ancestor" as $2 a sticky directory (/tmp, mode 1777) is let through when root or
+  # you own it: others can add to it but not rename or remove what is yours.
+  if [[ "${2:-}" == "ancestor" && "${mode:9:1}" == [tT] && ( "$uid" == "$(id -u)" || "$uid" == "0" ) ]]; then
+    AP_REASON=""
+    return 0
+  fi
   if [[ "${mode:8:1}" == "w" ]]; then
     AP_REASON="it or its directory is writable by everyone"; return 1
   fi
@@ -305,18 +311,69 @@ ap_owner_ok() {
   return 0
 }
 
-# Removes group and other write from the directory $1 when it exists and is
-# owned by the current user; a directory owned by anyone else is left alone, and
+# Removes group and other write from the directory $1 when it exists, is not a
+# symbolic link (chmod would follow it) and is owned by the current user; a directory owned by anyone else is left alone, and
 # a mode is never widened. Directories AgentPulse itself made under a umask of
 # 002 (the default for Fedora and Debian user-private-group accounts) are 775,
 # which ap_owner_ok would then refuse.
 ap_tighten_dir() {
   local mode uid
-  if [[ ! -d "$1" ]]; then return 0; fi
-  read -r mode _ uid _ <<<"$(ls -ldnL "$1" 2>/dev/null)" || return 0
+  if [[ ! -d "$1" || -L "$1" ]]; then return 0; fi
+  read -r mode _ uid _ <<<"$(ls -ldn "$1" 2>/dev/null)" || return 0
   if [[ "$uid" == "$(id -u)" && ( "${mode:5:1}" == "w" || "${mode:8:1}" == "w" ) ]]; then
     chmod go-w "$1" 2>/dev/null || true
   fi
+  return 0
+}
+
+# Prints a ✗ line and returns 1 for the first directory given that is a symbolic link:
+# they are chmod'ed and written into, so they have to be real directories.
+ap_refuse_linked_dirs() {
+  local d
+  for d in "$@"; do
+    if [[ -L "$d" ]]; then
+      printf '  ✗ %q is a symbolic link; it must be a real directory. Nothing was installed.\n' "$d" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+# Whether the symbolic link $1 leads somewhere that can be trusted: the directory of every
+# link in the chain (at most 40), the directory of the final target, and every directory
+# above that up to /, each owned by you or root and not writable by others (the same rule as
+# ap_owner_ok; above the target a sticky directory like /tmp passes). The target file itself
+# is judged by the caller. Sets AP_REASON.
+ap_bun_link_ok() {
+  local p="$1" hops=0 d t
+  AP_REASON="its symbolic link goes through a directory that is writable by others or isn't owned by you or root"
+  while [[ -L "$p" ]]; do
+    if [[ "$hops" -ge 40 ]]; then AP_REASON="it is a chain of more than 40 symbolic links"; return 1; fi
+    hops=$((hops + 1))
+    d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+    if ! ap_owner_ok "$d"; then
+      AP_REASON="its symbolic link goes through a directory that is writable by others or isn't owned by you or root"
+      return 1
+    fi
+    t="$(readlink "$p")" || return 1
+    case "$t" in
+      /*) p="$t" ;;
+      *) p="$d/$t" ;;
+    esac
+  done
+  d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+  if ! ap_owner_ok "$d"; then
+    AP_REASON="its symbolic link goes through a directory that is writable by others or isn't owned by you or root"
+    return 1
+  fi
+  while [[ "$d" != "/" ]]; do
+    d="$(dirname "$d")"
+    if ! ap_owner_ok "$d" ancestor; then
+      AP_REASON="its symbolic link goes through a directory that is writable by others or isn't owned by you or root"
+      return 1
+    fi
+  done
+  AP_REASON=""
   return 0
 }
 
@@ -329,7 +386,8 @@ ap_bun_install_candidate() {
 
 # Whether the Bun at $1 may run in a service: a safe path, an executable file
 # (a symlink is followed), owned and unwritable by others, itself and its
-# directory as written, and at least BUN_MIN_VERSION. Sets AP_REASON, prints
+# directory as written, for a symbolic link also everything ap_bun_link_ok
+# checks, and at least BUN_MIN_VERSION. Sets AP_REASON, prints
 # nothing. "wide" as $2 is passed to ap_safe_path.
 ap_bun_acceptable() {
   local p="$1" v
@@ -337,6 +395,7 @@ ap_bun_acceptable() {
   if [[ ! -f "$p" || ! -x "$p" ]]; then AP_REASON="isn't an executable file"; return 1; fi
   ap_owner_ok "$p" || return 1
   ap_owner_ok "$(dirname "$p")" || return 1
+  if [[ -L "$p" ]]; then ap_bun_link_ok "$p" || return 1; fi
   v="$("$p" --version </dev/null 2>/dev/null | head -n 1 || true)"
   if ! version_at_least "$v" "$BUN_MIN_VERSION"; then
     AP_REASON="Bun ${v:-of unknown version} is older than $BUN_MIN_VERSION"; return 1
@@ -459,12 +518,12 @@ ap_fetch_bun_zip() {
     if [[ -d "$d" ]]; then
       ap_tighten_dir "$d"
     elif ! mkdir -p "$d" || ! chmod 755 "$d"; then
-      printf "  ✗ couldn't create a temporary directory under %q\n" "$(dirname "$d")" >&2
+      printf "  ✗ couldn't create the directory %q for Bun\n" "$d" >&2
       return 1
     fi
   done
   if ! stage="$(mktemp "$dest_dir/.bun.XXXXXX")"; then
-    printf "  ✗ couldn't create a temporary directory under %q\n" "$dest_dir" >&2
+    printf "  ✗ couldn't create a temporary file in %q\n" "$dest_dir" >&2
     return 1
   fi
   if ! cp "$member" "$stage" || ! chmod 755 "$stage" || ! mv -f "$stage" "$dest"; then
@@ -557,7 +616,7 @@ ap_local_host_ok() {
 }
 
 ap_local_validate_args() {
-  local digits
+  local digits repo_reason repo_name repo_path repo_ssh repo_scp
   case "$PORT" in
     ''|*[!0-9]*) ap_local_arg_bad --port "must be a number from 1 to 65535" ;;
   esac
@@ -578,6 +637,13 @@ ap_local_validate_args() {
     -*|*..*|''|*[!A-Za-z0-9._/-]*)
       ap_local_arg_bad --ref "can only contain letters, digits, '.', '_', '/' and '-', can't start with '-' and can't contain '..'" ;;
   esac
+  # https://, ssh://[user@]host[:port]/path, user@host:path, or a local absolute path. A first
+  # character other than a letter or digit, and every transport:: form, is refused by the patterns.
+  repo_reason="must be an https:// URL (without spaces, quotes, $, ; or <>), an ssh:// URL, a user@host:path address or an absolute path of letters, digits and / . _ + - @"
+  repo_name='[A-Za-z0-9][A-Za-z0-9._-]*'
+  repo_path='[A-Za-z0-9._/~-]'
+  repo_ssh="^ssh://(${repo_name}@)?${repo_name}(:[0-9]{1,5})?/${repo_path}+\$"
+  repo_scp="^${repo_name}@${repo_name}:[A-Za-z0-9._/~]${repo_path}*\$"
   case "$REPO_URL" in
     https://*)
       # A token in the URL would be kept in .git/config (readable by others) and show in git's command line.
@@ -589,12 +655,14 @@ ap_local_validate_args() {
       # The same URL characters as --public-url (no quote, $ or ;); \133 and \135 are [ and ].
       # (A newline would vanish from the remainder below, as command substitution drops it.)
       if [[ "$(ap_local_strip_controls "$REPO_URL")" != "$REPO_URL" ]] || [[ -n "$(printf '%s' "$REPO_URL" | LC_ALL=C tr -d 'A-Za-z0-9._~:/?#\133\135@!&()*+,=%-')" ]]; then
-        ap_local_arg_bad --repo "must be an https:// URL (without spaces, quotes, $, ; or <>) or an absolute path of letters, digits and / . _ + - @"
+        ap_local_arg_bad --repo "$repo_reason"
       fi ;;
+    ssh://*)
+      [[ "$REPO_URL" =~ $repo_ssh ]] || ap_local_arg_bad --repo "$repo_reason" ;;
     /*)
-      ap_safe_path "$REPO_URL" || ap_local_arg_bad --repo "must be an https:// URL (without spaces, quotes, $, ; or <>) or an absolute path of letters, digits and / . _ + - @" ;;
+      ap_safe_path "$REPO_URL" || ap_local_arg_bad --repo "$repo_reason" ;;
     *)
-      ap_local_arg_bad --repo "must be an https:// URL (without spaces, quotes, $, ; or <>) or an absolute path of letters, digits and / . _ + - @" ;;
+      [[ "$REPO_URL" =~ $repo_scp ]] || ap_local_arg_bad --repo "$repo_reason" ;;
   esac
   if [[ "$(ap_local_strip_controls "$PUBLIC_URL")" != "$PUBLIC_URL" ]]; then
     ap_local_arg_bad --public-url "can't contain control characters"
@@ -712,14 +780,33 @@ ap_local_preflight_services() {
 ap_local_check_install_dir() {
   local d="${INSTALL_DIR}"
   if [[ ! -e "$d" && ! -L "$d" ]]; then return 0; fi
-  # A git checkout (a link to one included) is updated in place, never deleted.
-  if [[ -d "$d/.git" ]]; then return 0; fi
+  # A git checkout (a link to one included) is updated in place, never deleted. git runs
+  # in it with your hooks and config, so it and its .git (a directory or a gitfile) must be yours.
+  if [[ -d "$d/.git" || -f "$d/.git" ]]; then
+    ap_local_owned_by_me "$d" "$d/.git" && return 0
+    printf "  ✗ %q is owned by another user; the installer won't run git in it. Move it or choose another --dir.\n" "$d" >&2
+    return 1
+  fi
   if [[ -d "$d" && ! -L "$d" ]]; then
     if [[ -z "$(ls -A "$d" 2>/dev/null)" ]]; then return 0; fi
     if ap_local_is_agentpulse_package "$d/package.json"; then return 0; fi
   fi
   printf "  ✗ --dir %q already exists and isn't an AgentPulse checkout; the installer won't delete it. Move it or choose another --dir.\n" "$d" >&2
   return 1
+}
+
+# Whether every path given exists and is owned by the current user (a link is judged by what
+# it points to for a directory, and by itself for .git).
+ap_local_owned_by_me() {
+  local p uid
+  for p in "$@"; do
+    read -r _ _ uid _ <<<"$(ls -ldn "$p" 2>/dev/null)" || return 1
+    if [[ "${p##*/}" != ".git" ]]; then
+      read -r _ _ uid _ <<<"$(ls -ldnL "$p" 2>/dev/null)" || return 1
+    fi
+    if [[ "$uid" != "$(id -u)" ]]; then return 1; fi
+  done
+  return 0
 }
 
 # Whether the file $1 is a regular file (not a link) whose top-level "name" is
@@ -990,6 +1077,8 @@ ap_local_check_paths || exit 1
 ap_local_preflight_services || exit 1
 # A umask of 002 leaves the directories an earlier run made group-writable, which
 # would make this run refuse its own private Bun. Only ours, and only ever narrowed.
+# These are chmod'ed and written into, so a symbolic link in their place is refused first.
+ap_refuse_linked_dirs "${AGENTPULSE_DIR}" "${AGENTPULSE_DIR}/bun" "${AGENTPULSE_DIR}/bun/bin" || exit 1
 ap_tighten_dir "${AGENTPULSE_DIR}"
 ap_tighten_dir "${AGENTPULSE_DIR}/bun"
 ap_tighten_dir "${AGENTPULSE_DIR}/bun/bin"
@@ -1045,8 +1134,14 @@ else
 fi
 ap_local_mkdir_p "$(dirname "${INSTALL_DIR}")"
 
-if [[ -d "${INSTALL_DIR}/.git" ]]; then
+if [[ -d "${INSTALL_DIR}/.git" || -f "${INSTALL_DIR}/.git" ]]; then
   echo "  Updating existing checkout..."
+  # A umask of 002 left an earlier clone group-writable; git reads hooks and config from here,
+  # so that goes before git runs. A directory the user chose is theirs to set the mode of.
+  if [[ "${INSTALL_DIR_GIVEN}" != "true" ]]; then
+    ap_tighten_dir "${INSTALL_DIR}"
+    ap_tighten_dir "${INSTALL_DIR}/.git"
+  fi
   ap_local_with_umask git -C "${INSTALL_DIR}" fetch --tags origin </dev/null
   ap_local_with_umask git -C "${INSTALL_DIR}" checkout "${REPO_REF}" -- </dev/null
   ap_local_with_umask git -C "${INSTALL_DIR}" pull --ff-only origin "${REPO_REF}" </dev/null || true

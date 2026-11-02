@@ -81,6 +81,12 @@ Windows:
 irm https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 | iex
 ```
 
+It needs `curl` and `git`, plus `python3` for the supervisor and hooks. If it can't find a Bun 1.3.12 or newer it installs a pinned one, which also needs `unzip` and `shasum` or `sha256sum`. Anything missing is listed up front with the command to install it, and nothing is installed until it's there. To put Bun somewhere of your choosing (supply it again on a re-run):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.sh | BUN_INSTALL=/opt/bun bash
+```
+
 When it finishes, open [http://localhost:3000](http://localhost:3000) and start a new Claude Code or Codex session.
 
 ### Docker install: 1 shell line
@@ -320,8 +326,8 @@ irm https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-l
 
 What it does:
 
-- checks its prerequisites up front and names anything missing, with the package-manager command to install it, before it installs or writes any file (it may first remove group and other write permission from its own `~/.agentpulse` directories, which a umask of 002 leaves group-writable): `curl`, `git`, `python3` (for the supervisor and the agent hooks; `--skip-supervisor --skip-hooks` installs without it), and, only when it has to install Bun, `unzip` and `shasum` or `sha256sum`
-- uses a Bun 1.3.12 or newer that's already there (`~/.bun`, or on your `PATH`), as long as it is owned by you or root, isn't writable by anyone else (Homebrew's, in macOS group `admin`, is fine) and sits on a path of letters, digits and `/ . _ + - @`. Otherwise it installs the pinned Bun 1.3.12 release, checked against its SHA-256, into `~/.agentpulse/bun`, or into `$BUN_INSTALL/bin` if you set `BUN_INSTALL`. It doesn't edit your shell rc files, so `bun` isn't added to your interactive `PATH`; the services are given the path of the Bun that was chosen. To pick the location, run `curl -fsSL … | BUN_INSTALL=/opt/bun bash` (supply it again on a re-run; any `BUN_INSTALL` other than `~/.bun` that holds an unusable Bun is refused)
+- checks its prerequisites up front and names anything missing, with the package-manager command to install it, before it installs or writes any file (it may first remove group and other write permission from its own `~/.agentpulse` directories, which a umask of 002 leaves group-writable): `curl`, `git`, `python3` (when the supervisor or the agent hooks will be set up, so not with `--skip-supervisor --skip-hooks`, nor with `--disable-auth false` and no `--api-key`, which skips both), and, only when it has to install Bun, `unzip` and `shasum` or `sha256sum`
+- uses a Bun 1.3.12 or newer that's already there (`~/.bun`, or on your `PATH`), as long as it is owned by you or root, isn't writable by anyone else (Homebrew's, in macOS group `admin`, is fine) and sits on a path of letters, digits and `/ . _ + - @`. If it's a symbolic link, the directory of each link, of the target, and every directory above the target must meet the same rule. Otherwise it installs the pinned Bun 1.3.12 release, checked against its SHA-256, into `~/.agentpulse/bun`, or into `$BUN_INSTALL/bin` if you set `BUN_INSTALL`. It doesn't edit your shell rc files, so `bun` isn't added to your interactive `PATH`; the services are given the path of the Bun that was chosen. To pick the location, run `curl -fsSL … | BUN_INSTALL=/opt/bun bash` (supply it again on a re-run; any `BUN_INSTALL` other than `~/.bun` that holds an unusable Bun is refused)
 - clones AgentPulse to `~/.agentpulse/app`
 - builds the app
 - stores SQLite data in `~/.agentpulse/data`
@@ -467,7 +473,7 @@ It asks for the API key on the terminal (input hidden), which keeps the key out 
 
 That single command:
 - Checks `unzip` and a checksum tool (`shasum` or `sha256sum`) before it asks for the key, if it will need to install Bun, and names what's missing. It then checks the key with the server, and writes no file if the key is missing a scope (it may first remove group and other write permission from its own `~/.agentpulse` directories, which are left group-writable by a umask of 002)
-- Runs the relay on your Bun if it's 1.3.12 or newer, looking in this order: `$BUN_INSTALL` (or `~/.bun`), then your `PATH`. A Bun that is group-writable or owned by someone else is skipped, apart from Homebrew's on macOS (group `admin`). Otherwise it installs the pinned, checksum-verified 1.3.12 release privately into `~/.agentpulse/bun` (your own Bun and shell profile are left alone). Older Bun releases don't apply file modes, which the relay relies on to keep its state private.
+- Runs the relay on your Bun if it's 1.3.12 or newer, looking in this order: `$BUN_INSTALL` (or `~/.bun`), then your `PATH`. A Bun that is group-writable or owned by someone else is skipped, apart from Homebrew's on macOS (group `admin`). For a symbolic link, that includes every directory it leads through, up to `/`. Otherwise it installs the pinned, checksum-verified 1.3.12 release privately into `~/.agentpulse/bun` (your own Bun and shell profile are left alone). Older Bun releases don't apply file modes, which the relay relies on to keep its state private.
 - Needs a `HOME` whose path holds only letters, digits, spaces, UTF-8 text and `/ . _ + - @` (non-ASCII text needs `iconv` to be checked), because the service files hold it.
 - Installs the relay at `~/.agentpulse/relay.ts`, with its settings in `~/.agentpulse/config.json` (mode 600; the key never appears in a process list, the plist or the unit)
 - Installs the Claude Code statusline at `~/.claude/statusline-agentpulse.sh` and turns it on if you don't already have a `statusLine` (otherwise it prints the line to add)

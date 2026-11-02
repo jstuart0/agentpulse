@@ -16,6 +16,8 @@ import {
 	mkdtempSync,
 	readFileSync,
 	readdirSync,
+	realpathSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -111,6 +113,7 @@ const BASE_TOOLS = [
 	"mkdir",
 	"mktemp",
 	"mv",
+	"readlink",
 	"rm",
 	"tr",
 ];
@@ -161,7 +164,7 @@ describe("the blocks are byte-equal across sites", () => {
 				.split("\n")
 				.map((l) => l.trim())
 				.filter((l) => /(\$HOME|\$\{HOME[^}]*\}|~)\/\.bun/.test(l));
-		/** The exact lines allowed to: the D18 comparison and the one place the service PATH default is derived. */
+		/** The exact lines allowed to: the default-Bun-directory comparison and the one place the service PATH default is derived. */
 		const ALLOWED = [
 			'if [[ "$base" == "${HOME%/}/.bun" ]]; then',
 			'AP_DEFAULT_BUN_BIN="${HOME%/}/.bun/bin"',
@@ -226,6 +229,60 @@ describe("ap_xml_escape (install-local's own block): the E-table", () => {
 	);
 });
 
+describe("ap_tighten_dir and ap_refuse_linked_dirs", () => {
+	const me = process.getuid?.() ?? 0;
+	each(
+		"a real directory loses group/other write; a link is left alone and its target is untouched",
+		(bash) => {
+			const plainDir = scratch("real");
+			const target = scratch("target");
+			for (const d of [plainDir, target]) chmodSync(d, 0o775);
+			const link = join(scratch("holder"), "link");
+			symlinkSync(target, link);
+			// A symbolic link is listed as lrwxrwxrwx on Linux, so to chmod it would look necessary; on macOS
+			// it is lrwxr-xr-x. The stub makes it the Linux way wherever this runs.
+			const lsLink = `for a in "$@"; do last="$a"; done
+case "$last" in "${link}") echo "lrwxrwxrwx 1 ${me} 20 0 Jan 1 00:00 $last" ;; *) exec "${real("ls")}" "$@" ;; esac`;
+			const res = inBlocks(
+				bash,
+				'ap_tighten_dir "$1"; ap_tighten_dir "$2"',
+				pathOf([], { ls: lsLink }),
+				{},
+				[plainDir, link],
+			);
+			expect(res.code).toBe(0);
+			expect(statSync(plainDir).mode & 0o777).toBe(0o755);
+			expect(statSync(target).mode & 0o777).toBe(0o775);
+		},
+	);
+
+	each(
+		"ap_refuse_linked_dirs names the first link and returns 1; real and absent paths pass",
+		(bash) => {
+			const plainDir = scratch("real");
+			const link = join(scratch("holder"), "link");
+			symlinkSync(plainDir, link);
+			const ok = inBlocks(
+				bash,
+				'ap_refuse_linked_dirs "$1" "$2/absent" && echo fine',
+				pathOf(),
+				{},
+				[plainDir, plainDir],
+			);
+			expect(ok.out).toBe("fine");
+			const bad = inBlocks(
+				bash,
+				'ap_refuse_linked_dirs "$1" "$2" "$3" || echo "RC=$?"',
+				pathOf(),
+				{},
+				[plainDir, link, `${link}-second`],
+			);
+			expect(bad.out).toBe("RC=1");
+			expect(bad.err).toBe(`${MESSAGES.linkedDir(shellQuote(bash, link, bad.env))}\n`);
+		},
+	);
+});
+
 describe("static guards over the shared blocks", () => {
 	for (const b of BLOCKS) {
 		const text = blockAt(RELAY, b);
@@ -239,6 +296,22 @@ describe("static guards over the shared blocks", () => {
 			expect(text).not.toMatch(/^\s*trap\b/m);
 		});
 	}
+});
+
+describe("static guards over install-local's own block", () => {
+	const text = extractMarkerBlock(INSTALL_LOCAL, "agentpulse-local-prereqs", {
+		minLines: 150,
+		sentinel: "ap_local_check_prereqs() {",
+	});
+	test("no whole-array expansion (bash 3.2 breaks on an empty one)", () => {
+		expect(text).not.toMatch(/\$\{[^}]*\[[@*]\]/);
+	});
+	test("no pattern replacement whose text holds & (bash 5.2 reads it as the match)", () => {
+		expect(text).not.toMatch(/\$\{[^}]*\/\/[^}]*&/);
+	});
+	test("no exit handler is installed", () => {
+		expect(text).not.toMatch(/^\s*trap\b/m);
+	});
 });
 
 describe("the pins", () => {
@@ -525,6 +598,29 @@ describe("ap_fetch_bun_zip", () => {
 		expect(res.err).toContain("couldn't install Bun at");
 		expect(readdirSync(join(dir, "inst", "bin"))).toEqual([]);
 	});
+
+	each("a destination directory that can't be made says so, not 'temporary directory'", (bash) => {
+		const dir = scratch("fetch");
+		const res = fetchCase(bash, makeFakeBunZip(dir, ASSET, "file"), dir, {
+			stubs: {
+				mkdir: `case "$*" in *inst*) exit 1 ;; *) exec "${real("mkdir")}" "$@" ;; esac`,
+			},
+		});
+		expect(res.out).toBe("RC=1");
+		expect(res.err).toContain(MESSAGES.fetch.mkdir(shellQuote(bash, join(dir, "inst"), res.env)));
+		expect(res.err).not.toContain("temporary directory");
+	});
+
+	each("a staging file that can't be made says so, not 'temporary directory'", (bash) => {
+		const dir = scratch("fetch");
+		const res = fetchCase(bash, makeFakeBunZip(dir, ASSET, "file"), dir, {
+			stubs: { mktemp: "exit 1" },
+		});
+		expect(res.out).toBe("RC=1");
+		expect(res.err).toContain(
+			MESSAGES.fetch.stage(shellQuote(bash, join(dir, "inst", "bin"), res.env)),
+		);
+	});
 });
 
 describe("ap_bun_acceptable and ap_resolve_bun: which Bun may run in a service", () => {
@@ -582,6 +678,121 @@ describe("ap_bun_acceptable and ap_resolve_bun: which Bun may run in a service",
 		symlinkSync(target.file, join(link, "bin", "bun"));
 		const res = resolveVia(bash, link);
 		expect(res.out).toBe(`BIN=${join(link, "bin", "bun")} NEEDS=0`);
+	});
+
+	describe("a symbolic link is judged by everything it leads through", () => {
+		/** <label>/bin/bun is a link to `target`; BUN_INSTALL would be <label>. */
+		function linkTo(label: string, target: string) {
+			const base = scratch(label);
+			mkdirSync(join(base, "bin"));
+			symlinkSync(target, join(base, "bin", "bun"));
+			return { base, link: join(base, "bin", "bun") };
+		}
+		const untrusted = MESSAGES.reason.linkUntrusted;
+
+		each("into a group-writable directory is refused (Linux)", async (bash) => {
+			const t = await bunUnder("tgt", { dirMode: 0o775 });
+			const { base, link } = linkTo("lnk", t.file);
+			const res = resolveVia(bash, base);
+			expect(res.out).toContain(refusal(bash, link, untrusted, res.env));
+			expect(res.out).toContain("NEEDS=1");
+		});
+
+		each("into a directory whose parent is group-writable is refused", async (bash) => {
+			const t = await bunUnder("tgt");
+			chmodSync(t.base, 0o775);
+			const { base, link } = linkTo("lnk", t.file);
+			const res = resolveVia(bash, base);
+			expect(res.out).toContain(refusal(bash, link, untrusted, res.env));
+		});
+
+		each(
+			"a chain is refused when any link in it sits in a group-writable directory",
+			async (bash) => {
+				const t = await bunUnder("tgt");
+				const mid = linkTo("mid", t.file);
+				chmodSync(join(mid.base, "bin"), 0o775);
+				const { base, link } = linkTo("lnk", mid.link);
+				const res = resolveVia(bash, base);
+				expect(res.out).toContain(refusal(bash, link, untrusted, res.env));
+			},
+		);
+
+		each("a chain through good directories is accepted, path kept as written", async (bash) => {
+			const t = await bunUnder("tgt");
+			const mid = linkTo("mid", t.file);
+			const { base, link } = linkTo("lnk", mid.link);
+			const res = resolveVia(bash, base);
+			expect([res.out, res.err]).toEqual([`BIN=${link} NEEDS=0`, ""]);
+		});
+
+		each(
+			"a relative link into a Homebrew-shaped tree passes on Darwin with the admin group",
+			async (bash) => {
+				const brew = realpathSync(scratch("brew"));
+				const real = await fakeBun(join(brew, "Cellar", "bun", "1.3.12", "bin"), "1.3.12");
+				expect(existsSync(real)).toBe(true);
+				mkdirSync(join(brew, "bin"));
+				symlinkSync("../Cellar/bun/1.3.12/bin/bun", join(brew, "bin", "bun"));
+				for (const d of [brew, join(brew, "bin")]) chmodSync(d, 0o775);
+				const stubs = { ls: lsStub(me, 80, [brew, join(brew, "bin")]) };
+				const res = resolveVia(bash, brew, {
+					stubs,
+					env: { AP_TEST_S: "Darwin", AP_TEST_M: "arm64" },
+				});
+				expect([res.out, res.err]).toEqual([`BIN=${join(brew, "bin", "bun")} NEEDS=0`, ""]);
+				// The same tree on Linux is group-writable and not Homebrew's.
+				const linux = resolveVia(bash, brew, { stubs });
+				expect(linux.out).toContain("NEEDS=1");
+			},
+		);
+
+		each(
+			"a sticky world-writable ancestor you own is let through; the same without the sticky bit is not",
+			async (bash) => {
+				const outer = scratch("sticky");
+				const t = await bunUnder("tgt");
+				// outer/inner/<tgt>: outer is the ancestor under test.
+				const inner = join(outer, "inner");
+				mkdirSync(inner);
+				renameSync(t.base, join(inner, "tgt"));
+				const target = join(inner, "tgt", "bin", "bun");
+				const { base, link } = linkTo("lnk", target);
+				chmodSync(inner, 0o755);
+				// Bun's chmodSync drops the sticky bit, so the command does it.
+				expect(Bun.spawnSync(["chmod", "1777", outer]).exitCode).toBe(0);
+				expect(statSync(outer).mode & 0o1000).toBe(0o1000);
+				expect(resolveVia(bash, base).out).toBe(`BIN=${link} NEEDS=0`);
+				chmodSync(outer, 0o777);
+				const res = resolveVia(bash, base);
+				expect(res.out).toContain(refusal(bash, link, untrusted, res.env));
+			},
+		);
+
+		each(
+			"a plain file under a group-writable ancestor is still accepted (ancestors are only walked for links)",
+			async (bash) => {
+				const t = await bunUnder("plain");
+				chmodSync(t.base, 0o775);
+				const res = resolveVia(bash, t.base);
+				expect([res.out, res.err]).toEqual([`BIN=${t.file} NEEDS=0`, ""]);
+			},
+		);
+
+		each("a sticky directory such as /tmp above the target does not refuse it", (bash) => {
+			const out = inBlocks(
+				bash,
+				'ap_owner_ok "$1" ancestor && echo yes || echo "no: $AP_REASON"; ap_owner_ok "$1" && echo yes || echo "no: $AP_REASON"',
+				pathOf(),
+				{},
+				["/tmp"],
+			).out.split("\n");
+			// /tmp is world-writable and sticky wherever this runs: fine as an ancestor, never as the directory itself.
+			if (statSync("/tmp").mode & 0o1000) {
+				expect(out[0]).toBe("yes");
+				expect(out[1]).toStartWith("no:");
+			}
+		});
 	});
 
 	each("a file and directory owned by root are accepted", async (bash) => {

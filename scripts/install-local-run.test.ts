@@ -199,7 +199,7 @@ function buildStubDir(o: Omit<PathOpts, "prefix">): string {
 			: {
 					git: loggingStub(
 						"git",
-						'echo "$(umask)" >> "$AP_STUB_LOG.git-umask"; if [ "${1-}" = clone ]; then for a in "$@"; do d="$a"; done; mkdir -p "$d/src/deep"; echo \'{"name":"agentpulse"}\' > "$d/package.json"; echo x > "$d/src/deep/a.ts"; fi',
+						'echo "$(umask)" >> "$AP_STUB_LOG.git-umask"; if [ "${1-}" = -C ]; then ls -ld "$2" "$2/.git" >> "$AP_STUB_LOG.git-modes" 2>&1; fi; if [ "${1-}" = clone ]; then for a in "$@"; do d="$a"; done; mkdir -p "$d/src/deep"; echo \'{"name":"agentpulse"}\' > "$d/package.json"; echo x > "$d/src/deep/a.ts"; fi',
 					),
 				}),
 		...o.stubs,
@@ -757,7 +757,24 @@ describe("W15/W17: option values are validated before the banner", () => {
 			flag: "--repo",
 			reason: MESSAGES.argReason.repoUserinfo,
 		},
-		{ args: ["--repo", "git@h.example:x/y.git"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "ext::sh -c x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "fd::17/x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "-oProxyCommand=x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "git@h:-x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "git@-h:x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "file:///x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "http://h/x.git"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "git://h/x.git"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "ssh://-oProxy@h/x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "ssh://h:99999999/x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "ssh://h/a b"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "ssh://h/a;b"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "git@h:a b"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "git@h:a;b"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "git@h:a$b"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "git@h:a\nb"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "git@h:a'b"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "git@h:a<b>"], flag: "--repo", reason: MESSAGES.argReason.repo },
 		{ args: ["--repo", "-x"], flag: "--repo", reason: MESSAGES.argReason.repo },
 		{ args: ["--repo", "--upload-pack=x"], flag: "--repo", reason: MESSAGES.argReason.needsValue },
 		{ args: ["--repo", "rel/path"], flag: "--repo", reason: MESSAGES.argReason.repo },
@@ -2393,6 +2410,170 @@ describe("--ref and --repo reach git as options-safe arguments", () => {
 			expect(r.code).toBe(0);
 		});
 	}
+});
+
+// ── ssh repositories, existing checkouts, linked directories, missing checksum tools ──
+
+describe("--repo accepts ssh forms, with git getting them after --", () => {
+	const bunEnv = () => {
+		const bunx = fresh("bunx");
+		installBun(bunx);
+		return { BUN_INSTALL: bunx };
+	};
+	for (const repo of [
+		"git@github.com:o/r.git",
+		"ssh://git@h.example:22/o/r.git",
+		"ssh://h.example/o/r.git",
+		"deploy-user@h.example:~/r",
+	]) {
+		once(`${repo} is accepted and passed to git unchanged`, (bash) => {
+			const t = fresh("t");
+			const r = go(bash, [...PLAIN, "--skip-supervisor", "--dir", `${t}/app`, "--repo", repo], {
+				path: mkPath(),
+				env: bunEnv(),
+			});
+			expect(r.code).toBe(0);
+			expect(r.log).toContain(`--single-branch -- ${repo} ${t}/app stdin=0`);
+		});
+	}
+});
+
+describe("an existing checkout is made safe before git runs in it", () => {
+	const bunEnv = () => {
+		const bunx = fresh("bunx");
+		installBun(bunx);
+		return { BUN_INSTALL: bunx };
+	};
+	const modeChars = (line: string) => line.split(/\s+/)[0];
+	const groupOrOtherWrite = (mode: string) => mode[5] === "w" || mode[8] === "w";
+
+	each(
+		"the default checkout and its .git are not group/other-writable when git first runs",
+		(bash) => {
+			const home = fresh("home");
+			const app = join(home, ".agentpulse", "app");
+			mkdirSync(join(app, ".git"), { recursive: true });
+			for (const d of [join(home, ".agentpulse"), app, join(app, ".git")]) chmodSync(d, 0o775);
+			const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), home, env: bunEnv() });
+			expect(r.code).toBe(0);
+			const seen = readFileSync(`${r.logFile}.git-modes`, "utf-8").split("\n").filter(Boolean);
+			// ls -ld app, ls -ld app/.git, for the first git call; both already narrowed.
+			expect(seen.length).toBeGreaterThanOrEqual(2);
+			expect(groupOrOtherWrite(modeChars(seen[0]))).toBe(false);
+			expect(groupOrOtherWrite(modeChars(seen[1]))).toBe(false);
+		},
+	);
+
+	once("a .git that is a file (a worktree) is accepted and left as it is", (bash) => {
+		const home = fresh("home");
+		const app = join(home, ".agentpulse", "app");
+		mkdirSync(app, { recursive: true });
+		writeFileSync(join(app, ".git"), "gitdir: /elsewhere\n");
+		chmodSync(join(app, ".git"), 0o664);
+		const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), home, env: bunEnv() });
+		expect(r.code).toBe(0);
+		expect(r.log).toContain("git -C");
+		expect(modeOf(join(app, ".git"))).toBe(0o664);
+	});
+
+	for (const [what, victim] of [
+		["the checkout", "app"],
+		["its .git", "app/.git"],
+	] as const) {
+		for (const chosen of [false, true]) {
+			each(
+				`${what} owned by another user is refused before git runs${chosen ? " (a chosen --dir)" : ""}`,
+				(bash) => {
+					const home = fresh("home");
+					const t = fresh("t");
+					const app = chosen ? join(t, "app") : join(home, ".agentpulse", "app");
+					mkdirSync(join(app, ".git"), { recursive: true });
+					chmodSync(app, 0o775);
+					const target = victim === "app" ? app : join(app, ".git");
+					const r = go(bash, [...PLAIN, "--skip-supervisor", ...(chosen ? ["--dir", app] : [])], {
+						path: mkPath({ stubs: { ls: lsStub(12345, 12345, target) } }),
+						home,
+						env: bunEnv(),
+					});
+					expect(r.code).toBe(1);
+					expect(r.stderr).toContain(MESSAGES.checkoutForeign(q(bash, app)));
+					expect(r.log).toBe("");
+					expect(modeOf(app)).toBe(0o775);
+				},
+			);
+		}
+	}
+
+	once("a chosen --dir checkout keeps its mode", (bash) => {
+		const t = fresh("t");
+		mkdirSync(`${t}/app/.git`, { recursive: true });
+		chmodSync(`${t}/app`, 0o775);
+		chmodSync(`${t}/app/.git`, 0o775);
+		const r = go(bash, [...PLAIN, "--skip-supervisor", "--dir", `${t}/app`], {
+			path: mkPath(),
+			env: bunEnv(),
+		});
+		expect(r.code).toBe(0);
+		expect(modeOf(`${t}/app`)).toBe(0o775);
+		expect(modeOf(`${t}/app/.git`)).toBe(0o775);
+	});
+});
+
+describe("~/.agentpulse and its bun directories must be real directories", () => {
+	const bunEnv = () => {
+		const bunx = fresh("bunx");
+		installBun(bunx);
+		return { BUN_INSTALL: bunx };
+	};
+	const layouts: [string, (home: string, target: string) => string][] = [
+		[
+			".agentpulse",
+			(home, target) => {
+				symlinkSync(target, join(home, ".agentpulse"));
+				return join(home, ".agentpulse");
+			},
+		],
+		[
+			".agentpulse/bun",
+			(home, target) => {
+				mkdirSync(join(home, ".agentpulse"));
+				symlinkSync(target, join(home, ".agentpulse", "bun"));
+				return join(home, ".agentpulse", "bun");
+			},
+		],
+		[
+			".agentpulse/bun/bin",
+			(home, target) => {
+				mkdirSync(join(home, ".agentpulse", "bun"), { recursive: true });
+				symlinkSync(target, join(home, ".agentpulse", "bun", "bin"));
+				return join(home, ".agentpulse", "bun", "bin");
+			},
+		],
+	];
+	for (const [name, make] of layouts) {
+		each(`a symbolic link at ~/${name} is refused and its target is not touched`, (bash) => {
+			const home = fresh("home");
+			const target = fresh("target", 0o775);
+			const link = make(home, target);
+			const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), home, env: bunEnv() });
+			expect(r.code).toBe(1);
+			expect(r.stderr).toContain(MESSAGES.linkedDir(q(bash, link)));
+			expect(modeOf(target)).toBe(0o775);
+			expect(r.log).toBe("");
+		});
+	}
+});
+
+describe("with neither shasum nor sha256sum, Bun can't be fetched, and that is said before anything else", () => {
+	each("the hint names coreutils; no clone, no download, nothing written", (bash) => {
+		const r = go(bash, PLAIN, {
+			path: mkPath({ sha: false, stubs: { dnf: "exit 0" } }),
+		});
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain(MESSAGES.missing(["sha256sum"], `${SUDO}dnf install -y coreutils`));
+		expect(r.log).toBe("");
+		expect(list(r.home)).toEqual([]);
+	});
 });
 
 // ── piping ──

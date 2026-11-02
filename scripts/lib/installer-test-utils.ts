@@ -316,6 +316,8 @@ export const MESSAGES = {
 		checksum:
 			"  ✗ the downloaded Bun release's checksum doesn't match the pinned one; not installing it",
 		unzip: "  ✗ couldn't unzip the downloaded Bun release",
+		mkdir: (p: string) => `  ✗ couldn't create the directory ${p} for Bun`,
+		stage: (p: string) => `  ✗ couldn't create a temporary file in ${p}`,
 		notRegular: (asset: string) =>
 			`  ✗ the Bun release didn't contain a regular file at bun-${asset}/bun`,
 		notUsable: (p: string, reason: string) =>
@@ -339,6 +341,12 @@ export const MESSAGES = {
 		`  ✗ ${dir} is a symbolic link; the installer won't write service files through it. Nothing was installed.`,
 	relayHome: (home: string, reason: string) =>
 		`  ✗ The relay keeps its files and Bun under ${home}/.agentpulse, and that path can't be used (${reason}). It may hold only letters, digits, spaces, UTF-8 text and / . _ + - @. Run the installer as a user whose home path fits.`,
+	/** A required directory (~/.agentpulse, its bun or bun/bin) is a symbolic link (p is %q-quoted). */
+	linkedDir: (p: string) =>
+		`  ✗ ${p} is a symbolic link; it must be a real directory. Nothing was installed.`,
+	/** install-local: an existing checkout, or its .git, belongs to someone else (p is %q-quoted). */
+	checkoutForeign: (p: string) =>
+		`  ✗ ${p} is owned by another user; the installer won't run git in it. Move it or choose another --dir.`,
 	tmp: (p: string) => `  ✗ couldn't create a temporary directory under ${p}`,
 	/** install-local's "can be read by other users" note for a user-supplied --data-dir (p is %q-quoted). */
 	dataDirReadable: (p: string) =>
@@ -354,7 +362,7 @@ export const MESSAGES = {
 		repoUserinfo: "can't contain a user name or token; use a git credential helper",
 		host: "can only contain letters, digits, '.', ':', '_' and '-', or an IPv6 address in [brackets]",
 		ref: "can only contain letters, digits, '.', '_', '/' and '-', can't start with '-' and can't contain '..'",
-		repo: "must be an https:// URL (without spaces, quotes, $, ; or <>) or an absolute path of letters, digits and / . _ + - @",
+		repo: "must be an https:// URL (without spaces, quotes, $, ; or <>), an ssh:// URL, a user@host:path address or an absolute path of letters, digits and / . _ + - @",
 	},
 	/** The reasons a path-bad line carries. */
 	pathReason: {
@@ -372,6 +380,9 @@ export const MESSAGES = {
 		worldWritable: "it or its directory is writable by everyone",
 		groupWritable: "it or its directory is writable by its group",
 		notOwned: "it or its directory isn't owned by you or root",
+		linkUntrusted:
+			"its symbolic link goes through a directory that is writable by others or isn't owned by you or root",
+		linkTooDeep: "it is a chain of more than 40 symbolic links",
 		older: (version: string) => `Bun ${version} is older than 1.3.12`,
 		unknownVersion: "Bun of unknown version is older than 1.3.12",
 		notUtf8: "its path isn't valid UTF-8",
