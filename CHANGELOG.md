@@ -7,6 +7,26 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- If you installed with `install-local.sh --dir ~/.agentpulse` (or any `--dir` that is your home directory, the data directory
+  or the log directory), the installer now refuses it, because it deletes `--dir` when it isn't a git checkout. Re-run
+  it with the default `--dir`; your data stays in `~/.agentpulse/data`.
+- A re-run of `install-local.sh` or `setup-relay.sh` on a machine where no usable Bun is found (1.3.12 or newer, owned by you
+  or root, not writable by others) installs the pinned copy in `~/.agentpulse/bun`, which needs `unzip`, and moves the
+  services onto it. Pass `BUN_INSTALL` again on each re-run to keep a Bun you chose.
+- A re-run of `install-local.sh` is an upgrade, and it restarts both services on systemd and launchd (`--service none`
+  starts a new process and leaves the old one). That ends the sessions the supervisor launched: headless and Codex
+  sessions on both platforms and, on Linux, terminal sessions it started as its own children. Terminals it opened on
+  macOS keep running. The dashboard drops its live connections for a moment. Finish or stop managed sessions before you
+  re-run it.
+- `install-local.sh` is stricter about what it is given. `--repo` must be an `https://` URL without a user name or token (use a git
+  credential helper), an `ssh://[user@]host[:port]/path` URL (port 1 to 65535), a `user@host:path` address, or an absolute path, so installing
+  from a fork over SSH still works. A leading `-`, `transport::` forms such as `ext::`, and `file://`, `http://` and `git://`
+  are refused. `--ref` can only hold letters, digits, `.`, `_`, `/` and `-`, so a name with `@`, `^`, `~` or `+`, a
+  `..`, or a leading `-` is refused. `--host` refuses IPv6 zone ids (`%…`), `*` and anything else outside letters, digits,
+  `.`, `:`, `_`, `-` and a bracketed address.
+
 ### Added
 
 - **Health and digest pushes** (with mobile push, in a build with AI): `stuck` and `risky` when a session moves into that
@@ -178,7 +198,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
     skips both;
   - downloads the pinned Bun 1.3.12 release and checks its SHA-256 instead of piping bun.sh's script into bash. It puts it in
     `~/.agentpulse/bun`, or in `$BUN_INSTALL/bin` if `BUN_INSTALL` is set, and no longer edits your shell rc files;
-  - uses a Bun of 1.3.12 or newer from `~/.bun` or your `PATH` if it finds one. An older Bun is no longer used: the pinned copy
+  - uses a Bun of 1.3.12 or newer from `~/.bun` or your `PATH` if it finds one (with a `BUN_INSTALL` other than `~/.bun`,
+    only `$BUN_INSTALL/bin/bun` is considered, not `PATH`). An older Bun is no longer used: the pinned copy
     goes into `~/.agentpulse/bun` and the old one is left where it was. This also applies when `BUN_INSTALL` is the `~/.bun`
     that bun.sh writes into shell profiles. Any other `BUN_INSTALL` that holds an unusable Bun is refused;
   - runs every check (arguments, paths, the service directory, which Bun, the tools) before it writes a file; the only
@@ -196,9 +217,9 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   - XML-escapes `PUBLIC_URL` and `HOST` in the plists. A `PUBLIC_URL` containing `&` used to produce a plist launchd
     rejected;
   - validates `--port`, `--disable-auth`, `--api-key`, `--public-url`, `--host` (letters, digits, `.`, `:`, `_`, `-` or a
-    bracketed IPv6 address), `--ref` (letters, digits, `.`, `_`, `/` and `-`; no leading `-`, no `..`) and `--repo` (an
-    `https://` URL or an absolute path). A URL for `--public-url` or `--repo` can't hold a quote, `$`, `;`, `<`, `>` or a
-    space. A user name or token in an `https://` `--repo` is refused (it would be kept in `.git/config` and show in git's
+    bracketed IPv6 address), `--ref` (letters, digits, `.`, `_`, `/` and `-`; no leading `-`, no `..`) and `--repo` (see
+    the upgrade notes). A URL for `--public-url` or an `https://` `--repo` can't hold a quote, `$`, `;`, `<`, `>` or a space.
+    A user name or token in an `https://` `--repo` is refused (it would be kept in `.git/config` and show in git's
     command line); use a git credential helper. It gives git `--` before the repository, builds the `--service none`
     environment without word splitting or globbing, exports only the settings it wrote itself, and keeps the values off
     every command line;
@@ -209,9 +230,9 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   - runs git, `bun install` and the build under a umask that keeps the checkout from being group-writable. Before it runs
     git in an existing default checkout (`~/.agentpulse/app`) it removes group/other write from everything in it, including
     `.git/config` and the hooks, without following links, and it refuses the run if any file in it belongs to another user.
-    It also refuses the default checkout if its `.git` is a symbolic link or a git file, or if there is a symbolic link anywhere under `.git`, since a link could point git at
-    configuration or hooks kept somewhere else. A checkout in a `--dir` you chose is not changed, but one (or its `.git`)
-    owned by another user is refused too;
+    It also refuses the default checkout if its `.git` is a symbolic link or a git file, or if there is a symbolic link
+    anywhere under `.git`, since a link could point git at configuration or hooks kept somewhere else. A checkout in a
+    `--dir` you chose is not changed, but one (or its `.git`) owned by another user is refused too;
   - refuses a `~/.agentpulse`, `~/.agentpulse/bun` or `~/.agentpulse/bun/bin` that is a symbolic link (it must be a real
     directory), checking and tightening one level before the next, and never changes the mode of a directory through a link.
 - **`setup-relay.sh`** (#38) shares the same Bun handling:
@@ -220,8 +241,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   - it skips a Bun that is group-writable or owned by someone else (Homebrew's, in macOS group `admin`, is accepted) and
     uses the private pinned copy instead. For a Bun that is a symbolic link this covers where the link leads too: the
     directory of every link in the chain and of the target, and every directory above each of them, must be owned by you or
-    root and not writable by others (a sticky directory such as `/tmp` is fine above one). Both installers do
-    this;
+    root and not writable by others (a sticky directory such as `/tmp` is fine above one). `install-local.sh`
+    applies the same rule;
   - it checks for `unzip` and a checksum tool before it asks for the key;
   - it refuses a `~/.agentpulse`, `bun` or `bun/bin` that is a symbolic link, before it asks for the key;
   - it refuses a `HOME` whose path holds anything but letters, digits, spaces, UTF-8 text and `/ . _ + - @` (non-ASCII text
@@ -237,26 +258,6 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   the key, and exits nonzero.
 - **Backup sidecar:** the probe in `run-backup.sh` that checks the source database can be opened now has a busy timeout. Under
   a concurrent writer it could get `SQLITE_BUSY` and exit 2 ("cannot open source db").
-
-### Upgrade notes
-
-- If you installed with `install-local.sh --dir ~/.agentpulse` (or any `--dir` that is your home directory, the data directory
-  or the log directory), the installer now refuses it, because it deletes `--dir` when it isn't a git checkout. Re-run
-  it with the default `--dir`; your data stays in `~/.agentpulse/data`.
-- A re-run of `install-local.sh` or `setup-relay.sh` on a machine where no usable Bun is found (1.3.12 or newer, owned by you
-  or root, not writable by others) installs the pinned copy in `~/.agentpulse/bun`, which needs `unzip`, and moves the
-  services onto it. Pass `BUN_INSTALL` again on each re-run to keep a Bun you chose.
-- A re-run of `install-local.sh` is an upgrade, and it restarts both services on systemd and launchd (`--service none`
-  starts a new process and leaves the old one). That ends the sessions the supervisor launched: headless and Codex
-  sessions on both platforms and, on Linux, terminal sessions it started as its own children. Terminals it opened on
-  macOS keep running. The dashboard drops its live connections for a moment. Finish or stop managed sessions before you
-  re-run it.
-- `install-local.sh` is stricter about what it is given. `--repo` must be an `https://` URL without a user name or token (use a git
-  credential helper), an `ssh://[user@]host[:port]/path` URL (port 1 to 65535), a `user@host:path` address, or an absolute path, so installing
-  from a fork over SSH still works. A leading `-`, `transport::` forms such as `ext::`, and `file://`, `http://` and `git://`
-  are refused. `--ref` can only hold letters, digits, `.`, `_`, `/` and `-`, so a name with `@`, `^`, `~` or `+`, a
-  `..`, or a leading `-` is refused. `--host` refuses IPv6 zone ids (`%…`), `*` and anything else outside letters, digits,
-  `.`, `:`, `_`, `-` and a bracketed address.
 
 ## [0.9.0] — 2026-10-24
 

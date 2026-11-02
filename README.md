@@ -81,7 +81,7 @@ Windows:
 irm https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 | iex
 ```
 
-It needs `curl` and `git`, plus `python3` for the supervisor and hooks. If it can't find a Bun 1.3.12 or newer it installs a pinned one, which also needs `unzip` and `shasum` or `sha256sum`. Anything missing is listed up front with the command to install it, and nothing is installed until it's there. To put Bun somewhere of your choosing (supply it again on a re-run):
+It needs `curl` and `git`, plus `python3` for the supervisor and hooks. If it can't find a Bun 1.3.12 or newer it installs a pinned one, which also needs `unzip` and `shasum` or `sha256sum`. Anything missing is listed up front with the command to install it, and nothing is installed until it's there. To put Bun somewhere of your choosing (supply it again on a re-run; with a `BUN_INSTALL` other than `~/.bun`, only `$BUN_INSTALL/bin/bun` is considered, not `PATH`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.sh | BUN_INSTALL=/opt/bun bash
