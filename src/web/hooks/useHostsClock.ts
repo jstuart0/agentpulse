@@ -50,21 +50,24 @@ export function useHostsClock({
 	}, []);
 
 	useEffect(() => {
-		const tick = setInterval(() => {
-			if (!document.hidden) void run();
-		}, tickMs);
 		const onVisibility = () => {
 			setTabHidden(document.hidden);
 			if (!document.hidden) void run();
 		};
 		document.addEventListener("visibilitychange", onVisibility);
-		return () => {
-			clearInterval(tick);
-			document.removeEventListener("visibilitychange", onVisibility);
-		};
-	}, [run, tickMs]);
+		return () => document.removeEventListener("visibilitychange", onVisibility);
+	}, [run]);
 
+	// While a host is catching up the poll is the refetch; the slower tick would only fire alongside it.
 	const polling = shouldPollHosts(supervisors, now, tabHidden);
+	useEffect(() => {
+		if (polling) return;
+		const tick = setInterval(() => {
+			if (!document.hidden) void run();
+		}, tickMs);
+		return () => clearInterval(tick);
+	}, [polling, run, tickMs]);
+
 	useEffect(() => {
 		if (!polling) return;
 		const poll = setInterval(() => void run(), pollMs);

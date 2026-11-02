@@ -136,6 +136,21 @@ describe("ManagedEventsLost", () => {
 		expect(html).toContain("border-amber-500/20");
 	});
 
+	test("a loss row that is also late keeps its own amber border: the late mark is on a wrapper, not on the card", () => {
+		const html = render([
+			event({
+				eventType: "ManagedEventsLost",
+				content: "3 events were lost",
+				occurredAt: minutesAgo(10),
+			}),
+		]);
+		expect(html).toContain("border-amber-500/20");
+		const card = html.slice(html.indexOf("rounded-xl"), html.indexOf("rounded-xl") + 120);
+		expect(card).toContain("border-amber-500/20");
+		expect(card).not.toContain("border-dashed");
+		expect(html).toContain('<div class="border-l-2 border-dashed');
+	});
+
 	test("another event's content still goes through Markdown", () => {
 		const html = render([event({ content: "**bold**" })]);
 		expect(html).toContain("<strong>bold</strong>");

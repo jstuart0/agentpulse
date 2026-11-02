@@ -179,6 +179,25 @@ describe("the tab out of view", () => {
 	});
 });
 
+describe("the tick and the poll", () => {
+	test("while a host is catching up the tick is paused: only the poll refetches", async () => {
+		// a poll too slow to fire in the window, and a fast tick that would have fired many times
+		const w = setup({ pending: 5, pollMs: 10_000, tickMs: TICK_MS });
+		await w.h.render(null);
+		await flush(TICK_MS * 8);
+		expect(w.fetches()).toBe(0);
+		await w.h.unmount();
+	});
+
+	test("with nothing catching up the tick runs", async () => {
+		const w = setup({ pending: 0, pollMs: 10_000, tickMs: TICK_MS });
+		await w.h.render(null);
+		await flush(TICK_MS * 8);
+		expect(w.fetches()).toBeGreaterThanOrEqual(4);
+		await w.h.unmount();
+	});
+});
+
 describe("the catching-up poll", () => {
 	test("runs while a host is catching up and stops when it has caught up", async () => {
 		const w = setup({ pending: 5, pollMs: TICK_MS, tickMs: 10_000 });
@@ -202,6 +221,8 @@ describe("the page uses the clock and keeps no clock of its own", () => {
 	test("HostsPage takes `now` from useHostsClock, refetches quietly for it, and never sets the time itself", () => {
 		expect(page).toContain("useHostsClock({");
 		expect(page).toMatch(/refetch: \(\) => loadSupervisors\(false, true\)/);
+		// only the quiet refetch is a background request (it must never reload the page)
+		expect(page).toContain("api.getSupervisors({ background: quiet })");
 		expect(page).not.toMatch(/setNow\(/);
 		expect(page).not.toContain("setInterval(");
 		// the cards judge leases by the hook's now

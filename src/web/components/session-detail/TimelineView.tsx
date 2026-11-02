@@ -86,10 +86,10 @@ function SourceBadge({ source }: { source: EventSource }) {
 	);
 }
 
-/** The relative time of an event as a <time> element, with the late-arrival note when it starts a late run. */
 /** The quiet mark on a row that reached the server late: its time is when it happened, not where it sits. */
 const LATE_MARK = "border-l-2 border-dashed border-muted-foreground/40 pl-2";
 
+/** The relative time of an event as a <time> element, with the late-arrival note when it starts a late run. */
 function EventTime({
 	time,
 	lateNote,
@@ -204,25 +204,28 @@ export function TimelineCard({
 		muted: "border-border/70 bg-muted/30",
 	};
 
+	// The mark goes on a wrapper: on the card itself its border classes would replace the tone's border colour.
 	return (
-		<div className={cn("rounded-xl border px-3 py-2.5", toneClasses[tone], late && LATE_MARK)}>
-			<div className="flex items-center justify-between gap-3">
-				<div className="flex items-center gap-2">
-					<span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-						{label}
+		<div className={cn(late && LATE_MARK)}>
+			<div className={cn("rounded-xl border px-3 py-2.5", toneClasses[tone])}>
+				<div className="flex items-center justify-between gap-3">
+					<div className="flex items-center gap-2">
+						<span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+							{label}
+						</span>
+						{source ? <SourceBadge source={source} /> : null}
+					</div>
+					<span className="text-[10px] text-muted-foreground">
+						<EventTime time={time} lateNote={lateNote} lateDetail={lateDetail} />
 					</span>
-					{source ? <SourceBadge source={source} /> : null}
 				</div>
-				<span className="text-[10px] text-muted-foreground">
-					<EventTime time={time} lateNote={lateNote} lateDetail={lateDetail} />
-				</span>
-			</div>
-			<div className="mt-1.5">
-				{plainText ? (
-					<p className="whitespace-pre-wrap break-words text-sm">{text}</p>
-				) : (
-					<MarkdownContent content={text} compact />
-				)}
+				<div className="mt-1.5">
+					{plainText ? (
+						<p className="whitespace-pre-wrap break-words text-sm">{text}</p>
+					) : (
+						<MarkdownContent content={text} compact />
+					)}
+				</div>
 			</div>
 		</div>
 	);

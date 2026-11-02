@@ -91,7 +91,9 @@ export function HostsPage() {
 			setRefreshing(true);
 		}
 		try {
-			const result = (await api.getSupervisors()) as { supervisors: SupervisorRecord[] };
+			const result = (await api.getSupervisors({ background: quiet })) as {
+				supervisors: SupervisorRecord[];
+			};
 			setSupervisors(result.supervisors ?? []);
 			setLoadError(null);
 			markFresh();
