@@ -174,6 +174,11 @@ const http = (status: number, error?: string, retryAfterMs?: number) =>
 	new SupervisorRequestError(status, "x", error, retryAfterMs);
 const CREDENTIAL = () => http(401, "Invalid supervisor credential");
 
+/** Lets queued promise callbacks and I/O callbacks run. */
+const settle = async () => {
+	for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+};
+
 /** A flush at the current clock; the calls it made. */
 async function flushed(w: World) {
 	const before = w.calls.length;
@@ -1048,24 +1053,54 @@ describe("the Phase 5 review fixes", () => {
 	const stateEntry = (w: World, id: string) =>
 		w.outbox.head(id) as { kind: string; failures?: number };
 
-	test("a live report issued mid-flush is not held for the whole turn: it completes within about one round trip", async () => {
-		const RTT = 30;
+	test("a live report issued mid-flush waits for the send in flight and no further, however long the turn", async () => {
 		const w = await world({ script: () => network() });
-		for (let i = 0; i < 50; i++) await w.gate.reportEvents("a", probe(`m${i}`));
-		w.setScript(async () => {
-			await new Promise((r) => setTimeout(r, RTT));
-			return SERVER_OK;
+		for (let i = 0; i < 6; i++) await w.gate.reportEvents("a", probe(`m${i}`));
+		// every send waits at a gate the test opens, so nothing depends on how long anything takes
+		const gates: Array<() => void> = [];
+		let arrived!: () => void;
+		let arrival = new Promise<void>((r) => {
+			arrived = r;
 		});
+		w.setScript(
+			() =>
+				new Promise((resolve) => {
+					gates.push(() => resolve(SERVER_OK));
+					arrived();
+				}),
+		);
 		w.gate.noteServerReachable();
-		const turn = w.gate.flush();
-		await new Promise((r) => setTimeout(r, 5));
-		const started = performance.now();
-		await w.gate.reportEvents("a", probe("live"));
-		const took = performance.now() - started;
+		let turnDone = false;
+		const turn = w.gate.flush().then(() => {
+			turnDone = true;
+		});
+		await arrival; // the first send is in flight and holds the session's chain
+		expect(gates).toHaveLength(1);
+
+		let liveDone = false;
+		const live = w.gate.reportEvents("a", probe("live")).then(() => {
+			liveDone = true;
+		});
+		await settle();
+		expect(liveDone, "it waits for the send in flight").toBe(false);
+
+		arrival = new Promise<void>((r) => {
+			arrived = r;
+		});
+		(gates[0] as () => void)();
+		await arrival; // the second send is now in flight, a whole turn from over
+		expect(turnDone).toBe(false);
+		await live;
+		expect(liveDone, "it went in between the first send and the second").toBe(true);
+
+		// let the rest of the turn through
+		while (!turnDone) {
+			for (const open of gates.splice(0)) open();
+			await settle();
+		}
 		await turn;
-		// the whole turn is 50 round trips (1.5 s): the report waited for at most the one in flight
-		expect(took).toBeLessThan(RTT * 4 + 100);
-	}, 20_000);
+		expect(w.calls.length).toBeGreaterThanOrEqual(6);
+	});
 
 	test("the 100-per-pass cap with three sessions of 60: 100 first (A 50, B 50, C none), then the rest", async () => {
 		const w = await world({ script: () => network() });
@@ -1085,21 +1120,29 @@ describe("the Phase 5 review fixes", () => {
 		expect(w.pending()).toBe(0);
 	});
 
-	test("a second head is its own: after the first is delivered and pressure returns, its failures stay undefined for six hours", async () => {
+	test("a second head is its own: 5 h of pressure on the first, then 2 h on the next, and the next is never counted", async () => {
 		const w = await world({ script: () => network() });
 		w.gate.noteCwd("s1", work);
-		await w.gate.reportState(stateOf("s1"));
+		await w.gate.reportEvents("s1", probe("first"));
 		await w.gate.reportEvents("s1", probe("second"));
 		expect(w.pending()).toBe(2);
 		w.gate.noteServerReachable();
+		w.setScript(() => http(503, "busy", HOUR));
+		for (let i = 0; i < 5; i++) {
+			await w.gate.flush();
+			clock += HOUR;
+		}
+		expect(w.pending()).toBe(2);
+		expect(stateEntry(w, "s1").failures).toBeUndefined();
+		// the first goes through; the second meets the pressure again
 		let delivered = 0;
 		w.setScript(() => (delivered++ === 0 ? SERVER_OK : http(503, "busy", HOUR)));
-		for (let i = 0; i < 6; i++) {
+		for (let i = 0; i < 3; i++) {
 			await w.gate.flush();
 			clock += HOUR;
 		}
 		expect(w.pending()).toBe(1);
-		expect(stateEntry(w, "s1").kind).toBe("events");
+		// 5 h + 3 h carried over would be past six hours and count; its own 3 h do not
 		expect(stateEntry(w, "s1").failures).toBeUndefined();
 	});
 
@@ -1135,12 +1178,14 @@ describe("the Phase 5 review fixes", () => {
 			clock += HOUR;
 		}
 		expect(stateEntry(w, "ghost").failures).toBeUndefined();
+		let lost = 0;
 		for (let i = 0; i < 12 && w.pending() > 0; i++) {
 			await w.gate.flush();
+			lost += w.outbox.summary().lastFlushLost;
 			clock += HOUR;
 		}
 		expect(w.pending()).toBe(0);
-		expect(w.outbox.summary().lastFlushLost).toBeGreaterThanOrEqual(0);
+		expect(lost, "the one batch was counted lost, once").toBe(1);
 	});
 
 	test("a 401 or 403 that isn't the server's own is back-pressure: hours of it drop nothing, one call per pass", async () => {
@@ -1174,7 +1219,7 @@ describe("the Phase 5 review fixes", () => {
 		expect(stateEntry(w, "s1").failures).toBe(1);
 	});
 
-	test("the missing-row snapshot is the fold of every queued state report: the creating one's agentType, cwd and model survive a newest patch that omits them", async () => {
+	test("the missing-row answer is the creating state report, as it was queued: its agentType, cwd, model and title reach the server, and the later patch follows the events in order", async () => {
 		const w = await world({ script: () => network() });
 		w.gate.noteCwd("ghost", work);
 		await w.gate.reportEvents("ghost", probe("early"));
@@ -1200,15 +1245,19 @@ describe("the Phase 5 review fixes", () => {
 			return SERVER_OK;
 		});
 		const made = await flushed(w);
-		const snapshot = made.find((c) => c.path.endsWith("/managed-session-state"));
-		expect(snapshot?.body).toMatchObject({
-			sessionId: "ghost",
+		expect(made.map((c) => c.path.split("/").pop())).toEqual([
+			"events",
+			"managed-session-state",
+			"events",
+			"managed-session-state",
+		]);
+		expect(made[1]?.body).toMatchObject({
 			agentType: "codex_cli",
 			cwd: work,
 			model: "model-x",
-			status: "completed",
+			desiredThreadTitle: "t1",
 		});
-		expect(made.filter((c) => c.path.endsWith("/managed-session-state"))).toHaveLength(1);
+		expect(made[3]?.body).toMatchObject({ status: "completed" });
 		expect(w.pending()).toBe(0);
 	});
 

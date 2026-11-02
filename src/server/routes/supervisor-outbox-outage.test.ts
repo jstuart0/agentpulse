@@ -14,6 +14,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	readdirSync,
 	realpathSync,
 	rmSync,
@@ -361,7 +362,7 @@ const stateOf = (sessionId: string, extra: Partial<ManagedSessionStateInput> = {
 function writeBridgeSpool(
 	home: string,
 	id: string,
-	files: Array<{ kind: "state" | "events"; body: unknown }>,
+	files: Array<{ kind: "state" | "events"; body: unknown; at?: string }>,
 ) {
 	const dir = join(home, ".agentpulse", "interactive", id);
 	const reports = join(dir, "reports");
@@ -382,7 +383,7 @@ function writeBridgeSpool(
 				v: 1,
 				nonce: NONCE,
 				kind: file.kind,
-				occurredAt: new Date(Date.now() - 60_000).toISOString(),
+				occurredAt: file.at ?? new Date(Date.now() - 60_000).toISOString(),
 				...(file.kind === "events" ? { deliveryId: `bridge-${id}-${i + 1}-abcdefgh` } : {}),
 				body: file.body,
 			}),
@@ -403,6 +404,41 @@ const outboxFiles = (home: string) => {
 	const root = join(home, ".agentpulse", "supervisor-outbox");
 	return existsSync(root) ? readdirSync(root).filter((n) => n.startsWith("s-")) : [];
 };
+
+// ── the transport copy must not drift from the supervisor's ─────────────────────────────────
+
+describe("the test's request() mirrors the supervisor's transport", () => {
+	/** What both must do, as fragments that survive formatting; the copy is checked against the real one. */
+	const SHAPE: Array<[string, RegExp]> = [
+		["the content type", /"Content-Type": "application\/json"/],
+		["the credential header", /"X-AgentPulse-Supervisor-Token"/],
+		["only the delivery id and the replay marker pass", /DELIVERY_ID_HEADER,\s*REPLAY_HEADER\]/],
+		["a timeout on the fetch", /signal: AbortSignal\.timeout\(/],
+		[
+			"no answer is a network error",
+			/catch \(cause\) \{[^}]*throw new SupervisorNetworkError\(cause\)/,
+		],
+		["an HTTP error carries the body's error and Retry-After", /new SupervisorRequestError\(/],
+		["the server's Retry-After is parsed", /parseRetryAfterMs\(res\.headers\.get\("retry-after"\)/],
+		[
+			"a 2xx that isn't JSON is a network error",
+			/try \{\s*return await res\.json\(\);\s*\} catch \(cause\) \{[^}]*throw new SupervisorNetworkError\(cause\)/,
+		],
+	];
+	const real = readFileSync(join(import.meta.dir, "../../supervisor/index.ts"), "utf-8");
+	const copy = readFileSync(import.meta.path, "utf-8");
+	const requestOf = (text: string, marker: string) => text.slice(text.indexOf(marker));
+
+	for (const [label, pattern] of SHAPE) {
+		test(label, () => {
+			// the real one names its caller-header list in a constant above the function, so the whole file is read
+			expect(pattern.test(real), "index.ts").toBe(true);
+			expect(pattern.test(requestOf(copy, "async function request(")), "this file's copy").toBe(
+				true,
+			);
+		});
+	}
+});
 
 // ── scenario 1 ───────────────────────────────────────────────────────────────────────────────
 
@@ -529,6 +565,7 @@ describe("1. an outage, including the bridge path", () => {
 					)
 				).outcome,
 			).toBe("queued");
+			const bridgeStamps = [wholeSecond(-200_000), wholeSecond(-100_000)];
 			const reports = writeBridgeSpool(w.home, bridge, [
 				{
 					kind: "state",
@@ -553,6 +590,7 @@ describe("1. an outage, including the bridge path", () => {
 							},
 						],
 					},
+					at: bridgeStamps[0],
 				},
 				{
 					kind: "events",
@@ -566,6 +604,7 @@ describe("1. an outage, including the bridge path", () => {
 							},
 						],
 					},
+					at: bridgeStamps[1],
 				},
 			]);
 
@@ -599,15 +638,18 @@ describe("1. an outage, including the bridge path", () => {
 			const stateBodies = w.seen.filter(
 				(x) => x.path.endsWith("/managed-session-state") && x.replay,
 			);
-			expect(stateBodies.map((x) => x.body.includes("the title"))).toContain(true);
-			expect(stateBodies.length).toBeGreaterThanOrEqual(2);
-			console.log(
-				"DBG",
-				JSON.stringify(w.drain.stats()),
-				spoolFiles(reports),
-				w.outbox.summary().pending,
-			);
+			const mainStates = stateBodies
+				.map((x) => JSON.parse(x.body) as Record<string, unknown>)
+				.filter((b) => b.sessionId === main);
+			expect(mainStates.map((b) => [b.desiredThreadTitle ?? null, b.status ?? null])).toEqual([
+				["the title", "active"],
+				[null, "completed"],
+			]);
 			expect((await rowsOf(bridge)).map((r) => r.content)).toEqual(["typed-1", "typed-2"]);
+			expect(
+				(await rowsOf(bridge)).map((r) => r.occurredAt),
+				"the bridge's own times, not the time it was sent",
+			).toEqual(bridgeStamps);
 			expect(outboxFiles(w.home)).toEqual([]);
 			expect(spoolFiles(reports)).toEqual([]);
 			expect(w.outbox.summary().pending).toBe(0);
@@ -731,11 +773,18 @@ describe("4. a session the server has never seen", () => {
 			expect(
 				(
 					await w.gate.reportState(
-						stateOf(id, { agentType: "codex_cli", cwd: w.work, model: "model-x" }),
+						stateOf(id, {
+							agentType: "codex_cli",
+							cwd: w.work,
+							model: "model-x",
+							desiredThreadTitle: "aged title",
+						}),
 					)
 				).outcome,
 			).toBe("queued");
+			const lostFrom = Date.now();
 			expect(await w.gate.reportEvents(id, batch("old"))).toBe("queued");
+			const lostTo = Date.now();
 			w.skew(25 * HOUR);
 			await w.rebind();
 			const mark = w.seen.length;
@@ -747,16 +796,21 @@ describe("4. a session the server has never seen", () => {
 			expect(row?.agentType).toBe("codex_cli");
 			expect(row?.cwd).toBe(w.work);
 			expect(row?.model).toBe("model-x");
+			expect(row?.displayName, "the creating report's title names the session").toBe("aged title");
 			expect((await managedRow(id))?.supervisorId).toBe(w.supervisor.id);
 			const rows = await rowsOf(id);
 			expect(rows.map((r) => r.eventType)).toEqual(["ManagedEventsLost"]);
+			// the gap is stamped with when the first lost event was queued, not when it was sent
+			const lostAt = parseStoredTimestamp(rows[0]?.occurredAt as string) as number;
+			expect(lostAt).toBeGreaterThanOrEqual(lostFrom);
+			expect(lostAt).toBeLessThanOrEqual(lostTo);
 			expect(w.outbox.summary().pending).toBe(0);
 		} finally {
 			await w.cleanup();
 		}
 	}, 60_000);
 
-	test("[events, state, patch] for a row-less session: the fold goes first, then the events, and the row keeps agentType, cwd and model", async () => {
+	test("[events, state, patch] for a row-less session: the creating report goes first, then the events, and the row keeps agentType, cwd and model", async () => {
 		const w = await world();
 		try {
 			const id = uid("fold-first");
@@ -782,12 +836,14 @@ describe("4. a session the server has never seen", () => {
 			await w.gate.flush();
 
 			const calls = w.seen.slice(mark).map((s) => s.path.split("/").pop());
-			expect(calls).toEqual(["events", "managed-session-state", "events"]);
+			expect(calls).toEqual(["events", "managed-session-state", "events", "managed-session-state"]);
 			const row = await sessionRow(id);
 			expect(row?.agentType).toBe("codex_cli");
 			expect(row?.cwd).toBe(w.work);
 			expect(row?.model).toBe("model-x");
 			expect(row?.status).toBe("completed");
+			expect(row?.displayName, "the creating report's title names the session").toBe("t1");
+			expect((await managedRow(id))?.desiredThreadTitle).toBe("t1");
 			expect((await rowsOf(id)).map((r) => r.content)).toEqual(["early"]);
 			expect(w.outbox.summary().pending).toBe(0);
 		} finally {
@@ -813,6 +869,7 @@ describe("5. a restart in the middle of an outage", () => {
 			await w.gate.reportEvents(id, batch("r1", stamps[0]));
 			await w.gate.reportState(stateOf(id, { cwd: w.work }));
 			await w.gate.reportEvents(id, batch("r2", stamps[1]));
+			const typedAt = wholeSecond(-30_000);
 			const reports = writeBridgeSpool(w.home, bridge, [
 				{
 					kind: "state",
@@ -837,6 +894,7 @@ describe("5. a restart in the middle of an outage", () => {
 							},
 						],
 					},
+					at: typedAt,
 				},
 			]);
 
@@ -852,7 +910,9 @@ describe("5. a restart in the middle of an outage", () => {
 
 			expect((await rowsOf(id)).map((r) => r.content)).toEqual(["r1", "r2"]);
 			expect((await rowsOf(id)).map((r) => r.occurredAt)).toEqual(stamps);
-			expect((await rowsOf(bridge)).map((r) => r.content)).toEqual(["typed"]);
+			expect((await rowsOf(bridge)).map((r) => [r.content, r.occurredAt])).toEqual([
+				["typed", typedAt],
+			]);
 			expect(outboxFiles(w.home)).toEqual([]);
 			expect(spoolFiles(reports)).toEqual([]);
 		} finally {
@@ -930,14 +990,12 @@ describe("6. folding queued state reports equals sending them in order", () => {
 				await w.own(x);
 				await w.own(y);
 				const one = stateOf(x, a);
-				const two = { ...stateOf(x, {}), ...b, sessionId: x } as ManagedSessionStateInput;
 				// the second report's absent keys are really absent
 				const twoBody = {
 					sessionId: x,
 					agentType: one.agentType,
 					...b,
 				} as ManagedSessionStateInput;
-				void two;
 				// both rows exist before the pair: a title the creating report names is the session's name for good
 				for (const sid of [x, y]) {
 					await w.post(`/supervisors/${w.supervisor.id}/managed-session-state`, stateOf(sid));
@@ -960,6 +1018,72 @@ describe("6. folding queued state reports equals sending them in order", () => {
 				await w.cleanup();
 			}
 		}, 30_000);
+	}
+
+	test("the pairs cover every rule of the fold", () => {
+		expect(PAIRS.length).toBeGreaterThanOrEqual(6);
+	});
+
+	/** Every field a row holds that two sessions should share, displayName included (a generated desired title is masked). */
+	const stripWithName = (row: Record<string, unknown> | undefined, named: unknown[]) =>
+		Object.fromEntries(
+			Object.entries(strip(row, named)).concat(row ? [["displayName", row.displayName]] : []),
+		);
+
+	// Neither row exists yet. The oldest queued report creates the session, which the server reads
+	// differently from an update (a title names the session, the agent type sticks), so it is sent as it
+	// is and the outbox folds only the reports after it. X gets all three in order; Y gets what the
+	// outbox makes of them once they have aged past a day.
+	for (const [label, a, b] of PAIRS) {
+		test(`${label} (the row doesn't exist yet)`, async () => {
+			const w = await world();
+			try {
+				const x = uid("new-x");
+				const y = uid("new-y");
+				await w.own(x);
+				await w.own(y);
+				const creator = (sid: string) =>
+					({
+						sessionId: sid,
+						agentType: "codex_cli",
+						status: "active",
+						managedState: "headless",
+						cwd: "/tmp/creator",
+						model: "m-creator",
+						desiredThreadTitle: "creator title",
+					}) as ManagedSessionStateInput;
+				const first = (sid: string) => ({ ...stateOf(sid, a), sessionId: sid });
+				const second = (sid: string) =>
+					({ sessionId: sid, agentType: "codex_cli", ...b }) as ManagedSessionStateInput;
+				const url = `/supervisors/${w.supervisor.id}/managed-session-state`;
+				for (const body of [creator(x), first(x), second(x)]) await w.post(url, body);
+
+				await w.outage();
+				for (const body of [creator(y), first(y), second(y)]) {
+					expect((await w.gate.reportState(body)).outcome).toBe("queued");
+				}
+				w.skew(25 * HOUR);
+				await w.rebind();
+				const mark = w.seen.length;
+				await w.gate.flush();
+				const posted = w.seen.slice(mark).filter((s) => s.path.endsWith("/managed-session-state"));
+				expect(posted, "the creating report, then the other two folded into one").toHaveLength(2);
+				expect(JSON.parse(posted[0]?.body as string)).toMatchObject({
+					desiredThreadTitle: "creator title",
+					agentType: "codex_cli",
+				});
+
+				const named = ["creator title", a.desiredThreadTitle, b.desiredThreadTitle];
+				expect(stripWithName((await sessionRow(y)) as never, named)).toEqual(
+					stripWithName((await sessionRow(x)) as never, named),
+				);
+				expect(stripWithName((await managedRow(y)) as never, named)).toEqual(
+					stripWithName((await managedRow(x)) as never, named),
+				);
+			} finally {
+				await w.cleanup();
+			}
+		}, 60_000);
 	}
 });
 

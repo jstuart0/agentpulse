@@ -851,8 +851,11 @@ describe("aging", () => {
 		clock = T0 + 25 * HOUR;
 		box.ageOut(clock);
 		const out = drain(box, "s1");
-		expect(out.map((e) => e.kind)).toEqual(["state", "gap"]);
-		expect(JSON.parse(out[0]?.body as string)).toMatchObject({ cwd: "/work", status: "completed" });
+		// the creating report stays as it is (a first report is read differently from a later one on the
+		// server); the events are replaced by a gap, and the later state keeps its place after it
+		expect(out.map((e) => e.kind)).toEqual(["state", "gap", "state"]);
+		expect(JSON.parse(out[0]?.body as string)).toMatchObject({ cwd: "/work", status: "active" });
+		expect(JSON.parse(out[2]?.body as string)).toMatchObject({ status: "completed" });
 		expect(out[1]?.lost).toBe(3);
 		box.beginFlush();
 		box.endFlush("2026-11-02T14:00:00.000Z");

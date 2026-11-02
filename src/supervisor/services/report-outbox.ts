@@ -133,16 +133,11 @@ export interface ReportOutbox {
 	/** False when the write failed: the entry is still unattempted, so don't send it this round. */
 	markAttempted(sessionId: string, seq: number): boolean;
 	/**
-	 * Every state entry of a session, oldest first (empty when there are none or one can't be trusted). A
-	 * state report is a patch, so what the session looks like is their fold, which the gate can send ahead
-	 * of the entries before it: its answer to a server that has no row for the session yet.
+	 * Every state entry of a session, oldest first (empty when there are none or one can't be trusted). The
+	 * oldest is the report that creates the session on a server that has no row for it, which the gate can
+	 * send ahead of the events before it.
 	 */
 	queuedStates(sessionId: string): OutboxEntry[];
-	/**
-	 * Removes every state entry of the session older than `seq`, uncounted: once a newer snapshot has been
-	 * delivered they are superseded, and sending them afterwards would put the session back.
-	 */
-	dropStatesBefore(sessionId: string, seq: number): void;
 	/**
 	 * Notes a failed delivery of the head. Counts toward the poison rule unless `opts.counts` is false: a
 	 * server's own back-pressure (a 503 carrying Retry-After) is not a failure and must be passed as
@@ -625,6 +620,10 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 	/** Rule 1: fold the oldest non-head state entry into the next state entry. */
 	function foldOne(state: SessionState): boolean {
 		const states: Array<{ meta: EntryMeta; entry: OutboxEntry }> = [];
+		// The session's oldest state report may be the one that creates it on the server, where a first
+		// report is read differently from a later one (a title names the session, an agent type sticks). It
+		// is never folded into another; only the reports after it are, which the server reads as updates.
+		let creatorSkipped = state.entries[0]?.kind === "state";
 		for (let i = 1; i < state.entries.length; i++) {
 			const meta = state.entries[i] as EntryMeta;
 			if (meta.kind && meta.kind !== "state") continue;
@@ -635,6 +634,10 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 			}
 			if (read === "held") return false;
 			if (read.kind === "state") {
+				if (!creatorSkipped) {
+					creatorSkipped = true;
+					continue;
+				}
 				states.push({ meta, entry: read });
 				if (states.length === 2) break;
 			}
@@ -1150,20 +1153,6 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 		return found;
 	}
 
-	function dropStatesBefore(sessionId: string, seq: number) {
-		const state = sessions.get(sessionId);
-		if (!state || !isPrivateDirectory(state.dir)) return;
-		for (const meta of [...state.entries]) {
-			if (meta.seq >= seq) break;
-			if (meta.kind && meta.kind !== "state") continue;
-			const read = readEntry(state, meta);
-			if (!read || read === "held" || read.kind !== "state") continue;
-			unlinkQuiet(join(state.dir, seqName(meta.seq)));
-			dropMeta(state, meta);
-		}
-		retireIfEmpty(state);
-	}
-
 	function markAttempted(sessionId: string, seq: number): boolean {
 		const state = sessions.get(sessionId);
 		const current = head(sessionId);
@@ -1218,7 +1207,8 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 			// judged by until now: an entry that turns out to be recent stays.
 			if (read && meta.queuedAtMs <= nowMs - limits.ageMs) loaded.push({ meta, entry: read });
 		}
-		const agedStates = loaded.filter((x) => x.entry.kind === "state");
+		// The oldest state report is left as it is (it may create the session on the server, see foldOne).
+		const agedStates = loaded.filter((x) => x.entry.kind === "state").slice(1);
 		const agedOther = loaded.filter((x) => x.entry.kind !== "state");
 		if (agedStates.length > 1) {
 			const [first, ...rest] = agedStates as [(typeof agedStates)[number], ...typeof agedStates];
@@ -1355,7 +1345,6 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 		head,
 		markAttempted,
 		queuedStates,
-		dropStatesBefore,
 		recordFailure,
 		remove,
 		purge,

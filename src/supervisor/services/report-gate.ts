@@ -72,7 +72,7 @@ import {
 	isTrustedStateFileStat as storeIsTrustedStateFileStat,
 	trustedDirectory,
 } from "./private-store.js";
-import { type OutboxEntry, type ReportOutbox, foldStateReports } from "./report-outbox.js";
+import type { OutboxEntry, ReportOutbox } from "./report-outbox.js";
 import {
 	BACKOFF_BUDGET_MS,
 	type CredentialTripwire,
@@ -865,31 +865,17 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	const serverKnows = (id: string) => sessions.get(id)?.reported === true;
 
 	/**
-	 * Sends the fold of the session's queued state reports ahead of the entries before them. A state report
-	 * is a patch (the server keeps what a later one omits only for some fields), so the newest alone could
-	 * lose what the creating one carried; the older ones are dropped only once the fold is accepted.
+	 * Sends the session's oldest queued state report ahead of the events before it, as it is: it is the one
+	 * that creates the session on a server with no row for it, and the server reads a creating report
+	 * differently from a later one (a title names the session, an agent type sticks), so it is neither folded
+	 * nor reordered with the reports after it, which stay queued in their order.
 	 */
-	async function sendSnapshot(
+	async function sendCreator(
 		id: string,
-		states: OutboxEntry[],
+		creator: OutboxEntry,
 	): Promise<"sent" | "network" | "failed"> {
-		const snapshot = states[states.length - 1] as OutboxEntry;
-		let text: string;
 		try {
-			const bodies = states.map((s) => JSON.parse(s.body) as ManagedSessionStateInput);
-			text = JSON.stringify(
-				bodies
-					.slice(1)
-					.reduce(
-						(acc, next) => foldStateReports(acc, next),
-						bodies[0] as ManagedSessionStateInput,
-					),
-			);
-		} catch {
-			return "failed";
-		}
-		try {
-			await sendText("/managed-session-state", text, replayHeader(true));
+			await sendText("/managed-session-state", creator.body, replayHeader(true));
 		} catch (error) {
 			if (classifyReportFailure(error) === "network") {
 				markOffline();
@@ -897,10 +883,8 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			}
 			return "failed";
 		}
-		// The fold carries every state before the newest; they must not be sent after it.
-		outbox?.remove(id, snapshot.seq, "delivered");
-		outbox?.dropStatesBefore(id, snapshot.seq);
-		markReported(id, terminalOf(text));
+		outbox?.remove(id, creator.seq, "delivered");
+		markReported(id, terminalOf(creator.body));
 		backoffs.delete(id);
 		backoffBudgets.delete(id);
 		return "sent";
@@ -937,15 +921,14 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			return "next";
 		}
 		const status = error instanceof SupervisorRequestError ? error.status : 0;
-		// A 500 for events of a session the server has no row for yet: the state that creates it may be
-		// queued behind them, so it goes first: the fold of every queued state report, as the server would
-		// hold them after receiving all in order.
+		// A 500 for events of a session the server has no row for yet: the state report that creates it may be
+		// queued behind them, so it goes first.
 		const missingRow =
 			failure === "server" && status === 500 && head.kind !== "state" && !serverKnows(id);
 		if (missingRow) {
-			const states = outbox.queuedStates(id);
-			if (states.length > 0) {
-				const result = await sendSnapshot(id, states);
+			const creator = outbox.queuedStates(id)[0];
+			if (creator) {
+				const result = await sendCreator(id, creator);
 				if (result === "network") return "all";
 				if (result === "sent") return "continue";
 			}
