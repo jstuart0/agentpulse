@@ -106,14 +106,17 @@ export function deriveHostOutboxNotice(
 
 /**
  * What a screen reader is told when a host's notice changes: the new notice's sentence when it changes
- * branch, "Caught up." when the catching-up notice goes away, and nothing for a change in a count.
+ * branch, "caught up." when the catching-up notice goes away, and nothing for a change in a count. With
+ * several hosts on the page each announcement names its host ("build-box: caught up.").
  */
 export function outboxAnnouncement(
 	prev: HostOutboxNotice | null,
 	next: HostOutboxNotice | null,
+	hostName?: string,
 ): string | null {
-	if (next && next.kind !== prev?.kind) return next.text;
-	if (!next && prev?.kind === "catching-up") return "Caught up.";
+	const named = (words: string) => (hostName ? `${hostName}: ${words}` : words);
+	if (next && next.kind !== prev?.kind) return named(next.text);
+	if (!next && prev?.kind === "catching-up") return named(hostName ? "caught up." : "Caught up.");
 	return null;
 }
 

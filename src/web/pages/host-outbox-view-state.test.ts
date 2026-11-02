@@ -256,6 +256,18 @@ describe("outboxAnnouncement", () => {
 		expect(outboxAnnouncement(notice("offline"), null)).toBeNull();
 	});
 
+	test("with a host name, every announcement names the host", () => {
+		expect(outboxAnnouncement(null, notice("catching-up", "Catching up."), "build-box")).toBe(
+			"build-box: Catching up.",
+		);
+		expect(outboxAnnouncement(notice("catching-up"), null, "build-box")).toBe(
+			"build-box: caught up.",
+		);
+		expect(
+			outboxAnnouncement(notice("catching-up"), notice("catching-up"), "build-box"),
+		).toBeNull();
+	});
+
 	test("a count changing inside the same branch announces nothing", () => {
 		expect(
 			outboxAnnouncement(notice("catching-up", "3 events."), notice("catching-up", "2 events.")),

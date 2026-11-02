@@ -17,6 +17,7 @@ const render = (over: Partial<Props> = {}) =>
 		createElement(HostOutboxNotice, {
 			supervisor: {
 				id: "h1",
+				hostName: "build-box",
 				status: "connected",
 				enrollmentState: "active",
 				heartbeatLeaseExpiresAt: iso(NOW + 60_000),

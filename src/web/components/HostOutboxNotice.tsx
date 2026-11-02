@@ -9,7 +9,13 @@ import {
 
 type NoticeSupervisor = Pick<
 	SupervisorRecord,
-	"id" | "outbox" | "status" | "heartbeatLeaseExpiresAt" | "enrollmentState" | "capabilities"
+	| "id"
+	| "hostName"
+	| "outbox"
+	| "status"
+	| "heartbeatLeaseExpiresAt"
+	| "enrollmentState"
+	| "capabilities"
 >;
 
 const ICONS = { "catching-up": RefreshCw, recovered: Check, offline: Clock } as const;
@@ -31,6 +37,8 @@ export function HostOutboxNotice({
 	// The effect runs on a change of branch (or host), not on every render: the notice object is new each time.
 	const current = useRef(notice);
 	current.current = notice;
+	const hostNameRef = useRef(supervisor.hostName);
+	hostNameRef.current = supervisor.hostName;
 	const kind = notice?.kind ?? null;
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `kind` is what makes this run, on a change of branch
@@ -39,7 +47,7 @@ export function HostOutboxNotice({
 		const before = previous.current?.id === supervisor.id ? previous.current.notice : undefined;
 		previous.current = { id: supervisor.id, notice: now };
 		if (before === undefined) return; // the first look at a host announces nothing
-		const said = outboxAnnouncement(before, now);
+		const said = outboxAnnouncement(before, now, hostNameRef.current);
 		if (!said) return;
 		// Cleared first, so the same words again are a change a screen reader reads out.
 		setAnnouncement("");

@@ -84,6 +84,20 @@ describe("ActivityTimeline late arrivals", () => {
 		expect(html).toContain('<span aria-hidden="true"> · </span>');
 	});
 
+	test("the marker is on the bubble's own box, not on a full-width wrapper around it", () => {
+		const html = render([
+			event({
+				occurredAt: minutesAgo(10),
+				category: "prompt",
+				eventType: "UserPromptSubmit",
+				content: "typed",
+			}),
+		]);
+		// the dashed border sits on the right-aligned prompt's 80% box
+		expect(html).toContain('class="max-w-[80%] border-l-2 border-dashed');
+		expect(html).not.toMatch(/<div id="event-\d+" class="[^"]*border-dashed/);
+	});
+
 	test("an on-time row has no marker, no title and no extra text", () => {
 		const html = render([event({})]);
 		expect(html).not.toContain("border-dashed");

@@ -65,21 +65,18 @@ ActivityTimeline.displayName = "ActivityTimeline";
  * `data-event-key` attribute instead — search hits always reference persisted
  * rows so they will always find the id-stamped element.
  */
-/** The quiet mark on a row that reached the server late: its time is when it happened, not where it sits. */
-const LATE_ROW_CLASS = "border-l-2 border-dashed border-muted-foreground/40 pl-2";
-
-function stampedItem(event: SessionEvent, child: ReactNode, late = false) {
+function stampedItem(event: SessionEvent, child: ReactNode) {
 	if (child === null) return null;
 	const key = eventKey(event);
 	if (event.id) {
 		return (
-			<div key={key} id={`event-${event.id}`} className={late ? LATE_ROW_CLASS : undefined}>
+			<div key={key} id={`event-${event.id}`}>
 				{child}
 			</div>
 		);
 	}
 	return (
-		<div key={key} data-event-key={key} className={late ? LATE_ROW_CLASS : undefined}>
+		<div key={key} data-event-key={key}>
 			{child}
 		</div>
 	);
@@ -125,7 +122,7 @@ function renderBubbles(visibleEvents: SessionEvent[], mode: TimelineMode) {
 		const minutes = lateArrival(event);
 		const detail = lateDetail(event) ?? undefined;
 		const note = minutes !== null && starts.has(index) ? lateSuffix(minutes) : undefined;
-		return stampedItem(event, renderBubbleEvent(event, mode, note, detail), minutes !== null);
+		return stampedItem(event, renderBubbleEvent(event, mode, note, detail, minutes !== null));
 	});
 }
 
@@ -134,6 +131,7 @@ function renderBubbleEvent(
 	mode: TimelineMode,
 	lateNote?: string,
 	lateDetail?: string,
+	late?: boolean,
 ) {
 	if (event.category === "prompt" && event.content) {
 		return (
@@ -142,6 +140,7 @@ function renderBubbleEvent(
 				time={eventDisplayTime(event)}
 				lateNote={lateNote}
 				lateDetail={lateDetail}
+				late={late}
 				source={mode === "debug" ? event.source : undefined}
 			/>
 		);
@@ -153,6 +152,7 @@ function renderBubbleEvent(
 				time={eventDisplayTime(event)}
 				lateNote={lateNote}
 				lateDetail={lateDetail}
+				late={late}
 				source={mode === "debug" ? event.source : undefined}
 			/>
 		);
@@ -166,6 +166,7 @@ function renderBubbleEvent(
 				time={eventDisplayTime(event)}
 				lateNote={lateNote}
 				lateDetail={lateDetail}
+				late={late}
 				tone={event.isNoise ? "muted" : "amber"}
 				source={mode === "debug" ? event.source : undefined}
 			/>
@@ -179,6 +180,7 @@ function renderBubbleEvent(
 			time={eventDisplayTime(event)}
 			lateNote={lateNote}
 			lateDetail={lateDetail}
+			late={late}
 			tone={
 				event.eventType === "ManagedEventsLost"
 					? "amber"

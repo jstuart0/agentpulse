@@ -87,6 +87,9 @@ function SourceBadge({ source }: { source: EventSource }) {
 }
 
 /** The relative time of an event as a <time> element, with the late-arrival note when it starts a late run. */
+/** The quiet mark on a row that reached the server late: its time is when it happened, not where it sits. */
+const LATE_MARK = "border-l-2 border-dashed border-muted-foreground/40 pl-2";
+
 function EventTime({
 	time,
 	lateNote,
@@ -114,16 +117,18 @@ export function PromptBubble({
 	source,
 	lateNote,
 	lateDetail,
+	late,
 }: {
 	text: string;
 	time: string;
 	source?: EventSource;
 	lateNote?: string;
 	lateDetail?: string;
+	late?: boolean;
 }) {
 	return (
 		<div className="flex justify-end">
-			<div className="max-w-[80%]">
+			<div className={cn("max-w-[80%]", late && LATE_MARK)}>
 				<div className="rounded-2xl rounded-br-sm bg-primary/15 border border-primary/20 px-4 py-3">
 					<MarkdownContent content={text} compact />
 				</div>
@@ -144,16 +149,18 @@ export function AssistantBubble({
 	source,
 	lateNote,
 	lateDetail,
+	late,
 }: {
 	text: string;
 	time: string;
 	source?: EventSource;
 	lateNote?: string;
 	lateDetail?: string;
+	late?: boolean;
 }) {
 	return (
 		<div className="flex justify-start">
-			<div className="max-w-[80%]">
+			<div className={cn("max-w-[80%]", late && LATE_MARK)}>
 				<div className="rounded-2xl rounded-bl-sm bg-sky-500/10 border border-sky-500/20 px-4 py-3">
 					<MarkdownContent content={text} compact />
 				</div>
@@ -176,6 +183,7 @@ export function TimelineCard({
 	source,
 	lateNote,
 	lateDetail,
+	late,
 	plainText,
 }: {
 	text: string;
@@ -185,6 +193,7 @@ export function TimelineCard({
 	source?: EventSource;
 	lateNote?: string;
 	lateDetail?: string;
+	late?: boolean;
 	/** Shown as text, never as Markdown (for content that is not the user's or the agent's own writing). */
 	plainText?: boolean;
 }) {
@@ -196,7 +205,7 @@ export function TimelineCard({
 	};
 
 	return (
-		<div className={cn("rounded-xl border px-3 py-2.5", toneClasses[tone])}>
+		<div className={cn("rounded-xl border px-3 py-2.5", toneClasses[tone], late && LATE_MARK)}>
 			<div className="flex items-center justify-between gap-3">
 				<div className="flex items-center gap-2">
 					<span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">

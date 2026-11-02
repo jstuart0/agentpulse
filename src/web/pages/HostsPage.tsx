@@ -5,6 +5,7 @@ import { HostExcludeNotice } from "../components/HostExcludeNotice.js";
 import { HostOutboxNotice } from "../components/HostOutboxNotice.js";
 import { HostOwnerDialog } from "../components/HostOwnerDialog.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
+import { useHostsClock } from "../hooks/useHostsClock.js";
 import { useNoteUnknownOwners } from "../hooks/useNoteUnknownOwners.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
 import { useSecretLifetime } from "../hooks/useSecretLifetime.js";
@@ -16,7 +17,6 @@ import { assignablePeople, withCurrentOwner } from "../lib/people.js";
 import { useDbFingerprintStore } from "../stores/db-fingerprint-store.js";
 import { useUserStore } from "../stores/user-store.js";
 import { useUsersStore } from "../stores/users-store.js";
-import { HOSTS_TICK_MS, OUTBOX_POLL_MS, shouldPollHosts } from "./host-outbox-view-state.js";
 import {
 	deriveHostAccess,
 	deriveHostsViewState,
@@ -83,8 +83,8 @@ export function HostsPage() {
 		hostName?: string | null;
 	} | null>(null);
 
-	/** `quiet` is the background refetch while a host catches up: no spinner, and a failure waits for the next one. */
-	async function loadSupervisors(showInitialLoader = false, quiet = false) {
+	/** `quiet` is the background refetch while the tab is in view: no spinner, and a failure waits for the next one. True when the answer was taken. */
+	async function loadSupervisors(showInitialLoader = false, quiet = false): Promise<boolean> {
 		if (showInitialLoader) {
 			setLoading(true);
 		} else if (!quiet) {
@@ -94,39 +94,23 @@ export function HostsPage() {
 			const result = (await api.getSupervisors()) as { supervisors: SupervisorRecord[] };
 			setSupervisors(result.supervisors ?? []);
 			setLoadError(null);
-			setNow(Date.now());
+			markFresh();
+			return true;
 		} catch (err) {
 			console.error("Failed to load supervisors:", err);
 			if (!quiet) setLoadError(formatLoadError(err));
+			return false;
 		} finally {
 			setLoading(false);
 			setRefreshing(false);
 		}
 	}
 
-	// Redraw every 30 s so a lease that runs out shows the offline notice without a refresh, and refetch
-	// every 15 s while a host is catching up (and the tab is in view) so its count and "Caught up." arrive.
-	const [now, setNow] = useState(() => Date.now());
-	const [tabHidden, setTabHidden] = useState(() => document.hidden);
-	useEffect(() => {
-		const tick = setInterval(() => setNow(Date.now()), HOSTS_TICK_MS);
-		const onVisibility = () => {
-			setTabHidden(document.hidden);
-			if (!document.hidden) setNow(Date.now());
-		};
-		document.addEventListener("visibilitychange", onVisibility);
-		return () => {
-			clearInterval(tick);
-			document.removeEventListener("visibilitychange", onVisibility);
-		};
-	}, []);
-	const polling = shouldPollHosts(supervisors, now, tabHidden);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: loadSupervisors is redefined each render; only the rule's outcome starts and stops the interval
-	useEffect(() => {
-		if (!polling) return;
-		const poll = setInterval(() => void loadSupervisors(false, true), OUTBOX_POLL_MS);
-		return () => clearInterval(poll);
-	}, [polling]);
+	// The time the cards judge leases by moves only when the hosts are really fetched (see useHostsClock).
+	const { now, markFresh } = useHostsClock({
+		supervisors,
+		refetch: () => loadSupervisors(false, true),
+	});
 
 	useEffect(() => {
 		loadSupervisors(true);
