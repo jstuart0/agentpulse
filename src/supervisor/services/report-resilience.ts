@@ -123,6 +123,9 @@ export function classifyReportFailure(error: unknown): ReportFailureClass {
 	if (status === 400 && error.error !== undefined && ENTRY_400_ERRORS.has(error.error)) {
 		return "entry";
 	}
+	// Too large for the server (or a proxy in front of it): the entry will never be taken, so it is dropped
+	// as lost at once, not retried until the poison rule removes it an hour later.
+	if (status === 413) return "entry";
 	if (status === 503 && error.error === "busy" && error.retryAfterMs !== undefined)
 		return "backoff";
 	if (status === 408 || status === 425 || status === 429 || status >= 500) return "server";

@@ -298,6 +298,16 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 		return entry;
 	}
 
+	/**
+	 * Stops following a bridge that looks gone. The scan's memory of the directory is forgotten with it: a
+	 * bridge that was only asleep (a laptop closed) comes back without changing the directory's own mtime,
+	 * so a scan that still remembered it would skip it for good.
+	 */
+	function drop(id: string) {
+		followed.delete(id);
+		known.delete(id);
+	}
+
 	function admit(sessionId: string) {
 		if (SESSION_ID_PATTERN.test(sessionId)) follow(sessionId);
 	}
@@ -561,7 +571,7 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 			st = await stat(entry.reportsDir);
 		} catch {
 			if (now() - entry.admittedAt > MISSING_REPORTS_GRACE_MS && !(await bridgeAlive(entry))) {
-				followed.delete(entry.id);
+				drop(entry.id);
 			}
 			return { used: 0, stopAll: false };
 		}
@@ -578,7 +588,7 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 			// (one stat) a quiet directory is checked for a living bridge and let go if there is none.
 			if (now() - entry.livenessCheckedAt >= LIVENESS_RECHECK_MS) {
 				entry.livenessCheckedAt = now();
-				if (!(await pidFresh(entry))) followed.delete(entry.id);
+				if (!(await pidFresh(entry))) drop(entry.id);
 			}
 			return { used: 0, stopAll: false };
 		}
@@ -645,7 +655,7 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 		// Something is left to do (files, or a lost count that couldn't be reported yet): look again next tick.
 		entry.backlog = remaining > 0 || lostPending;
 		if (!entry.backlog && !stopAll && !stopDir && !(await bridgeAlive(entry))) {
-			followed.delete(entry.id);
+			drop(entry.id);
 		}
 		return { used, stopAll };
 	}

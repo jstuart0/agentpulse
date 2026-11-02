@@ -309,7 +309,7 @@ describe("classifyReportFailure (AGEN-83 D8)", () => {
 		["503 with Retry-After and no body error", http(503, undefined, 2_000), "server"],
 		["599", http(599), "server"],
 		["404", http(404, "Launch request not found"), "stop"],
-		["413 payload_too_large", http(413, "payload_too_large"), "stop"],
+		["413 payload_too_large", http(413, "payload_too_large"), "entry"],
 		["a 400 with another body", http(400, "something_else"), "stop"],
 		["a 400 with no body error", http(400), "stop"],
 		["a 422", http(422), "stop"],

@@ -1811,3 +1811,32 @@ describe("a bridge's final reports are not stranded (AGEN-83 final review)", () 
 		expect(text).toMatch(/except BaseException:\s+#[^\n]*\n\s+remove_liveness_markers\(\)\s+raise/);
 	});
 });
+
+describe("a bridge that was asleep is followed again when it wakes (AGEN-83 final round)", () => {
+	test("L2: a scan-adopted bridge dropped as dead after a long sleep has its next report delivered", async () => {
+		makeBridge("sleeper");
+		const pidFile = join(bridgeDir("sleeper"), "bridge.pid");
+		writeFileSync(pidFile, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
+		const touch = () => utimesSync(pidFile, new Date(clock), new Date(clock));
+		touch();
+		put("sleeper", 1, envelope("events", eventBody({ content: "before" })));
+		const { gate, calls } = recorder();
+		const { drain } = makeDrain(gate);
+		await drain.drain(); // the scan finds a live bridge and follows it
+		expect(drain.stats().followed).toBe(1);
+		expect(calls).toHaveLength(1);
+		// the machine sleeps: no tick for a long while, the pid file goes stale, the directory looks gone
+		clock += 10 * 60_000;
+		await drain.drain();
+		expect(drain.stats().followed).toBe(0);
+		// it wakes: the bridge touches its pid file and writes a prompt; nothing in the directory's own entry changes
+		touch();
+		put("sleeper", 2, envelope("events", eventBody({ content: "after" })));
+		clock += SCAN_INTERVAL_MS + 1_000;
+		await drain.drain();
+		await drain.drain();
+		expect(
+			calls.map((c) => (c as { events?: Array<{ content?: string }> }).events?.[0]?.content),
+		).toEqual(["before", "after"]);
+	});
+});

@@ -1550,3 +1550,26 @@ describe("event content the server would refuse is cut, not lost with its batch"
 		expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
 	});
 });
+
+describe("a report the server says is too large (413)", () => {
+	const TOO_LARGE = () => http(413, "payload_too_large");
+
+	test("in the queue it is dropped as lost at once and the session goes on with the next entry", async () => {
+		const w = await world({ script: () => network() });
+		await w.gate.reportEvents("A", probe("huge"));
+		await w.gate.reportEvents("A", probe("small"));
+		w.gate.noteServerReachable();
+		w.setScript((call) => (call.rawBody.includes("huge") ? TOO_LARGE() : SERVER_OK));
+		await w.gate.flush();
+		// no hour-long wait for the poison rule: the huge one is gone and the small one delivered in the same pass
+		expect(w.pending()).toBe(0);
+		expect(w.outbox.summary().lastFlushLost).toBe(1);
+		expect(w.outbox.summary().lastFlushDelivered).toBe(1);
+	});
+
+	test("on a live send it is thrown to the caller, not queued to be refused again later", async () => {
+		const w = await world({ script: () => TOO_LARGE() });
+		await expect(w.gate.reportEvents("A", probe("huge"))).rejects.toMatchObject({ status: 413 });
+		expect(w.pending()).toBe(0);
+	});
+});
