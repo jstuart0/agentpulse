@@ -1173,4 +1173,69 @@ describe("the Phase 5 review fixes", () => {
 		await w.gate.flush();
 		expect(stateEntry(w, "s1").failures).toBe(1);
 	});
+
+	test("the missing-row snapshot is the fold of every queued state report: the creating one's agentType, cwd and model survive a newest patch that omits them", async () => {
+		const w = await world({ script: () => network() });
+		w.gate.noteCwd("ghost", work);
+		await w.gate.reportEvents("ghost", probe("early"));
+		await w.gate.reportState(
+			stateOf("ghost", {
+				agentType: "codex_cli",
+				cwd: work,
+				model: "model-x",
+				desiredThreadTitle: "t1",
+			}),
+		);
+		await w.gate.reportState({
+			sessionId: "ghost",
+			status: "completed",
+			managedState: "completed",
+		} as ManagedSessionStateInput);
+		expect(w.pending()).toBe(3);
+		w.gate.noteServerReachable();
+		let row = false;
+		w.setScript((call) => {
+			if (call.path.endsWith("/events")) return row ? SERVER_OK : http(500);
+			row = true;
+			return SERVER_OK;
+		});
+		const made = await flushed(w);
+		const snapshot = made.find((c) => c.path.endsWith("/managed-session-state"));
+		expect(snapshot?.body).toMatchObject({
+			sessionId: "ghost",
+			agentType: "codex_cli",
+			cwd: work,
+			model: "model-x",
+			status: "completed",
+		});
+		expect(made.filter((c) => c.path.endsWith("/managed-session-state"))).toHaveLength(1);
+		expect(w.pending()).toBe(0);
+	});
+
+	test("a snapshot the server refuses keeps every queued state report", async () => {
+		const w = await world({ script: () => network() });
+		await w.gate.reportEvents("ghost", probe("early"));
+		await w.gate.reportState(stateOf("ghost", { cwd: work }));
+		await w.gate.reportState(stateOf("ghost", { status: "completed" }));
+		w.gate.noteServerReachable();
+		w.setScript((call) => (call.path.endsWith("/events") ? http(500) : http(500)));
+		await w.gate.flush();
+		expect(w.pending()).toBe(3);
+	});
+
+	test("a live send that hits a proxy's 401 is kept as back-pressure: attempted, held, never counted", async () => {
+		const w = await world({ script: () => http(401, "Unauthorized") });
+		expect(await w.gate.reportEvents("s1", probe("x"))).toBe("queued");
+		expect(w.pending()).toBe(1);
+		const head = w.outbox.head("s1") as { attempted: boolean; failures?: number };
+		expect(head.attempted).toBe(true);
+		expect(head.failures).toBeUndefined();
+		expect(w.rejected()).toBe(0);
+		// the hold: a flush right away sends nothing, one after the wait does
+		w.setScript(() => SERVER_OK);
+		expect(await flushed(w)).toHaveLength(0);
+		clock += 5 * MINUTE;
+		expect(await flushed(w)).toHaveLength(1);
+		expect(w.pending()).toBe(0);
+	});
 });

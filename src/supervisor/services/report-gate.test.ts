@@ -2128,6 +2128,10 @@ describe("the terminal bridge script has no way to the network (drift guard)", (
 
 	/** The only names the script may take from the socket module directly: constants, never a constructor. */
 	const ALLOWED_FROM_SOCKET = new Set(["AF_UNIX", "SOCK_STREAM"]);
+	const ALLOWED_FROM_OS_SUBPROCESS: Record<string, Set<string>> = {
+		os: new Set<string>(),
+		subprocess: new Set<string>(["Popen", "PIPE", "DEVNULL"]),
+	};
 
 	/** Imports outside the allowlist, calls to `socket.socket` that don't name AF_UNIX, and dynamic loading. */
 	const structuralViolations = (text: string): string[] => {
@@ -2139,6 +2143,16 @@ describe("the terminal bridge script has no way to the network (drift guard)", (
 			if (from) {
 				const root = (from[1] as string).split(".")[0] as string;
 				if (!ALLOWED_IMPORTS.has(root)) found.push(`import of ${from[1]}`);
+				if (root === "os" || root === "subprocess") {
+					// `from os import system` dodges the `os.system` pattern: only the names the script uses are allowed
+					for (const name of (from[2] as string)
+						.split(",")
+						.map((x) => x.trim().split(/\s+as\s+/)[0])) {
+						if (!(ALLOWED_FROM_OS_SUBPROCESS[root] as Set<string>).has(name as string)) {
+							found.push(`from ${root} import ${name}`);
+						}
+					}
+				}
 				if (root === "socket") {
 					for (const name of (from[2] as string)
 						.split(",")
@@ -2160,6 +2174,9 @@ describe("the terminal bridge script has no way to the network (drift guard)", (
 		for (const m of text.matchAll(/\bsubprocess\.(?!Popen\b)(\w+)/g)) {
 			found.push(`subprocess.${m[1]}`);
 		}
+		// `import socket as s` would make every later `s.socket(...)` invisible to the checks below
+		if (/^\s*import\s+(?:[\w., ]*,\s*)?socket\s+as\s+\w+/m.test(text))
+			found.push("import socket as an alias");
 		// an alias of the constructor would dodge the AF_UNIX check below
 		if (/\bsocket\.socket\b(?!\()/.test(text)) found.push("socket.socket used without a call");
 		for (const m of text.matchAll(/\bsocket\.socket\(([^)]*)\)/g)) {
@@ -2202,6 +2219,11 @@ describe("the terminal bridge script has no way to the network (drift guard)", (
 			["from socket import socket", "from socket import socket"],
 			["from socket import create_connection", "from socket import AF_UNIX, create_connection"],
 			["socket.socket used without a call", "make = socket.socket"],
+			["from os import system", "from os import system"],
+			["from os import popen", "from os import path, popen"],
+			["from subprocess import run", "from subprocess import run"],
+			["from subprocess import check_output", "from subprocess import Popen, check_output"],
+			["import socket as an alias", "import socket as s"],
 			["os.system", "os.system('curl x')"],
 			["os.popen", "os.popen('curl x')"],
 			["os.execvp", "os.execvp('curl', ['curl'])"],

@@ -72,7 +72,7 @@ import {
 	isTrustedStateFileStat as storeIsTrustedStateFileStat,
 	trustedDirectory,
 } from "./private-store.js";
-import type { OutboxEntry, ReportOutbox } from "./report-outbox.js";
+import { type OutboxEntry, type ReportOutbox, foldStateReports } from "./report-outbox.js";
 import {
 	BACKOFF_BUDGET_MS,
 	type CredentialTripwire,
@@ -840,23 +840,56 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		} catch (error) {
 			if (!outbox?.enabled) throw error;
 			const failure = classifyReportFailure(error);
-			if (failure !== "network" && failure !== "server" && failure !== "backoff") throw error;
+			// A 401 or 403 that isn't the server's own credential wording comes from something in front of it:
+			// the report is kept as back-pressure, and the whole flush holds off, as for a queued one.
+			const edge = failure === "stop" && isEdgeRejection(error);
+			if (failure !== "network" && failure !== "server" && failure !== "backoff" && !edge)
+				throw error;
 			if (failure === "network") markOffline();
-			else noteSessionFailure(id, error, failure === "server");
+			else {
+				const wait = noteSessionFailure(id, error, failure === "server");
+				if (edge) edgeHoldUntilMs = now() + wait;
+			}
 			return keep(id, kind, text, true, deliveryId, error);
 		}
+	}
+
+	/** A 401 or 403 that isn't the server's own credential rejection. */
+	function isEdgeRejection(error: unknown): boolean {
+		return (
+			error instanceof SupervisorRequestError && (error.status === 401 || error.status === 403)
+		);
 	}
 
 	/** Whether the server has a record of this session from us: events for one it has never heard of can't be stored. */
 	const serverKnows = (id: string) => sessions.get(id)?.reported === true;
 
-	/** Sends a state snapshot ahead of the entries before it. */
+	/**
+	 * Sends the fold of the session's queued state reports ahead of the entries before them. A state report
+	 * is a patch (the server keeps what a later one omits only for some fields), so the newest alone could
+	 * lose what the creating one carried; the older ones are dropped only once the fold is accepted.
+	 */
 	async function sendSnapshot(
 		id: string,
-		snapshot: OutboxEntry,
+		states: OutboxEntry[],
 	): Promise<"sent" | "network" | "failed"> {
+		const snapshot = states[states.length - 1] as OutboxEntry;
+		let text: string;
 		try {
-			await sendText("/managed-session-state", snapshot.body, replayHeader(true));
+			const bodies = states.map((s) => JSON.parse(s.body) as ManagedSessionStateInput);
+			text = JSON.stringify(
+				bodies
+					.slice(1)
+					.reduce(
+						(acc, next) => foldStateReports(acc, next),
+						bodies[0] as ManagedSessionStateInput,
+					),
+			);
+		} catch {
+			return "failed";
+		}
+		try {
+			await sendText("/managed-session-state", text, replayHeader(true));
 		} catch (error) {
 			if (classifyReportFailure(error) === "network") {
 				markOffline();
@@ -864,10 +897,10 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			}
 			return "failed";
 		}
-		// A snapshot supersedes the state reports before it; they must not be sent after it.
+		// The fold carries every state before the newest; they must not be sent after it.
 		outbox?.remove(id, snapshot.seq, "delivered");
 		outbox?.dropStatesBefore(id, snapshot.seq);
-		markReported(id, terminalOf(snapshot.body));
+		markReported(id, terminalOf(text));
 		backoffs.delete(id);
 		backoffBudgets.delete(id);
 		return "sent";
@@ -905,20 +938,21 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		}
 		const status = error instanceof SupervisorRequestError ? error.status : 0;
 		// A 500 for events of a session the server has no row for yet: the state that creates it may be
-		// queued behind them, so it goes first (it is a snapshot of the session, so the newest is safe).
+		// queued behind them, so it goes first: the fold of every queued state report, as the server would
+		// hold them after receiving all in order.
 		const missingRow =
 			failure === "server" && status === 500 && head.kind !== "state" && !serverKnows(id);
 		if (missingRow) {
-			const snapshot = outbox.newestState(id);
-			if (snapshot) {
-				const result = await sendSnapshot(id, snapshot);
+			const states = outbox.queuedStates(id);
+			if (states.length > 0) {
+				const result = await sendSnapshot(id, states);
 				if (result === "network") return "all";
 				if (result === "sent") return "continue";
 			}
 		}
 		// A 401 or 403 that isn't the server's own credential wording comes from something in front of it (a
 		// proxy, an auth edge, a captive portal) and says nothing about this report.
-		const edge = failure === "stop" && (status === 401 || status === 403);
+		const edge = failure === "stop" && isEdgeRejection(error);
 		// The server's own back-pressure, those, and a row-less 500 are waiting, not failing. They count only
 		// once a head has waited longer than the budget.
 		const waiting = failure === "backoff" || missingRow || edge;

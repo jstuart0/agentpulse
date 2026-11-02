@@ -133,11 +133,11 @@ export interface ReportOutbox {
 	/** False when the write failed: the entry is still unattempted, so don't send it this round. */
 	markAttempted(sessionId: string, seq: number): boolean;
 	/**
-	 * The newest state entry of a session that is not its head, or null. A state report is a snapshot of
-	 * the session, so it can be sent ahead of the entries before it; its readers are the gate's answer to a
-	 * server that has no row for the session yet.
+	 * Every state entry of a session, oldest first (empty when there are none or one can't be trusted). A
+	 * state report is a patch, so what the session looks like is their fold, which the gate can send ahead
+	 * of the entries before it: its answer to a server that has no row for the session yet.
 	 */
-	newestState(sessionId: string): OutboxEntry | null;
+	queuedStates(sessionId: string): OutboxEntry[];
 	/**
 	 * Removes every state entry of the session older than `seq`, uncounted: once a newer snapshot has been
 	 * delivered they are superseded, and sending them afterwards would put the session back.
@@ -1136,18 +1136,18 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 		retireIfEmpty(state);
 	}
 
-	function newestState(sessionId: string): OutboxEntry | null {
+	function queuedStates(sessionId: string): OutboxEntry[] {
 		const state = sessions.get(sessionId);
-		if (!state || !isPrivateDirectory(state.dir)) return null;
-		for (let i = state.entries.length - 1; i >= 1; i--) {
-			const meta = state.entries[i] as EntryMeta;
+		if (!state || !isPrivateDirectory(state.dir)) return [];
+		const found: OutboxEntry[] = [];
+		for (const meta of state.entries) {
 			if (meta.kind && meta.kind !== "state") continue;
 			const read = readEntry(state, meta);
 			if (read === undefined) continue;
-			if (read === "held") return null;
-			if (read.kind === "state") return { ...read };
+			if (read === "held") return [];
+			if (read.kind === "state") found.push({ ...read });
 		}
-		return null;
+		return found;
 	}
 
 	function dropStatesBefore(sessionId: string, seq: number) {
@@ -1354,7 +1354,7 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 		append,
 		head,
 		markAttempted,
-		newestState,
+		queuedStates,
 		dropStatesBefore,
 		recordFailure,
 		remove,
