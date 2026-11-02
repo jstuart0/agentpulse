@@ -764,6 +764,7 @@ const SELF_SCAN_FAKE_CREDENTIAL_FIXTURES = new Set([
 	"src/web/lib/setup-steps.test.ts",
 	"scripts/install-local-private-write.test.ts",
 	"scripts/write-private-no-follow.test.ts",
+	"scripts/install-local-run.test.ts", // `--repo https://user:token@host/…` rows: the installer must refuse them
 ]);
 /** Files that are about redaction itself: their text is the rules' own test input. */
 const SELF_SCAN_FILES_ABOUT_REDACTION = new Set([

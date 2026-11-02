@@ -81,6 +81,12 @@ Windows:
 irm https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 | iex
 ```
 
+It needs `curl` and `git`, plus `python3` for the supervisor and hooks. If it can't find a Bun 1.3.12 or newer it installs a pinned one, which also needs `unzip` and `shasum` or `sha256sum`. Anything missing is listed up front with the command to install it, and nothing is installed until it's there. To put Bun somewhere of your choosing (supply it again on a re-run; with a `BUN_INSTALL` other than `~/.bun`, only `$BUN_INSTALL/bin/bun` is considered, not `PATH`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.sh | BUN_INSTALL=/opt/bun bash
+```
+
 When it finishes, open [http://localhost:3000](http://localhost:3000) and start a new Claude Code or Codex session.
 
 ### Docker install: 1 shell line
@@ -320,7 +326,8 @@ irm https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-l
 
 What it does:
 
-- installs Bun if needed
+- checks its prerequisites up front and names anything missing, with the package-manager command to install it, before it installs or writes any file (it may first remove group and other write permission from its own `~/.agentpulse` directories, which a umask of 002 leaves group-writable): `curl`, `git`, `python3` (when the supervisor or the agent hooks will be set up, so not with `--skip-supervisor --skip-hooks`, nor with `--disable-auth false` and no `--api-key`, which skips both), and, only when it has to install Bun, `unzip` and `shasum` or `sha256sum`
+- uses a Bun 1.3.12 or newer that's already there (`~/.bun`, or on your `PATH`), as long as it is owned by you or root, isn't writable by anyone else (Homebrew's, in macOS group `admin`, is fine) and sits on a path of letters, digits and `/ . _ + - @`. If it's a symbolic link, the directory of each link and of the target, and every directory above each, must meet the same rule. Otherwise it installs the pinned Bun 1.3.12 release, checked against its SHA-256, into `~/.agentpulse/bun`, or into `$BUN_INSTALL/bin` if you set `BUN_INSTALL`. It doesn't edit your shell rc files, so `bun` isn't added to your interactive `PATH`; the services are given the path of the Bun that was chosen. To pick the location, run `curl -fsSL … | BUN_INSTALL=/opt/bun bash` (supply it again on a re-run; any `BUN_INSTALL` other than `~/.bun` that holds an unusable Bun is refused)
 - clones AgentPulse to `~/.agentpulse/app`
 - builds the app
 - stores SQLite data in `~/.agentpulse/data`
@@ -465,8 +472,9 @@ curl -fsSL --proto '=https' https://your-server.example.com/setup-relay.sh | bas
 It asks for the API key on the terminal (input hidden), which keeps the key out of your shell history and the process list. For unattended installs, set `AGENTPULSE_KEY` or pass `--key ap_YOUR_KEY` instead; a re-run reuses the saved key. The dashboard's Setup page has this command ready to copy, with a **Mint relay key** button.
 
 That single command:
-- Checks the key with the server first, and writes nothing if it's missing a scope
-- Runs the relay on your Bun if it's 1.3.12 or newer; otherwise installs that pinned, checksum-verified release privately into `~/.agentpulse/bun` (your own Bun and shell profile are left alone). Older Bun releases don't apply file modes, which the relay relies on to keep its state private.
+- Checks `unzip` and a checksum tool (`shasum` or `sha256sum`) before it asks for the key, if it will need to install Bun, and names what's missing. It then checks the key with the server, and writes no file if the key is missing a scope (it may first remove group and other write permission from its own `~/.agentpulse` directories, which are left group-writable by a umask of 002)
+- Runs the relay on your Bun if it's 1.3.12 or newer, looking in this order: `$BUN_INSTALL` (or `~/.bun`), then your `PATH`. A Bun that is group-writable or owned by someone else is skipped, apart from Homebrew's on macOS (group `admin`). For a symbolic link, that includes every directory it leads through, and each one's parents up to `/`. Otherwise it installs the pinned, checksum-verified 1.3.12 release privately into `~/.agentpulse/bun` (your own Bun and shell profile are left alone). Older Bun releases don't apply file modes, which the relay relies on to keep its state private.
+- Needs a `HOME` whose path holds only letters, digits, spaces, UTF-8 text and `/ . _ + - @` (non-ASCII text needs `iconv` to be checked), because the service files hold it.
 - Installs the relay at `~/.agentpulse/relay.ts`, with its settings in `~/.agentpulse/config.json` (mode 600; the key never appears in a process list, the plist or the unit)
 - Installs the Claude Code statusline at `~/.claude/statusline-agentpulse.sh` and turns it on if you don't already have a `statusLine` (otherwise it prints the line to add)
 - Runs the relay as a macOS LaunchAgent or a Linux systemd user service that starts on login
@@ -514,7 +522,7 @@ Both:
 | `config.json` | Server URL, API key, port, `codex_name_policy` |
 | `installed.json` | When the installer last wrote the agent hooks |
 | `relay.ts`, `logs/` | The relay and its logs |
-| `bun/` | The relay's own Bun, if your Bun was too old or missing |
+| `bun/` | The pinned Bun 1.3.12 that the relay and the local install use when no usable Bun (1.3.12+, owned by you or root, not writable by others) was found |
 | `status` | The one-line hint the statusline shows (absent when all is well) |
 | `local-sessions.json` | Sessions this relay forwarded hooks for (the only ones it syncs CLAUDE.md for) |
 | `codex-pull-state.json` | Which Codex names were already sent to the dashboard |
@@ -525,7 +533,7 @@ Both:
 Plus the service (`~/Library/LaunchAgents/dev.agentpulse.relay.plist` or `~/.config/systemd/user/agentpulse-relay.service`) and `~/.claude/statusline-agentpulse.sh`.
 
 - **Reset** (clear sync state, keep the install): stop the relay, delete `status`, `local-sessions.json`, `codex-pull-state.json`, `cache/` and `hook-queue/` (unsent hooks are lost), then start it again.
-- **Uninstall**: stop the relay and delete the service file, all of `~/.agentpulse/` and `~/.claude/statusline-agentpulse.sh`. Remove the `statusLine` entry and the AgentPulse hooks from `~/.claude/settings.json`, and `~/.codex/hooks.json` if nothing else uses it.
+- **Uninstall**: stop the relay and delete the service file, all of `~/.agentpulse/` and `~/.claude/statusline-agentpulse.sh`. Deleting `~/.agentpulse/` also removes a local install's app, data and Bun that live there (`app/`, `data/`, `bun/`), so back up `data/` first if you ran `install-local.sh` on the same machine. Remove the `statusLine` entry and the AgentPulse hooks from `~/.claude/settings.json`, and `~/.codex/hooks.json` if nothing else uses it.
 - **Keep `codex-pushed.jsonl` unless you're uninstalling.** It's how the relay tells its own writes in Codex's index from Codex's. Without it, under the `codex` policy the relay would read the names it wrote earlier as Codex's own and send them back to the dashboard as agent names.
 
 **Option C: Kubernetes with forwardauth SSO (Authentik / Authelia / oauth2-proxy / Pomerium / Cloudflare Access)**
@@ -913,7 +921,7 @@ Get-Content "$HOME\.agentpulse\logs\supervisor.out.log" -Wait
 ```bash
 cd ~/.agentpulse/app
 export $(cat .env.local | xargs)
-bun run start
+~/.agentpulse/bun/bin/bun run start   # or the Bun path the installer printed
 ```
 
 ## Deploy on Kubernetes

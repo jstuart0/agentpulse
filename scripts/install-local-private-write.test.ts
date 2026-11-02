@@ -27,19 +27,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { extractMarkerBlock } from "./lib/installer-test-utils.ts";
 
 const ROOT = join(import.meta.dir, "..");
 
 function extractPrivateWriteBlock(): string {
-	const source = readFileSync(join(ROOT, "scripts/install-local.sh"), "utf-8");
-	const startMarker = "# >>> agentpulse-private-write";
-	const endMarker = "# <<< agentpulse-private-write";
-	const start = source.indexOf(startMarker);
-	const end = source.indexOf(endMarker);
-	if (start === -1 || end === -1) {
-		throw new Error("agentpulse-private-write markers not found in scripts/install-local.sh");
-	}
-	return source.slice(start, end + endMarker.length);
+	return extractMarkerBlock(
+		readFileSync(join(ROOT, "scripts/install-local.sh"), "utf-8"),
+		"agentpulse-private-write",
+	);
 }
 
 /**

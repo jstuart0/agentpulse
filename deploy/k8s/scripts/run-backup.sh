@@ -75,8 +75,9 @@ fi
 # open if writable; absence is normal after a clean checkpoint).
 ls -la "$SRC" "${SRC}-wal" "${SRC}-shm" 2>&1 || true
 
-# Probe: can we open the source?
-if ! sqlite3 "$SRC" "SELECT sqlite_version();" >/dev/null 2>&1; then
+# Probe: can we open the source? busy_timeout, because opening a WAL database
+# under a concurrent writer can briefly answer SQLITE_BUSY, which is not "can't open".
+if ! sqlite3 "$SRC" "PRAGMA busy_timeout=5000; SELECT sqlite_version();" >/dev/null 2>&1; then
 	echo "[backup] ERROR: cannot open source db (sqlite3 probe failed)"
 	exit 2
 fi
