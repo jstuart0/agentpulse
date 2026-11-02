@@ -99,6 +99,7 @@ function makeGate(
 		/** Reuse a recorder so a second gate (a restarted supervisor) reports into the same list. */
 		shared?: ReturnType<typeof recorder>;
 		maxTrackedSessions?: number;
+		isBridgeActive?: (sessionId: string) => boolean;
 		logs?: string[];
 	} = {},
 ) {
@@ -111,6 +112,7 @@ function makeGate(
 		now: () => clock,
 		log: (line) => opts.logs?.push(line),
 		maxTrackedSessions: opts.maxTrackedSessions,
+		isBridgeActive: opts.isBridgeActive,
 	});
 	return { gate, calls, headers };
 }
@@ -644,6 +646,31 @@ describe("the gate's memory survives a restart", () => {
 });
 
 describe("a bounded memory never turns a live session into a closing report", () => {
+	for (const rules of [false, true]) {
+		test(`an interactive launch with a live bridge is not the one forgotten to make room (${rules ? "rules in place" : "no rules"})`, () => {
+			const active = new Set(["bridge"]);
+			const { gate } = makeGate({ maxTrackedSessions: 4, isBridgeActive: (id) => active.has(id) });
+			if (rules) writeRules([work]);
+			gate.noteLaunch("launch-1", "bridge", elsewhere, { interactive: true });
+			gate.noteCwd("plain-1", elsewhere);
+			gate.noteCwd("plain-2", elsewhere);
+			gate.noteCwd("plain-3", elsewhere);
+			gate.noteCwd("plain-4", elsewhere);
+			expect(
+				gate.isInteractiveLaunch("bridge"),
+				"the oldest record is kept: its bridge is alive",
+			).toBe(true);
+			// once the bridge is gone it is an ordinary record again
+			active.clear();
+			gate.noteCwd("plain-5", elsewhere);
+			gate.noteCwd("plain-6", elsewhere);
+			gate.noteCwd("plain-7", elsewhere);
+			gate.noteCwd("plain-8", elsewhere);
+			gate.noteCwd("plain-9", elsewhere);
+			expect(gate.isInteractiveLaunch("bridge")).toBe(false);
+		});
+	}
+
 	test("sessions that were reported and not closed are never forgotten: a new one is refused instead", async () => {
 		const { gate, calls } = makeGate({ maxTrackedSessions: 3 });
 		await startSession(gate, "live-1", elsewhere);
@@ -2099,18 +2126,42 @@ describe("the terminal bridge script has no way to the network (drift guard)", (
 		"pathlib",
 	]);
 
+	/** The only names the script may take from the socket module directly: constants, never a constructor. */
+	const ALLOWED_FROM_SOCKET = new Set(["AF_UNIX", "SOCK_STREAM"]);
+
 	/** Imports outside the allowlist, calls to `socket.socket` that don't name AF_UNIX, and dynamic loading. */
 	const structuralViolations = (text: string): string[] => {
 		const found: string[] = [];
-		for (const m of text.matchAll(/^[ \t]*(?:import\s+([\w., ]+)|from\s+([\w.]+)\s+import\b)/gm)) {
-			const modules = m[1]
-				? m[1].split(",").map((x) => x.trim().split(/\s+as\s+/)[0] as string)
-				: [m[2] as string];
-			for (const module of modules) {
-				const root = module.split(".")[0] as string;
-				if (!ALLOWED_IMPORTS.has(root)) found.push(`import of ${module}`);
+		// statements, not lines: `import os; import ftplib` is two imports on one line
+		for (const statement of text.split(/[\n;]/)) {
+			const from = /^\s*from\s+([\w.]+)\s+import\s+(.*)$/.exec(statement);
+			const plain = /^\s*import\s+(.+)$/.exec(statement);
+			if (from) {
+				const root = (from[1] as string).split(".")[0] as string;
+				if (!ALLOWED_IMPORTS.has(root)) found.push(`import of ${from[1]}`);
+				if (root === "socket") {
+					for (const name of (from[2] as string)
+						.split(",")
+						.map((x) => x.trim().split(/\s+as\s+/)[0])) {
+						if (!ALLOWED_FROM_SOCKET.has(name as string)) found.push(`from socket import ${name}`);
+					}
+				}
+			} else if (plain) {
+				for (const part of (plain[1] as string).split(",")) {
+					const module = part.trim().split(/\s+as\s+/)[0] as string;
+					const root = module.split(".")[0] as string;
+					if (!ALLOWED_IMPORTS.has(root)) found.push(`import of ${module}`);
+				}
 			}
 		}
+		for (const m of text.matchAll(/\bos\.(system|popen|exec\w*|spawn\w*|posix_spawn\w*)\b/g)) {
+			found.push(`os.${m[1]}`);
+		}
+		for (const m of text.matchAll(/\bsubprocess\.(?!Popen\b)(\w+)/g)) {
+			found.push(`subprocess.${m[1]}`);
+		}
+		// an alias of the constructor would dodge the AF_UNIX check below
+		if (/\bsocket\.socket\b(?!\()/.test(text)) found.push("socket.socket used without a call");
 		for (const m of text.matchAll(/\bsocket\.socket\(([^)]*)\)/g)) {
 			if (!/\bAF_UNIX\b/.test(m[1] ?? ""))
 				found.push(`socket.socket(${m[1]}) does not name AF_UNIX`);
@@ -2146,6 +2197,18 @@ describe("the terminal bridge script has no way to the network (drift guard)", (
 			["import of ssl", "import json, ssl"],
 			["import of urllib", "from urllib import parse"],
 			["import of ftplib", "import ftplib as f"],
+			["import of ftplib", "import os, ftplib"],
+			["import of ftplib", "import os; import ftplib"],
+			["from socket import socket", "from socket import socket"],
+			["from socket import create_connection", "from socket import AF_UNIX, create_connection"],
+			["socket.socket used without a call", "make = socket.socket"],
+			["os.system", "os.system('curl x')"],
+			["os.popen", "os.popen('curl x')"],
+			["os.execvp", "os.execvp('curl', ['curl'])"],
+			["os.spawnl", "os.spawnl(os.P_WAIT, 'curl')"],
+			["subprocess.run", "subprocess.run(['curl', 'x'])"],
+			["subprocess.check_output", "subprocess.check_output(['curl'])"],
+			["subprocess.getoutput", "subprocess.getoutput('curl x')"],
 			["import of ctypes", "import ctypes"],
 			["socket.socket() does not name AF_UNIX", "s = socket.socket()"],
 			[

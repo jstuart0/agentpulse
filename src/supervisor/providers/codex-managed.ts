@@ -145,6 +145,11 @@ export function assertCodexThreadPrivileges(
 	} as CodexReportedPrivileges;
 }
 
+/** Whether the first title push should happen: not when the bootstrap state was only queued. */
+export function shouldPushBootstrapTitle(outcome: string | undefined): boolean {
+	return outcome !== "queued";
+}
+
 export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks: LaunchCallbacks) {
 	const privileges = requireLaunchPrivileges(
 		"codex_cli",
@@ -285,7 +290,11 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		});
 	}
 
-	await syncTitle(bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8));
+	// A queued bootstrap has no server name to go by: pushing the short id as the thread's title would
+	// stick. The title is left for reconcileManagedCodexTitles, once the server has the session.
+	if (shouldPushBootstrapTitle(bootstrap.outcome)) {
+		await syncTitle(bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8));
+	}
 
 	const runtime: ManagedCodexRuntime = {
 		sessionId: launch.launchCorrelationId,
@@ -293,7 +302,9 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		url,
 		client,
 		serverProcess,
-		currentThreadTitle: bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8),
+		currentThreadTitle: shouldPushBootstrapTitle(bootstrap.outcome)
+			? bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8)
+			: "",
 		protocolVersion: resolveProviderProtocolVersion(initResult),
 		activeTurnId: null,
 		intentionalClose: false,

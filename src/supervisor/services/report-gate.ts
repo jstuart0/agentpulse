@@ -26,9 +26,11 @@ import { randomUUID } from "node:crypto";
  * in a private file next to the stamp, so a restart forgets nothing: a session
  * excluded before it stays excluded and is closed exactly once.
  *
- * A host with no rules file pays nothing for any of this. While there are no rules
- * and nothing is excluded, the gate keeps its memory in the process only (no state
- * file is created or written), and a full memory forgets its oldest session instead
+ * A host with no rules file pays nothing for any of this. While there are no rules,
+ * nothing is excluded and no interactive terminal session has been launched, the gate
+ * keeps its memory in the process only (no state file is created or written); an
+ * interactive launch is remembered on disk regardless, because its terminal bridge
+ * outlives the supervisor and has to be found again after a restart. A full memory forgets its oldest session instead
  * of refusing a launch. When rules appear the memory is saved at the next decision
  * or scan. A session is let go (its slot reusable) once a terminal state report for
  * it has been delivered; with rules in place a launch is refused for capacity only
@@ -135,7 +137,7 @@ export type ReportOutcome = "sent" | "queued" | "excluded" | "blocked";
 export type ReportEventsOptions = { deliveryId?: string; replay?: boolean };
 export type ReportStateOptions = { replay?: boolean };
 
-export interface ReportGateDeps {
+interface ReportGateBaseDeps {
 	/** The supervisor's request function: the gate's only way out. */
 	request: (path: string, options?: RequestInit) => Promise<unknown>;
 	supervisorId: string;
@@ -155,15 +157,31 @@ export interface ReportGateDeps {
 	 * (and sent later, in order) instead.
 	 */
 	outbox?: ReportOutbox;
-	/** The one tripwire a rejected credential feeds; shared with the heartbeat and the bridge drain. */
-	credentialTripwire?: CredentialTripwire;
-	/** Called once the tripwire confirms the credential was rejected (the supervisor then disposes its runtimes and exits). */
-	onCredentialRejected?: () => void | Promise<void>;
+	/**
+	 * Whether this session's terminal bridge is still in use (followed by the spool drain, or alive): such a
+	 * record is not forgotten to make room, since forgetting it would strand the bridge's reports.
+	 */
+	isBridgeActive?: (sessionId: string) => boolean;
 	/** Jitter and backoff draw from this; a test passes a fixed one. */
 	random?: () => number;
 	/** Runs `fn` after `ms`. The default is an unref'd timer; a test resolves it at once. */
 	schedule?: (fn: () => void, ms: number) => void;
 }
+
+/**
+ * A tripwire and the handler that acts on its confirmation come together: a gate that counts credential
+ * rejections must say what happens when they are confirmed.
+ */
+export type CredentialDeps =
+	| { credentialTripwire?: undefined; onCredentialRejected?: undefined }
+	| {
+			/** The one tripwire a rejected credential feeds; shared with the heartbeat and the bridge drain. */
+			credentialTripwire: CredentialTripwire;
+			/** Called once the tripwire confirms the credential was rejected (the supervisor then disposes its runtimes and exits). */
+			onCredentialRejected: () => void | Promise<void>;
+	  };
+
+export type ReportGateDeps = ReportGateBaseDeps & CredentialDeps;
 
 /** Most queued reports sent for one session, and in all, by one flush. A flush every 3 s makes about 33 requests a second at most. */
 export const FLUSH_MAX_PER_SESSION = 50;
@@ -350,6 +368,8 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	/** The server has just come back: the next flush waits a random moment first. */
 	let settling = false;
 	let flushOpen = false;
+	/** Something in front of the server (a proxy, an auth edge) is refusing everything: no pass sends before this. */
+	let edgeHoldUntilMs = 0;
 	let flushing: Promise<void> | null = null;
 	/** A session whose sends failed waits before the next one: until when, and how many failures in a row. */
 	const backoffs = new Map<string, { untilMs: number; failures: number }>();
@@ -373,18 +393,17 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 
 	async function handleCredential(error: unknown) {
 		markCredentialHandled(error);
-		if (!tripwire) return;
+		if (!tripwire || !deps.onCredentialRejected) return;
 		if (tripwire.record() === "confirmed") {
-			log("[supervisor] the server rejected this supervisor's credential twice; shutting down");
-			await deps.onCredentialRejected?.();
+			log("[supervisor] the server rejected this supervisor's credential twice");
+			await deps.onCredentialRejected();
 		}
 	}
 
 	/**
 	 * Every request that leaves the gate. `headers` is only ever the delivery id and replay marker. A
 	 * success clears the credential tripwire and the offline latch; a credential rejection feeds the
-	 * tripwire (which decides whether it ends the supervisor); with an outbox, a 2xx whose body can't be
-	 * read is a delivery like any other.
+	 * tripwire (which decides whether it ends the supervisor).
 	 */
 	async function sendText(path: string, text: string, headers?: Record<string, string>) {
 		try {
@@ -396,10 +415,6 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			onContact();
 			return result;
 		} catch (error) {
-			if (outbox && error instanceof SyntaxError) {
-				onContact();
-				return undefined;
-			}
 			if (classifyReportFailure(error) === "credential") await handleCredential(error);
 			throw error;
 		}
@@ -438,11 +453,16 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		return live;
 	}
 
+	/** An interactive launch whose terminal bridge is still in use: forgetting it would strand the bridge's reports. */
+	function protectedBridge(id: string, rec: SessionRecord): boolean {
+		return rec.interactive === true && deps.isBridgeActive?.(id) === true;
+	}
+
 	/** Makes room for one more session by forgetting one that no longer needs the gate (never one in `keep`); false when there is none. */
 	function evictOne(keep: readonly string[]): boolean {
 		let fallback: string | undefined;
 		for (const [id, rec] of sessions) {
-			if (isLive(rec) || keep.includes(id)) continue;
+			if (isLive(rec) || keep.includes(id) || protectedBridge(id, rec)) continue;
 			if (!rec.excluded) {
 				sessions.delete(id);
 				return true;
@@ -468,7 +488,9 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			if (currentRules().state !== "none") {
 				if (liveCount() >= maxTracked) return undefined;
 			} else {
-				const oldest = [...sessions.keys()].find((key) => !keep.includes(key));
+				const oldest = [...sessions].find(
+					([key, rec]) => !keep.includes(key) && !protectedBridge(key, rec),
+				)?.[0];
 				if (oldest !== undefined) sessions.delete(oldest);
 			}
 		}
@@ -828,15 +850,38 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	/** Whether the server has a record of this session from us: events for one it has never heard of can't be stored. */
 	const serverKnows = (id: string) => sessions.get(id)?.reported === true;
 
+	/** Sends a state snapshot ahead of the entries before it. */
+	async function sendSnapshot(
+		id: string,
+		snapshot: OutboxEntry,
+	): Promise<"sent" | "network" | "failed"> {
+		try {
+			await sendText("/managed-session-state", snapshot.body, replayHeader(true));
+		} catch (error) {
+			if (classifyReportFailure(error) === "network") {
+				markOffline();
+				return "network";
+			}
+			return "failed";
+		}
+		// A snapshot supersedes the state reports before it; they must not be sent after it.
+		outbox?.remove(id, snapshot.seq, "delivered");
+		outbox?.dropStatesBefore(id, snapshot.seq);
+		markReported(id, terminalOf(snapshot.body));
+		backoffs.delete(id);
+		backoffBudgets.delete(id);
+		return "sent";
+	}
+
 	/**
 	 * What to do with a queue head whose send failed. `continue` goes on to the next entry, `next` leaves
 	 * this session for the next pass, `all` ends the pass.
 	 */
-	function afterFailure(
+	async function afterFailure(
 		id: string,
 		head: OutboxEntry,
 		error: unknown,
-	): "continue" | "next" | "all" {
+	): Promise<"continue" | "next" | "all"> {
 		if (!outbox) return "next";
 		const failure = classifyReportFailure(error);
 		if (failure === "network") {
@@ -858,24 +903,36 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			);
 			return "next";
 		}
-		// The server's own back-pressure, or a 500 for events of a session it has no record of yet (the
-		// state that creates it may still be on its way), is waiting, not failing. It counts only once a
-		// head has waited longer than the budget.
+		const status = error instanceof SupervisorRequestError ? error.status : 0;
+		// A 500 for events of a session the server has no row for yet: the state that creates it may be
+		// queued behind them, so it goes first (it is a snapshot of the session, so the newest is safe).
 		const missingRow =
-			failure === "server" &&
-			error instanceof SupervisorRequestError &&
-			error.status === 500 &&
-			head.kind !== "state" &&
-			!serverKnows(id);
-		let counts = failure !== "backoff" && !missingRow;
+			failure === "server" && status === 500 && head.kind !== "state" && !serverKnows(id);
+		if (missingRow) {
+			const snapshot = outbox.newestState(id);
+			if (snapshot) {
+				const result = await sendSnapshot(id, snapshot);
+				if (result === "network") return "all";
+				if (result === "sent") return "continue";
+			}
+		}
+		// A 401 or 403 that isn't the server's own credential wording comes from something in front of it (a
+		// proxy, an auth edge, a captive portal) and says nothing about this report.
+		const edge = failure === "stop" && (status === 401 || status === 403);
+		// The server's own back-pressure, those, and a row-less 500 are waiting, not failing. They count only
+		// once a head has waited longer than the budget.
+		const waiting = failure === "backoff" || missingRow || edge;
+		let counts = !waiting;
 		if (counts) {
 			noteSessionFailure(id, error, true);
 		} else {
-			const wait = noteSessionFailure(id, error, missingRow);
+			const wait = noteSessionFailure(id, error, missingRow || edge);
 			const budget = backoffBudgets.get(id);
 			const spent = (budget?.seq === head.seq ? budget.waitedMs : 0) + wait;
 			backoffBudgets.set(id, { seq: head.seq, waitedMs: spent });
 			counts = spent > BACKOFF_BUDGET_MS;
+			// The edge is in front of every session: the whole pass waits, not just this one.
+			if (edge) edgeHoldUntilMs = now() + wait;
 		}
 		const verdict = outbox.recordFailure(id, head.seq, now(), { counts });
 		if (verdict === "poisoned") {
@@ -883,7 +940,7 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			backoffBudgets.delete(id);
 			return "continue";
 		}
-		return "next";
+		return edge ? "all" : "next";
 	}
 
 	function terminalOf(body: string): boolean | undefined {
@@ -894,51 +951,63 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		}
 	}
 
-	/** One session's turn in a flush: sends its queue head by head until it runs out, fails, or hits its share. */
-	async function flushSession(id: string, budget: { left: number }): Promise<"next" | "all"> {
+	/** One send for a session, on its chain: judge, take the head, send it, settle the answer. */
+	async function flushStep(id: string, budget: { left: number }): Promise<"sent" | "next" | "all"> {
 		if (!outbox) return "next";
+		const verdict = decide(id);
+		if (verdict === "blocked") return "all";
+		if (verdict === "excluded") {
+			outbox.purge(id);
+			await closeIfNeeded(id);
+			return "next";
+		}
+		if (verdict !== "send") return "next";
+		const wait = backoffs.get(id);
+		if (wait && now() < wait.untilMs) return "next";
+		const head = outbox.head(id);
+		if (head === null || head === "held") return "next";
+		if (head.kind !== "state" && !outbox.markAttempted(id, head.seq)) return "next";
+		budget.left--;
+		try {
+			if (head.kind === "state") {
+				await sendText("/managed-session-state", head.body, replayHeader(true));
+			} else {
+				await sendText(`/managed-sessions/${id}/events`, head.body, {
+					...(head.deliveryId ? { [DELIVERY_ID_HEADER]: head.deliveryId } : {}),
+					...replayHeader(true),
+				});
+			}
+		} catch (error) {
+			const next = await afterFailure(id, head, error);
+			return next === "continue" ? "sent" : next;
+		}
+		outbox.remove(id, head.seq, "delivered");
+		markReported(id, head.kind === "state" ? terminalOf(head.body) : undefined);
+		backoffs.delete(id);
+		backoffBudgets.delete(id);
+		return "sent";
+	}
+
+	/**
+	 * One session's turn in a flush: its sends, one at a time, up to its share. The session's chain is taken
+	 * for each send, not for the whole turn, so a live report for it waits for at most one send.
+	 */
+	async function flushSession(id: string, budget: { left: number }): Promise<"next" | "all"> {
 		let sentHere = 0;
 		while (sentHere < FLUSH_MAX_PER_SESSION && budget.left > 0) {
-			const verdict = decide(id);
-			if (verdict === "blocked") return "all";
-			if (verdict === "excluded") {
-				outbox.purge(id);
-				await closeIfNeeded(id);
-				return "next";
-			}
-			if (verdict !== "send") return "next";
-			const wait = backoffs.get(id);
-			if (wait && now() < wait.untilMs) return "next";
-			const head = outbox.head(id);
-			if (head === null || head === "held") return "next";
-			if (head.kind !== "state" && !outbox.markAttempted(id, head.seq)) return "next";
-			budget.left--;
-			sentHere++;
-			try {
-				if (head.kind === "state") {
-					await sendText("/managed-session-state", head.body, replayHeader(true));
-				} else {
-					await sendText(`/managed-sessions/${id}/events`, head.body, {
-						...(head.deliveryId ? { [DELIVERY_ID_HEADER]: head.deliveryId } : {}),
-						...replayHeader(true),
-					});
-				}
-			} catch (error) {
-				const next = afterFailure(id, head, error);
-				if (next === "all") return "all";
-				if (next === "next") return "next";
+			const step = await serialize(id, () => flushStep(id, budget));
+			if (step === "sent") {
+				sentHere++;
 				continue;
 			}
-			outbox.remove(id, head.seq, "delivered");
-			markReported(id, head.kind === "state" ? terminalOf(head.body) : undefined);
-			backoffs.delete(id);
-			backoffBudgets.delete(id);
+			return step;
 		}
 		return "next";
 	}
 
 	async function flushPass(): Promise<void> {
 		if (!outbox?.enabled || offline) return;
+		if (now() < edgeHoldUntilMs) return;
 		if (settling && outbox.sessions().length > 0) {
 			settling = false;
 			await new Promise<void>((resolve) =>
@@ -955,7 +1024,7 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		const budget = { left: FLUSH_MAX_PER_PASS };
 		for (const id of outbox.sessions()) {
 			if (budget.left <= 0 || offline) break;
-			if ((await serialize(id, () => flushSession(id, budget))) === "all") break;
+			if ((await flushSession(id, budget)) === "all") break;
 		}
 		if (flushOpen && outbox.summary().pending === 0) {
 			outbox.endFlush(new Date(now()).toISOString());

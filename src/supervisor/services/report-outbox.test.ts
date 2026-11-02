@@ -985,6 +985,22 @@ describe("purge", () => {
 		expect(box.hasPending("keep")).toBe(true);
 	});
 
+	test("more half-finished purges than the in-memory leftover set holds are all finished at load, not just the first 1,024", async () => {
+		const first = open();
+		await first.ready();
+		putEvents(first, "keep");
+		const count = 1_100;
+		for (let i = 0; i < count; i++) {
+			const stale = join(rootDir(), `.purge-${i.toString(16).padStart(16, "0")}`);
+			mkdirSync(stale, { mode: 0o700 });
+			writeFileSync(join(stale, "0000000000000001.json"), "old");
+		}
+		const box = open();
+		await box.ready();
+		expect(readdirSync(rootDir()).filter((n) => n.startsWith(".purge-"))).toEqual([]);
+		expect(box.hasPending("keep")).toBe(true);
+	}, 30_000);
+
 	test("purging a session the outbox doesn't track still removes a directory left on disk", async () => {
 		plant("ghost", 1, {});
 		const box = open();

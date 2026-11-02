@@ -1191,8 +1191,20 @@ describe("idle ceilings", () => {
 				return { kind: "ok", text: JSON.stringify({ cwd: "/x" }) }; // no nonce: rejected
 			},
 		});
-		await drain.drain();
+		const realSetImmediate = globalThis.setImmediate;
+		let yields = 0;
+		globalThis.setImmediate = ((fn: () => void, ...rest: unknown[]) => {
+			yields++;
+			return (realSetImmediate as (...a: unknown[]) => unknown)(fn, ...rest);
+		}) as unknown as typeof setImmediate;
+		try {
+			await drain.drain();
+		} finally {
+			globalThis.setImmediate = realSetImmediate;
+		}
 		expect(counts.readFile).toBe(10_000);
+		// the fakes cost nothing, so only the scan's own yield lets the event loop turn: 10,000 / 200
+		expect(yields, "the first scan yields to the event loop as it goes").toBeGreaterThanOrEqual(45);
 		counts.stat = 0;
 		counts.readdir = 0;
 		counts.readFile = 0;
@@ -1203,6 +1215,27 @@ describe("idle ceilings", () => {
 		expect(counts.readdir).toBe(1);
 		expect(drain.stats().followed).toBe(0);
 	}, 60_000);
+});
+
+describe("isBridgeActive: whether the gate may forget an interactive launch", () => {
+	test("true while bridge.pid is fresh, false for a stale pid file, no file, or an unknown id", () => {
+		const { gate } = recorder();
+		const { drain } = makeDrain(gate);
+		makeBridge("fresh");
+		makeBridge("stale");
+		makeBridge("nopid");
+		const pid = (id: string, at: number) => {
+			const file = join(bridgeDir(id), "bridge.pid");
+			writeFileSync(file, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
+			utimesSync(file, new Date(at), new Date(at));
+		};
+		pid("fresh", clock - 10_000);
+		pid("stale", clock - 10 * 60_000);
+		expect(drain.isBridgeActive("fresh")).toBe(true);
+		expect(drain.isBridgeActive("stale")).toBe(false);
+		expect(drain.isBridgeActive("nopid")).toBe(false);
+		expect(drain.isBridgeActive("never-heard-of")).toBe(false);
+	});
 });
 
 describe("scrubbing the credentials an older supervisor left in bridge.json", () => {

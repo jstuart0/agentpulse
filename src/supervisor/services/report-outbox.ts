@@ -133,6 +133,17 @@ export interface ReportOutbox {
 	/** False when the write failed: the entry is still unattempted, so don't send it this round. */
 	markAttempted(sessionId: string, seq: number): boolean;
 	/**
+	 * The newest state entry of a session that is not its head, or null. A state report is a snapshot of
+	 * the session, so it can be sent ahead of the entries before it; its readers are the gate's answer to a
+	 * server that has no row for the session yet.
+	 */
+	newestState(sessionId: string): OutboxEntry | null;
+	/**
+	 * Removes every state entry of the session older than `seq`, uncounted: once a newer snapshot has been
+	 * delivered they are superseded, and sending them afterwards would put the session back.
+	 */
+	dropStatesBefore(sessionId: string, seq: number): void;
+	/**
 	 * Notes a failed delivery of the head. Counts toward the poison rule unless `opts.counts` is false: a
 	 * server's own back-pressure (a 503 carrying Retry-After) is not a failure and must be passed as
 	 * `counts: false`, which changes nothing and never poisons.
@@ -1125,6 +1136,34 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 		retireIfEmpty(state);
 	}
 
+	function newestState(sessionId: string): OutboxEntry | null {
+		const state = sessions.get(sessionId);
+		if (!state || !isPrivateDirectory(state.dir)) return null;
+		for (let i = state.entries.length - 1; i >= 1; i--) {
+			const meta = state.entries[i] as EntryMeta;
+			if (meta.kind && meta.kind !== "state") continue;
+			const read = readEntry(state, meta);
+			if (read === undefined) continue;
+			if (read === "held") return null;
+			if (read.kind === "state") return { ...read };
+		}
+		return null;
+	}
+
+	function dropStatesBefore(sessionId: string, seq: number) {
+		const state = sessions.get(sessionId);
+		if (!state || !isPrivateDirectory(state.dir)) return;
+		for (const meta of [...state.entries]) {
+			if (meta.seq >= seq) break;
+			if (meta.kind && meta.kind !== "state") continue;
+			const read = readEntry(state, meta);
+			if (!read || read === "held" || read.kind !== "state") continue;
+			unlinkQuiet(join(state.dir, seqName(meta.seq)));
+			dropMeta(state, meta);
+		}
+		retireIfEmpty(state);
+	}
+
 	function markAttempted(sessionId: string, seq: number): boolean {
 		const state = sessions.get(sessionId);
 		const current = head(sessionId);
@@ -1315,6 +1354,8 @@ export function createReportOutbox(opts: CreateReportOutboxOptions): ReportOutbo
 		append,
 		head,
 		markAttempted,
+		newestState,
+		dropStatesBefore,
 		recordFailure,
 		remove,
 		purge,

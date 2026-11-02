@@ -77,9 +77,8 @@ describe("src/supervisor/index.ts keeps the host alive and offline-aware (AGEN-8
 		expect(stale).toBeLessThan(counts);
 		expect(counts).toBeLessThan(bridges);
 		expect(watchdog).toMatch(/codex > 0 \|\| headless > 0\s*\?\s*0/);
-		expect(watchdog).toContain("liveBridgeCount().catch(() => null)");
+		expect(watchdog).toMatch(/countBridgesBounded\(\s*\(\) => bridgeSpool\.liveBridgeCount\(\)/);
 		expect(watchdog).toContain("BRIDGE_COUNT_TIMEOUT_MS");
-		expect(watchdog).toContain("resolve(null)");
 	});
 
 	test("when it stays up it says so once per stale period, and a good heartbeat starts a new period", () => {

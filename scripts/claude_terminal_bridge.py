@@ -93,13 +93,15 @@ def resolve_nonce(config: dict, warn=None) -> str:
     return ""
 
 
-def echo_enabled(fd: int) -> bool:
-    """Whether the terminal behind `fd` is echoing what is typed. A password prompt turns echo off, and what
-    is typed then must not be kept. If the terminal can't be asked, echo is assumed on."""
+def hidden_input(fd: int) -> bool:
+    """Whether what is typed is a secret being read: echo off while the terminal is in line mode (getpass,
+    sudo, ssh). A full-screen program in raw mode also turns echo off, but it is not line mode, so its
+    prompts are still captured. If the terminal can't be asked, input is assumed visible."""
     try:
-        return bool(termios.tcgetattr(fd)[3] & termios.ECHO)
+        lflag = termios.tcgetattr(fd)[3]
     except termios.error:
-        return True
+        return False
+    return not (lflag & termios.ECHO) and bool(lflag & termios.ICANON)
 
 
 class ReportSpool:
@@ -384,7 +386,7 @@ def main() -> int:
                     if not data:
                         continue
                     os.write(master_fd, data)
-                    if not echo_enabled(master_fd):
+                    if hidden_input(master_fd):
                         # A password or other secret is being typed: forward it, keep none of it.
                         typed_buffer = ""
                         continue

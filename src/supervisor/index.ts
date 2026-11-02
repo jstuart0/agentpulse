@@ -30,7 +30,11 @@ import {
 	warnIfHomeMismatch,
 } from "./services/exclude-rules-watch.js";
 import { disposeRuntimesAndExit } from "./services/fatal-exit.js";
-import { keepAliveLine, shouldExitOnStaleHeartbeat } from "./services/keep-alive.js";
+import {
+	countBridgesBounded,
+	keepAliveLine,
+	shouldExitOnStaleHeartbeat,
+} from "./services/keep-alive.js";
 import { parseErrorBodyField, sanitizeForLog } from "./services/log-sanitize.js";
 import { executePrelaunchActions } from "./services/prelaunch-actions.js";
 import { retryWithBackoff } from "./services/registration-retry.js";
@@ -102,7 +106,13 @@ async function request(path: string, options?: RequestInit) {
 			parseRetryAfterMs(res.headers.get("retry-after"), Date.now()),
 		);
 	}
-	return res.json();
+	try {
+		return await res.json();
+	} catch (cause) {
+		// A 2xx that isn't JSON is not the server's answer (a captive portal, a proxy's error page): it is
+		// treated like no answer at all, so nothing queued is taken as delivered.
+		throw new SupervisorNetworkError(cause);
+	}
 }
 
 async function main() {
@@ -116,8 +126,8 @@ async function main() {
 	// an old-shadow 401/403 from a not-yet-upgraded server during a
 	// mixed-version rollout) and on no answer at all (the server is down or
 	// unreachable, as it is when the supervisor restarts mid-outage) instead
-	// of exiting and crash-looping. Only a config load failure or a
-	// malformed success body is fatal here.
+	// of exiting and crash-looping, and on a 2xx that isn't JSON (treated as
+	// no answer). Only a config load failure is fatal here.
 	const registration = (await retryWithBackoff(
 		() =>
 			request("/supervisors/register", {
@@ -217,6 +227,7 @@ async function main() {
 		version: config.version,
 		rules,
 		outbox,
+		isBridgeActive: (sessionId) => bridgeSpool.isBridgeActive(sessionId),
 		credentialTripwire,
 		onCredentialRejected: disposeRuntimesAndExit,
 	});
@@ -251,12 +262,10 @@ async function main() {
 				const bridges =
 					codex > 0 || headless > 0
 						? 0
-						: await Promise.race([
-								bridgeSpool.liveBridgeCount().catch(() => null),
-								new Promise<null>((resolve) =>
-									setTimeout(() => resolve(null), BRIDGE_COUNT_TIMEOUT_MS),
-								),
-							]);
+						: await countBridgesBounded(
+								() => bridgeSpool.liveBridgeCount(),
+								BRIDGE_COUNT_TIMEOUT_MS,
+							);
 				if (
 					shouldExitOnStaleHeartbeat({
 						staleMs,

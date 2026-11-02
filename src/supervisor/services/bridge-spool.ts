@@ -30,7 +30,7 @@
  * bridges costs one directory listing and one `lstat` each per minute, and no reads.
  */
 import { createHash } from "node:crypto";
-import { unlinkSync } from "node:fs";
+import { statSync, unlinkSync } from "node:fs";
 import { lstat as fsLstat, readdir as fsReaddir } from "node:fs/promises";
 import { join } from "node:path";
 import { LATE_ARRIVAL_MS } from "../../shared/late-arrival.js";
@@ -111,6 +111,8 @@ export interface BridgeSpoolDrain {
 	admit(sessionId: string): void;
 	/** One pass over the followed directories; an overlapping call returns the pass already running. */
 	drain(): Promise<void>;
+	/** Whether this bridge directory is still in use: followed by the drain, or its pid file touched within 90 s. */
+	isBridgeActive(sessionId: string): boolean;
 	/** How many followed bridges are alive: a pid file naming a live process, touched within 90 s. */
 	liveBridgeCount(): Promise<number>;
 	/** Removes the credentials an older supervisor wrote into `bridge.json`; returns how many files it rewrote. */
@@ -769,7 +771,18 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 		return rewritten;
 	}
 
+	function isBridgeActive(sessionId: string): boolean {
+		if (followed.has(sessionId)) return true;
+		try {
+			const st = statSync(join(root, sessionId, "bridge.pid"));
+			return now() - st.mtimeMs <= BRIDGE_ALIVE_MS;
+		} catch {
+			return false;
+		}
+	}
+
 	return {
+		isBridgeActive,
 		admit,
 		drain,
 		liveBridgeCount,

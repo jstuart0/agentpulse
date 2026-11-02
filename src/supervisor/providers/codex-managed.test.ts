@@ -1,8 +1,27 @@
 import { beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
 	_resetWarnedProtocolVersionsForTest,
 	resolveProviderProtocolVersion,
+	shouldPushBootstrapTitle,
 } from "./codex-managed.js";
+
+describe("the first title push after a bootstrap report", () => {
+	test("a queued bootstrap never pushes the short-id title; every other outcome does", () => {
+		expect(shouldPushBootstrapTitle("queued")).toBe(false);
+		for (const outcome of ["sent", "excluded", "blocked", undefined]) {
+			expect(shouldPushBootstrapTitle(outcome), String(outcome)).toBe(true);
+		}
+	});
+
+	test("the launch path asks before it syncs the title, and records no title when it didn't", () => {
+		const text = readFileSync(new URL("./codex-managed.ts", import.meta.url), "utf-8");
+		expect(text).toMatch(
+			/if \(shouldPushBootstrapTitle\(bootstrap\.outcome\)\) \{\s*await syncTitle\(/,
+		);
+		expect(text).toMatch(/currentThreadTitle: shouldPushBootstrapTitle\(bootstrap\.outcome\)/);
+	});
+});
 
 describe("resolveProviderProtocolVersion", () => {
 	// The warn-once memory is module-level; each test needs to start without it.

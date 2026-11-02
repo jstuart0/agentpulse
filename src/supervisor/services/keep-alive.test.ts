@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { keepAliveLine, shouldExitOnStaleHeartbeat } from "./keep-alive.js";
+import { countBridgesBounded, keepAliveLine, shouldExitOnStaleHeartbeat } from "./keep-alive.js";
 
 const T = 90_000;
 
@@ -73,8 +73,7 @@ describe("shouldExitOnStaleHeartbeat", () => {
 	});
 
 	test("queued reports are not an input: they don't keep a supervisor with nothing running alive", () => {
-		// the function takes no queue figure at all; this pins that by its parameter list
-		expect(shouldExitOnStaleHeartbeat.length).toBe(1);
+		// the input type has no queue figure at all, so nothing queued can reach the decision
 		expect(
 			shouldExitOnStaleHeartbeat({
 				staleMs: T + 1,
@@ -92,5 +91,46 @@ describe("keepAliveLine", () => {
 		expect(keepAliveLine(125_400, 3)).toBe(
 			"server unreachable for 125s; keeping 3 managed sessions running; their events are queued on this host",
 		);
+	});
+});
+
+describe("countBridgesBounded", () => {
+	test("returns the count, and clears its timer", async () => {
+		let cancelled = 0;
+		const n = await countBridgesBounded(
+			async () => 3,
+			2_000,
+			() => "h",
+			() => void cancelled++,
+		);
+		expect(n).toBe(3);
+		expect(cancelled).toBe(1);
+	});
+
+	test("an error is null (unknown), not a throw", async () => {
+		const n = await countBridgesBounded(
+			async () => {
+				throw new Error("EACCES");
+			},
+			2_000,
+			() => "h",
+			() => {},
+		);
+		expect(n).toBeNull();
+	});
+
+	test("no answer in time is null", async () => {
+		let fire: () => void = () => {};
+		const pending = countBridgesBounded(
+			() => new Promise<number>(() => {}),
+			2_000,
+			(fn) => {
+				fire = fn;
+				return "h";
+			},
+			() => {},
+		);
+		fire();
+		expect(await pending).toBeNull();
 	});
 });

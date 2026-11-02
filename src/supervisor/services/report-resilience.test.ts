@@ -4,7 +4,7 @@
  * onFatal callback and stops. A 403 (session_not_owned) or any 5xx must
  * log and continue, exactly like before D7.
  */
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
 	BACKOFF_BUDGET_MS,
 	MIN_RETRY_AFTER_MS,
@@ -263,39 +263,18 @@ describe("reportInSessionSafely: a confirmed credential rejection is fatal, anyt
 		expect(fatalCalled).toBe(false);
 	});
 
-	test("defaults onFatal to process.exit(1) when the caller doesn't supply one and the rejection is confirmed (mocked)", async () => {
-		const exitSpy = spyOn(process, "exit").mockImplementation(
-			(() => undefined) as unknown as typeof process.exit,
-		);
-		try {
-			let clock = 1_000;
-			setSharedCredentialTripwire(createCredentialTripwire({ now: () => clock }));
-			await reportInSessionSafely("test-scope", "sess-6", "reportState", async () => {
-				throw CREDENTIAL();
-			});
-			expect(exitSpy).not.toHaveBeenCalled();
-			clock += 11_000;
-			await reportInSessionSafely("test-scope", "sess-6", "reportState", async () => {
-				throw CREDENTIAL();
-			});
-			expect(exitSpy).toHaveBeenCalledWith(1);
-		} finally {
-			exitSpy.mockRestore();
-		}
-	});
-
-	test("the default onFatal is NOT invoked for a 403 (mocked process.exit stays uncalled)", async () => {
-		const exitSpy = spyOn(process, "exit").mockImplementation(
-			(() => undefined) as unknown as typeof process.exit,
-		);
-		try {
-			await reportInSessionSafely("test-scope", "sess-7", "reportState", async () => {
+	test("onFatal is NOT invoked for a 403", async () => {
+		let fatal = 0;
+		await reportInSessionSafely(
+			"test-scope",
+			"sess-7",
+			"reportState",
+			async () => {
 				throw new SupervisorRequestError(403, "Forbidden");
-			});
-			expect(exitSpy).not.toHaveBeenCalled();
-		} finally {
-			exitSpy.mockRestore();
-		}
+			},
+			() => void fatal++,
+		);
+		expect(fatal).toBe(0);
 	});
 });
 

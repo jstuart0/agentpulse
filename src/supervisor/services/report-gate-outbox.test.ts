@@ -19,7 +19,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ManagedSessionEventInput, ManagedSessionStateInput } from "../../shared/types.js";
-import { FLUSH_MAX_PER_PASS, FLUSH_MAX_PER_SESSION, createReportGate } from "./report-gate.js";
+import {
+	type CredentialDeps,
+	FLUSH_MAX_PER_PASS,
+	FLUSH_MAX_PER_SESSION,
+	createReportGate,
+} from "./report-gate.js";
 import { createReportOutbox, outboxDirName } from "./report-outbox.js";
 import {
 	BACKOFF_BUDGET_MS,
@@ -107,6 +112,10 @@ function buildWorld(
 		canConfirm: over.canConfirm,
 		log: (l) => logs.push(l),
 	});
+	const credentials: CredentialDeps =
+		over.withTripwire === false
+			? {}
+			: { credentialTripwire: tripwire, onCredentialRejected: () => void rejected++ };
 	const gate = createReportGate({
 		request,
 		supervisorId: "sup-1",
@@ -114,8 +123,7 @@ function buildWorld(
 		now: () => clock,
 		log: (l) => logs.push(l),
 		outbox,
-		credentialTripwire: over.withTripwire === false ? undefined : tripwire,
-		onCredentialRejected: () => void rejected++,
+		...credentials,
 		random: over.random ?? (() => 0.5),
 		schedule: (fn, ms) => {
 			scheduled.push(ms);
@@ -291,13 +299,13 @@ describe("when the server can't be reached", () => {
 		expect(existsSync(outboxRoot())).toBe(false);
 	});
 
-	test("a 2xx whose body can't be read is a delivery: sent, not queued, not an error", async () => {
-		const w = await world({ script: () => new SyntaxError("Unexpected end of JSON input") });
-		expect(await w.gate.reportEvents("s1", probe("x"))).toBe("sent");
-		const state = await w.gate.reportState(stateOf("s1"));
-		expect(state.outcome).toBe("sent");
-		expect(state.session.displayName).toBe("");
-		expect(w.pending()).toBe(0);
+	test("a 2xx that isn't JSON (an HTML page from a proxy) is no delivery: queued, and the reports stay", async () => {
+		const w = await world({
+			script: () => new SupervisorNetworkError(new SyntaxError("Unexpected token '<'")),
+		});
+		expect(await w.gate.reportEvents("s1", probe("x"))).toBe("queued");
+		expect((await w.gate.reportState(stateOf("s1"))).outcome).toBe("queued");
+		expect(w.pending()).toBe(2);
 	});
 });
 
@@ -616,13 +624,14 @@ describe("each kind of failure while sending what was kept (D8)", () => {
 		expect(w.logs.join("\n")).toContain("local reason");
 	});
 
-	test("a 2xx whose body can't be read is a delivery in a flush too", async () => {
+	test("an HTML 200 in a flush leaves every queued entry in place", async () => {
 		const w = await world({ script: () => network() });
 		await queuedState(w);
-		w.setScript(() => new SyntaxError("bad json"));
+		await w.gate.reportEvents("s1", probe("x"));
+		w.setScript(() => new SupervisorNetworkError(new SyntaxError("Unexpected token '<'")));
 		await w.gate.flush();
-		expect(w.pending()).toBe(0);
-		expect(w.outbox.summary().lastFlushDelivered).toBe(1);
+		expect(w.pending()).toBe(2);
+		expect(w.outbox.summary().lastFlushDelivered).toBe(0);
 	});
 
 	test("held: a session whose head can't be trusted is skipped and does not block another", async () => {
@@ -1032,5 +1041,136 @@ describe("leftovers", () => {
 		w.gate.noteServerReachable();
 		await w.gate.flush();
 		expect(readdirSync(outboxRoot()).filter((n) => n.startsWith("s-"))).toEqual([]);
+	});
+});
+
+describe("the Phase 5 review fixes", () => {
+	const stateEntry = (w: World, id: string) =>
+		w.outbox.head(id) as { kind: string; failures?: number };
+
+	test("a live report issued mid-flush is not held for the whole turn: it completes within about one round trip", async () => {
+		const RTT = 30;
+		const w = await world({ script: () => network() });
+		for (let i = 0; i < 50; i++) await w.gate.reportEvents("a", probe(`m${i}`));
+		w.setScript(async () => {
+			await new Promise((r) => setTimeout(r, RTT));
+			return SERVER_OK;
+		});
+		w.gate.noteServerReachable();
+		const turn = w.gate.flush();
+		await new Promise((r) => setTimeout(r, 5));
+		const started = performance.now();
+		await w.gate.reportEvents("a", probe("live"));
+		const took = performance.now() - started;
+		await turn;
+		// the whole turn is 50 round trips (1.5 s): the report waited for at most the one in flight
+		expect(took).toBeLessThan(RTT * 4 + 100);
+	}, 20_000);
+
+	test("the 100-per-pass cap with three sessions of 60: 100 first (A 50, B 50, C none), then the rest", async () => {
+		const w = await world({ script: () => network() });
+		for (const id of ["A", "B", "C"]) {
+			for (let i = 0; i < 60; i++) await w.gate.reportEvents(id, probe(`${id}${i}`));
+		}
+		w.setScript(() => SERVER_OK);
+		w.gate.noteServerReachable();
+		const first = await flushed(w);
+		const per = (calls: Call[], id: string) =>
+			calls.filter((c) => c.path.includes(`/${id}/`)).length;
+		expect(first).toHaveLength(100);
+		const firstCounts = ["A", "B", "C"].map((id) => per(first, id)).sort((x, y) => x - y);
+		expect(firstCounts, "two sessions get their 50 and the third is short").toEqual([0, 50, 50]);
+		expect(await flushed(w)).toHaveLength(70);
+		expect(await flushed(w)).toHaveLength(10);
+		expect(w.pending()).toBe(0);
+	});
+
+	test("a second head is its own: after the first is delivered and pressure returns, its failures stay undefined for six hours", async () => {
+		const w = await world({ script: () => network() });
+		w.gate.noteCwd("s1", work);
+		await w.gate.reportState(stateOf("s1"));
+		await w.gate.reportEvents("s1", probe("second"));
+		expect(w.pending()).toBe(2);
+		w.gate.noteServerReachable();
+		let delivered = 0;
+		w.setScript(() => (delivered++ === 0 ? SERVER_OK : http(503, "busy", HOUR)));
+		for (let i = 0; i < 6; i++) {
+			await w.gate.flush();
+			clock += HOUR;
+		}
+		expect(w.pending()).toBe(1);
+		expect(stateEntry(w, "s1").kind).toBe("events");
+		expect(stateEntry(w, "s1").failures).toBeUndefined();
+	});
+
+	test("[events, state] queued for a session the server has never seen: the state goes first, then the events, without a six-hour stall", async () => {
+		const w = await world({ script: () => network() });
+		await w.gate.reportEvents("ghost", probe("early"));
+		await w.gate.reportState(stateOf("ghost"));
+		expect(w.pending()).toBe(2);
+		w.gate.noteServerReachable();
+		let row = false;
+		w.setScript((call) => {
+			if (call.path.endsWith("/events")) return row ? SERVER_OK : http(500);
+			row = true;
+			return SERVER_OK;
+		});
+		const made = await flushed(w);
+		expect(made.map((c) => c.path.split("/").pop())).toEqual([
+			"events",
+			"managed-session-state",
+			"events",
+		]);
+		expect(made[1]?.headers?.["X-AgentPulse-Replay"]).toBeDefined();
+		expect(w.pending()).toBe(0);
+	});
+
+	test("with no state queued for such a session, the six-hour path ends with the events counted and removed", async () => {
+		const w = await world({ script: () => network() });
+		await w.gate.reportEvents("ghost", probe("early"));
+		w.gate.noteServerReachable();
+		w.setScript(() => http(500, undefined, HOUR));
+		for (let i = 0; i < 6; i++) {
+			await w.gate.flush();
+			clock += HOUR;
+		}
+		expect(stateEntry(w, "ghost").failures).toBeUndefined();
+		for (let i = 0; i < 12 && w.pending() > 0; i++) {
+			await w.gate.flush();
+			clock += HOUR;
+		}
+		expect(w.pending()).toBe(0);
+		expect(w.outbox.summary().lastFlushLost).toBeGreaterThanOrEqual(0);
+	});
+
+	test("a 401 or 403 that isn't the server's own is back-pressure: hours of it drop nothing, one call per pass", async () => {
+		const w = await world({ script: () => network() });
+		await w.gate.reportState(stateOf("s1"));
+		await w.gate.reportState(stateOf("s2"));
+		w.gate.noteServerReachable();
+		w.setScript(() => http(401, "Unauthorized"));
+		let calls = 0;
+		for (let i = 0; i < 100; i++) {
+			calls += (await flushed(w)).length;
+			clock += 61_000;
+		}
+		expect(calls, "the whole pass is held, so one call per attempt").toBeLessThanOrEqual(100);
+		expect(w.pending()).toBe(2);
+		expect(stateEntry(w, "s1").failures).toBeUndefined();
+		expect(w.rejected()).toBe(0);
+	});
+
+	test("but a proxy's 403 that outlasts the six-hour budget starts to count", async () => {
+		const w = await world({ script: () => network() });
+		await w.gate.reportState(stateOf("s1"));
+		w.gate.noteServerReachable();
+		w.setScript(() => http(403, "Forbidden", HOUR));
+		for (let i = 0; i < 6; i++) {
+			await w.gate.flush();
+			clock += HOUR;
+		}
+		expect(stateEntry(w, "s1").failures).toBeUndefined();
+		await w.gate.flush();
+		expect(stateEntry(w, "s1").failures).toBe(1);
 	});
 });

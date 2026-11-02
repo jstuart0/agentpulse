@@ -55,6 +55,12 @@ describe("request(): failures", () => {
 		expect(BODY.slice(catchAt, catchAt + 400)).toContain("throw new SupervisorNetworkError(cause)");
 	});
 
+	test("a 2xx whose body isn't JSON (a proxy's HTML page) is a network failure, never a delivery", () => {
+		expect(BODY).toMatch(
+			/try \{\s*return await res\.json\(\);\s*\} catch \(cause\) \{[^}]*throw new SupervisorNetworkError\(cause\);/,
+		);
+	});
+
 	test("the timeout stays: a stalled server is a network failure too", () => {
 		expect(BODY).toContain("signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)");
 	});

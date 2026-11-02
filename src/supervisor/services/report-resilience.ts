@@ -250,10 +250,9 @@ function sharedCredentialTripwire(): CredentialTripwire {
  * resolves normally. When the server rejects the supervisor's credential
  * (one of its exact wordings; a bare 401 from a proxy doesn't count), the
  * rejection goes through the shared tripwire: only a second one at least
- * 10 s after the first makes this await `onFatal` (default:
- * process.exit(1); callers pass disposeRuntimesAndExit, which kills every
- * child runtime first and is awaited so the exit never races ahead of that
- * cleanup). A rejection the report gate already counted is only logged
+ * 10 s after the first makes this await `onFatal` (callers pass
+ * disposeRuntimesAndExit, which kills every child runtime first and is
+ * awaited so the exit never races ahead of that cleanup). A rejection the report gate already counted is only logged
  * here, so one response is never counted twice. On any other failure (403
  * session_not_owned, 5xx, network error), logs a session-scoped line and
  * returns normally so the caller's stream/notification loop keeps running.
@@ -263,7 +262,7 @@ export async function reportInSessionSafely(
 	sessionId: string,
 	op: string,
 	fn: () => Promise<unknown>,
-	onFatal: () => void | Promise<void> = () => process.exit(1),
+	onFatal: () => void | Promise<void>,
 ): Promise<void> {
 	try {
 		await fn();

@@ -7,6 +7,28 @@
  * `bridges` is the number of live interactive terminal bridges, or null when that could not be learned (an
  * error, or no answer in time): unknown counts as "something may be running", so the answer is not to exit.
  */
+/**
+ * Counts live bridges, but never waits longer than `timeoutMs` and never throws: an error or no answer in
+ * time is null ("unknown"), which the caller treats as "something may be running". The timer is cleared
+ * once the count settles. `schedule` is `setTimeout`-shaped, injectable for tests.
+ */
+export async function countBridgesBounded(
+	count: () => Promise<number>,
+	timeoutMs: number,
+	schedule: (fn: () => void, ms: number) => unknown = setTimeout,
+	cancel: (handle: unknown) => void = (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+): Promise<number | null> {
+	let handle: unknown;
+	const timeout = new Promise<null>((resolve) => {
+		handle = schedule(() => resolve(null), timeoutMs);
+	});
+	try {
+		return await Promise.race([count().catch(() => null), timeout]);
+	} finally {
+		cancel(handle);
+	}
+}
+
 export function shouldExitOnStaleHeartbeat(input: {
 	staleMs: number;
 	thresholdMs: number;

@@ -289,6 +289,28 @@ describe("secrets typed while the terminal is not echoing are not kept", () => {
 		}
 		expect(JSON.stringify(readSpool().map((r) => r.envelope))).not.toContain("hunter2");
 	}, 60_000);
+
+	test("a full-screen child in raw mode (echo off, not line mode) is still captured", async () => {
+		const ready = join(home, "rr");
+		const go = join(home, "rg");
+		const script = 'stty raw -echo; touch "$R"; while [ ! -e "$G" ]; do sleep 0.05; done; exit 4';
+		const config = writeConfig(go, script, { R: ready, G: go });
+		const proc = runBridge(config);
+		try {
+			await until("the child to be in raw mode", () => existsSync(ready));
+			await until("the control socket", () => existsSync(join(dir, "control.sock")));
+			proc.stdin.write("tui-prompt-text\r");
+			proc.stdin.flush();
+			await until("the raw-mode line to be spooled", () =>
+				readSpool().some((r) => JSON.stringify(r.envelope).includes("tui-prompt-text")),
+			);
+			writeFileSync(go, "");
+			expect(await proc.exited).toBe(4);
+		} finally {
+			writeFileSync(go, "");
+			proc.kill();
+		}
+	}, 60_000);
 });
 
 describe("the spool class, driven from threads (python3 -I)", () => {
