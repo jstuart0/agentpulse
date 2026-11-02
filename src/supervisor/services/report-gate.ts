@@ -927,7 +927,13 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			markOffline();
 			return "all";
 		}
-		if (failure === "credential") return "all";
+		if (failure === "credential") {
+			// A rejection the tripwire has not confirmed (the first, or any over plain http to a non-local server,
+			// where none is ever acted on): the entry stays and is not counted against, and the session waits out
+			// a backoff instead of being tried again by the next flush 3 s later.
+			noteSessionFailure(id, error, true);
+			return "next";
+		}
 		if (failure === "session") {
 			outbox.purge(id, { countLost: true });
 			return "next";

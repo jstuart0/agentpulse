@@ -2267,6 +2267,7 @@ describe("the terminal bridge script has no way to the network (drift guard)", (
 			"services/bridge-spool.ts",
 			"services/report-outbox.ts",
 			"services/fatal-exit.ts",
+			"services/keep-alive.ts",
 		]) {
 			expect(files, named).toContain(named);
 			const code = readFileSync(join(import.meta.dir, "..", named), "utf-8")

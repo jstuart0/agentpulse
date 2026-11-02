@@ -874,12 +874,33 @@ describe("the credential tripwire", () => {
 		const w = await rejectedWorld();
 		await w.gate.flush();
 		expect(w.rejected()).toBe(0);
+		// the session waits out a backoff between tries; a try well after the first, 10 s or more, confirms
 		clock += 9_000;
 		await w.gate.flush();
 		expect(w.rejected()).toBe(0);
-		clock += 2_000;
+		clock += 20_000;
 		await w.gate.flush();
 		expect(w.rejected()).toBe(1);
+		expect(w.pending()).toBe(1);
+	});
+
+	test("a rejection that can't be confirmed waits out a per-session backoff instead of being retried every flush, and is never counted against the entry", async () => {
+		const w = await rejectedWorld({ canConfirm: false });
+		const callsFor = async (ms: number) => {
+			let calls = 0;
+			for (let spent = 0; spent < ms; spent += 3_000) {
+				calls += (await flushed(w)).length;
+				clock += 3_000;
+			}
+			return calls;
+		};
+		// a flush every 3 s for a minute would be 20 tries; with a growing wait it is a handful
+		const tries = await callsFor(60_000);
+		expect(tries).toBeGreaterThanOrEqual(2);
+		expect(tries).toBeLessThanOrEqual(7);
+		expect(w.rejected()).toBe(0);
+		const head = w.outbox.head("s1") as { failures?: number };
+		expect(head.failures).toBeUndefined();
 		expect(w.pending()).toBe(1);
 	});
 
