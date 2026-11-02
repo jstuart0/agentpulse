@@ -2078,6 +2078,97 @@ describe("the terminal bridge script has no way to the network (drift guard)", (
 		}
 	});
 
+	/** What the script may import: files, processes, terminals, its own local socket, time. Nothing that speaks a network protocol, loads code by name or reaches native code. */
+	const ALLOWED_IMPORTS = new Set([
+		"argparse",
+		"datetime",
+		"json",
+		"os",
+		"pty",
+		"selectors",
+		"signal",
+		"socket",
+		"stat",
+		"subprocess",
+		"sys",
+		"termios",
+		"threading",
+		"time",
+		"tty",
+		"uuid",
+		"pathlib",
+	]);
+
+	/** Imports outside the allowlist, calls to `socket.socket` that don't name AF_UNIX, and dynamic loading. */
+	const structuralViolations = (text: string): string[] => {
+		const found: string[] = [];
+		for (const m of text.matchAll(/^[ \t]*(?:import\s+([\w., ]+)|from\s+([\w.]+)\s+import\b)/gm)) {
+			const modules = m[1]
+				? m[1].split(",").map((x) => x.trim().split(/\s+as\s+/)[0] as string)
+				: [m[2] as string];
+			for (const module of modules) {
+				const root = module.split(".")[0] as string;
+				if (!ALLOWED_IMPORTS.has(root)) found.push(`import of ${module}`);
+			}
+		}
+		for (const m of text.matchAll(/\bsocket\.socket\(([^)]*)\)/g)) {
+			if (!/\bAF_UNIX\b/.test(m[1] ?? ""))
+				found.push(`socket.socket(${m[1]}) does not name AF_UNIX`);
+		}
+		for (const [name, pattern] of [
+			["__import__", /__import__\s*\(/],
+			["importlib", /\bimportlib\b/],
+			["exec", /\bexec\s*\(/],
+			["eval", /\beval\s*\(/],
+			["ctypes", /\bctypes\b/],
+			["socket.create_server", /socket\.create_server/],
+			["getaddrinfo", /getaddrinfo|gethostbyname/],
+			["socket.fromfd", /socket\.fromfd/],
+		] as const) {
+			if (pattern.test(text)) found.push(name);
+		}
+		return found;
+	};
+
+	test("the real script's imports are all on the allowlist and every socket it makes is a Unix socket", () => {
+		const text = readFileSync(BRIDGE_PATH, "utf-8");
+		expect(structuralViolations(text)).toEqual([]);
+		// the check saw what it is meant to: the script does import socket and does make a socket
+		expect(text).toMatch(/^import socket$/m);
+		expect(text).toMatch(/socket\.socket\(socket\.AF_UNIX/);
+	});
+
+	test("each structural rule fires on a planted copy", () => {
+		const real = readFileSync(BRIDGE_PATH, "utf-8");
+		const plants: Array<[string, string]> = [
+			["import of http.server", "import http.server"],
+			["import of asyncio", "import asyncio"],
+			["import of ssl", "import json, ssl"],
+			["import of urllib", "from urllib import parse"],
+			["import of ftplib", "import ftplib as f"],
+			["import of ctypes", "import ctypes"],
+			["socket.socket() does not name AF_UNIX", "s = socket.socket()"],
+			[
+				"socket.socket(socket.AF_INET, socket.SOCK_STREAM) does not name AF_UNIX",
+				"s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
+			],
+			[
+				"socket.socket(socket.SOCK_STREAM) does not name AF_UNIX",
+				"s = socket.socket(socket.SOCK_STREAM)",
+			],
+			["__import__", "m = __import__('urllib.request')"],
+			["importlib", "x = importlib.import_module('http')"],
+			["exec", "exec('import urllib')"],
+			["eval", "eval('1')"],
+			["socket.create_server", "socket.create_server(('', 1))"],
+			["getaddrinfo", "socket.getaddrinfo('x', 1)"],
+			["socket.fromfd", "socket.fromfd(3, 1, 1)"],
+		];
+		for (const [expected, line] of plants) {
+			expect(structuralViolations(`${real}\n${line}\n`), line).toContain(expected);
+		}
+	});
+
 	test("the TypeScript that drains the spool is inside the scanned set and holds no request or fetch", () => {
 		const files = Object.keys(
 			Object.fromEntries(

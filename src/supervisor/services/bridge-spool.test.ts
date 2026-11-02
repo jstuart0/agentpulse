@@ -19,9 +19,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { LATE_ARRIVAL_MS } from "../../shared/late-arrival.js";
 import type { ManagedSessionEventInput, ManagedSessionStateInput } from "../../shared/types.js";
 import {
-	LATE_ARRIVAL_MS,
 	MAX_ACTIVE_DIRS,
 	MAX_FILES_PER_DIR,
 	MAX_FILES_PER_TICK,
@@ -80,8 +80,25 @@ const stateBody = (id: string, over: Record<string, unknown> = {}) => ({
 	managedState: "interactive_terminal",
 	providerSessionId: id,
 	correlationSource: "launch_correlation_id",
-	metadata: { launchMode: "interactive_terminal" },
+	metadata: {
+		launchMode: "interactive_terminal",
+		interactiveBridge: {
+			socketPath: join(bridgeDir(id), "control.sock"),
+			bridgePid: 4242,
+			childPid: 4243,
+		},
+	},
 	...over,
+});
+/** The metadata of a bridge that has ended. */
+const endedMetadata = (id: string, exitCode = 0) => ({
+	launchMode: "interactive_terminal",
+	interactiveBridge: {
+		socketPath: join(bridgeDir(id), "control.sock"),
+		bridgePid: 4242,
+		childPid: 4243,
+	},
+	exitCode,
 });
 const eventBody = (over: Record<string, unknown> = {}) => ({
 	events: [
@@ -125,9 +142,13 @@ type Call =
 
 type Answer = "sent" | "queued" | "excluded" | "blocked" | Error;
 
-function recorder(answer: (call: Call) => Answer = () => "sent") {
+function recorder(
+	answer: (call: Call) => Answer = () => "sent",
+	interactive: (id: string) => boolean = () => true,
+) {
 	const calls: Call[] = [];
 	const gate = {
+		isInteractiveLaunch: interactive,
 		async reportState(body: ManagedSessionStateInput, opts?: { replay?: boolean }) {
 			const call: Call = { kind: "state", id: body.sessionId, body, replay: opts?.replay };
 			calls.push(call);
@@ -184,7 +205,14 @@ describe("order and the happy path", () => {
 		put(
 			"sess-1",
 			4,
-			envelope("state", stateBody("sess-1", { status: "completed", managedState: "completed" })),
+			envelope(
+				"state",
+				stateBody("sess-1", {
+					status: "completed",
+					managedState: "completed",
+					metadata: endedMetadata("sess-1"),
+				}),
+			),
 		);
 		const { gate, calls } = recorder();
 		const { drain } = makeDrain(gate);
@@ -348,7 +376,9 @@ describe("validation: anything outside the whitelist is deleted, counted lost an
 			envelope(
 				"state",
 				stateBody("edge", {
-					metadata: Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`k${i}`, 1])),
+					status: "failed",
+					managedState: "failed",
+					metadata: endedMetadata("edge", 255),
 				}),
 			),
 		);
@@ -704,8 +734,12 @@ describe("replay age comes from when the drain first saw a file, never from the 
 		const old = new Date(T0 - 5 * 3_600_000);
 		utimesSync(seqFile("r1", 1), old, old);
 		let failing = true;
-		const { gate, calls } = recorder(() => (failing ? new SupervisorNetworkError() : "sent"));
+		const { gate, calls } = recorder(
+			() => (failing ? new SupervisorNetworkError() : "sent"),
+			() => false,
+		);
 		const { drain } = makeDrain(gate);
+		await drain.drain(); // the first pass after start, with nothing followed yet
 		drain.admit("r1");
 		await drain.drain();
 		failing = false;
@@ -717,12 +751,40 @@ describe("replay age comes from when the drain first saw a file, never from the 
 		expect(replays).toEqual([false, false]);
 	});
 
+	test("every file already there at the first pass after the drain starts goes out as a replay, but not one written after", async () => {
+		makeBridge("early");
+		put("early", 1, envelope("events", eventBody({ content: "before the supervisor started" })));
+		const { gate, calls } = recorder(
+			() => "sent",
+			() => false,
+		);
+		const { drain } = makeDrain(gate);
+		drain.admit("early");
+		await drain.drain();
+		makeBridge("later");
+		put("later", 1, envelope("events", eventBody({ content: "after" })));
+		drain.admit("later");
+		await drain.drain();
+		const byContent = new Map(
+			calls.map((c) => [
+				(c as { events: ManagedSessionEventInput[] }).events[0]?.content,
+				(c as { opts?: { replay?: boolean } }).opts?.replay,
+			]),
+		);
+		expect(byContent.get("before the supervisor started")).toBe(true);
+		expect(byContent.get("after")).toBe(false);
+	});
+
 	test("a file still there after more than a minute goes out as a replay", async () => {
 		makeBridge("r2");
 		put("r2", 1, envelope("events", eventBody()));
 		let failing = true;
-		const { gate, calls } = recorder(() => (failing ? new SupervisorNetworkError() : "sent"));
+		const { gate, calls } = recorder(
+			() => (failing ? new SupervisorNetworkError() : "sent"),
+			() => false,
+		);
 		const { drain } = makeDrain(gate);
+		await drain.drain(); // the first pass after start, with nothing followed yet
 		drain.admit("r2");
 		await drain.drain();
 		failing = false;
@@ -738,8 +800,12 @@ describe("replay age comes from when the drain first saw a file, never from the 
 		makeBridge("r3");
 		put("r3", 1, envelope("state", stateBody("r3")));
 		let failing = true;
-		const { gate, calls } = recorder(() => (failing ? new SupervisorNetworkError() : "sent"));
+		const { gate, calls } = recorder(
+			() => (failing ? new SupervisorNetworkError() : "sent"),
+			() => false,
+		);
 		const { drain } = makeDrain(gate);
+		await drain.drain(); // the first pass after start, with nothing followed yet
 		drain.admit("r3");
 		await drain.drain();
 		failing = false;
@@ -842,6 +908,7 @@ describe("bounds and single flight", () => {
 		});
 		const calls: string[] = [];
 		const gate = {
+			isInteractiveLaunch: () => true,
 			async reportState() {
 				return { outcome: "sent" } as never;
 			},
@@ -943,6 +1010,8 @@ describe("which directories are followed (the parent scan)", () => {
 
 	test("a directory the scan once rejected is not read again until its mtime changes", async () => {
 		makeBridge("late-config", null);
+		// a report left behind makes the directory worth reading
+		put("late-config", 1, envelope("events", eventBody()));
 		const { gate } = recorder();
 		const reads: string[] = [];
 		const drain = createBridgeSpoolDrain({
@@ -1188,4 +1257,387 @@ describe("scrubbing the credentials an older supervisor left in bridge.json", ()
 		expect(await drain.scrubLegacyBridgeConfigs()).toBe(0);
 		expect(readFileSync(join(bridgeDir("loose"), "bridge.json"), "utf-8")).toContain("api_key");
 	});
+});
+
+describe("only a launch this supervisor started as interactive is found by the scan (an agent can plant a directory)", () => {
+	test("a planted directory with a copied nonce and reports is never followed or sent; the real one is", async () => {
+		makeBridge("real-launch");
+		put("real-launch", 1, envelope("events", eventBody({ content: "real" })));
+		makeBridge("planted-by-an-agent");
+		put("planted-by-an-agent", 1, envelope("events", eventBody({ content: "forged" })));
+		const { gate, calls } = recorder(
+			() => "sent",
+			(id) => id === "real-launch",
+		);
+		const { drain } = makeDrain(gate);
+		await drain.drain();
+		await drain.drain();
+		expect(
+			calls.map((c) => (c as { events: ManagedSessionEventInput[] }).events[0]?.content),
+		).toEqual(["real"]);
+		expect(remaining("planted-by-an-agent"), "left alone, not even removed").toHaveLength(1);
+	});
+
+	test("with the real gate: noteLaunch(interactive) is what makes the scan find a surviving bridge, across a restart, even with no rules", async () => {
+		makeBridge("survivor");
+		put("survivor", 1, envelope("events", eventBody({ content: "after the restart" })));
+		makeBridge("never-launched");
+		put("never-launched", 1, envelope("events", eventBody({ content: "forged" })));
+		const sentPaths: string[] = [];
+		const make = () =>
+			createReportGate({
+				request: async (path) => {
+					sentPaths.push(path);
+					return { session: { displayName: "x" }, managedSession: {}, events: [] };
+				},
+				supervisorId: "sup-1",
+				home,
+				now: () => clock,
+				log: () => undefined,
+			});
+		const before = make();
+		expect(before.noteLaunch("launch-1", "survivor", home, { interactive: true })).toBe(true);
+		// the supervisor restarts: a new gate on the same home, a new drain that was told nothing
+		const after = make();
+		expect(after.isInteractiveLaunch("survivor")).toBe(true);
+		expect(after.isInteractiveLaunch("never-launched")).toBe(false);
+		const { drain } = makeDrain(after as never);
+		await drain.drain();
+		expect(sentPaths).toEqual(["/supervisors/sup-1/managed-sessions/survivor/events"]);
+		expect(remaining("never-launched")).toHaveLength(1);
+	});
+});
+
+describe("the state metadata whitelist is exact", () => {
+	const bad: Array<[string, (id: string) => Record<string, unknown>]> = [
+		["an extra metadata key", (id) => ({ ...stateBody(id).metadata, note: "x" })],
+		["no interactiveBridge", () => ({ launchMode: "interactive_terminal" })],
+		["another launchMode", (id) => ({ ...stateBody(id).metadata, launchMode: "headless" })],
+		[
+			"a socketPath that isn't this directory's control socket",
+			(id) => ({
+				launchMode: "interactive_terminal",
+				interactiveBridge: { socketPath: "/tmp/elsewhere.sock", bridgePid: 1, childPid: 2 },
+				...(id ? {} : {}),
+			}),
+		],
+		[
+			"an extra interactiveBridge key",
+			(id) => ({
+				launchMode: "interactive_terminal",
+				interactiveBridge: {
+					...(stateBody(id).metadata as { interactiveBridge: object }).interactiveBridge,
+					extra: 1,
+				},
+			}),
+		],
+		[
+			"a string pid",
+			(id) => ({
+				launchMode: "interactive_terminal",
+				interactiveBridge: {
+					socketPath: join(bridgeDir(id), "control.sock"),
+					bridgePid: "42",
+					childPid: 1,
+				},
+			}),
+		],
+		[
+			"a zero pid",
+			(id) => ({
+				launchMode: "interactive_terminal",
+				interactiveBridge: {
+					socketPath: join(bridgeDir(id), "control.sock"),
+					bridgePid: 0,
+					childPid: 1,
+				},
+			}),
+		],
+	];
+	for (const [label, metadata] of bad) {
+		test(label, async () => {
+			makeBridge("md");
+			put("md", 1, envelope("state", stateBody("md", { metadata: metadata("md") })));
+			const { gate, calls } = recorder();
+			const { drain } = makeDrain(gate);
+			drain.admit("md");
+			await drain.drain();
+			expect(calls).toEqual([]);
+			expect(drain.stats().lost).toBe(1);
+		});
+	}
+
+	test("an ended state needs an exitCode in range, and a running one may not carry one", async () => {
+		const cases: Array<[string, Record<string, unknown>, boolean]> = [
+			[
+				"ended with exitCode 3",
+				{ status: "failed", managedState: "failed", metadata: endedMetadata("md2", 3) },
+				true,
+			],
+			["ended without exitCode", { status: "failed", managedState: "failed" }, false],
+			[
+				"ended with exitCode 9999",
+				{ status: "failed", managedState: "failed", metadata: endedMetadata("md2", 9999) },
+				false,
+			],
+			[
+				"ended with a fractional exitCode",
+				{ status: "failed", managedState: "failed", metadata: endedMetadata("md2", 1.5) },
+				false,
+			],
+			["running with an exitCode", { metadata: endedMetadata("md2", 0) }, false],
+		];
+		for (const [label, over, accepted] of cases) {
+			makeBridge("md2");
+			put("md2", 1, envelope("state", stateBody("md2", over)));
+			const { gate, calls } = recorder();
+			const { drain } = makeDrain(gate);
+			drain.admit("md2");
+			await drain.drain();
+			expect(calls.length, label).toBe(accepted ? 1 : 0);
+			rmSync(reportsDir("md2"), { recursive: true, force: true });
+		}
+	});
+});
+
+describe("limits on what is read and when", () => {
+	test("only the first 2,000 names of a reports directory are looked at, matched through a set", async () => {
+		const junk = Array.from({ length: 2_000 }, (_, i) => `junk-${i}`);
+		const beyond = Array.from({ length: 5 }, (_, i) => `${String(i + 1).padStart(16, "0")}.json`);
+		const { gate } = recorder();
+		const reads: string[] = [];
+		const drain = createBridgeSpoolDrain({
+			gate: gate as never,
+			home,
+			now: () => clock,
+			log: () => undefined,
+			credentialTripwire: createCredentialTripwire({ now: () => clock }),
+			onCredentialRejected: () => undefined,
+			stat: async () => ({
+				mtimeMs: T0,
+				uid: process.getuid?.() ?? 0,
+				mode: 0o40700,
+				isSymbolicLink: () => false,
+				isDirectory: () => true,
+				isSocket: () => false,
+			}),
+			readdir: async () => [...junk, ...beyond],
+			readFile: (path): PrivateFileRead => {
+				reads.push(path);
+				return path.endsWith("bridge.json")
+					? { kind: "ok", text: JSON.stringify({ launchNonce: NONCE }) }
+					: { kind: "absent" };
+			},
+		});
+		drain.admit("big");
+		await drain.drain();
+		expect(reads.filter((p) => /\d{16}\.json$/.test(p))).toEqual([]);
+	});
+
+	test("the lost-count event carries the lost file's own time, so a retry is byte for byte the same", async () => {
+		makeBridge("lt");
+		writeFileSync(join(reportsDir("lt"), "lost"), JSON.stringify({ v: 1, lostTotal: 4 }), {
+			mode: 0o600,
+		});
+		const stamp = new Date(T0 - 7 * 3_600_000);
+		utimesSync(join(reportsDir("lt"), "lost"), stamp, stamp);
+		let failing = true;
+		const { gate, calls } = recorder(() => (failing ? new SupervisorNetworkError() : "sent"));
+		const { drain } = makeDrain(gate);
+		drain.admit("lt");
+		await drain.drain();
+		failing = false;
+		clock += 5_000;
+		utimesSync(reportsDir("lt"), new Date(clock), new Date(clock));
+		await drain.drain();
+		expect(calls).toHaveLength(2);
+		const [first, second] = calls as Array<Extract<Call, { kind: "events" }>>;
+		expect(JSON.stringify(second?.events)).toBe(JSON.stringify(first?.events));
+		expect(first?.events[0]?.occurredAt).toBe(stamp.toISOString());
+		expect(second?.opts?.deliveryId).toBe(first?.opts?.deliveryId);
+	});
+
+	test("a crash between the gate's 'sent' and the unlink: the next tick sends the same delivery id again", async () => {
+		makeBridge("crash2");
+		put("crash2", 1, envelope("events", eventBody(), { deliveryId: "stable-crash-12345678" }));
+		let unlinkFails = true;
+		const { gate, calls } = recorder();
+		const drain = createBridgeSpoolDrain({
+			gate: gate as never,
+			home,
+			now: () => clock,
+			log: () => undefined,
+			credentialTripwire: createCredentialTripwire({ now: () => clock }),
+			onCredentialRejected: () => undefined,
+			unlink: (path) => {
+				if (unlinkFails) throw new Error("EIO: the supervisor died here");
+				rmSync(path);
+			},
+		});
+		drain.admit("crash2");
+		await drain.drain();
+		expect(remaining("crash2"), "the file is still there").toHaveLength(1);
+		unlinkFails = false;
+		await drain.drain();
+		expect(remaining("crash2")).toEqual([]);
+		expect(calls.map((c) => (c as { opts?: { deliveryId?: string } }).opts?.deliveryId)).toEqual([
+			"stable-crash-12345678",
+			"stable-crash-12345678",
+		]);
+	});
+});
+
+describe("following and letting go", () => {
+	const fakeStat = (over: Partial<SpoolStat> = {}): SpoolStat => ({
+		mtimeMs: T0,
+		uid: process.getuid?.() ?? 0,
+		mode: 0o40700,
+		isSymbolicLink: () => false,
+		isDirectory: () => true,
+		isSocket: () => false,
+		...over,
+	});
+
+	test("256 followed bridges that have died are let go after 90 s, and a new launch is then admitted", async () => {
+		const pidAgeMs = { value: 1_000 };
+		const { gate } = recorder();
+		const drain = createBridgeSpoolDrain({
+			gate: gate as never,
+			home,
+			now: () => clock,
+			log: () => undefined,
+			credentialTripwire: createCredentialTripwire({ now: () => clock }),
+			onCredentialRejected: () => undefined,
+			stat: async (path) =>
+				path.endsWith("bridge.pid") ? fakeStat({ mtimeMs: clock - pidAgeMs.value }) : fakeStat(),
+			readdir: async () => [],
+			readFile: (path): PrivateFileRead =>
+				path.endsWith("bridge.pid")
+					? { kind: "ok", text: JSON.stringify({ pid: 1 }) }
+					: { kind: "ok", text: JSON.stringify({ launchNonce: NONCE }) },
+			isPidAlive: () => true,
+		});
+		for (let i = 0; i < MAX_ACTIVE_DIRS; i++) drain.admit(`dead-${i}`);
+		await drain.drain(); // settles each once; the bridges look alive
+		expect(drain.stats().followed).toBe(MAX_ACTIVE_DIRS);
+		drain.admit("one-too-many");
+		expect(drain.stats().followed, "full").toBe(MAX_ACTIVE_DIRS);
+		// the bridges die: their pid files stop being touched. Nothing else in the directories changes.
+		pidAgeMs.value = 200_000;
+		clock += 89_000;
+		await drain.drain();
+		expect(drain.stats().followed, "not yet 90 s since the last look").toBe(MAX_ACTIVE_DIRS);
+		clock += 2_000;
+		await drain.drain();
+		expect(drain.stats().followed).toBe(0);
+		drain.admit("new-launch");
+		expect(drain.stats().followed).toBe(1);
+	});
+
+	test("one live bridge among 3,000 finished directories is followed at the first scan, without reading the others", async () => {
+		const names = Array.from({ length: 3_000 }, (_, i) => `done-${i}`);
+		names[1_777] = "live-one";
+		const readBridgeJson: string[] = [];
+		const { gate } = recorder();
+		const drain = createBridgeSpoolDrain({
+			gate: gate as never,
+			home,
+			now: () => clock,
+			log: () => undefined,
+			credentialTripwire: createCredentialTripwire({ now: () => clock }),
+			onCredentialRejected: () => undefined,
+			stat: async (path) => {
+				if (path.endsWith("bridge.pid")) {
+					if (path.includes("/live-one/")) return fakeStat({ mtimeMs: clock - 5_000 });
+					throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+				}
+				return fakeStat();
+			},
+			readdir: async (path) => (path === root() ? names : []),
+			readFile: (path): PrivateFileRead => {
+				if (path.endsWith("bridge.json")) {
+					readBridgeJson.push(path);
+					return { kind: "ok", text: JSON.stringify({ launchNonce: NONCE }) };
+				}
+				return { kind: "ok", text: JSON.stringify({ pid: 99 }) };
+			},
+			isPidAlive: () => true,
+		});
+		await drain.drain();
+		expect(drain.stats().followed).toBe(1);
+		expect(readBridgeJson).toHaveLength(1);
+		expect(readBridgeJson[0]).toContain("live-one");
+	});
+
+	test("a finished directory that left reports behind is followed; one that left none, or whose bridge is gone with nothing in it, is not", async () => {
+		makeBridge("left-something");
+		put("left-something", 1, envelope("events", eventBody({ content: "unsent" })));
+		makeBridge("left-nothing");
+		const { gate, calls } = recorder();
+		const { drain } = makeDrain(gate);
+		await drain.drain();
+		expect(calls.map((c) => c.id)).toEqual(["left-something"]);
+	});
+
+	test("more candidates than room are queued, not forgotten, and followed as room appears; none is read twice", async () => {
+		const count = MAX_ACTIVE_DIRS + 44;
+		const names = Array.from({ length: count }, (_, i) => `live-${i}`);
+		const reads: string[] = [];
+		const pidAge = { value: 1_000 };
+		const { gate } = recorder();
+		const drain = createBridgeSpoolDrain({
+			gate: gate as never,
+			home,
+			now: () => clock,
+			log: () => undefined,
+			credentialTripwire: createCredentialTripwire({ now: () => clock }),
+			onCredentialRejected: () => undefined,
+			stat: async (path) =>
+				path.endsWith("bridge.pid") ? fakeStat({ mtimeMs: clock - pidAge.value }) : fakeStat(),
+			readdir: async (path) => (path === root() ? names : []),
+			readFile: (path): PrivateFileRead => {
+				if (path.endsWith("bridge.json")) {
+					reads.push(path);
+					return { kind: "ok", text: JSON.stringify({ launchNonce: NONCE }) };
+				}
+				return { kind: "ok", text: JSON.stringify({ pid: 99 }) };
+			},
+			isPidAlive: () => true,
+		});
+		await drain.drain();
+		expect(drain.stats().followed).toBe(MAX_ACTIVE_DIRS);
+		expect(reads, "each nonce was read once, at the scan, and handed on").toHaveLength(count);
+		// the first 256 bridges die; their slots go to the waiting ones, with no further reads
+		pidAge.value = 500_000;
+		clock += 100_000;
+		await drain.drain();
+		expect(drain.stats().followed).toBeGreaterThan(0);
+		expect(reads, "no bridge.json read twice").toHaveLength(count);
+	});
+
+	test("the first scan of 10,000 directories never holds the event loop for long", async () => {
+		const names = Array.from({ length: 10_000 }, (_, i) => `hist-${i}`);
+		const { gate } = recorder();
+		const drain = createBridgeSpoolDrain({
+			gate: gate as never,
+			home,
+			now: () => clock,
+			log: () => undefined,
+			credentialTripwire: createCredentialTripwire({ now: () => clock }),
+			onCredentialRejected: () => undefined,
+			stat: async () => fakeStat(),
+			readdir: async (path) => (path === root() ? names : []),
+			readFile: (): PrivateFileRead => ({ kind: "absent" }),
+		});
+		let maxGap = 0;
+		let last = performance.now();
+		const timer = setInterval(() => {
+			const t = performance.now();
+			maxGap = Math.max(maxGap, t - last);
+			last = t;
+		}, 2);
+		await drain.drain();
+		clearInterval(timer);
+		expect(maxGap).toBeLessThan(150);
+	}, 60_000);
 });

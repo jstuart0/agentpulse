@@ -29,3 +29,7 @@ deploy/overlays/postgres/secret-patch.yaml
 
 # Claude Code per-project state (scheduled task locks, etc.)
 .claude/
+
+# Python bytecode (the terminal bridge script is run by python3)
+__pycache__/
+*.pyc

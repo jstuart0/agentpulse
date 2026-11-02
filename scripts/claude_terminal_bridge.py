@@ -36,6 +36,72 @@ def utc_now_iso() -> str:
     )
 
 
+class PidFile:
+    """`bridge.pid`: tells the supervisor this bridge is alive. Written at start, touched from the main loop
+    (not a helper thread, so a wedged loop stops looking alive), removed on exit and on the signals a closing
+    terminal sends."""
+
+    def __init__(self, path: str, interval: float = PID_TOUCH_SECONDS) -> None:
+        self.path = path
+        self.interval = interval
+        self._last = time.monotonic()
+
+    def write(self) -> None:
+        try:
+            fd = os.open(
+                self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
+            )
+            try:
+                os.write(fd, json.dumps({"pid": os.getpid()}).encode("utf-8"))
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+        self._last = time.monotonic()
+
+    def touch_if_due(self, now: float) -> bool:
+        if now - self._last < self.interval:
+            return False
+        self._last = now
+        try:
+            os.utime(self.path)
+        except OSError:
+            pass
+        return True
+
+    def remove(self) -> None:
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+
+
+def resolve_nonce(config: dict, warn=None) -> str:
+    """The launch nonce from the config, or "" with one warning on stderr: a config written by an older
+    supervisor has none, and every report this bridge spools would then be rejected as stale."""
+    nonce = config.get("launchNonce")
+    if isinstance(nonce, str) and nonce:
+        return nonce
+    message = (
+        "agentpulse bridge: bridge.json has no launchNonce, so the supervisor will not accept this "
+        "terminal's reports; restart the AgentPulse supervisor and launch a new session."
+    )
+    if warn is None:
+        print(message, file=sys.stderr)
+    else:
+        warn(message)
+    return ""
+
+
+def echo_enabled(fd: int) -> bool:
+    """Whether the terminal behind `fd` is echoing what is typed. A password prompt turns echo off, and what
+    is typed then must not be kept. If the terminal can't be asked, echo is assumed on."""
+    try:
+        return bool(termios.tcgetattr(fd)[3] & termios.ECHO)
+    except termios.error:
+        return True
+
+
 class ReportSpool:
     """Writes each report as `reports/<16-digit seq>.json`, best effort.
 
@@ -51,6 +117,11 @@ class ReportSpool:
         self._lock = threading.Lock()
         self._seq = 1
         self._usable = False
+        # How many report files and bytes the directory holds, counted once at start and kept as this
+        # process adds to it. The supervisor deletes what it has sent, so before a count says "full" it
+        # is taken again from the directory; a spool that is really full costs a scan, a healthy one none.
+        self._files = 0
+        self._bytes = 0
         try:
             try:
                 os.mkdir(directory, 0o700)
@@ -65,6 +136,7 @@ class ReportSpool:
             )
             if self._usable:
                 self._seq = self._next_seq()
+                self._recount()
         except OSError:
             self._usable = False
 
@@ -84,16 +156,22 @@ class ReportSpool:
                 highest = max(highest, int(stem))
         return highest + 1
 
-    def _check_room(self) -> None:
-        count = 0
+    def _recount(self) -> None:
+        files = 0
         size = 0
         for entry in self._entries():
-            count += 1
+            files += 1
             try:
                 size += entry.stat(follow_symlinks=False).st_size
             except OSError:
                 pass
-        if count >= SPOOL_MAX_FILES or size >= SPOOL_MAX_BYTES:
+        self._files = files
+        self._bytes = size
+
+    def _check_room(self, incoming: int) -> None:
+        if self._files >= SPOOL_MAX_FILES or self._bytes + incoming > SPOOL_MAX_BYTES:
+            self._recount()
+        if self._files >= SPOOL_MAX_FILES or self._bytes + incoming > SPOOL_MAX_BYTES:
             raise OSError("spool is full")
 
     def _record_loss(self) -> None:
@@ -119,7 +197,6 @@ class ReportSpool:
             try:
                 if not self._usable:
                     raise OSError("spool unavailable")
-                self._check_room()
                 envelope = {
                     "v": 1,
                     "nonce": self.nonce,
@@ -130,6 +207,7 @@ class ReportSpool:
                 if kind == "events":
                     envelope["deliveryId"] = str(uuid.uuid4())
                 data = json.dumps(envelope).encode("utf-8")
+                self._check_room(len(data))
                 temp = os.path.join(self.directory, f".tmp-{seq:0{SEQ_WIDTH}d}")
                 final = os.path.join(self.directory, f"{seq:0{SEQ_WIDTH}d}.json")
                 # O_EXCL: if anything is at the temp path (a stale file, a planted entry) the open fails
@@ -159,6 +237,8 @@ class ReportSpool:
                     except OSError:
                         pass
                     raise
+                self._files += 1
+                self._bytes += len(data)
             except Exception:
                 self._record_loss()
 
@@ -179,9 +259,7 @@ def main() -> int:
     Path(socket_path).parent.mkdir(parents=True, exist_ok=True)
     # The launch nonce only lets the supervisor tell a report written for this launch from a stale file
     # left in the directory by an earlier one. It is not a secret and not a security control.
-    spool = ReportSpool(
-        os.path.join(control_dir, "reports"), str(config.get("launchNonce") or "")
-    )
+    spool = ReportSpool(os.path.join(control_dir, "reports"), resolve_nonce(config))
     try:
         os.unlink(socket_path)
     except FileNotFoundError:
@@ -199,32 +277,14 @@ def main() -> int:
     )
     os.close(slave_fd)
 
-    # Tells the supervisor this bridge is alive: written now, touched from the socket thread, removed on
-    # exit and on the signals a closing terminal sends.
-    def write_pid_file() -> None:
-        try:
-            fd = os.open(
-                pid_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
-            )
-            try:
-                os.write(fd, json.dumps({"pid": os.getpid()}).encode("utf-8"))
-            finally:
-                os.close(fd)
-        except OSError:
-            pass
-
-    def remove_pid_file() -> None:
-        try:
-            os.unlink(pid_path)
-        except OSError:
-            pass
+    pid_file = PidFile(pid_path)
 
     def on_signal(signum, _frame) -> None:
-        remove_pid_file()
+        pid_file.remove()
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
 
-    write_pid_file()
+    pid_file.write()
     signal.signal(signal.SIGHUP, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
@@ -277,14 +337,7 @@ def main() -> int:
         os.chmod(socket_path, 0o600)
         server.listen()
         server.settimeout(1.0)
-        last_touch = time.monotonic()
         while running:
-            if time.monotonic() - last_touch >= PID_TOUCH_SECONDS:
-                last_touch = time.monotonic()
-                try:
-                    os.utime(pid_path)
-                except OSError:
-                    pass
             try:
                 conn, _ = server.accept()
             except TimeoutError:
@@ -315,6 +368,7 @@ def main() -> int:
 
     try:
         while True:
+            pid_file.touch_if_due(time.monotonic())
             if child.poll() is not None:
                 try:
                     remaining = os.read(master_fd, 4096)
@@ -330,6 +384,10 @@ def main() -> int:
                     if not data:
                         continue
                     os.write(master_fd, data)
+                    if not echo_enabled(master_fd):
+                        # A password or other secret is being typed: forward it, keep none of it.
+                        typed_buffer = ""
+                        continue
                     for char in data.decode("utf-8", errors="ignore"):
                         if char in ("\r", "\n"):
                             if typed_buffer.strip():
@@ -346,7 +404,7 @@ def main() -> int:
                     os.write(stdout_fd, output)
     finally:
         running = False
-        remove_pid_file()
+        pid_file.remove()
         try:
             termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_tty)
         except termios.error:

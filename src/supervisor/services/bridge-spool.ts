@@ -33,6 +33,7 @@ import { createHash } from "node:crypto";
 import { unlinkSync } from "node:fs";
 import { lstat as fsLstat, readdir as fsReaddir } from "node:fs/promises";
 import { join } from "node:path";
+import { LATE_ARRIVAL_MS } from "../../shared/late-arrival.js";
 import { writePrivateFileAtomicNoFollow } from "../../shared/private-file.js";
 import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type { ManagedSessionEventInput, ManagedSessionStateInput } from "../../shared/types.js";
@@ -46,8 +47,6 @@ import {
 import type { ReportGate } from "./report-gate.js";
 import { type CredentialTripwire, classifyReportFailure } from "./report-resilience.js";
 
-/** A report older than this when the drain first sees it is a replay (late), however it is stamped. */
-export const LATE_ARRIVAL_MS = 60_000;
 export const MAX_ACTIVE_DIRS = 256;
 export const MAX_FILES_PER_DIR = 50;
 export const MAX_FILES_PER_TICK = 200;
@@ -55,13 +54,20 @@ export const SCAN_INTERVAL_MS = 60_000;
 /** A directory admitted by a launch but whose bridge hasn't written anything yet is followed this long. */
 const MISSING_REPORTS_GRACE_MS = 10 * 60_000;
 const BRIDGE_ALIVE_MS = 90_000;
+/** An idle followed directory is checked for a living bridge this often, with one stat. */
+const LIVENESS_RECHECK_MS = 90_000;
+/** Names read from one reports directory; the bridge never keeps more than ~2,000 and nothing else belongs there. */
+const MAX_LISTED_NAMES = 2_000;
+/** Directories found by the scan but not yet followed, because the followed set is full. */
+const MAX_PENDING_ADMIT = 4_096;
+/** The scan gives the event loop a turn this often. */
+const SCAN_YIELD_EVERY = 200;
+const MAX_UNLINK_FAILURES = 3;
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_CONFIG_BYTES = 64 * 1024;
 const MAX_CONTENT_CHARS = 64 * 1024;
 const MAX_RAW_PAYLOAD_KEYS = 4;
 const MAX_RAW_PAYLOAD_BYTES = 1024;
-const MAX_METADATA_KEYS = 8;
-const MAX_METADATA_BYTES = 4096;
 const MAX_LOST_TOTAL = 10_000_000;
 const ENTRY_PATTERN = /^\d{16}\.json$/;
 const NONCE_PATTERN = /^[0-9a-f]{32}$/;
@@ -83,7 +89,7 @@ export interface SpoolStat {
 }
 
 export interface BridgeSpoolDeps {
-	gate: Pick<ReportGate, "reportState" | "reportEvents">;
+	gate: Pick<ReportGate, "reportState" | "reportEvents" | "isInteractiveLaunch">;
 	home: string;
 	now?: () => number;
 	log?: (line: string) => void;
@@ -96,6 +102,8 @@ export interface BridgeSpoolDeps {
 	stat?: (path: string) => Promise<SpoolStat>;
 	readFile?: (path: string, maxBytes: number) => PrivateFileRead;
 	isPidAlive?: (pid: number) => boolean;
+	/** Removes a handled report file; a test makes it fail to prove the same delivery id is resent. */
+	unlink?: (path: string) => void;
 }
 
 export interface BridgeSpoolDrain {
@@ -119,7 +127,11 @@ interface Followed {
 	lastMtimeMs: number | null;
 	/** Files were left (kept or past the cap) at the last look, so the next tick looks again whatever the mtime says. */
 	backlog: boolean;
+	/** When this directory's bridge was last known alive, so an idle one is rechecked now and then. */
+	livenessCheckedAt: number;
 	firstSeen: Map<string, number>;
+	/** Files that could not be removed after they were handled, with how many times: past a few they are left alone rather than resent every tick. */
+	unlinkFailures: Map<string, number>;
 	warned: Set<string>;
 }
 
@@ -140,8 +152,36 @@ function boundedObject(value: unknown, maxKeys: number, maxBytes: number): boole
 	return Buffer.byteLength(JSON.stringify(value), "utf-8") <= maxBytes;
 }
 
-/** The state body a bridge may send, or null. `id` is the vetted directory name. */
-function validState(body: unknown, id: string): ManagedSessionStateInput | null {
+const isSmallPositiveInt = (v: unknown) =>
+	typeof v === "number" && Number.isInteger(v) && v > 0 && v <= 2 ** 31;
+
+/**
+ * The metadata a bridge may send, exactly: `launchMode`, `interactiveBridge` (its own socket path, which is
+ * known from the directory, and two process ids) and, once it has ended, `exitCode`.
+ */
+function validMetadata(metadata: unknown, dir: string, ended: boolean): boolean {
+	if (!isObject(metadata)) return false;
+	const keys = Object.keys(metadata);
+	const allowed = ended
+		? ["launchMode", "interactiveBridge", "exitCode"]
+		: ["launchMode", "interactiveBridge"];
+	if (keys.length !== allowed.length || !allowed.every((k) => keys.includes(k))) return false;
+	if (metadata.launchMode !== "interactive_terminal") return false;
+	const bridge = metadata.interactiveBridge;
+	if (!isObject(bridge) || !hasExactKeys(bridge, ["socketPath", "bridgePid", "childPid"]))
+		return false;
+	if (bridge.socketPath !== join(dir, "control.sock")) return false;
+	if (!isSmallPositiveInt(bridge.bridgePid) || !isSmallPositiveInt(bridge.childPid)) return false;
+	if (ended) {
+		const code = metadata.exitCode;
+		if (typeof code !== "number" || !Number.isInteger(code) || code < -255 || code > 255)
+			return false;
+	}
+	return true;
+}
+
+/** The state body a bridge may send, or null. `id` is the vetted directory name, `dir` its path. */
+function validState(body: unknown, id: string, dir: string): ManagedSessionStateInput | null {
 	if (!isObject(body)) return null;
 	if (
 		!hasExactKeys(body, [
@@ -161,7 +201,7 @@ function validState(body: unknown, id: string): ManagedSessionStateInput | null 
 		return null;
 	}
 	if (body.correlationSource !== "launch_correlation_id") return null;
-	if (!boundedObject(body.metadata, MAX_METADATA_KEYS, MAX_METADATA_BYTES)) return null;
+	if (!validMetadata(body.metadata, dir, body.managedState !== "interactive_terminal")) return null;
 	return body as unknown as ManagedSessionStateInput;
 }
 
@@ -202,6 +242,7 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 	const readdir = deps.readdir ?? ((path: string) => fsReaddir(path));
 	const stat = deps.stat ?? (async (path: string) => (await fsLstat(path)) as unknown as SpoolStat);
 	const readFile = deps.readFile ?? readPrivateFileNoFollow;
+	const unlink = deps.unlink ?? unlinkSync;
 	const isPidAlive =
 		deps.isPidAlive ??
 		((pid: number) => {
@@ -218,26 +259,38 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 	const followed = new Map<string, Followed>();
 	/** Names seen by the parent scan, with the directory's mtime when last examined. */
 	const known = new Map<string, number>();
+	/** Directories the scan found that wait for room among the followed ones: name, mtime, probed nonce. */
+	const pendingAdmit = new Map<string, { mtimeMs: number; nonce: string }>();
+	/** The first pass after the drain starts treats every file it finds as a replay: it was written before this process existed. */
+	let firstPass = true;
 	let lastScanAt = Number.NEGATIVE_INFINITY;
 	let running: Promise<void> | null = null;
 	let sent = 0;
 	let lostCount = 0;
 
-	function follow(id: string): Followed | null {
-		const existing = followed.get(id);
-		if (existing) return existing;
-		if (followed.size >= MAX_ACTIVE_DIRS) return null;
+	function newFollowed(id: string): Followed {
 		const dir = join(root, id);
-		const entry: Followed = {
+		return {
 			id,
 			dir,
 			reportsDir: join(dir, "reports"),
 			admittedAt: now(),
 			lastMtimeMs: null,
 			backlog: false,
+			livenessCheckedAt: now(),
 			firstSeen: new Map(),
+			unlinkFailures: new Map(),
 			warned: new Set(),
 		};
+	}
+
+	function follow(id: string, nonce?: string): Followed | null {
+		const existing = followed.get(id);
+		if (existing) return existing;
+		if (followed.size >= MAX_ACTIVE_DIRS) return null;
+		const entry = newFollowed(id);
+		// A nonce the scan already read is not read again.
+		if (nonce !== undefined) entry.nonce = nonce;
 		followed.set(id, entry);
 		return entry;
 	}
@@ -284,20 +337,43 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 		}
 	}
 
+	/** One stat: the pid file was touched within the last 90 s. Enough to tell a dead bridge from a quiet one. */
+	async function pidFresh(entry: Followed): Promise<boolean> {
+		try {
+			const st = await stat(join(entry.dir, "bridge.pid"));
+			return now() - st.mtimeMs <= BRIDGE_ALIVE_MS;
+		} catch {
+			return false;
+		}
+	}
+
 	function warnOnce(entry: Followed, key: string, line: string) {
 		if (entry.warned.has(key)) return;
 		entry.warned.add(key);
 		log(line);
 	}
 
+	/** Removes a handled report file. If it can't be removed it stays, and so is sent again (same delivery id) on a later tick, a few times at most. */
 	function discard(entry: Followed, name: string, countLost: boolean) {
-		entry.firstSeen.delete(name);
 		try {
 			// A path, never followed: unlink removes a link itself.
-			unlinkSync(join(entry.reportsDir, name));
-		} catch {
-			// already gone, or not ours to remove: nothing more to do
+			unlink(join(entry.reportsDir, name));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+				const failures = (entry.unlinkFailures.get(name) ?? 0) + 1;
+				entry.unlinkFailures.set(name, failures);
+				if (failures >= MAX_UNLINK_FAILURES) {
+					warnOnce(
+						entry,
+						`unlink-${name}`,
+						`[supervisor] a handled bridge report can't be removed and is left alone: ${entry.id}`,
+					);
+				}
+				return;
+			}
 		}
+		entry.firstSeen.delete(name);
+		entry.unlinkFailures.delete(name);
 		if (countLost) lostCount++;
 	}
 
@@ -378,7 +454,7 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 		if (parseStoredTimestamp(envelope.occurredAt) === null) return null;
 		if (envelope.kind === "state") {
 			if (!hasExactKeys(envelope, ["v", "nonce", "kind", "occurredAt", "body"])) return null;
-			const state = validState(envelope.body, id);
+			const state = validState(envelope.body, id, join(root, id));
 			return state ? { kind: "state", state, occurredAt: envelope.occurredAt } : null;
 		}
 		if (envelope.kind === "events") {
@@ -416,6 +492,13 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 		if (ackedFile.kind === "ok") acked = clampLost(Number(ackedFile.text.trim()));
 		if (total <= acked) return "next";
 		const delta = total - acked;
+		// The time is the lost file's own, so a retry of the same total carries the same bytes.
+		let occurredAt: string;
+		try {
+			occurredAt = new Date((await stat(join(entry.reportsDir, "lost"))).mtimeMs).toISOString();
+		} catch {
+			return "next";
+		}
 		try {
 			const outcome = await deps.gate.reportEvents(
 				entry.id,
@@ -426,7 +509,7 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 						source: "launch_system",
 						content: `${delta === 1 ? "1 report from this terminal session wasn't" : `${delta} reports from this terminal session weren't`} delivered: the terminal's report spool was full or couldn't be written.`,
 						rawPayload: { lost: delta },
-						occurredAt: new Date(now()).toISOString(),
+						occurredAt,
 					},
 				],
 				{ deliveryId: lostId(entry.id, total) },
@@ -468,7 +551,15 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 			);
 			return { used: 0, stopAll: false };
 		}
-		if (st.mtimeMs === entry.lastMtimeMs && !entry.backlog) return { used: 0, stopAll: false };
+		if (st.mtimeMs === entry.lastMtimeMs && !entry.backlog) {
+			// Nothing changed. A bridge that has died leaves its directory quiet for good, so now and then
+			// (one stat) a quiet directory is checked for a living bridge and let go if there is none.
+			if (now() - entry.livenessCheckedAt >= LIVENESS_RECHECK_MS) {
+				entry.livenessCheckedAt = now();
+				if (!(await pidFresh(entry))) followed.delete(entry.id);
+			}
+			return { used: 0, stopAll: false };
+		}
 
 		let names: string[];
 		try {
@@ -476,11 +567,22 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 		} catch {
 			return { used: 0, stopAll: false };
 		}
-		const files = names.filter((n) => ENTRY_PATTERN.test(n)).sort();
+		// Only the first names are looked at, matched through a Set: nothing legitimate lists more, and an
+		// agent planting a very large directory must not make each pass quadratic.
+		const files = names
+			.slice(0, MAX_LISTED_NAMES)
+			.filter((n) => ENTRY_PATTERN.test(n))
+			.sort();
+		const listed = new Set(files);
 		for (const known of [...entry.firstSeen.keys()]) {
-			if (!files.includes(known)) entry.firstSeen.delete(known);
+			if (!listed.has(known)) entry.firstSeen.delete(known);
 		}
-		for (const name of files) if (!entry.firstSeen.has(name)) entry.firstSeen.set(name, now());
+		for (const name of files) {
+			if ((entry.unlinkFailures.get(name) ?? 0) >= MAX_UNLINK_FAILURES) continue;
+			if (!entry.firstSeen.has(name)) {
+				entry.firstSeen.set(name, firstPass ? now() - LATE_ARRIVAL_MS - 1 : now());
+			}
+		}
 		entry.lastMtimeMs = st.mtimeMs;
 
 		const nonce = nonceOf(entry);
@@ -495,6 +597,10 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 		let stopAll = false;
 		let stopDir = false;
 		for (const name of files) {
+			if ((entry.unlinkFailures.get(name) ?? 0) >= MAX_UNLINK_FAILURES) {
+				remaining--;
+				continue;
+			}
 			if (used >= Math.min(MAX_FILES_PER_DIR, budget)) break;
 			const verdict = await sendFile(entry, name, nonce);
 			used++;
@@ -508,17 +614,27 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 				break;
 			}
 		}
-		if (!stopAll && !stopDir && names.includes("lost")) {
+		let lostPending = false;
+		if (!stopAll && !stopDir) {
 			const verdict = await sendLostDelta(entry);
 			if (verdict === "stopAll") stopAll = true;
+			if (verdict !== "next") lostPending = true;
 		}
-		entry.backlog = remaining > 0;
+		// Something is left to do (files, or a lost count that couldn't be reported yet): look again next tick.
+		entry.backlog = remaining > 0 || lostPending;
 		if (!entry.backlog && !stopAll && !stopDir && !(await bridgeAlive(entry))) {
 			followed.delete(entry.id);
 		}
 		return { used, stopAll };
 	}
 
+	/**
+	 * Looks through the interactive directory for bridges nobody told the drain about (a supervisor that was
+	 * restarted while its bridges kept running). Only ids the gate knows as interactive launches of this
+	 * supervisor are considered, so a directory an agent plants is never followed. Cheap things first: a bridge
+	 * that is alive is followed before anything else, one that is gone only if it left reports behind, and a
+	 * directory examined once is not looked at again until its mtime changes.
+	 */
 	async function scan() {
 		lastScanAt = now();
 		let names: string[];
@@ -529,9 +645,14 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 		}
 		const present = new Set(names);
 		for (const name of [...known.keys()]) if (!present.has(name)) known.delete(name);
-		const fresh: Array<{ name: string; mtimeMs: number }> = [];
+		for (const name of [...pendingAdmit.keys()]) if (!present.has(name)) pendingAdmit.delete(name);
+		const alive: Array<{ name: string; mtimeMs: number; nonce: string }> = [];
+		const left: Array<{ name: string; mtimeMs: number; nonce: string }> = [];
+		let examined = 0;
 		for (const name of names) {
-			if (!SESSION_ID_PATTERN.test(name) || followed.has(name)) continue;
+			if (!SESSION_ID_PATTERN.test(name) || followed.has(name) || pendingAdmit.has(name)) continue;
+			if (++examined % SCAN_YIELD_EVERY === 0) await new Promise<void>((r) => setImmediate(r));
+			if (!deps.gate.isInteractiveLaunch(name)) continue;
 			let st: SpoolStat;
 			try {
 				st = await stat(join(root, name));
@@ -539,43 +660,54 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 				continue;
 			}
 			if (known.get(name) === st.mtimeMs) continue;
-			if (!privateDir(st)) {
-				known.set(name, st.mtimeMs);
-				continue;
+			known.set(name, st.mtimeMs);
+			if (!privateDir(st)) continue;
+			const probe = newFollowed(name);
+			const live = await bridgeAlive(probe);
+			if (!live) {
+				let inside: string[];
+				try {
+					inside = await readdir(probe.reportsDir);
+				} catch {
+					continue;
+				}
+				if (!inside.slice(0, MAX_LISTED_NAMES).some((n) => ENTRY_PATTERN.test(n))) continue;
 			}
-			const probe: Followed = {
-				id: name,
-				dir: join(root, name),
-				reportsDir: join(root, name, "reports"),
-				admittedAt: now(),
-				lastMtimeMs: null,
-				backlog: false,
-				firstSeen: new Map(),
-				warned: new Set(),
-			};
-			if (nonceOf(probe) === null) {
-				known.set(name, st.mtimeMs);
-				continue;
-			}
-			fresh.push({ name, mtimeMs: st.mtimeMs });
+			const nonce = nonceOf(probe);
+			if (nonce === null) continue;
+			(live ? alive : left).push({ name, mtimeMs: st.mtimeMs, nonce });
 		}
-		fresh.sort((a, b) => a.mtimeMs - b.mtimeMs);
-		for (const { name, mtimeMs } of fresh) {
-			if (followed.size >= MAX_ACTIVE_DIRS) break;
-			known.set(name, mtimeMs);
-			follow(name);
+		const byAge = (a: { mtimeMs: number }, b: { mtimeMs: number }) => a.mtimeMs - b.mtimeMs;
+		for (const { name, mtimeMs, nonce } of [...alive.sort(byAge), ...left.sort(byAge)]) {
+			if (follow(name, nonce)) continue;
+			if (pendingAdmit.size < MAX_PENDING_ADMIT) pendingAdmit.set(name, { mtimeMs, nonce });
+		}
+	}
+
+	/** Follows what was waiting for room, as room appears. */
+	function admitPending() {
+		for (const [name, { nonce }] of pendingAdmit) {
+			if (followed.size >= MAX_ACTIVE_DIRS) return;
+			pendingAdmit.delete(name);
+			follow(name, nonce);
 		}
 	}
 
 	async function tick() {
 		if (now() - lastScanAt >= SCAN_INTERVAL_MS) await scan();
+		admitPending();
 		let budget = MAX_FILES_PER_TICK;
-		for (const entry of [...followed.values()]) {
-			if (budget <= 0) break;
-			const result = await serve(entry, budget);
-			budget -= result.used;
-			if (result.stopAll) break;
+		try {
+			for (const entry of [...followed.values()]) {
+				if (budget <= 0) break;
+				const result = await serve(entry, budget);
+				budget -= result.used;
+				if (result.stopAll) break;
+			}
+		} finally {
+			firstPass = false;
 		}
+		admitPending();
 	}
 
 	function drain(): Promise<void> {

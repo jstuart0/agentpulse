@@ -104,6 +104,8 @@ type SessionRecord = {
 	closed?: boolean;
 	/** A terminal state report (completed, failed, stopped) was delivered: it no longer needs a closing report, and its slot is free for reuse. */
 	done?: boolean;
+	/** This id is the correlation id of an interactive terminal launch this supervisor started: the only kind of id whose terminal bridge directory the spool drain may follow without being told. */
+	interactive?: boolean;
 };
 
 export type LaunchStatusBody = {
@@ -185,7 +187,14 @@ export interface ReportGate {
 	 * Neither is forgotten to make room for the other, so a launch the gate accepts can always be judged by
 	 * both ids. False (a capacity refusal, or an unusable id or directory) when it must be refused.
 	 */
-	noteLaunch(launchId: string, correlationId: string, cwd: string): boolean;
+	noteLaunch(
+		launchId: string,
+		correlationId: string,
+		cwd: string,
+		opts?: { interactive?: boolean },
+	): boolean;
+	/** Whether this id is the correlation id of an interactive launch this supervisor started (persisted, so it survives a restart). */
+	isInteractiveLaunch(id: string): boolean;
 	/**
 	 * Whether data about this id may leave now. Action handlers ask before they execute anything, with
 	 * the directory the action names (never trusted over the one known): "excluded" when either is covered
@@ -418,6 +427,8 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 
 	/** Whether any session is excluded: that exclusion must outlive a restart, so from then on the gate saves whether or not rules exist. */
 	let anyExcluded = false;
+	/** Whether any session is an interactive launch: that must be remembered too. */
+	let anyInteractive = false;
 	/** The memory changed while saving was skipped (no rules, nothing excluded); the next scan with rules in place saves it. */
 	let unsaved = false;
 
@@ -483,7 +494,9 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	 */
 	function persist(state: LoadExcludeRulesResult["state"] = lastState) {
 		if (!deps.home) return;
-		if (!anyExcluded && state === "none") {
+		// A host that never used exclusion keeps nothing on disk, with one exception: an interactive terminal
+		// launch has to be remembered across a restart, because its bridge outlives the supervisor.
+		if (!anyExcluded && !anyInteractive && state === "none") {
 			unsaved = true;
 			return;
 		}
@@ -557,6 +570,7 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			for (const [id, rec] of found.entries.slice(-maxTracked)) {
 				sessions.set(id, rec);
 				if (rec.excluded) anyExcluded = true;
+				if (rec.interactive) anyInteractive = true;
 			}
 		}
 	}
@@ -597,11 +611,24 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		return true;
 	}
 
-	function noteLaunch(launchId: string, correlationId: string, cwd: string): boolean {
-		return (
+	function noteLaunch(
+		launchId: string,
+		correlationId: string,
+		cwd: string,
+		opts?: { interactive?: boolean },
+	): boolean {
+		const noted =
 			noteCwd(launchId, cwd, [correlationId]) &&
-			noteCwd(correlationId, cwd, [launchId, correlationId])
-		);
+			noteCwd(correlationId, cwd, [launchId, correlationId]);
+		if (noted && opts?.interactive) {
+			const rec = sessions.get(correlationId);
+			if (rec && !rec.interactive) {
+				rec.interactive = true;
+				anyInteractive = true;
+				persist(currentRules().state);
+			}
+		}
+		return noted;
 	}
 
 	function markExcluded(id: string | null | undefined) {
@@ -949,6 +976,7 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	return {
 		noteCwd: (id, cwd) => noteCwd(id, cwd),
 		noteLaunch,
+		isInteractiveLaunch: (id) => sessions.get(id)?.interactive === true,
 		verdict: decide,
 		verdictForDirectory: decideDirectory,
 		rulesState: () => currentRules().state,
@@ -1090,6 +1118,7 @@ function readSavedSessions(parsed: unknown): [string, SessionRecord][] | null {
 		if (entry.reported === true) rec.reported = true;
 		if (entry.closed === true) rec.closed = true;
 		if (entry.done === true) rec.done = true;
+		if (entry.interactive === true) rec.interactive = true;
 		out.push([id, rec]);
 	}
 	return out;

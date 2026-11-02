@@ -75,15 +75,15 @@ const spoolFiles = () =>
 				.sort()
 		: [];
 
-function writeConfig(go: string) {
+function writeConfig(go: string, script?: string, env: Record<string, string> = {}) {
 	const config = join(dir, "bridge.json");
 	writeFileSync(
 		config,
 		JSON.stringify({
 			session_id: id,
 			cwd: home,
-			command: ["/bin/sh", "-c", 'while [ ! -e "$GO" ]; do sleep 0.05; done; exit 3'],
-			env: { GO: go },
+			command: ["/bin/sh", "-c", script ?? 'while [ ! -e "$GO" ]; do sleep 0.05; done; exit 3'],
+			env: { GO: go, ...env },
 			socket_path: join(dir, "control.sock"),
 			launchNonce: NONCE,
 		}),
@@ -94,12 +94,15 @@ function writeConfig(go: string) {
 }
 
 function runBridge(config: string) {
-	return Bun.spawn(["python3", "-c", PTY_RUNNER, "python3", BRIDGE, "--config", config], {
-		// An open pipe that is never written: end-of-input would make pty.spawn hang up on the bridge.
-		stdin: "pipe",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	return Bun.spawn(
+		["python3", "-B", "-c", PTY_RUNNER, "python3", "-B", BRIDGE, "--config", config],
+		{
+			// An open pipe that is never written: end-of-input would make pty.spawn hang up on the bridge.
+			stdin: "pipe",
+			stdout: "pipe",
+			stderr: "pipe",
+		},
+	);
 }
 
 function sendPrompt(text: string) {
@@ -122,7 +125,7 @@ function readSpool() {
 
 describe("the real bridge under python3", () => {
 	test("python3 is available", () => {
-		const probe = Bun.spawnSync(["python3", "--version"]);
+		const probe = Bun.spawnSync(["python3", "-B", "--version"]);
 		expect(probe.exitCode).toBe(0);
 	});
 
@@ -142,6 +145,8 @@ describe("the real bridge under python3", () => {
 			const exit = await proc.exited;
 			expect(exit).toBe(3);
 		} finally {
+			// let the child end on its own before anything is killed
+			writeFileSync(go, "");
 			proc.kill();
 		}
 
@@ -247,6 +252,45 @@ describe("the real bridge under python3", () => {
 	}, 60_000);
 });
 
+describe("secrets typed while the terminal is not echoing are not kept", () => {
+	test("text typed before a password prompt is spooled, text typed after the child turned echo off is not", async () => {
+		const ready1 = join(home, "r1");
+		const ready2 = join(home, "r2");
+		const go1 = join(home, "g1");
+		const go2 = join(home, "g2");
+		const script =
+			'touch "$R1"; while [ ! -e "$G1" ]; do sleep 0.05; done; stty -echo; touch "$R2"; while [ ! -e "$G2" ]; do sleep 0.05; done; exit 3';
+		const config = writeConfig(go2, script, { R1: ready1, R2: ready2, G1: go1, G2: go2 });
+		const proc = runBridge(config);
+		const type = (text: string) => {
+			proc.stdin.write(text);
+			proc.stdin.flush();
+		};
+		try {
+			await until("the child to be running", () => existsSync(ready1));
+			await until("the control socket", () => existsSync(join(dir, "control.sock")));
+			type("visible text\r");
+			await until("the first line to be spooled", () =>
+				readSpool().some((r) => JSON.stringify(r.envelope).includes("visible text")),
+			);
+			writeFileSync(go1, "");
+			await until("the child to turn echo off", () => existsSync(ready2));
+			type("hunter2-the-password\r");
+			await sleep(800);
+			expect(
+				readSpool().some((r) => JSON.stringify(r.envelope).includes("hunter2")),
+				"nothing typed with echo off is kept",
+			).toBe(false);
+			writeFileSync(go2, "");
+			expect(await proc.exited).toBe(3);
+		} finally {
+			writeFileSync(go2, "");
+			proc.kill();
+		}
+		expect(JSON.stringify(readSpool().map((r) => r.envelope))).not.toContain("hunter2");
+	}, 60_000);
+});
+
 describe("the spool class, driven from threads (python3 -I)", () => {
 	const HELPER = `
 import importlib.util, json, os, sys, threading
@@ -294,6 +338,74 @@ elif mode == "resume":
     if names != ["0000000000000001.json", "0000000000000002.json", "0000000000000003.json"]:
         print(names)
         sys.exit(1)
+elif mode == "pid":
+    path = os.path.join(directory, "bridge.pid")
+    pid_file = bridge.PidFile(path, interval=30)
+    pid_file.write()
+    base = pid_file._last
+    if pid_file.touch_if_due(base + 29.9):
+        print("touched too early"); sys.exit(1)
+    old = os.stat(path).st_mtime - 1000
+    os.utime(path, (old, old))
+    if not pid_file.touch_if_due(base + 30):
+        print("not touched when due"); sys.exit(2)
+    if os.stat(path).st_mtime < old + 500:
+        print("mtime not refreshed"); sys.exit(3)
+    if pid_file.touch_if_due(base + 31):
+        print("touched again at once"); sys.exit(4)
+    if json.load(open(path)) != {"pid": os.getpid()}:
+        sys.exit(5)
+    pid_file.remove()
+    if os.path.exists(path):
+        sys.exit(6)
+elif mode == "counters":
+    bridge.SPOOL_MAX_FILES = 3
+    calls = {"n": 0}
+    real = bridge.ReportSpool._entries
+    def counting(self):
+        calls["n"] += 1
+        return real(self)
+    bridge.ReportSpool._entries = counting
+    spool = bridge.ReportSpool(directory, "n" * 32)
+    start = calls["n"]
+    for i in range(3):
+        spool.spool("state", {"i": i})
+    if calls["n"] != start:
+        print("a healthy spool rescanned the directory", calls["n"] - start); sys.exit(1)
+    spool.spool("state", {"i": 3})
+    if spool.lost_total != 1:
+        print("the fourth should be lost", spool.lost_total); sys.exit(2)
+    names = sorted(n for n in os.listdir(directory) if n.endswith(".json") and n[0].isdigit())
+    for n in names[:2]:
+        os.unlink(os.path.join(directory, n))
+    spool.spool("state", {"i": 4})
+    if spool.lost_total != 1:
+        print("after the supervisor removed files the spool should accept again", spool.lost_total); sys.exit(3)
+    if len([n for n in os.listdir(directory) if n[0].isdigit()]) != 2:
+        sys.exit(4)
+elif mode == "bytes":
+    bridge.SPOOL_MAX_BYTES = 4096
+    spool = bridge.ReportSpool(directory, "n" * 32)
+    for i in range(10):
+        spool.spool("state", {"blob": "x" * 1000, "i": i})
+    names = [n for n in os.listdir(directory) if n[0].isdigit()]
+    total = sum(os.stat(os.path.join(directory, n)).st_size for n in names)
+    if not (1 <= len(names) <= 3) or total > 4096 or spool.lost_total != 10 - len(names):
+        print("byte cap", len(names), total, spool.lost_total); sys.exit(1)
+    lost = json.load(open(os.path.join(directory, "lost")))
+    if lost != {"v": 1, "lostTotal": spool.lost_total}:
+        print(lost); sys.exit(2)
+    for n in names:
+        os.unlink(os.path.join(directory, n))
+    spool.spool("state", {"blob": "x" * 1000, "i": 99})
+    if len([n for n in os.listdir(directory) if n[0].isdigit()]) != 1:
+        sys.exit(3)
+elif mode == "nonce":
+    bridge.resolve_nonce({"launchNonce": "a" * 32})
+    sys.stderr.write("--\\n")
+    value = bridge.resolve_nonce({})
+    if value != "":
+        sys.exit(1)
 elif mode == "symlink":
     spool = bridge.ReportSpool(directory, "n" * 32)
     spool.spool("state", {"i": 1})
@@ -305,7 +417,7 @@ elif mode == "symlink":
 	function runHelper(mode: string, target: string) {
 		const helper = join(home, "helper.py");
 		writeFileSync(helper, HELPER);
-		return Bun.spawnSync(["python3", "-I", helper, BRIDGE, target, mode], {
+		return Bun.spawnSync(["python3", "-B", "-I", helper, BRIDGE, target, mode], {
 			stdout: "pipe",
 			stderr: "pipe",
 		});
@@ -333,6 +445,52 @@ elif mode == "symlink":
 		mkdirSync(target, { mode: 0o700 });
 		const result = runHelper("resume", target);
 		expect(result.exitCode, out(result)).toBe(0);
+	});
+
+	test("bridge.pid is touched from the main loop on its interval, only when due, and removed", () => {
+		const target = join(home, "pid");
+		mkdirSync(target, { mode: 0o700 });
+		const result = runHelper("pid", target);
+		expect(result.exitCode, out(result)).toBe(0);
+	});
+
+	test("the file and byte counts are kept in memory: a healthy spool never rescans, a full one rescans before it refuses, and what the supervisor removed makes room", () => {
+		const target = join(home, "counters");
+		mkdirSync(target, { mode: 0o700 });
+		const result = runHelper("counters", target);
+		expect(result.exitCode, out(result)).toBe(0);
+	});
+
+	test("the byte cap: a spool past it counts further reports lost, and recovers when files go", () => {
+		const target = join(home, "bytes");
+		mkdirSync(target, { mode: 0o700 });
+		const result = runHelper("bytes", target);
+		expect(result.exitCode, out(result)).toBe(0);
+	});
+
+	test("a config with no launchNonce is warned about once on stderr, with the way out; one with a nonce is not", () => {
+		const target = join(home, "nonce");
+		mkdirSync(target, { mode: 0o700 });
+		const result = runHelper("nonce", target);
+		expect(result.exitCode, out(result)).toBe(0);
+		const [before, after] = new TextDecoder().decode(result.stderr).split("--\n");
+		expect(before).toBe("");
+		expect(after).toContain("restart the AgentPulse supervisor");
+		expect(after?.match(/launchNonce/g)).toHaveLength(1);
+	});
+
+	test("the pid file is touched in exactly one place, the PidFile class the main loop calls (not a helper thread)", () => {
+		const source = readFileSync(BRIDGE, "utf-8");
+		expect(source.match(/os\.utime/g)).toHaveLength(1);
+		const klass = source.slice(
+			source.indexOf("class PidFile"),
+			source.indexOf("def resolve_nonce"),
+		);
+		expect(klass).toContain("os.utime");
+		const main = source.slice(source.indexOf("def main()"));
+		expect(main).toContain("pid_file.touch_if_due(time.monotonic())");
+		const thread = main.slice(main.indexOf("def socket_loop"), main.indexOf("socket_thread = "));
+		expect(thread).not.toContain("pid");
 	});
 
 	test("a reports directory that is a symlink is never written through", () => {

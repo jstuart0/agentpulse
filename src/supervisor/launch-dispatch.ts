@@ -52,7 +52,9 @@ export function createLaunchDispatcher(
 
 	/** Why this host will not start anything in the launch's directory, or null. Specifics are for the local log only. */
 	function refusalReason(launch: LaunchRequest): string | null {
-		if (!gate.noteLaunch(launch.id, launch.launchCorrelationId, launch.cwd)) {
+		const interactive =
+			launch.agentType === "claude_code" && launch.requestedLaunchMode === "interactive_terminal";
+		if (!gate.noteLaunch(launch.id, launch.launchCorrelationId, launch.cwd, { interactive })) {
 			return "too_many_live_sessions: this host is following as many sessions as it can";
 		}
 		const verdict = gate.verdict(launch.id, launch.cwd);
