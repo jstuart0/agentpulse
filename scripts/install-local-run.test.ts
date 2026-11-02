@@ -40,6 +40,7 @@ import {
 	HAS_ICONV,
 	MESSAGES,
 	extractMarkerBlock,
+	fn,
 	lsStub,
 	makeFakeBunZip,
 	run,
@@ -223,6 +224,7 @@ function installBun(prefix: string, version = "1.3.12"): string {
 			`case "\${1-}" in --version) echo "${version}"; exit 0 ;; esac`,
 			"n=$(cat | wc -c | tr -d ' ')",
 			'echo "$0 $* stdin=$n" >> "$AP_STUB_LOG"',
+			'case "$*" in "run start"|"run supervisor") echo "ENV $2 PUBLIC_URL=$PUBLIC_URL HOST=$HOST PATH=$PATH" >> "$AP_STUB_LOG" ;; esac',
 			// What a real install and build leave in the checkout, written under the caller's umask.
 			'case "$*" in install) mkdir -p node_modules/.bin; echo x > node_modules/.bin/f ;; "run build") mkdir -p dist; echo x > dist/f ;; esac',
 			"exit 0",
@@ -718,7 +720,68 @@ describe("W15/W17: option values are validated before the banner", () => {
 		{ args: ["--port", "9999999"], flag: "--port", reason: MESSAGES.argReason.port },
 		{ args: ["--disable-auth", "yes"], flag: "--disable-auth", reason: MESSAGES.argReason.bool },
 		{ args: ["--api-key", "a b"], flag: "--api-key", reason: MESSAGES.argReason.charset },
-		{ args: ["--host", "h\u0001"], flag: "--host", reason: MESSAGES.argReason.controls },
+		{ args: ["--host", "h\u0001"], flag: "--host", reason: MESSAGES.argReason.host },
+		{ args: ["--host", "a b"], flag: "--host", reason: MESSAGES.argReason.host },
+		{ args: ["--host", "h$x"], flag: "--host", reason: MESSAGES.argReason.host },
+		{ args: ["--host", "*"], flag: "--host", reason: MESSAGES.argReason.host },
+		{ args: ["--host", "a'b\"c>"], flag: "--host", reason: MESSAGES.argReason.host },
+		{ args: ["--host", "a&b"], flag: "--host", reason: MESSAGES.argReason.host },
+		{ args: ["--host", "a<b"], flag: "--host", reason: MESSAGES.argReason.host },
+		{ args: ["--host", "fe80::1%eth0"], flag: "--host", reason: MESSAGES.argReason.host },
+		{ args: ["--host", "[::1"], flag: "--host", reason: MESSAGES.argReason.host },
+		{ args: ["--host", "[zz]"], flag: "--host", reason: MESSAGES.argReason.host },
+		{ args: ["--host", ""], flag: "--host", reason: MESSAGES.argReason.host },
+		{ args: ["--ref", "-x"], flag: "--ref", reason: MESSAGES.argReason.ref },
+		{ args: ["--ref", "a..b"], flag: "--ref", reason: MESSAGES.argReason.ref },
+		{ args: ["--ref", "a b"], flag: "--ref", reason: MESSAGES.argReason.ref },
+		{ args: ["--ref", "a;b"], flag: "--ref", reason: MESSAGES.argReason.ref },
+		{ args: ["--ref", ""], flag: "--ref", reason: MESSAGES.argReason.ref },
+		{ args: ["--repo", "ftp://h/x.git"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{
+			args: ["--repo", "https://u:t@h.example/x.git"],
+			flag: "--repo",
+			reason: MESSAGES.argReason.repoUserinfo,
+		},
+		{
+			args: ["--repo", "https://u@h.example/x.git"],
+			flag: "--repo",
+			reason: MESSAGES.argReason.repoUserinfo,
+		},
+		{
+			args: ["--repo", "https://h.example@evil.example/x.git"],
+			flag: "--repo",
+			reason: MESSAGES.argReason.repoUserinfo,
+		},
+		{
+			args: ["--repo", "https://u:p@ss@h.example/x.git"],
+			flag: "--repo",
+			reason: MESSAGES.argReason.repoUserinfo,
+		},
+		{ args: ["--repo", "git@h.example:x/y.git"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "-x"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "--upload-pack=x"], flag: "--repo", reason: MESSAGES.argReason.needsValue },
+		{ args: ["--repo", "rel/path"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "/tmp/a b"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "https://h/a b"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "https://h/a\nb"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "https://h/it's.git"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "https://h/$x.git"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{ args: ["--repo", "https://h/a;b.git"], flag: "--repo", reason: MESSAGES.argReason.repo },
+		{
+			args: ["--public-url", "http://h/it's"],
+			flag: "--public-url",
+			reason: MESSAGES.argReason.url,
+		},
+		{
+			args: ["--public-url", "http://h/$HOME"],
+			flag: "--public-url",
+			reason: MESSAGES.argReason.url,
+		},
+		{
+			args: ["--public-url", "http://h/a;b"],
+			flag: "--public-url",
+			reason: MESSAGES.argReason.url,
+		},
 		{ args: ["--public-url", "u\n"], flag: "--public-url", reason: MESSAGES.argReason.controls },
 		{
 			args: ["--public-url", "http://h/a b"],
@@ -1738,6 +1801,598 @@ describe("a HOME that ends in slashes is normalised before any path is built", (
 			MESSAGES.dirHolds(q(bash, base), "your home directory", q(bash, base)),
 		);
 	});
+});
+
+// ── service files: private, escaped, restarted ──
+
+describe("service files are written 0600, end in one newline, and are applied on a re-run", () => {
+	const bunEnv = () => {
+		const bunx = fresh("bunx");
+		installBun(bunx);
+		return { BUN_INSTALL: bunx };
+	};
+	const endsInOneNewline = (file: string) => {
+		const text = readFileSync(file, "utf-8");
+		return text.endsWith("\n") && !text.endsWith("\n\n");
+	};
+
+	each(
+		"W4/W4c (Linux): both units are 0600 even over an older 0644 file, and end in exactly one newline",
+		(bash) => {
+			const home = fresh("home");
+			mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
+			for (const n of ["agentpulse", "agentpulse-supervisor"]) {
+				writeFileSync(unitFile(home, n), "old\n");
+				chmodSync(unitFile(home, n), 0o644);
+			}
+			const r = go(bash, ["--skip-hooks", "--service", "systemd"], {
+				path: mkPath(),
+				home,
+				env: bunEnv(),
+			});
+			expect(r.code).toBe(0);
+			for (const n of ["agentpulse", "agentpulse-supervisor"]) {
+				expect(modeOf(unitFile(home, n))).toBe(0o600);
+				expect(endsInOneNewline(unitFile(home, n))).toBe(true);
+			}
+		},
+	);
+
+	onlyWithPlistlib(
+		plistName("W4/W4c (macOS): both plists are 0600 over an older 0644 file, one trailing newline"),
+		() => {
+			const home = fresh("home");
+			mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+			for (const n of ["local", "supervisor"]) {
+				writeFileSync(plistFile(home, n), "old\n");
+				chmodSync(plistFile(home, n), 0o644);
+			}
+			const r = go(MAIN, ["--skip-hooks", "--service", "launchd"], {
+				path: mkPath(),
+				home,
+				uname: "Darwin",
+				env: bunEnv(),
+			});
+			expect(r.code).toBe(0);
+			for (const n of ["local", "supervisor"]) {
+				expect(modeOf(plistFile(home, n))).toBe(0o600);
+				expect(endsInOneNewline(plistFile(home, n))).toBe(true);
+				expect(plistJson(plistFile(home, n)).ProgramArguments[0]).toContain("/bin/bun");
+			}
+		},
+	);
+
+	const IS_ROOT = (process.getuid?.() ?? 1) === 0;
+	const unwritable = IS_ROOT ? test.skip : test;
+
+	each(
+		"W4 (Linux): a link at a unit path is refused before the clone and build, its target untouched",
+		(bash) => {
+			for (const which of ["agentpulse", "agentpulse-supervisor"]) {
+				const home = fresh("home");
+				mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
+				writeFileSync(`${home}/target`, "keep");
+				symlinkSync(`${home}/target`, unitFile(home, which));
+				const r = go(bash, ["--skip-hooks", "--service", "systemd"], {
+					path: mkPath(),
+					home,
+					env: bunEnv(),
+				});
+				expect(r.code).toBe(1);
+				expect(r.stderr).toContain(MESSAGES.unitDir(q(bash, unitFile(home, which))));
+				expect(readFileSync(`${home}/target`, "utf-8")).toBe("keep");
+				expect(r.log).toBe("");
+				expect(existsSync(join(home, ".agentpulse"))).toBe(false);
+			}
+		},
+	);
+
+	once("W4 (Linux): a dangling link at a unit path is refused too", (bash) => {
+		const home = fresh("home");
+		mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
+		symlinkSync(`${home}/nowhere`, unitFile(home));
+		const r = go(bash, ["--skip-hooks", "--skip-supervisor", "--service", "systemd"], {
+			path: mkPath(),
+			home,
+			env: bunEnv(),
+		});
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain(MESSAGES.unitDir(q(bash, unitFile(home))));
+		expect(r.log).toBe("");
+	});
+
+	once(
+		"a link at the supervisor's unit path doesn't matter when the supervisor is skipped",
+		(bash) => {
+			const home = fresh("home");
+			mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
+			symlinkSync(`${home}/nowhere`, unitFile(home, "agentpulse-supervisor"));
+			const r = go(bash, ["--skip-hooks", "--skip-supervisor", "--service", "systemd"], {
+				path: mkPath(),
+				home,
+				env: bunEnv(),
+			});
+			expect(r.code).toBe(0);
+		},
+	);
+
+	once(
+		"W4 (macOS): a link at a plist path is refused before the clone, and launchctl isn't called",
+		(bash) => {
+			for (const which of ["local", "supervisor"]) {
+				const home = fresh("home");
+				mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+				writeFileSync(`${home}/target`, "keep");
+				symlinkSync(`${home}/target`, plistFile(home, which));
+				const r = go(bash, ["--skip-hooks", "--service", "launchd"], {
+					path: mkPath(),
+					home,
+					uname: "Darwin",
+					env: bunEnv(),
+				});
+				expect(r.code).toBe(1);
+				expect(r.stderr).toContain(MESSAGES.unitDir(q(bash, plistFile(home, which))));
+				expect(readFileSync(`${home}/target`, "utf-8")).toBe("keep");
+				expect(r.log).toBe("");
+			}
+		},
+	);
+
+	// A write that fails after the pre-flight (here, a directory that can't be written to) must
+	// stop the run before systemctl or launchctl is touched.
+	unwritable("a unit that can't be written stops the run before systemctl", () => {
+		const home = fresh("home");
+		mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
+		chmodSync(join(home, ".config", "systemd", "user"), 0o555);
+		try {
+			const r = go(MAIN, ["--skip-hooks", "--skip-supervisor", "--service", "systemd"], {
+				path: mkPath(),
+				home,
+				env: bunEnv(),
+			});
+			expect(r.code).toBe(1);
+			expect(r.stderr).toContain("could not create a private temp file");
+			expect(r.log).not.toContain("systemctl");
+		} finally {
+			chmodSync(join(home, ".config", "systemd", "user"), 0o755);
+		}
+	});
+	unwritable("a plist that can't be written stops the run before launchctl", () => {
+		const home = fresh("home");
+		mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+		chmodSync(join(home, "Library", "LaunchAgents"), 0o555);
+		try {
+			const r = go(MAIN, ["--skip-hooks", "--skip-supervisor", "--service", "launchd"], {
+				path: mkPath(),
+				home,
+				uname: "Darwin",
+				env: bunEnv(),
+			});
+			expect(r.code).toBe(1);
+			expect(r.stderr).toContain("could not create a private temp file");
+			expect(r.log).not.toContain("launchctl");
+		} finally {
+			chmodSync(join(home, "Library", "LaunchAgents"), 0o755);
+		}
+	});
+
+	each(
+		"neither unit sets KillMode: systemd's default stops the agents the supervisor started",
+		(bash) => {
+			const r = go(bash, ["--skip-hooks", "--service", "systemd"], {
+				path: mkPath(),
+				env: bunEnv(),
+			});
+			expect(r.code).toBe(0);
+			for (const n of ["agentpulse", "agentpulse-supervisor"]) {
+				expect(readFileSync(unitFile(r.home, n), "utf-8")).not.toContain("KillMode");
+			}
+		},
+	);
+
+	each("under umask 002 a fresh service directory is not group-writable", (bash) => {
+		const u = go(bash, ["--skip-hooks", "--skip-supervisor", "--service", "systemd"], {
+			path: mkPath(),
+			umask: "002",
+			env: bunEnv(),
+		});
+		expect(u.code).toBe(0);
+		for (const d of [".config", ".config/systemd", ".config/systemd/user"]) {
+			expect(modeOf(join(u.home, d)) & 0o022).toBe(0);
+		}
+		const l = go(bash, ["--skip-hooks", "--skip-supervisor", "--service", "launchd"], {
+			path: mkPath(),
+			umask: "002",
+			uname: "Darwin",
+			env: bunEnv(),
+		});
+		expect(l.code).toBe(0);
+		for (const d of ["Library", "Library/LaunchAgents"]) {
+			expect(modeOf(join(l.home, d)) & 0o022).toBe(0);
+		}
+	});
+
+	each("systemd: enable, then restart, for both units, and never enable --now", (bash) => {
+		const r = go(bash, ["--skip-hooks", "--service", "systemd"], { path: mkPath(), env: bunEnv() });
+		expect(r.code).toBe(0);
+		const calls = r.log.split("\n").filter((l) => l.startsWith("systemctl "));
+		expect(calls.filter((c) => c.includes("restart"))).toEqual([
+			"systemctl --user restart agentpulse stdin=0",
+			"systemctl --user restart agentpulse-supervisor stdin=0",
+		]);
+		expect(r.log).not.toContain("--now");
+		for (const n of ["agentpulse", "agentpulse-supervisor"]) {
+			const enable = calls.findIndex((c) => c.startsWith(`systemctl --user enable ${n} `));
+			const restart = calls.findIndex((c) => c.startsWith(`systemctl --user restart ${n} `));
+			expect(enable).toBeGreaterThanOrEqual(0);
+			expect(restart).toBeGreaterThan(enable);
+		}
+	});
+
+	withUnzip(
+		"W5: a re-run that switches Bun rewrites both units to the new path and restarts both",
+		(bash) => {
+			const rel = fakeRelease("Linux");
+			const home = fresh("home");
+			const first = go(bash, ["--skip-hooks", "--service", "systemd"], {
+				path: mkPath(),
+				home,
+				env: bunEnv(),
+			});
+			expect(first.code).toBe(0);
+			const second = go(bash, ["--skip-hooks", "--service", "systemd"], {
+				path: mkPath(),
+				home,
+				script: rel.script,
+				env: { AP_FAKE_ZIP: rel.zip },
+			});
+			expect(second.code).toBe(0);
+			const priv = `${home}/.agentpulse/bun/bin/bun`;
+			expect(readFileSync(unitFile(home), "utf-8")).toContain(`\nExecStart=${priv} run start\n`);
+			expect(readFileSync(unitFile(home, "agentpulse-supervisor"), "utf-8")).toContain(
+				`\nExecStart=${priv} run supervisor\n`,
+			);
+			for (const r of [first, second]) {
+				expect(r.log).toContain("systemctl --user restart agentpulse stdin=0");
+				expect(r.log).toContain("systemctl --user restart agentpulse-supervisor stdin=0");
+			}
+		},
+	);
+
+	once("W5 (macOS): both plists are unloaded and then loaded again on a re-run", (bash) => {
+		const home = fresh("home");
+		const run = () =>
+			go(bash, ["--skip-hooks", "--service", "launchd"], {
+				path: mkPath(),
+				home,
+				uname: "Darwin",
+				env: bunEnv(),
+			});
+		run();
+		const r = run();
+		expect(r.code).toBe(0);
+		const calls = r.log.split("\n").filter((l) => l.startsWith("launchctl "));
+		for (const n of ["local", "supervisor"]) {
+			const unload = calls.findIndex(
+				(c) => c.startsWith("launchctl unload") && c.includes(`dev.agentpulse.${n}.plist`),
+			);
+			const load = calls.findIndex(
+				(c) => c.startsWith("launchctl load") && c.includes(`dev.agentpulse.${n}.plist`),
+			);
+			expect(unload).toBeGreaterThanOrEqual(0);
+			expect(load).toBeGreaterThan(unload);
+		}
+	});
+});
+
+describe("D13: the plist holds XML-escaped values and the paths use only safe characters", () => {
+	const bunEnv = () => {
+		const bunx = fresh("bunx");
+		installBun(bunx);
+		return { BUN_INSTALL: bunx };
+	};
+	onlyWithPlistlib(
+		plistName("X-url: a URL with & is escaped in the file and read back exactly"),
+		() => {
+			const url = "http://h.example:3000/?a=1&b=2&c=(3)";
+			const home = fresh("home");
+			const r = go(MAIN, ["--skip-hooks", "--service", "launchd", "--public-url", url], {
+				path: mkPath(),
+				home,
+				uname: "Darwin",
+				env: bunEnv(),
+			});
+			expect(r.code).toBe(0);
+			for (const n of ["local", "supervisor"]) {
+				const raw = readFileSync(plistFile(home, n), "utf-8");
+				expect(raw).toContain(
+					"<key>PUBLIC_URL</key><string>http://h.example:3000/?a=1&amp;b=2&amp;c=(3)</string>",
+				);
+				expect(plistJson(plistFile(home, n)).EnvironmentVariables.PUBLIC_URL).toBe(url);
+			}
+		},
+	);
+	onlyWithPlistlib(plistName("X-host: a bracketed IPv6 host reads back exactly"), () => {
+		const home = fresh("home");
+		const r = go(
+			MAIN,
+			["--skip-hooks", "--skip-supervisor", "--service", "launchd", "--host", "[::1]"],
+			{
+				path: mkPath(),
+				home,
+				uname: "Darwin",
+				env: bunEnv(),
+			},
+		);
+		expect(r.code).toBe(0);
+		expect(plistJson(plistFile(home)).EnvironmentVariables.HOST).toBe("[::1]");
+	});
+
+	const rows = (t: string) => [
+		{
+			args: ["--dir", `${t}/d$x`],
+			what: "--dir",
+			p: `${t}/d$x`,
+			reason: MESSAGES.pathReason.badChars,
+		},
+		{
+			args: ["--dir", `${t}/d'q`],
+			what: "--dir",
+			p: `${t}/d'q`,
+			reason: MESSAGES.pathReason.badChars,
+		},
+		{
+			args: ["--dir", `${t}/dé`],
+			what: "--dir",
+			p: `${t}/dé`,
+			reason: MESSAGES.pathReason.badChars,
+		},
+		{
+			args: ["--dir", `${t}/d&x`],
+			what: "--dir",
+			p: `${t}/d&x`,
+			reason: MESSAGES.pathReason.badChars,
+		},
+		{
+			args: ["--data-dir", `${t}/d%h`],
+			what: "--data-dir",
+			p: `${t}/d%h`,
+			reason: MESSAGES.pathReason.badChars,
+		},
+		{
+			args: ["--data-dir", `${t}/d"q`],
+			what: "--data-dir",
+			p: `${t}/d"q`,
+			reason: MESSAGES.pathReason.badChars,
+		},
+	];
+	for (const i of [0, 1, 2, 3, 4, 5]) {
+		once(`P-dir row ${i} is refused with the path-bad line`, (bash) => {
+			const t = fresh("t");
+			const row = rows(t)[i];
+			const r = go(bash, [...PLAIN, ...row.args], { path: mkPath() });
+			expect(r.code).toBe(1);
+			expect(r.stderr).toContain(MESSAGES.pathBad(row.what, q(bash, row.p), row.reason));
+			expect(list(r.home)).toEqual([]);
+		});
+	}
+});
+
+describe("--service none builds the environment safely", () => {
+	const LOCAL_BLOCK = extractMarkerBlock(SOURCE, "agentpulse-local-prereqs");
+	const bunEnv = () => {
+		const bunx = fresh("bunx");
+		const bun = installBun(bunx);
+		return { env: { BUN_INSTALL: bunx }, bun };
+	};
+	const SYS_PATH = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
+
+	/** The two functions plus the settings the script has set by the time it runs a service. */
+	const PRELUDE = `PORT=3000 HOST=0.0.0.0 PUBLIC_URL=http://h DISABLE_AUTH=true API_KEY="" DATA_DIR=/d
+${fn(LOCAL_BLOCK, "ap_local_env_content")}
+${fn(LOCAL_BLOCK, "ap_local_env_run")}`;
+
+	each(
+		"ap_local_env_run keeps every NAME=value line one word, without globbing or splitting",
+		(bash) => {
+			const dir = fresh("env");
+			writeFileSync(`${dir}/decoy1`, "");
+			writeFileSync(`${dir}/decoy2`, "");
+			writeFileSync(`${dir}/env`, "PORT=1\nHOST=x y  z\nPUBLIC_URL=*\n\nNODE_ENV=last-no-newline");
+			const out = run(
+				bash,
+				`cd "${dir}"\n${PRELUDE}\nap_local_env_run "${dir}/env" sh -c 'printf "%s|%s|%s|%s" "$PORT" "$HOST" "$PUBLIC_URL" "$NODE_ENV"'`,
+				[],
+				SYS_PATH,
+			);
+			expect(out.code).toBe(0);
+			expect(out.out).toBe("1|x y  z|*|last-no-newline");
+		},
+	);
+
+	each(
+		"a line that isn't one of the settings the installer writes is skipped by number, without its text, and never runs",
+		(bash) => {
+			const dir = fresh("env");
+			const secret = "ap_secret_in_a_bad_line";
+			writeFileSync(
+				`${dir}/env`,
+				`PORT=1\nnot an assignment ${secret}\n=x\n1A=x\nD-E=x\n$(touch ${dir}/pwned)=x\nHOST=ok\nPUBLIC_URL=$(touch ${dir}/pwned2) \`touch ${dir}/pwned3\`\n`,
+			);
+			const out = run(
+				bash,
+				`${PRELUDE}\nap_local_env_run "${dir}/env" sh -c 'printf "%s|%s|%s" "$PORT" "$HOST" "$PUBLIC_URL"'`,
+				[],
+				SYS_PATH,
+			);
+			expect(out.code).toBe(0);
+			expect(out.out).toBe(`1|ok|$(touch ${dir}/pwned2) \`touch ${dir}/pwned3\``);
+			expect(out.err).toBe(
+				[2, 3, 4, 5, 6]
+					.map(
+						(n) =>
+							`  ! Skipping line ${n} of ${dir}/env: it isn't one of the settings the installer writes\n`,
+					)
+					.join(""),
+			);
+			expect(out.err).not.toContain(secret);
+			expect(existsSync(`${dir}/pwned`)).toBe(false);
+			expect(existsSync(`${dir}/pwned2`) || existsSync(`${dir}/pwned3`)).toBe(false);
+		},
+	);
+
+	each("a PATH= or BASH_ENV= line in .env.local is not exported", (bash) => {
+		const dir = fresh("env");
+		writeFileSync(`${dir}/hook.sh`, `touch ${dir}/hooked\n`);
+		writeFileSync(
+			`${dir}/env`,
+			`PATH=/nowhere\nBASH_ENV=${dir}/hook.sh\nLD_PRELOAD=/x\nNODE_OPTIONS=--require=x\nPORT=3000\n`,
+		);
+		const out = run(
+			bash,
+			`${PRELUDE}\nap_local_env_run "${dir}/env" bash -c 'printf "%s|%s|%s|%s|%s" "$PORT" "\${BASH_ENV-unset}" "\${LD_PRELOAD-unset}" "\${NODE_OPTIONS-unset}" "$(command -v sh >/dev/null && echo path-ok)"'`,
+			[],
+			SYS_PATH,
+		);
+		expect(out.code).toBe(0);
+		expect(out.out).toBe("3000|unset|unset|unset|path-ok");
+		expect(existsSync(`${dir}/hooked`)).toBe(false);
+		expect(out.err.split("\n").filter(Boolean)).toHaveLength(4);
+	});
+
+	test("the names it may export are derived from the function that writes the file", () => {
+		const content = fn(LOCAL_BLOCK, "ap_local_env_content");
+		const written = [...content.matchAll(/^([A-Z_]+)=/gm)].map((m) => m[1]);
+		expect(written.length).toBeGreaterThanOrEqual(8);
+		expect(fn(LOCAL_BLOCK, "ap_local_env_run")).toContain("ap_local_env_content");
+		expect(SOURCE).toContain('ENV_CONTENT="$(ap_local_env_content)"');
+	});
+
+	test("the values never go through a command line: the function execs the command itself", () => {
+		const body = fn(LOCAL_BLOCK, "ap_local_env_run");
+		expect(body).toContain('exec "$@"');
+		expect(body).not.toMatch(/\benv\b[^\n]*"\$@"/);
+	});
+
+	each("an empty file gives no variables and still runs the command (bash 3.2, set -u)", (bash) => {
+		const dir = fresh("env");
+		writeFileSync(`${dir}/env`, "");
+		const out = run(
+			bash,
+			`${PRELUDE}\nap_local_env_run "${dir}/env" sh -c 'echo ran'`,
+			[],
+			SYS_PATH,
+		);
+		expect(out.code).toBe(0);
+		expect(out.out).toBe("ran");
+	});
+
+	once(
+		"a URL with * reaches the server as written even when files would match the glob",
+		(bash) => {
+			const { env, bun } = bunEnv();
+			const t = fresh("t");
+			// The old unquoted `env $(tr ...)` expanded PUBLIC_URL=http://* against this directory.
+			mkdirSync(`${t}/app/.git`, { recursive: true });
+			mkdirSync(`${t}/app/PUBLIC_URL=http:`);
+			writeFileSync(`${t}/app/PUBLIC_URL=http:/x`, "");
+			const r = go(bash, [...PLAIN, "--dir", `${t}/app`, "--public-url", "http://*"], {
+				path: mkPath(),
+				env,
+			});
+			expect(r.code).toBe(0);
+			const deadline = Date.now() + 10_000;
+			let seen = readFileSync(r.logFile, "utf-8");
+			while (
+				Date.now() < deadline &&
+				!(seen.includes("ENV start") && seen.includes("ENV supervisor"))
+			) {
+				Bun.sleepSync(100);
+				seen = readFileSync(r.logFile, "utf-8");
+			}
+			expect(seen).toContain("ENV start PUBLIC_URL=http://* HOST=0.0.0.0 ");
+			expect(seen).toContain("ENV supervisor PUBLIC_URL=http://* HOST=0.0.0.0 PATH=");
+			expect(seen).toContain(`PATH=${bun.slice(0, -"/bun".length)}:`);
+		},
+	);
+});
+
+describe("--ref and --repo reach git as options-safe arguments", () => {
+	const bunEnv = () => {
+		const bunx = fresh("bunx");
+		installBun(bunx);
+		return { BUN_INSTALL: bunx };
+	};
+	each("a clone gets --branch <ref> --single-branch -- <repo> <dir>", (bash) => {
+		const t = fresh("t");
+		const r = go(
+			bash,
+			[
+				...PLAIN,
+				"--skip-supervisor",
+				"--dir",
+				`${t}/app`,
+				"--ref",
+				"release/v1.2.3",
+				"--repo",
+				"https://git.example.test/x/y.git",
+			],
+			{ path: mkPath(), env: bunEnv() },
+		);
+		expect(r.code).toBe(0);
+		expect(r.log).toContain(
+			`git clone --branch release/v1.2.3 --single-branch -- https://git.example.test/x/y.git ${t}/app stdin=0`,
+		);
+	});
+	once("a local absolute path is accepted as the repository", (bash) => {
+		const t = fresh("t");
+		const r = go(
+			bash,
+			[...PLAIN, "--skip-supervisor", "--dir", `${t}/app`, "--repo", `${t}/origin.git`],
+			{
+				path: mkPath(),
+				env: bunEnv(),
+			},
+		);
+		expect(r.code).toBe(0);
+		expect(r.log).toContain(`--single-branch -- ${t}/origin.git ${t}/app`);
+	});
+	once("an update checks the ref out with -- after it", (bash) => {
+		const t = fresh("t");
+		mkdirSync(`${t}/app/.git`, { recursive: true });
+		const r = go(bash, [...PLAIN, "--skip-supervisor", "--dir", `${t}/app`, "--ref", "v2"], {
+			path: mkPath(),
+			env: bunEnv(),
+		});
+		expect(r.code).toBe(0);
+		expect(r.log).toContain(`git -C ${t}/app checkout v2 -- stdin=0`);
+	});
+	once("an @ in the path of an https repository is fine, and is shown as given", (bash) => {
+		const t = fresh("t");
+		const r = go(
+			bash,
+			[
+				...PLAIN,
+				"--skip-supervisor",
+				"--dir",
+				`${t}/app`,
+				"--repo",
+				"https://git.example.test/x@y/z@w.git",
+			],
+			{ path: mkPath(), env: bunEnv() },
+		);
+		expect(r.code).toBe(0);
+		expect(r.stdout).toContain("  Repo:       https://git.example.test/x@y/z@w.git (main)");
+	});
+	for (const host of ["localhost", "0.0.0.0", "my-host_1.example", "[::1]", "::1"]) {
+		once(`--host ${host} is accepted`, (bash) => {
+			const r = go(bash, [...PLAIN, "--skip-supervisor", "--host", host], {
+				path: mkPath(),
+				env: bunEnv(),
+			});
+			expect(r.code).toBe(0);
+		});
+	}
 });
 
 // ── piping ──

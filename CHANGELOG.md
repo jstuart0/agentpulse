@@ -170,6 +170,76 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   key is 409. Client-supplied `launchSpec.prelaunchActions` are refused.
   Migration `0016_launch_idempotency_key` adds the column on both dialects.
 
+- **`install-local.sh` installs a pinned Bun and checks everything first** (#38). On Fedora and other systems without `unzip`,
+  the old script stopped silently at "Installing Bun…". It now:
+  - lists what it needs (`curl`, `git`, `python3` unless the supervisor and hooks are skipped, and `unzip` plus `shasum` or
+    `sha256sum` when it has to install Bun) with the package-manager command, and installs nothing until they're there;
+  - downloads the pinned Bun 1.3.12 release and checks its SHA-256 instead of piping bun.sh's script into bash. It puts it in
+    `~/.agentpulse/bun`, or in `$BUN_INSTALL/bin` if `BUN_INSTALL` is set, and no longer edits your shell rc files;
+  - uses a Bun of 1.3.12 or newer from `~/.bun` or your `PATH` if it finds one. An older Bun is no longer used: the pinned copy
+    goes into `~/.agentpulse/bun` and the old one is left where it was. This also applies when `BUN_INSTALL` is the `~/.bun`
+    that bun.sh writes into shell profiles. Any other `BUN_INSTALL` that holds an unusable Bun is refused;
+  - runs every check (arguments, paths, the service directory, which Bun, the tools) before it writes a file; the only
+    thing it does earlier is remove group/other write from its own `~/.agentpulse` directories;
+  - makes the services run the Bun it actually chose. Before, the unit and plist always pointed at `~/.bun/bin/bun`, so an
+    install whose Bun was only on `PATH` produced a service that couldn't start. The service `PATH` keeps `~/.bun/bin`
+    after it only when that directory exists and isn't group/world-writable or owned by someone else;
+  - makes `~/.agentpulse`, its `logs` and (by default) its `data` directory mode 700, whatever the umask. A `--data-dir` you
+    chose is left as it is, with a note if other users can read it;
+  - writes the systemd units and launchd plists with mode 0600 and, on a re-run, applies them: systemd units are enabled and
+    then restarted (it was `enable --now`, which leaves a running unit as it is) and launchd plists are unloaded and loaded
+    again. `--service none` doesn't restart anything; it starts a new background process;
+  - refuses, before the clone and build, a service file that is a symbolic link, and creates the service directories so
+    they aren't group-writable;
+  - XML-escapes `PUBLIC_URL` and `HOST` in the plists. A `PUBLIC_URL` containing `&` used to produce a plist launchd
+    rejected;
+  - validates `--port`, `--disable-auth`, `--api-key`, `--public-url`, `--host` (letters, digits, `.`, `:`, `_`, `-` or a
+    bracketed IPv6 address), `--ref` (letters, digits, `.`, `_`, `/` and `-`; no leading `-`, no `..`) and `--repo` (an
+    `https://` URL or an absolute path). A URL for `--public-url` or `--repo` can't hold a quote, `$`, `;`, `<`, `>` or a
+    space. A user name or token in an `https://` `--repo` is refused (it would be kept in `.git/config` and show in git's
+    command line); use a git credential helper. It gives git `--` before the repository, builds the `--service none`
+    environment without word splitting or globbing, exports only the settings it wrote itself, and keeps the values off
+    every command line;
+  - refuses a `--dir`, `--data-dir` or log directory that isn't an absolute path of letters, digits and `/ . _ + - @`;
+    refuses a `--dir` that is, or contains, your home directory, `~/.agentpulse`, the data directory or the log
+    directory; and refuses to delete a `--dir` that exists, isn't a git checkout and isn't an older copy of AgentPulse;
+  - answers `--dir` (or any option that takes a value) with nothing after it with "needs a value" instead of a shell error;
+  - runs git, `bun install` and the build under a umask that keeps the checkout from being group-writable.
+- **`setup-relay.sh`** (#38) shares the same Bun handling:
+  - It looks for a Bun of 1.3.12 or newer in `$BUN_INSTALL` (or `~/.bun`) first and then on `PATH`. Before, `PATH` came
+    first, so a re-run can switch the relay service to the `~/.bun` Bun and restart it;
+  - it skips a Bun that is group-writable or owned by someone else (Homebrew's, in macOS group `admin`, is accepted) and
+    uses the private pinned copy instead;
+  - it checks for `unzip` and a checksum tool before it asks for the key;
+  - it refuses a `HOME` whose path holds anything but letters, digits, spaces, UTF-8 text and `/ . _ + - @` (non-ASCII text
+    needs `iconv` to be checked);
+  - it removes group/other write from its own `~/.agentpulse` directories, and a first-run `~/.agentpulse` is created
+    mode 700 before Bun is fetched into it.
+
+### Fixed
+
+- **Backup sidecar:** the probe in `run-backup.sh` that checks the source database can be opened now has a busy timeout. Under
+  a concurrent writer it could get `SQLITE_BUSY` and exit 2 ("cannot open source db").
+
+### Upgrade notes
+
+- If you installed with `install-local.sh --dir ~/.agentpulse` (or any `--dir` that is your home directory, the data directory
+  or the log directory), the installer now refuses it, because it deletes `--dir` when it isn't a git checkout. Re-run
+  it with the default `--dir`; your data stays in `~/.agentpulse/data`.
+- A re-run of `install-local.sh` or `setup-relay.sh` on a machine where no usable Bun is found (1.3.12 or newer, owned by you
+  or root, not writable by others) installs the pinned copy in `~/.agentpulse/bun`, which needs `unzip`, and moves the
+  services onto it. Pass `BUN_INSTALL` again on each re-run to keep a Bun you chose.
+- A re-run of `install-local.sh` is an upgrade, and it restarts both services on systemd and launchd (`--service none`
+  starts a new process and leaves the old one). That ends the sessions the supervisor launched: headless and Codex
+  sessions on both platforms and, on Linux, terminal sessions it started as its own children. Terminals it opened on
+  macOS keep running. The dashboard drops its live connections for a moment. Finish or stop managed sessions before you
+  re-run it.
+- `install-local.sh` is stricter about what it is given. `--repo` must be an `https://` URL without a user name or token, or an absolute path (an SSH
+  address such as `git@host:org/repo.git` is refused, which affects anyone installing from a fork over SSH; use the
+  `https://` address). `--ref` can only hold letters, digits, `.`, `_`, `/` and `-`, so a name with `@`, `^`, `~` or `+`, a
+  `..`, or a leading `-` is refused. `--host` refuses IPv6 zone ids (`%…`), `*` and anything else outside letters, digits,
+  `.`, `:`, `_`, `-` and a bracketed address.
+
 ## [0.9.0] — 2026-10-24
 
 ### Upgrade notes

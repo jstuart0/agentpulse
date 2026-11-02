@@ -542,6 +542,20 @@ ap_local_strip_controls() {
   return 0
 }
 
+# Whether $1 is a host to bind: letters, digits, '.', ':', '_' and '-', or an IPv6
+# address in brackets.
+ap_local_host_ok() {
+  local h="$1"
+  case "$h" in
+    '') return 1 ;;
+    \[*\]) h="${h#[}"; h="${h%]}"
+      case "$h" in ''|*[!0-9A-Fa-f:.]*) return 1 ;; esac
+      return 0 ;;
+    *[!A-Za-z0-9.:_-]*) return 1 ;;
+  esac
+  return 0
+}
+
 ap_local_validate_args() {
   local digits
   case "$PORT" in
@@ -559,20 +573,42 @@ ap_local_validate_args() {
     *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*)
       ap_local_arg_bad --api-key "can only contain letters, digits, '.', '_' and '-'" ;;
   esac
-  if [[ "$(ap_local_strip_controls "$HOST")" != "$HOST" ]]; then
-    ap_local_arg_bad --host "can't contain control characters"
-  fi
+  ap_local_host_ok "$HOST" || ap_local_arg_bad --host "can only contain letters, digits, '.', ':', '_' and '-', or an IPv6 address in [brackets]"
+  case "$REPO_REF" in
+    -*|*..*|''|*[!A-Za-z0-9._/-]*)
+      ap_local_arg_bad --ref "can only contain letters, digits, '.', '_', '/' and '-', can't start with '-' and can't contain '..'" ;;
+  esac
+  case "$REPO_URL" in
+    https://*)
+      # A token in the URL would be kept in .git/config (readable by others) and show in git's command line.
+      AP_AUTH="${REPO_URL#https://}"
+      AP_AUTH="${AP_AUTH%%[/?#]*}"
+      if [[ "${AP_AUTH}" == *@* ]]; then
+        ap_local_arg_bad --repo "can't contain a user name or token; use a git credential helper"
+      fi
+      # The same URL characters as --public-url (no quote, $ or ;); \133 and \135 are [ and ].
+      # (A newline would vanish from the remainder below, as command substitution drops it.)
+      if [[ "$(ap_local_strip_controls "$REPO_URL")" != "$REPO_URL" ]] || [[ -n "$(printf '%s' "$REPO_URL" | LC_ALL=C tr -d 'A-Za-z0-9._~:/?#\133\135@!&()*+,=%-')" ]]; then
+        ap_local_arg_bad --repo "must be an https:// URL (without spaces, quotes, $, ; or <>) or an absolute path of letters, digits and / . _ + - @"
+      fi ;;
+    /*)
+      ap_safe_path "$REPO_URL" || ap_local_arg_bad --repo "must be an https:// URL (without spaces, quotes, $, ; or <>) or an absolute path of letters, digits and / . _ + - @" ;;
+    *)
+      ap_local_arg_bad --repo "must be an https:// URL (without spaces, quotes, $, ; or <>) or an absolute path of letters, digits and / . _ + - @" ;;
+  esac
   if [[ "$(ap_local_strip_controls "$PUBLIC_URL")" != "$PUBLIC_URL" ]]; then
     ap_local_arg_bad --public-url "can't contain control characters"
   fi
   if [[ -n "$PUBLIC_URL" ]]; then
     case "$PUBLIC_URL" in
       http://*|https://*) ;;
-      *) ap_local_arg_bad --public-url "must be an http:// or https:// URL without spaces, quotes or <>" ;;
+      *) ap_local_arg_bad --public-url "must be an http:// or https:// URL without spaces, quotes, $, ; or <>" ;;
     esac
-    # \133 and \135 are [ and ], \047 is '; written as escapes so tr reads no range or class.
-    if [[ -n "$(printf '%s' "$PUBLIC_URL" | LC_ALL=C tr -d 'A-Za-z0-9._~:/?#\133\135@!$&\047()*+,;=%-')" ]]; then
-      ap_local_arg_bad --public-url "must be an http:// or https:// URL without spaces, quotes or <>"
+    # \133 and \135 are [ and ]; written as escapes so tr reads no range or class. A quote starts
+    # a quoted value in systemd's EnvironmentFile, and Bun expands $ in a .env value, so neither
+    # (nor ;, out of caution) is allowed.
+    if [[ -n "$(printf '%s' "$PUBLIC_URL" | LC_ALL=C tr -d 'A-Za-z0-9._~:/?#\133\135@!&()*+,=%-')" ]]; then
+      ap_local_arg_bad --public-url "must be an http:// or https:// URL without spaces, quotes, $, ; or <>"
     fi
   fi
   return 0
@@ -626,7 +662,7 @@ ap_local_dir_holds() {
 # Resolves --service auto, refuses a mode this installer doesn't have, and
 # refuses a service directory that is itself a symbolic link.
 ap_local_preflight_services() {
-  local unit_dir=""
+  local unit_dir="" files="" f
   if [[ "${SERVICE_MODE}" == "auto" ]]; then
     if [[ "$(uname)" == "Darwin" ]]; then
       SERVICE_MODE="launchd"
@@ -649,6 +685,23 @@ ap_local_preflight_services() {
     printf "  ✗ %q is a symbolic link; the installer won't write service files through it. Nothing was installed.\n" "$unit_dir" >&2
     return 1
   fi
+  # The service files themselves, too: finding that out at the write would be after the clone and build.
+  case "${SERVICE_MODE}" in
+    systemd) files="${unit_dir}/${SERVICE_NAME}.service" ;;
+    launchd) files="${unit_dir}/dev.agentpulse.local.plist" ;;
+  esac
+  if [[ "${AUTO_SUPERVISOR}" == "true" ]]; then
+    case "${SERVICE_MODE}" in
+      systemd) files="${files} ${unit_dir}/${SERVICE_NAME}-supervisor.service" ;;
+      launchd) files="${files} ${unit_dir}/dev.agentpulse.supervisor.plist" ;;
+    esac
+  fi
+  for f in $files; do
+    if [[ -L "$f" ]]; then
+      printf "  ✗ %q is a symbolic link; the installer won't write service files through it. Nothing was installed.\n" "$f" >&2
+      return 1
+    fi
+  done
   return 0
 }
 
@@ -868,6 +921,45 @@ ap_local_private_dir() {
   return 0
 }
 
+# The lines of .env.local. This is the one place the file's content and the names it may
+# hold are defined: ap_local_env_run exports only the names printed here.
+ap_local_env_content() {
+  cat <<EOF
+PORT=${PORT}
+HOST=${HOST}
+PUBLIC_URL=${PUBLIC_URL}
+DISABLE_AUTH=${DISABLE_AUTH}
+AGENTPULSE_INITIAL_API_KEY=${API_KEY}
+DATA_DIR=${DATA_DIR}
+SQLITE_PATH=${DATA_DIR}/agentpulse.db
+NODE_ENV=production
+EOF
+  return 0
+}
+
+# Runs the command "$@" in place of this (background) shell with the NAME=value lines of
+# the file $1 exported, but only the names ap_local_env_content writes (so a PATH= or
+# BASH_ENV= line added to the file later changes nothing). Each line stays one word (no
+# splitting, no globbing), and the values are never on a command line. Any other line is
+# skipped, by number and without its text, which may be a key. Only called in the background, where exec
+# keeps $! the pid of the command itself.
+ap_local_env_run() {
+  local file="$1" line name n=0 allowed
+  allowed=" $(ap_local_env_content | sed 's/=.*//' | tr '\n' ' ')"
+  shift
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    n=$((n + 1))
+    if [[ -z "$line" ]]; then continue; fi
+    name="${line%%=*}"
+    if [[ "$line" != *=* ]] || [[ "$allowed" != *" $name "* ]]; then
+      echo "  ! Skipping line $n of $file: it isn't one of the settings the installer writes" >&2
+      continue
+    fi
+    export "$line"
+  done < "$file"
+  exec "$@"
+}
+
 # Escapes the five XML characters in $1, & first.
 ap_xml_escape() {
   printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"
@@ -956,14 +1048,14 @@ ap_local_mkdir_p "$(dirname "${INSTALL_DIR}")"
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
   echo "  Updating existing checkout..."
   ap_local_with_umask git -C "${INSTALL_DIR}" fetch --tags origin </dev/null
-  ap_local_with_umask git -C "${INSTALL_DIR}" checkout "${REPO_REF}" </dev/null
+  ap_local_with_umask git -C "${INSTALL_DIR}" checkout "${REPO_REF}" -- </dev/null
   ap_local_with_umask git -C "${INSTALL_DIR}" pull --ff-only origin "${REPO_REF}" </dev/null || true
 else
   echo "  Cloning repository..."
   # Checked again here: the earlier check ran before the Bun install, which can take a while.
   ap_local_check_install_dir || exit 1
   rm -rf "${INSTALL_DIR}"
-  ap_local_with_umask git clone --branch "${REPO_REF}" --single-branch "${REPO_URL}" "${INSTALL_DIR}" </dev/null
+  ap_local_with_umask git clone --branch "${REPO_REF}" --single-branch -- "${REPO_URL}" "${INSTALL_DIR}" </dev/null
 fi
 # A directory the user chose is theirs to set the mode of, as --data-dir is.
 if [[ "${INSTALL_DIR_GIVEN}" != "true" ]]; then
@@ -979,22 +1071,15 @@ echo "  Building application..."
 ap_local_with_umask env NODE_ENV=production "${BUN_BIN}" run build </dev/null
 
 ENV_FILE="${INSTALL_DIR}/.env.local"
-ENV_CONTENT="$(cat <<EOF
-PORT=${PORT}
-HOST=${HOST}
-PUBLIC_URL=${PUBLIC_URL}
-DISABLE_AUTH=${DISABLE_AUTH}
-AGENTPULSE_INITIAL_API_KEY=${API_KEY}
-DATA_DIR=${DATA_DIR}
-SQLITE_PATH=${DATA_DIR}/agentpulse.db
-NODE_ENV=production
-EOF
-)"$'\n'
+ENV_CONTENT="$(ap_local_env_content)"$'\n'
 ap_write_private_no_follow "${ENV_FILE}" "${ENV_CONTENT}" || exit 1
 echo "  ✓ Wrote ${ENV_FILE}"
 
 SUPERVISOR_CONFIG_FILE="${AGENTPULSE_DIR}/supervisor.json"
 SUPERVISOR_ENROLLMENT_TOKEN=""
+# The only two plist values that can hold XML-special characters (a URL may hold & and ').
+PUBLIC_URL_XML="$(ap_xml_escape "${PUBLIC_URL}")"
+HOST_XML="$(ap_xml_escape "${HOST}")"
 
 json_escape() {
   python3 - "$1" <<'PY'
@@ -1064,9 +1149,9 @@ PY
 }
 
 create_systemd() {
-  mkdir -p "${HOME}/.config/systemd/user"
-  local unit="${HOME}/.config/systemd/user/${SERVICE_NAME}.service"
-  cat > "${unit}" <<EOF
+  ap_local_mkdir_p "${HOME}/.config/systemd/user"
+  local unit="${HOME}/.config/systemd/user/${SERVICE_NAME}.service" content
+  content="$(cat <<EOF
 [Unit]
 Description=AgentPulse local server
 After=network.target
@@ -1084,16 +1169,19 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 EOF
+)"$'\n'
+  ap_write_private_no_follow "${unit}" "${content}" || exit 1
   systemctl --user daemon-reload </dev/null
-  systemctl --user enable --now "${SERVICE_NAME}" >/dev/null </dev/null
+  systemctl --user enable "${SERVICE_NAME}" >/dev/null </dev/null
+  systemctl --user restart "${SERVICE_NAME}" </dev/null
   echo "  ✓ systemd user service started"
   echo "    Logs: journalctl --user -u ${SERVICE_NAME} -f"
 }
 
 create_supervisor_systemd() {
-  mkdir -p "${HOME}/.config/systemd/user"
-  local unit="${HOME}/.config/systemd/user/${SERVICE_NAME}-supervisor.service"
-  cat > "${unit}" <<EOF
+  ap_local_mkdir_p "${HOME}/.config/systemd/user"
+  local unit="${HOME}/.config/systemd/user/${SERVICE_NAME}-supervisor.service" content
+  content="$(cat <<EOF
 [Unit]
 Description=AgentPulse local supervisor
 After=network.target ${SERVICE_NAME}.service
@@ -1111,16 +1199,19 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 EOF
+)"$'\n'
+  ap_write_private_no_follow "${unit}" "${content}" || exit 1
   systemctl --user daemon-reload </dev/null
-  systemctl --user enable --now "${SERVICE_NAME}-supervisor" >/dev/null </dev/null
+  systemctl --user enable "${SERVICE_NAME}-supervisor" >/dev/null </dev/null
+  systemctl --user restart "${SERVICE_NAME}-supervisor" </dev/null
   echo "  ✓ systemd supervisor started"
   echo "    Logs: journalctl --user -u ${SERVICE_NAME}-supervisor -f"
 }
 
 create_launchd() {
-  mkdir -p "${HOME}/Library/LaunchAgents" "${LOG_DIR}"
-  local plist="${HOME}/Library/LaunchAgents/dev.agentpulse.local.plist"
-  cat > "${plist}" <<EOF
+  ap_local_mkdir_p "${HOME}/Library/LaunchAgents" "${LOG_DIR}"
+  local plist="${HOME}/Library/LaunchAgents/dev.agentpulse.local.plist" content
+  content="$(cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1140,8 +1231,8 @@ create_launchd() {
     <key>HOME</key><string>${HOME}</string>
     <key>PATH</key><string>${SERVICE_BUN_PATH}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>PORT</key><string>${PORT}</string>
-    <key>HOST</key><string>${HOST}</string>
-    <key>PUBLIC_URL</key><string>${PUBLIC_URL}</string>
+    <key>HOST</key><string>${HOST_XML}</string>
+    <key>PUBLIC_URL</key><string>${PUBLIC_URL_XML}</string>
     <key>DISABLE_AUTH</key><string>${DISABLE_AUTH}</string>
     <key>AGENTPULSE_INITIAL_API_KEY</key><string>${API_KEY}</string>
     <key>DATA_DIR</key><string>${DATA_DIR}</string>
@@ -1159,6 +1250,8 @@ create_launchd() {
 </dict>
 </plist>
 EOF
+)"$'\n'
+  ap_write_private_no_follow "${plist}" "${content}" || exit 1
   launchctl unload "${plist}" >/dev/null 2>&1 </dev/null || true
   launchctl load "${plist}" </dev/null
   echo "  ✓ launchd service started"
@@ -1166,9 +1259,9 @@ EOF
 }
 
 create_supervisor_launchd() {
-  mkdir -p "${HOME}/Library/LaunchAgents" "${LOG_DIR}"
-  local plist="${HOME}/Library/LaunchAgents/dev.agentpulse.supervisor.plist"
-  cat > "${plist}" <<EOF
+  ap_local_mkdir_p "${HOME}/Library/LaunchAgents" "${LOG_DIR}"
+  local plist="${HOME}/Library/LaunchAgents/dev.agentpulse.supervisor.plist" content
+  content="$(cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1188,8 +1281,8 @@ create_supervisor_launchd() {
     <key>HOME</key><string>${HOME}</string>
     <key>PATH</key><string>${SERVICE_BUN_PATH}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>PORT</key><string>${PORT}</string>
-    <key>HOST</key><string>${HOST}</string>
-    <key>PUBLIC_URL</key><string>${PUBLIC_URL}</string>
+    <key>HOST</key><string>${HOST_XML}</string>
+    <key>PUBLIC_URL</key><string>${PUBLIC_URL_XML}</string>
     <key>DISABLE_AUTH</key><string>${DISABLE_AUTH}</string>
     <key>AGENTPULSE_INITIAL_API_KEY</key><string>${API_KEY}</string>
     <key>DATA_DIR</key><string>${DATA_DIR}</string>
@@ -1209,6 +1302,8 @@ create_supervisor_launchd() {
 </dict>
 </plist>
 EOF
+)"$'\n'
+  ap_write_private_no_follow "${plist}" "${content}" || exit 1
   launchctl unload "${plist}" >/dev/null 2>&1 </dev/null || true
   launchctl load "${plist}" </dev/null
   echo "  ✓ launchd supervisor started"
@@ -1224,7 +1319,7 @@ case "${SERVICE_MODE}" in
     ;;
   none)
     echo "  Starting AgentPulse in the background..."
-    env $(tr '\n' ' ' < "${ENV_FILE}") "${BUN_BIN}" run start </dev/null > "${LOG_DIR}/agentpulse.out.log" 2>&1 &
+    ap_local_env_run "${ENV_FILE}" "${BUN_BIN}" run start </dev/null > "${LOG_DIR}/agentpulse.out.log" 2>&1 &
     echo $! > "${AGENTPULSE_DIR}/agentpulse.pid"
     echo "  ✓ Started background process"
     echo "    Logs: tail -f ${LOG_DIR}/agentpulse.out.log"
@@ -1269,7 +1364,7 @@ for _ in $(seq 1 30); do
           none)
             echo "  Starting AgentPulse supervisor in the background..."
             HOME="${HOME}" PATH="${SERVICE_BUN_PATH}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-              env $(tr '\n' ' ' < "${ENV_FILE}") "${BUN_BIN}" run supervisor </dev/null > "${LOG_DIR}/supervisor.out.log" 2> "${LOG_DIR}/supervisor.err.log" &
+              ap_local_env_run "${ENV_FILE}" "${BUN_BIN}" run supervisor </dev/null > "${LOG_DIR}/supervisor.out.log" 2> "${LOG_DIR}/supervisor.err.log" &
             echo $! > "${AGENTPULSE_DIR}/supervisor.pid"
             echo "  ✓ Started background supervisor"
             echo "    Logs: tail -f ${LOG_DIR}/supervisor.out.log"

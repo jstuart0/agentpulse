@@ -349,8 +349,12 @@ export const MESSAGES = {
 		bool: "must be true or false",
 		charset: "can only contain letters, digits, '.', '_' and '-'",
 		controls: "can't contain control characters",
-		url: "must be an http:// or https:// URL without spaces, quotes or <>",
+		url: "must be an http:// or https:// URL without spaces, quotes, $, ; or <>",
 		needsValue: "needs a value",
+		repoUserinfo: "can't contain a user name or token; use a git credential helper",
+		host: "can only contain letters, digits, '.', ':', '_' and '-', or an IPv6 address in [brackets]",
+		ref: "can only contain letters, digits, '.', '_', '/' and '-', can't start with '-' and can't contain '..'",
+		repo: "must be an https:// URL (without spaces, quotes, $, ; or <>) or an absolute path of letters, digits and / . _ + - @",
 	},
 	/** The reasons a path-bad line carries. */
 	pathReason: {

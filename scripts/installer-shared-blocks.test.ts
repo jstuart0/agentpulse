@@ -194,6 +194,38 @@ describe("the blocks are byte-equal across sites", () => {
 	});
 });
 
+describe("ap_xml_escape (install-local's own block): the E-table", () => {
+	const LOCAL = extractMarkerBlock(INSTALL_LOCAL, "agentpulse-local-prereqs", {
+		sentinel: "ap_xml_escape() {",
+	});
+	const rows: [string, string][] = [
+		["&", "&amp;"],
+		["<", "&lt;"],
+		[">", "&gt;"],
+		['"', "&quot;"],
+		["'", "&apos;"],
+		["&amp;", "&amp;amp;"],
+		["plain text", "plain text"],
+		["http://h/?a=1&b=2'x", "http://h/?a=1&amp;b=2&apos;x"],
+	];
+	// bash 5.2 turns & in a pattern-replacement into the matched text unless told not to;
+	// patsub_replacement is turned on where it exists, so the escape is shown to survive it.
+	each(
+		"every character is escaped, & first, with patsub_replacement on where bash has it",
+		(bash) => {
+			for (const [input, want] of rows) {
+				const out = run(
+					bash,
+					`shopt -s patsub_replacement 2>/dev/null || true\n${LOCAL}\nap_xml_escape "$1"`,
+					[input],
+					{ PATH: process.env.PATH ?? "/usr/bin:/bin" },
+				);
+				expect([input, out.out]).toEqual([input, want]);
+			}
+		},
+	);
+});
+
 describe("static guards over the shared blocks", () => {
 	for (const b of BLOCKS) {
 		const text = blockAt(RELAY, b);
