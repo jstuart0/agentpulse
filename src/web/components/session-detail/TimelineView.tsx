@@ -85,14 +85,26 @@ function SourceBadge({ source }: { source: EventSource }) {
 	);
 }
 
+/** The relative time of an event as a <time> element, with the late-arrival note when it starts a late run. */
+function EventTime({ time, lateNote }: { time: string; lateNote?: string }) {
+	return (
+		<>
+			<time dateTime={time}>{formatTimeAgo(time)}</time>
+			{lateNote ? <span> · {lateNote}</span> : null}
+		</>
+	);
+}
+
 export function PromptBubble({
 	text,
 	time,
 	source,
+	lateNote,
 }: {
 	text: string;
 	time: string;
 	source?: EventSource;
+	lateNote?: string;
 }) {
 	return (
 		<div className="flex justify-end">
@@ -102,7 +114,9 @@ export function PromptBubble({
 				</div>
 				<div className="mt-1 flex items-center justify-end gap-2">
 					{source ? <SourceBadge source={source} /> : null}
-					<p className="text-[10px] text-muted-foreground text-right">{formatTimeAgo(time)}</p>
+					<p className="text-[10px] text-muted-foreground text-right">
+						<EventTime time={time} lateNote={lateNote} />
+					</p>
 				</div>
 			</div>
 		</div>
@@ -113,10 +127,12 @@ export function AssistantBubble({
 	text,
 	time,
 	source,
+	lateNote,
 }: {
 	text: string;
 	time: string;
 	source?: EventSource;
+	lateNote?: string;
 }) {
 	return (
 		<div className="flex justify-start">
@@ -125,7 +141,9 @@ export function AssistantBubble({
 					<MarkdownContent content={text} compact />
 				</div>
 				<div className="mt-1 flex items-center gap-2">
-					<p className="text-[10px] text-muted-foreground">{formatTimeAgo(time)}</p>
+					<p className="text-[10px] text-muted-foreground">
+						<EventTime time={time} lateNote={lateNote} />
+					</p>
 					{source ? <SourceBadge source={source} /> : null}
 				</div>
 			</div>
@@ -139,12 +157,17 @@ export function TimelineCard({
 	label,
 	tone = "default",
 	source,
+	lateNote,
+	plainText,
 }: {
 	text: string;
 	time: string;
 	label: string;
 	tone?: "default" | "emerald" | "amber" | "muted";
 	source?: EventSource;
+	lateNote?: string;
+	/** Shown as text, never as Markdown (for content that is not the user's or the agent's own writing). */
+	plainText?: boolean;
 }) {
 	const toneClasses = {
 		default: "border-border bg-card/60",
@@ -162,10 +185,16 @@ export function TimelineCard({
 					</span>
 					{source ? <SourceBadge source={source} /> : null}
 				</div>
-				<span className="text-[10px] text-muted-foreground">{formatTimeAgo(time)}</span>
+				<span className="text-[10px] text-muted-foreground">
+					<EventTime time={time} lateNote={lateNote} />
+				</span>
 			</div>
 			<div className="mt-1.5">
-				<MarkdownContent content={text} compact />
+				{plainText ? (
+					<p className="whitespace-pre-wrap break-words text-sm">{text}</p>
+				) : (
+					<MarkdownContent content={text} compact />
+				)}
 			</div>
 		</div>
 	);

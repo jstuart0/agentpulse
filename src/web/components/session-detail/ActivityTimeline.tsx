@@ -1,5 +1,6 @@
 import { type ReactNode, type RefObject, forwardRef } from "react";
 import type { SessionEvent } from "../../../shared/types.js";
+import { eventDisplayTime, lateArrival, lateRunStarts, lateSuffix } from "../../lib/event-time.js";
 import {
 	AssistantBubble,
 	PromptBubble,
@@ -40,7 +41,7 @@ export const ActivityTimeline = forwardRef<HTMLDivElement, ActivityTimelineProps
 					) : mode === "terminal" ? (
 						visibleEvents.map((event) => stampedItem(event, renderTerminalEvent(event)))
 					) : (
-						visibleEvents.map((event) => stampedItem(event, renderBubbleEvent(event, mode)))
+						renderBubbles(visibleEvents, mode)
 					)}
 					<div ref={endRef} />
 				</div>
@@ -105,12 +106,25 @@ function renderTerminalEvent(event: SessionEvent) {
 	);
 }
 
-function renderBubbleEvent(event: SessionEvent, mode: TimelineMode) {
+/** The late-arrival note goes on the first row of each late run, judged over the rows on screen. */
+function renderBubbles(visibleEvents: SessionEvent[], mode: TimelineMode) {
+	const starts = lateRunStarts(visibleEvents);
+	return visibleEvents.map((event, index) => {
+		const minutes = starts.has(index) ? lateArrival(event) : null;
+		return stampedItem(
+			event,
+			renderBubbleEvent(event, mode, minutes === null ? undefined : lateSuffix(minutes)),
+		);
+	});
+}
+
+function renderBubbleEvent(event: SessionEvent, mode: TimelineMode, lateNote?: string) {
 	if (event.category === "prompt" && event.content) {
 		return (
 			<PromptBubble
 				text={event.content}
-				time={event.createdAt}
+				time={eventDisplayTime(event)}
+				lateNote={lateNote}
 				source={mode === "debug" ? event.source : undefined}
 			/>
 		);
@@ -119,7 +133,8 @@ function renderBubbleEvent(event: SessionEvent, mode: TimelineMode) {
 		return (
 			<AssistantBubble
 				text={event.content}
-				time={event.createdAt}
+				time={eventDisplayTime(event)}
+				lateNote={lateNote}
 				source={mode === "debug" ? event.source : undefined}
 			/>
 		);
@@ -130,7 +145,8 @@ function renderBubbleEvent(event: SessionEvent, mode: TimelineMode) {
 			<TimelineCard
 				label={eventLabel(event.category)}
 				text={detail}
-				time={event.createdAt}
+				time={eventDisplayTime(event)}
+				lateNote={lateNote}
 				tone={event.isNoise ? "muted" : "amber"}
 				source={mode === "debug" ? event.source : undefined}
 			/>
@@ -141,7 +157,8 @@ function renderBubbleEvent(event: SessionEvent, mode: TimelineMode) {
 		<TimelineCard
 			label={eventLabel(event.category)}
 			text={event.content}
-			time={event.createdAt}
+			time={eventDisplayTime(event)}
+			lateNote={lateNote}
 			tone={
 				event.category === "status_update"
 					? "emerald"
@@ -150,6 +167,7 @@ function renderBubbleEvent(event: SessionEvent, mode: TimelineMode) {
 						: "default"
 			}
 			source={mode === "debug" ? event.source : undefined}
+			plainText={event.eventType === "ManagedEventsLost"}
 		/>
 	);
 }

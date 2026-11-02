@@ -1,17 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { SupervisorRecord } from "../../shared/types.js";
+import type { SupervisorOutboxState, SupervisorRecord } from "../../shared/types.js";
 import { ownershipUi } from "../lib/ownership-ui.js";
 import {
+	HOST_OUTBOX_OFFLINE_TEXT,
 	deriveHostAccess,
 	deriveHostExcludeNotice,
+	deriveHostOutboxNotice,
 	deriveHostsViewState,
 	enrollmentOwnershipNote,
 	hostActionConfirm,
 	hostOwnerDialogNote,
 	hostOwnerUnchanged,
 	launchHostLabel,
+	outboxAnnouncement,
 } from "./hosts-view-state.js";
 
 function supervisor(id: string): SupervisorRecord {
@@ -372,5 +375,197 @@ describe("the owner dialogs", () => {
 	test("both pages offer a disabled current owner in the picker", () => {
 		expect(read("pages", "HostsPage.tsx")).toContain("withCurrentOwner(");
 		expect(read("pages", "SessionDetailPage.tsx")).toContain("withCurrentOwner(");
+	});
+});
+
+describe("deriveHostOutboxNotice", () => {
+	// Local-time constructors, so the expected clock text holds in any time zone.
+	const at = (day: number, h: number, m: number) => new Date(2026, 10, day, h, m, 0).getTime();
+	const NOW = at(5, 15, 30); // Thursday 5 Nov 2026, 15:30
+	const iso = (ms: number) => new Date(ms).toISOString();
+	const live = iso(NOW + 60_000);
+	const expired = iso(NOW - 1_000);
+	type In = Parameters<typeof deriveHostOutboxNotice>[0];
+	const host = (
+		over: Partial<Omit<In, "outbox">> & { outbox?: Partial<SupervisorOutboxState> | null } = {},
+	): In => {
+		const { outbox, ...rest } = over;
+		return {
+			status: "connected",
+			enrollmentState: "active",
+			heartbeatLeaseExpiresAt: live,
+			capabilities: { features: ["offline_outbox"] } as In["capabilities"],
+			...(outbox === null
+				? {}
+				: {
+						outbox: {
+							pending: 0,
+							oldestPendingAt: null,
+							lastFlushAt: iso(at(5, 14, 2)),
+							lastFlushDelivered: 0,
+							lastFlushLost: 0,
+							...outbox,
+						},
+					}),
+			...rest,
+		} as In;
+	};
+
+	test("catching up: the count and the oldest time, today's as a clock time", () => {
+		expect(
+			deriveHostOutboxNotice(
+				host({ outbox: { pending: 12, oldestPendingAt: iso(at(5, 9, 5)) } }),
+				NOW,
+			),
+		).toEqual({
+			kind: "catching-up",
+			text: "Catching up: 12 events from while this host was offline, the oldest from 09:05.",
+			lost: 0,
+		});
+	});
+
+	test("catching up: singular, an earlier day with the weekday and date, and no time when it is unknown", () => {
+		expect(
+			deriveHostOutboxNotice(
+				host({ outbox: { pending: 1, oldestPendingAt: iso(at(3, 14, 2)) } }),
+				NOW,
+			)?.text,
+		).toBe(
+			"Catching up: 1 event from while this host was offline, the oldest from Tue 3 Nov, 14:02.",
+		);
+		expect(deriveHostOutboxNotice(host({ outbox: { pending: 2 } }), NOW)?.text).toBe(
+			"Catching up: 2 events from while this host was offline.",
+		);
+	});
+
+	test("recovered: back online, then the delivered and lost clauses only when above zero", () => {
+		const recovered = (delivered: number, lost: number) =>
+			deriveHostOutboxNotice(
+				host({ outbox: { lastFlushDelivered: delivered, lastFlushLost: lost } }),
+				NOW,
+			);
+		expect(recovered(1, 0)?.text).toBe("Back online 14:02. 1 late event delivered.");
+		expect(recovered(30, 0)?.text).toBe("Back online 14:02. 30 late events delivered.");
+		expect(recovered(0, 1)?.text).toBe(
+			"Back online 14:02. 1 event lost: the host's offline queue was full or they were more than a day old.",
+		);
+		expect(recovered(30, 2)).toEqual({
+			kind: "recovered",
+			text: "Back online 14:02. 30 late events delivered. 2 events lost: the host's offline queue was full or they were more than a day old.",
+			lost: 2,
+		});
+	});
+
+	test("recovered is hidden when nothing moved, when the flush is over a day old, and while anything is pending", () => {
+		expect(deriveHostOutboxNotice(host(), NOW)).toBeNull();
+		expect(
+			deriveHostOutboxNotice(
+				host({ outbox: { lastFlushDelivered: 3, lastFlushAt: iso(NOW - 25 * 3_600_000) } }),
+				NOW,
+			),
+		).toBeNull();
+		expect(
+			deriveHostOutboxNotice(
+				host({ outbox: { lastFlushDelivered: 3, lastFlushAt: iso(NOW - 23 * 3_600_000) } }),
+				NOW,
+			),
+		).not.toBeNull();
+		expect(
+			deriveHostOutboxNotice(host({ outbox: { lastFlushDelivered: 3, lastFlushAt: null } }), NOW),
+		).toBeNull();
+	});
+
+	test("an earlier day's flush names the day", () => {
+		expect(
+			deriveHostOutboxNotice(
+				host({ outbox: { lastFlushDelivered: 1, lastFlushAt: iso(at(4, 23, 40)) } }),
+				NOW,
+			)?.text,
+		).toBe("Back online Wed 4 Nov, 23:40. 1 late event delivered.");
+	});
+
+	test("offline: the lease has run out, the enrollment is active and the host keeps events offline", () => {
+		expect(
+			deriveHostOutboxNotice(host({ heartbeatLeaseExpiresAt: expired, outbox: null }), NOW),
+		).toEqual({ kind: "offline", text: HOST_OUTBOX_OFFLINE_TEXT, lost: 0 });
+		expect(HOST_OUTBOX_OFFLINE_TEXT).toBe(
+			"This host keeps its sessions' events while it's offline and sends them when it reconnects.",
+		);
+		// a host that doesn't advertise the feature says nothing
+		expect(
+			deriveHostOutboxNotice(
+				host({
+					heartbeatLeaseExpiresAt: expired,
+					outbox: null,
+					capabilities: { features: [] } as unknown as In["capabilities"],
+				}),
+				NOW,
+			),
+		).toBeNull();
+	});
+
+	test("an expired lease never shows the last reported figures, only the offline sentence", () => {
+		const notice = deriveHostOutboxNotice(
+			host({ heartbeatLeaseExpiresAt: expired, outbox: { pending: 99 } }),
+			NOW,
+		);
+		expect(notice?.kind).toBe("offline");
+	});
+
+	test("never for a revoked or pending host, in any branch", () => {
+		for (const enrollmentState of ["revoked", "pending"] as const) {
+			expect(
+				deriveHostOutboxNotice(host({ enrollmentState, outbox: { pending: 5 } }), NOW),
+			).toBeNull();
+			expect(
+				deriveHostOutboxNotice(
+					host({ enrollmentState, heartbeatLeaseExpiresAt: expired, outbox: null }),
+					NOW,
+				),
+			).toBeNull();
+		}
+	});
+
+	test("a live host that isn't connected, and one that never reported, show nothing", () => {
+		expect(
+			deriveHostOutboxNotice(host({ status: "stale", outbox: { pending: 5 } }), NOW),
+		).toBeNull();
+		expect(deriveHostOutboxNotice(host({ outbox: null }), NOW)).toBeNull();
+	});
+});
+
+describe("outboxAnnouncement", () => {
+	const notice = (kind: "catching-up" | "recovered" | "offline", text: string = kind) => ({
+		kind,
+		text,
+		lost: 0,
+	});
+
+	test("a change of branch announces the new branch's sentence", () => {
+		expect(outboxAnnouncement(null, notice("catching-up", "Catching up: 3 events."))).toBe(
+			"Catching up: 3 events.",
+		);
+		expect(
+			outboxAnnouncement(notice("catching-up"), notice("recovered", "Back online 14:02.")),
+		).toBe("Back online 14:02.");
+		expect(outboxAnnouncement(notice("offline"), notice("catching-up", "Catching up."))).toBe(
+			"Catching up.",
+		);
+	});
+
+	test('"Caught up." when the notice goes away from catching up, and nothing for other clearings', () => {
+		expect(outboxAnnouncement(notice("catching-up"), null)).toBe("Caught up.");
+		expect(outboxAnnouncement(notice("recovered"), null)).toBeNull();
+		expect(outboxAnnouncement(notice("offline"), null)).toBeNull();
+	});
+
+	test("a count changing inside the same branch announces nothing", () => {
+		expect(
+			outboxAnnouncement(
+				notice("catching-up", "Catching up: 3 events."),
+				notice("catching-up", "Catching up: 2 events."),
+			),
+		).toBeNull();
+		expect(outboxAnnouncement(null, null)).toBeNull();
 	});
 });

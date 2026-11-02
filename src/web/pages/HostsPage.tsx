@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { SupervisorRecord } from "../../shared/types.js";
 import { ConfirmDialog } from "../components/ConfirmDialog.js";
 import { HostExcludeNotice } from "../components/HostExcludeNotice.js";
+import { HostOutboxNotice } from "../components/HostOutboxNotice.js";
 import { HostOwnerDialog } from "../components/HostOwnerDialog.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { useNoteUnknownOwners } from "../hooks/useNoteUnknownOwners.js";
@@ -450,6 +451,7 @@ export function HostsPage() {
 									</div>
 
 									<HostExcludeNotice supervisor={supervisor} />
+									<HostOutboxNotice supervisor={supervisor} />
 
 									<div className="mt-4 space-y-3 text-xs">
 										{access.ownerText !== null && (
