@@ -840,9 +840,12 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 
-	// /health and /auth/me are not behind forwardauth, so neither can ever come back as an auth bounce: a
-	// fetch that fails there is an outage, never an expired sign-in, and must not reload the page (that
-	// would throw away a shown-once token or a typed name). Both are always background requests.
+	// Both are always background requests: a fetch that gets no answer is an outage and must not reload the
+	// page (that would throw away a shown-once token or a typed name). The deploy routing
+	// (deploy/k8s/07-ingressroute.yaml) exempts `/api/v1/health` and `/app-api/v1/auth/me` from forwardauth,
+	// so those two can't come back as an auth bounce. The browser's `/app-api/v1/health` is not exempt, so a
+	// health poll can still bounce; `looksLikeAuthBounce` reads that from the answer and reloads, which is
+	// the right thing for an expired sign-in.
 	getHealth: () =>
 		request<{
 			status: string;
