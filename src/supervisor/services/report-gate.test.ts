@@ -2015,3 +2015,91 @@ describe("nothing else sends session data (drift guards)", () => {
 		expect(offenders).toEqual([]);
 	});
 });
+
+describe("the terminal bridge script has no way to the network (drift guard)", () => {
+	const BRIDGE_PATH = join(
+		import.meta.dir,
+		"..",
+		"..",
+		"..",
+		"scripts",
+		"claude_terminal_bridge.py",
+	);
+
+	/** Every ban the script must satisfy: no HTTP library, no inet socket, no endpoint, no URL, no credential name. */
+	const BANS: Array<[string, RegExp]> = [
+		["urllib", /urllib/],
+		["http.client", /http\.client/],
+		["requests", /\brequests\b/],
+		["httpx", /httpx/],
+		["curl", /\bcurl\b/],
+		["subprocess curl", /subprocess\.run\(\s*\[\s*["']curl/],
+		["AF_INET", /AF_INET/],
+		["AF_INET6", /AF_INET6/],
+		["socket.create_connection", /socket\.create_connection/],
+		["an API path", /\/api\/v1/],
+		["a URL", /https?:\/\//],
+		["supervisor_token", /supervisor_token/],
+		["api_key", /api_key/],
+	];
+
+	const violations = (text: string) =>
+		BANS.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+
+	test("the real script contains none of them", () => {
+		const text = readFileSync(BRIDGE_PATH, "utf-8");
+		expect(violations(text)).toEqual([]);
+		// the scan read the real file and it is the bridge: a local socket and its one child are what it uses
+		expect(text).toContain("AF_UNIX");
+		expect(text).toContain("subprocess.Popen");
+		expect(text).toContain("class ReportSpool");
+	});
+
+	test("each ban fires on a planted copy: the check is not vacuous", () => {
+		const real = readFileSync(BRIDGE_PATH, "utf-8");
+		const plants: Array<[string, string]> = [
+			["urllib", "import urllib.request"],
+			["http.client", "import http.client"],
+			["requests", "import requests"],
+			["httpx", "import httpx"],
+			["curl", "os.system('curl example')"],
+			["subprocess curl", 'subprocess.run(["curl", "x"])'],
+			["AF_INET", "socket.socket(socket.AF_INET, socket.SOCK_STREAM)"],
+			["AF_INET6", "socket.socket(socket.AF_INET6)"],
+			["socket.create_connection", "socket.create_connection(('x', 1))"],
+			["an API path", 'path = "/api/v1/supervisors"'],
+			["a URL", 'url = "https://example.invalid/"'],
+			["supervisor_token", 'config.get("supervisor_token")'],
+			["api_key", 'config["api_key"]'],
+		];
+		expect(plants.length).toBe(BANS.length);
+		for (const [name, line] of plants) {
+			expect(violations(`${real}\n${line}\n`), name).toContain(name);
+		}
+	});
+
+	test("the TypeScript that drains the spool is inside the scanned set and holds no request or fetch", () => {
+		const files = Object.keys(
+			Object.fromEntries(
+				readdirSync(join(import.meta.dir, ".."), {
+					recursive: true,
+					withFileTypes: false,
+				} as never).map((name) => [String(name), true]),
+			),
+		);
+		for (const named of [
+			"services/bridge-spool.ts",
+			"services/report-outbox.ts",
+			"services/fatal-exit.ts",
+		]) {
+			expect(files, named).toContain(named);
+			const code = readFileSync(join(import.meta.dir, "..", named), "utf-8")
+				.replace(/\/\*[\s\S]*?\*\//g, "")
+				.replace(/^\s*\/\/.*$/gm, "");
+			expect(code, named).not.toMatch(/\bfetch\b|(?<![.\w])request\b/);
+			expect(code, named).not.toMatch(
+				/managed-session-state|managed-sessions\/|control-actions|launches\//,
+			);
+		}
+	});
+});

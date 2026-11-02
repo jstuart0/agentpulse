@@ -36,6 +36,8 @@ export interface LaunchDispatchDeps {
 	trustedRoots: string[];
 	providers: LaunchProviders;
 	executePrelaunchActions: typeof executePrelaunchActions;
+	/** The terminal-bridge spool drain; an interactive launch admits its bridge directory to it. */
+	bridgeSpool?: { admit(sessionId: string): void };
 	/** The host's own log: the only place the reason for a refusal is written. */
 	log?: (line: string) => void;
 	warn?: (line: string) => void;
@@ -172,6 +174,7 @@ export function createLaunchDispatcher(
 		return {
 			reportState: (body) => gate.reportState(body),
 			reportEvents: (events) => gate.reportEvents(launch.launchCorrelationId, events),
+			admitBridgeSpool: (sessionId) => deps.bridgeSpool?.admit(sessionId),
 		};
 	}
 

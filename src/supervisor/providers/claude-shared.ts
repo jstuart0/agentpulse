@@ -29,6 +29,11 @@ export type LaunchCallbacks = {
 		input: ManagedSessionStateInput,
 	) => Promise<{ session: Session; managedSession: ManagedSession }>;
 	reportEvents: (events: ManagedSessionEventInput[]) => Promise<unknown>;
+	/**
+	 * An interactive launch tells the bridge-spool drain which directory its terminal bridge will write
+	 * reports into, once the bridge's config is on disk. Optional: only the dispatcher supplies it.
+	 */
+	admitBridgeSpool?: (sessionId: string) => void;
 };
 
 export type ClaudePromptAction = {

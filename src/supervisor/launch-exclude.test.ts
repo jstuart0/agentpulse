@@ -75,7 +75,11 @@ type Harness = ReturnType<typeof harness>;
 
 /** A dispatcher wired to recorders: what was posted, what the host logged, which providers and prelaunch actions ran. */
 function harness(
-	opts: { prelaunch?: (actions: unknown[]) => Promise<void>; maxTrackedSessions?: number } = {},
+	opts: {
+		prelaunch?: (actions: unknown[]) => Promise<void>;
+		maxTrackedSessions?: number;
+		bridgeSpool?: { admit(sessionId: string): void };
+	} = {},
 ) {
 	// Every harness is a supervisor process that has just started: nothing remembered from another one in this test.
 	rmSync(join(home, ".agentpulse", "supervisor-gate-state.json"), { force: true });
@@ -123,6 +127,7 @@ function harness(
 	const dispatch = createLaunchDispatcher({
 		gate,
 		trustedRoots: [trusted],
+		bridgeSpool: opts.bridgeSpool,
 		providers,
 		executePrelaunchActions: (async (actions: unknown[]) => {
 			ran.push("prelaunch");
@@ -137,6 +142,7 @@ function harness(
 type Callbacks = {
 	reportState: (body: Record<string, unknown>) => Promise<unknown>;
 	reportEvents: (events: unknown[]) => Promise<void>;
+	admitBridgeSpool?: (sessionId: string) => void;
 };
 let lastCallbacks: Callbacks | undefined;
 
@@ -639,5 +645,36 @@ describe("capacity: a launch is refused for capacity only when the bound's worth
 				providerLaunchMetadata: { mode: "interactive_terminal" },
 			},
 		]);
+	});
+});
+
+describe("an interactive launch tells the bridge-spool drain which directory to follow", () => {
+	test("the provider's callbacks carry admitBridgeSpool, and it reaches the drain with the correlation id", async () => {
+		const admitted: string[] = [];
+		const h = harness({ bridgeSpool: { admit: (id) => void admitted.push(id) } });
+		await h.dispatch(
+			launchFor(outside, { mode: "interactive_terminal", correlationId: "bridge-corr-1" }),
+		);
+		expect(h.ran).toEqual(["interactive"]);
+		h.callbacks()?.admitBridgeSpool?.("bridge-corr-1");
+		expect(admitted).toEqual(["bridge-corr-1"]);
+	});
+
+	test("without a drain wired the callback is harmless", async () => {
+		const h = harness();
+		await h.dispatch(launchFor(outside, { mode: "interactive_terminal" }));
+		expect(() => h.callbacks()?.admitBridgeSpool?.("x")).not.toThrow();
+	});
+
+	test("the gate knows the launch's directory under the correlation id the bridge directory is named for, so the drain can be judged by it", async () => {
+		const h = harness();
+		writeRules([work]);
+		await h.dispatch(
+			launchFor(outside, { mode: "interactive_terminal", correlationId: "bridge-corr-2" }),
+		);
+		expect(h.gate.verdict("bridge-corr-2")).toBe("send");
+		const covered = harness();
+		writeRules([work]);
+		expect(covered.gate.verdict("never-launched-here")).toBe("excluded");
 	});
 });

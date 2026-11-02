@@ -19,6 +19,7 @@ import {
 	reconcileManagedCodexTitles,
 	stopManagedCodexSession,
 } from "./providers/codex-managed.js";
+import { createBridgeSpoolDrain } from "./services/bridge-spool.js";
 import { executeCleanupWorkArea } from "./services/cleanup-workarea.js";
 import { isCodexObserverEnabled, startCodexObserver } from "./services/codex-observer.js";
 import {
@@ -33,6 +34,7 @@ import { createReportGate, heartbeatBody } from "./services/report-gate.js";
 import {
 	SupervisorNetworkError,
 	SupervisorRequestError,
+	createCredentialTripwire,
 	parseRetryAfterMs,
 } from "./services/report-resilience.js";
 import { assertTrustedRootsExcludeAgentpulseDir } from "./services/spawn-cwd.js";
@@ -40,6 +42,8 @@ import { assertTrustedRootsExcludeAgentpulseDir } from "./services/spawn-cwd.js"
 const REQUEST_TIMEOUT_MS = 15_000;
 /** How often the exclude rules are re-read for a changed symlink, the stamp is refreshed and sessions a new rule covers are closed. */
 const EXCLUDE_SCAN_MS = 15_000;
+/** How often the terminal bridges' spooled reports are sent. */
+const BRIDGE_DRAIN_MS = 1_000;
 
 /** The only headers a caller may add to a request: the delivery id and the replay marker. Everything else is the transport's own. */
 const CALLER_HEADERS = [DELIVERY_ID_HEADER, REPLAY_HEADER];
@@ -198,8 +202,18 @@ async function main() {
 		version: config.version,
 		rules,
 	});
+	// The interactive terminal bridge holds no credential and opens no connection: it writes its reports to
+	// disk and this drain sends them through the gate. One tripwire serves every place a rejected credential
+	// can show up, so a stray proxy 401 in one doesn't count as a confirmed rejection on its own.
+	const credentialTripwire = createCredentialTripwire({ now: Date.now });
+	const bridgeSpool = createBridgeSpoolDrain({ gate, home, credentialTripwire });
+	void bridgeSpool.scrubLegacyBridgeConfigs().catch((error) => {
+		console.error("[supervisor] couldn't scrub old bridge configs", error);
+	});
+	setInterval(() => void bridgeSpool.drain(), BRIDGE_DRAIN_MS).unref();
 	const dispatchLaunch = createLaunchDispatcher({
 		gate,
+		bridgeSpool,
 		trustedRoots: config.trustedRoots,
 		providers: {
 			launchManagedCodex: launchManagedCodexRequest,
