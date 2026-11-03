@@ -12,6 +12,8 @@ import {
 	BACKOFF_MS,
 	BUCKET_MS,
 	COMPLETED_DISMISSAL_SEC,
+	LATE_UPDATE_MAX_WAIT_MS,
+	LATE_UPDATE_QUIET_MS,
 	LiveActivityPublisher,
 	type LiveActivityRow,
 	type SessionView,
@@ -62,6 +64,7 @@ class Harness {
 	lookupCalls = 0;
 	readOwnersError: Error | null = null;
 	warnings: { message: string; fields?: Record<string, unknown> }[] = [];
+	timers: { fn: () => void; due: number; cancelled: boolean }[] = [];
 	publisher: LiveActivityPublisher;
 
 	constructor() {
@@ -111,6 +114,13 @@ class Harness {
 			mode: async () => this.mode,
 			bus: this.bus as never,
 			clock: { now: () => this.now },
+			schedule: (fn, ms) => {
+				const timer = { fn, due: this.now + ms, cancelled: false };
+				this.timers.push(timer);
+				return () => {
+					timer.cancelled = true;
+				};
+			},
 			logger: {
 				info: () => undefined,
 				warn: (message, fields) => {
@@ -132,16 +142,34 @@ class Harness {
 		});
 	}
 
-	updated(over: Partial<Session> & { sessionId?: string } = {}) {
+	updated(over: Partial<Session> & { sessionId?: string } = {}, meta?: { late: true }) {
 		if (this.session && "ownerUserId" in over) this.session.ownerUserId = over.ownerUserId ?? null;
-		this.bus.emit("session_updated", {
+		const session = {
 			sessionId: "s1",
 			operationalStatus: "working",
 			ownerUserId: "alice",
 			totalToolUses: 3,
 			isArchived: false,
 			...over,
-		} as Session);
+		} as Session;
+		if (meta) this.bus.emit("session_updated", session, meta);
+		else this.bus.emit("session_updated", session);
+	}
+
+	/** Moves the clock on and runs the deferred timers that fell due. */
+	async advance(ms: number) {
+		this.now += ms;
+		for (const timer of this.timers) {
+			if (!timer.cancelled && timer.due <= this.now) {
+				timer.cancelled = true;
+				timer.fn();
+			}
+		}
+		await this.settle();
+	}
+
+	get pendingTimers() {
+		return this.timers.filter((t) => !t.cancelled).length;
 	}
 
 	/** Lets the fire-and-forget bus handlers finish. */
@@ -337,6 +365,94 @@ describe("trace cadence", () => {
 		h.now += 2_000;
 		await h.publisher.tick();
 		expect(h.sent).toHaveLength(2);
+	});
+});
+
+describe("late (replayed) reports", () => {
+	test("a late event does not fill the trace or the tool count; a live one does", async () => {
+		await h.publisher.follow(h.row());
+		h.sent = [];
+		for (let i = 0; i < 5; i++) {
+			h.bus.emit("session_event", {
+				sessionId: "s1",
+				event: { eventType: "PostToolUse" } as SessionEvent,
+				late: true,
+			});
+		}
+		h.now += BUCKET_MS;
+		await h.publisher.tick();
+		expect(h.sent, "five late events: nothing to send").toEqual([]);
+
+		for (let i = 0; i < 5; i++) h.toolEvent();
+		h.now += BUCKET_MS;
+		await h.publisher.tick();
+		expect(h.sent, "positive control: the same five live do send").toHaveLength(1);
+	});
+
+	test("late updates are held and settle into one refresh with the latest state after 2 s of quiet", async () => {
+		await h.publisher.follow(h.row());
+		h.sent = [];
+		h.updated({ operationalStatus: "waiting" }, { late: true });
+		await h.advance(LATE_UPDATE_QUIET_MS - 500);
+		h.updated({ operationalStatus: "error" }, { late: true });
+		await h.advance(LATE_UPDATE_QUIET_MS - 500);
+		h.updated({ operationalStatus: "waiting" }, { late: true });
+		await h.settle();
+		expect(h.sent, "nothing goes out while updates keep arriving").toEqual([]);
+		expect(h.pendingTimers).toBe(1);
+
+		await h.advance(LATE_UPDATE_QUIET_MS);
+		expect(h.sent).toHaveLength(1);
+		expect(state(h.sent[0] as Sent).status).toBe("waiting");
+	});
+
+	test("a steady trickle of late updates still refreshes no later than 10 s after the first", async () => {
+		await h.publisher.follow(h.row());
+		h.sent = [];
+		// An update every 1.5 s never leaves 2 s of quiet.
+		let elapsed = 0;
+		h.updated({ operationalStatus: "waiting" }, { late: true });
+		while (h.sent.length === 0 && elapsed < LATE_UPDATE_MAX_WAIT_MS + 3_000) {
+			await h.advance(1_500);
+			elapsed += 1_500;
+			if (h.sent.length === 0) h.updated({ operationalStatus: "error" }, { late: true });
+		}
+		expect(h.sent).toHaveLength(1);
+		expect(elapsed, "fired within the maximum wait (at the next 1.5 s step)").toBeLessThanOrEqual(
+			LATE_UPDATE_MAX_WAIT_MS + 1_500,
+		);
+		expect(elapsed).toBeGreaterThan(LATE_UPDATE_QUIET_MS);
+	});
+
+	test("a replayed terminal state still ends the activity, once, after the quiet period", async () => {
+		await h.publisher.follow(h.row());
+		h.sent = [];
+		h.updated({ operationalStatus: "completed" }, { late: true });
+		await h.settle();
+		expect(h.events("end")).toEqual([]);
+		await h.advance(LATE_UPDATE_QUIET_MS);
+		expect(h.events("end")).toHaveLength(1);
+		expect(h.ended).toEqual(["phone|s1"]);
+	});
+
+	test("a live update supersedes a late one still waiting", async () => {
+		await h.publisher.follow(h.row());
+		h.sent = [];
+		h.updated({ operationalStatus: "error" }, { late: true });
+		h.updated({ operationalStatus: "waiting" });
+		await h.settle();
+		expect(h.sent).toHaveLength(1);
+		expect(state(h.sent[0] as Sent).status).toBe("waiting");
+		expect(h.pendingTimers).toBe(0);
+		await h.advance(LATE_UPDATE_QUIET_MS * 2);
+		expect(h.sent, "the stale late state never goes out").toHaveLength(1);
+	});
+
+	test("stop cancels a pending late update", async () => {
+		await h.publisher.follow(h.row());
+		h.updated({ operationalStatus: "error" }, { late: true });
+		h.publisher.stop();
+		expect(h.pendingTimers).toBe(0);
 	});
 });
 

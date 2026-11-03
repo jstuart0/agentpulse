@@ -1,10 +1,16 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { DELIVERY_ID_HEADER, REPLAY_HEADER } from "../../shared/hook-headers.js";
 import { privilegeCliArgs } from "../../shared/launch-privileges.js";
+import {
+	MANAGED_REPORT_BODY_LIMIT_BYTES,
+	MAX_EVENT_CONTENT_CHARS,
+} from "../../shared/managed-report-limits.js";
 import type {
 	ManagedSessionEventInput,
 	ManagedSessionStateInput,
+	SessionEvent,
 	SupervisorRegistrationInput,
 } from "../../shared/types.js";
 import type { AuthUser } from "../auth/middleware.js";
@@ -30,20 +36,27 @@ import {
 	isHostTokenCreatorStillAllowed,
 } from "../services/authorization.js";
 import { claimNextControlAction, updateControlAction } from "../services/control-actions.js";
+import { parseDeliveryId } from "../services/event-dedup.js";
 import { claimNextLaunchRequest, updateLaunchDispatchStatus } from "../services/launch-dispatch.js";
 import { associateObservedSession } from "../services/launch-dispatch.js";
 import { cleanMachineName } from "../services/machine-name.js";
 import {
 	ReservedEventTypeError,
+	appendManagedSessionDelivery,
 	appendManagedSessionEvents,
 	listManagedSessionsNeedingSync,
 	upsertManagedSessionState,
 } from "../services/managed-session-state.js";
 import { notifySessionEvents, notifySessionUpdated } from "../services/notifier.js";
+import { REPLAY_RETRY_AFTER_SECONDS, tryAcquireReplay } from "../services/replay-limiter.js";
 import { SessionOwnershipError } from "../services/session-ownership.js";
 import { getSession } from "../services/session-tracker.js";
 import { parseRegistrationShape } from "../services/supervisor-capabilities.js";
-import { recordHeartbeatExcludeState } from "../services/supervisor-exclude-state.js";
+import {
+	readHeartbeatBody,
+	recordHeartbeatExcludeState,
+} from "../services/supervisor-exclude-state.js";
+import { parseOutboxState } from "../services/supervisor-outbox-state.js";
 import {
 	enrollSupervisor,
 	getSupervisor,
@@ -53,6 +66,7 @@ import {
 	revokeHost,
 	setSupervisorOwner,
 } from "../services/supervisor-registry.js";
+import { sha256Hex } from "../services/util/hash.js";
 
 // ── Dashboard-management router (requireAuth) ─────────────────────────────────
 // Mounted at /api/v1/admin/supervisors — falls through to the forwardauth
@@ -328,8 +342,9 @@ supervisorsAgentRouter.post("/supervisors/register", registerBodyLimit, async (c
 
 supervisorsAgentRouter.post("/supervisors/:id/heartbeat", requireSupervisorAuth(), async (c) => {
 	const supervisorId = c.req.param("id") ?? "";
-	await recordHeartbeatExcludeState(c, supervisorId);
-	const supervisor = await heartbeatSupervisor(supervisorId);
+	const body = await readHeartbeatBody(c);
+	await recordHeartbeatExcludeState(supervisorId, body);
+	const supervisor = await heartbeatSupervisor(supervisorId, parseOutboxState(body));
 	if (!supervisor) return c.json({ error: "Supervisor not found" }, 404);
 	return c.json({ supervisor });
 });
@@ -380,13 +395,83 @@ supervisorsAgentRouter.post(
 	},
 );
 
+/** A report body is a status line or a batch of events: 2 MiB is far above any real one. */
+const managedReportBodyLimit = bodyLimit({
+	maxSize: MANAGED_REPORT_BODY_LIMIT_BYTES,
+	onError: (c) => c.json({ error: "payload_too_large" }, 413),
+});
+
+/**
+ * A report sent late, from a supervisor's offline queue, carries the replay header. At most
+ * MAX_CONCURRENT_REPLAYS are worked on at once per process and MAX_REPLAYS_PER_SUPERVISOR from one
+ * supervisor; the rest are told to come back, which a supervisor treats as back-pressure and
+ * retries. A live report is never refused. The slot is taken by the handler after the credential
+ * check and after the body has been read and validated, so neither an unauthenticated caller nor a
+ * slow or malformed upload can hold one. Returns the release, or null when refused.
+ */
+function admitReplay(late: boolean, supervisorId: string): (() => void) | null {
+	return late ? tryAcquireReplay(supervisorId) : () => undefined;
+}
+
+function replayBusy(c: Context) {
+	c.header("Retry-After", String(REPLAY_RETRY_AFTER_SECONDS));
+	return c.json({ error: "busy" }, 503);
+}
+
+const MAX_EVENT_TYPE_CHARS = 256;
+const MAX_EVENT_SHORT_FIELD_CHARS = 256;
+const MAX_SESSION_ID_CHARS = 1024;
+
+const isPlainObject = (v: unknown) =>
+	typeof v === "object" &&
+	v !== null &&
+	!Array.isArray(v) &&
+	Object.getPrototypeOf(v) === Object.prototype;
+const isBoundedString = (v: unknown, max: number) => typeof v === "string" && v.length <= max;
+
+/** True when one event of a managed batch has a field of the wrong type or size. */
+function isMalformedManagedEvent(e: unknown): boolean {
+	if (!isPlainObject(e)) return true;
+	const event = e as Record<string, unknown>;
+	if (!isBoundedString(event.eventType, MAX_EVENT_TYPE_CHARS) || event.eventType === "")
+		return true;
+	if (event.content != null && !isBoundedString(event.content, MAX_EVENT_CONTENT_CHARS))
+		return true;
+	for (const field of ["category", "toolName"] as const) {
+		if (event[field] != null && !isBoundedString(event[field], MAX_EVENT_SHORT_FIELD_CHARS)) {
+			return true;
+		}
+	}
+	return event.rawPayload != null && !isPlainObject(event.rawPayload);
+}
+
+/** The parsed JSON object, or null when the text isn't a JSON object. */
+function parseJsonObject(text: string): Record<string, unknown> | null {
+	try {
+		const parsed: unknown = JSON.parse(text);
+		return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: null;
+	} catch {
+		return null;
+	}
+}
+
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-session-state",
 	requireSupervisorAuth(),
+	managedReportBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
-		const body = await c.req.json<ManagedSessionStateInput>();
+		const late = c.req.header(REPLAY_HEADER) === "1";
+		const body = parseJsonObject(await c.req.text()) as ManagedSessionStateInput | null;
+		if (!body) return c.json({ error: "invalid_body" }, 400);
+		if (body.sessionId !== undefined && !isBoundedString(body.sessionId, MAX_SESSION_ID_CHARS)) {
+			return c.json({ error: "invalid_body" }, 400);
+		}
 		if (!body.sessionId) return c.json({ error: "sessionId is required" }, 400);
+		const release = admitReplay(late, supervisorId);
+		if (!release) return replayBusy(c);
 		try {
 			const result = await upsertManagedSessionState(supervisorId, body);
 			await associateObservedSession({ sessionId: body.sessionId, supervisorId });
@@ -396,7 +481,7 @@ supervisorsAgentRouter.post(
 			// broadcasting so both carry the owner this same call set.
 			const freshSession = await getSession(body.sessionId);
 			const freshResult = freshSession ? { ...result, session: freshSession } : result;
-			notifySessionUpdated(freshResult.session);
+			notifySessionUpdated(freshResult.session, { late });
 			return c.json(freshResult);
 		} catch (err) {
 			if (err instanceof SessionOwnershipError) {
@@ -408,6 +493,8 @@ supervisorsAgentRouter.post(
 				return c.json({ error: "session_not_owned" }, 403);
 			}
 			throw err;
+		} finally {
+			release();
 		}
 	},
 );
@@ -415,16 +502,41 @@ supervisorsAgentRouter.post(
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-sessions/:sessionId/events",
 	requireSupervisorAuth(),
+	managedReportBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
 		const sessionId = c.req.param("sessionId") ?? "";
-		const body = await c.req.json<{ events: ManagedSessionEventInput[] }>();
+		const late = c.req.header(REPLAY_HEADER) === "1";
+		const text = await c.req.text();
+		const body = parseJsonObject(text) as { events?: unknown } | null;
+		const batch = body?.events ?? [];
+		if (!body || !Array.isArray(batch) || batch.some(isMalformedManagedEvent)) {
+			return c.json({ error: "invalid_body" }, 400);
+		}
+		const release = admitReplay(late, supervisorId);
+		if (!release) return replayBusy(c);
+		const incoming = batch as ManagedSessionEventInput[];
+		// A well-formed delivery id makes the batch idempotent (a receipt is written with
+		// the rows); without one, or with a malformed one, the batch is handled as it
+		// always was.
+		const deliveryId = parseDeliveryId(c.req.header(DELIVERY_ID_HEADER));
 		try {
-			const inserted = await appendManagedSessionEvents(supervisorId, sessionId, body.events ?? []);
+			let inserted: SessionEvent[];
+			if (deliveryId) {
+				const result = await appendManagedSessionDelivery(supervisorId, sessionId, incoming, {
+					deliveryId,
+					bodyDigest: sha256Hex(text),
+				});
+				// A delivery already received changed nothing: there is nothing to announce.
+				if (result.replay) return c.json({ events: [] });
+				inserted = result.events;
+			} else {
+				inserted = await appendManagedSessionEvents(supervisorId, sessionId, incoming);
+			}
 			const session = await getSession(sessionId);
 			if (session) {
-				notifySessionUpdated(session);
-				notifySessionEvents(sessionId, inserted);
+				notifySessionUpdated(session, { late });
+				notifySessionEvents(sessionId, inserted, { late });
 			}
 			return c.json({ events: inserted });
 		} catch (err) {
@@ -440,6 +552,8 @@ supervisorsAgentRouter.post(
 				return c.json({ error: "session_not_owned" }, 403);
 			}
 			throw err;
+		} finally {
+			release();
 		}
 	},
 );

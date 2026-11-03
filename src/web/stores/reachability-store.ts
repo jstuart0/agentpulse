@@ -32,7 +32,10 @@ export const useReachabilityStore = create<ReachabilityState>((set, get) => ({
 	},
 }));
 
-setNetworkHandler({
+/** What the request wrapper tells: exported so a test that swaps the handler can put this one back. */
+export const reachabilityNetworkHandler = {
 	failed: () => useReachabilityStore.getState().reportFailure(),
-	ok: (path) => useReachabilityStore.getState().reportSuccess(path),
-});
+	ok: (path: string) => useReachabilityStore.getState().reportSuccess(path),
+};
+
+setNetworkHandler(reachabilityNetworkHandler);

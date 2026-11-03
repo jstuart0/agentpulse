@@ -127,6 +127,20 @@
 			"when": 1793364745552,
 			"tag": "0017_ask_thread_owner_turn_start",
 			"breakpoints": true
+		},
+		{
+			"idx": 18,
+			"version": "6",
+			"when": 1793558796816,
+			"tag": "0018_managed_delivery",
+			"breakpoints": true
+		},
+		{
+			"idx": 19,
+			"version": "6",
+			"when": 1793601824673,
+			"tag": "0019_supervisor_outbox_state",
+			"breakpoints": true
 		}
 	]
 }

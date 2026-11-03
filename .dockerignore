@@ -41,3 +41,7 @@ drizzle/schema.*.ts
 # (which runs natively on the runner, not inside a Docker stage) touch this
 # directory, so excluding it from the build context has no effect on either.
 src/**/__fixtures__/
+
+# Python bytecode must never ride along in the image (scripts/ is copied whole)
+**/__pycache__
+**/*.pyc

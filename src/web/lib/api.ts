@@ -219,7 +219,26 @@ export function setRequestFailureHandler(
 	requestFailureHandler = handler;
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+/** Test seam: forget that a reload was already started, so each test can see its own. */
+export function resetAuthBounceForTests(): void {
+	authBounceInFlight = false;
+}
+
+/**
+ * `background` is for a refetch the user didn't ask for (the Hosts page's quiet tick). It must never be what
+ * reloads the page: a failed fetch there is reported as an outage (`networkHandler.failed()`), not treated as
+ * a possible expired sign-in, because a reload throws away what the person is in the middle of (a shown-once
+ * enrollment token, a typed name). An expired sign-in is still caught from the answer itself: with
+ * `redirect: "manual"` a forwardauth redirect comes back as an opaque redirect (or status 0), which
+ * `looksLikeAuthBounce` reads without any exception, so it reloads here too. The one case a background
+ * request cannot tell is a redirect the browser blocks outright (a TypeError); the person's next request of
+ * their own still reloads.
+ */
+async function request<T>(
+	path: string,
+	options?: RequestInit,
+	opts?: { background?: boolean },
+): Promise<T> {
 	let res: Response;
 	try {
 		res = await fetch(`${BASE_URL}${path}`, {
@@ -236,7 +255,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 		// network error. Either way, reload — the worst case is one
 		// extra full-page refresh.
 		if (err instanceof TypeError) {
-			handleFetchFailure(`fetch threw (${err.message})`);
+			if (opts?.background) networkHandler?.failed();
+			else handleFetchFailure(`fetch threw (${err.message})`);
 		}
 		throw err;
 	}
@@ -567,8 +587,12 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 
-	getSupervisors: () =>
-		request<{ supervisors: SupervisorRecord[]; total: number }>("/admin/supervisors"),
+	getSupervisors: (opts?: { background?: boolean }) =>
+		request<{ supervisors: SupervisorRecord[]; total: number }>(
+			"/admin/supervisors",
+			undefined,
+			opts,
+		),
 
 	getSupervisor: (id: string) =>
 		request<{ supervisor: SupervisorRecord }>(`/admin/supervisors/${id}`),
@@ -816,14 +840,20 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 
+	// Both are always background requests: a fetch that gets no answer is an outage and must not reload the
+	// page (that would throw away a shown-once token or a typed name). The deploy routing
+	// (deploy/k8s/07-ingressroute.yaml) exempts `/api/v1/health` and `/app-api/v1/auth/me` from forwardauth,
+	// so those two can't come back as an auth bounce. The browser's `/app-api/v1/health` is not exempt, so a
+	// health poll can still bounce; `looksLikeAuthBounce` reads that from the answer and reloads, which is
+	// the right thing for an expired sign-in.
 	getHealth: () =>
 		request<{
 			status: string;
 			version?: string;
 			instance?: { dbFingerprint: string; dialect: "sqlite" | "postgres" };
-		}>("/health"),
+		}>("/health", undefined, { background: true }),
 
-	getAuthMe: () => request<AuthMeResponse>("/auth/me"),
+	getAuthMe: () => request<AuthMeResponse>("/auth/me", undefined, { background: true }),
 
 	// --- Notification channels (Telegram, etc.) ---
 	getChannels: () =>

@@ -31,6 +31,8 @@ export const supervisorsSqlite = sqliteTable("supervisors", {
 		.default(sql`(datetime('now', '+90 seconds'))`),
 	enrollmentState: text("enrollment_state").notNull().default("active"),
 	excludeRulesState: text("exclude_rules_state"),
+	/** What the host last said about its offline outbox, as JSON text (null = nothing to show). */
+	outboxState: text("outbox_state"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 	/** The user who enrolled this host. Null for a pre-upgrade or unowned host. */
@@ -58,6 +60,7 @@ export const supervisorsPg = pgTable("supervisors", {
 		.default(sql`CURRENT_TIMESTAMP + INTERVAL '90 seconds'`),
 	enrollmentState: pgText("enrollment_state").notNull().default("active"),
 	excludeRulesState: pgText("exclude_rules_state"),
+	outboxState: pgText("outbox_state"),
 	createdAt: tsColumn("postgres", "created_at"),
 	updatedAt: tsColumn("postgres", "updated_at"),
 	ownerUserId: pgText("owner_user_id"),

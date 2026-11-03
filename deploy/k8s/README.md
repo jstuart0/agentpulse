@@ -81,9 +81,12 @@ its denormalized state are never touched — the `events` history ages out, and
 so do stored session summaries: the same pass deletes a summary generated
 before the cutoff (a row left `generating` is spared while its lease is live, and a lapsed one is deleted only if it is also older than the cutoff), in
 batches of 500, in its own transaction under the same advisory lock on
-Postgres. A summary is the only other thing this pass deletes.
+Postgres. Besides summaries, the pass deletes managed-delivery receipts (see
+"Upgrading to migrations 0018 and 0019" below), and it does that **whether or not
+`eventsRetentionDays` is set**: receipts older than 72 hours go in batches of 1,000 on
+every tick, with no advisory lock, even when event retention is disabled.
 `GET /api/v1/health`'s `retention` field reports the last pass as `lastRun`
-(`rowsDeleted`, `summariesDeleted`, `durationMs`, `disabled`) and, separately, `lastSkip` when
+(`rowsDeleted`, `summariesDeleted`, `receiptsDeleted`, `durationMs`, `disabled`) and, separately, `lastSkip` when
 a pass was skipped (`already_running`, or on Postgres `lock_held_elsewhere`
 — another replica already held the per-batch advisory lock), plus the next
 scheduled tick.
@@ -1050,3 +1053,44 @@ tells you roughly how many rows to expect to be removed.
 
 The watcher keeps its wake timers, its queue of boundaries and its in-flight set in
 process memory, so the Deployment must stay at **one replica**.
+
+## Upgrading to migrations 0018 and 0019 (SQLite and Postgres): supervisor offline outbox
+
+`drizzle/sqlite/0018_managed_delivery.sql` and `drizzle/postgres/0018_managed_delivery.sql`
+add a nullable `events.occurred_at` column (when a supervisor says a managed event
+happened; display only) and create `managed_delivery_receipts`, one row per accepted
+managed events delivery, with a cascade foreign key to `sessions.session_id`, a unique
+index on `(session_id, receipt_key)` and an index on `created_at`. `0019_supervisor_outbox_state.sql`
+adds a nullable `supervisors.outbox_state` column. Both dialects' folders now end at `0019`.
+Unlike the index migrations above, these are plain `CREATE TABLE` and `ADD COLUMN`; existing
+SQLite installs on the legacy `initializeDatabase()` path get the same objects through its
+additive steps, with `IF NOT EXISTS`.
+
+**Postgres lock.** `ALTER TABLE events ADD COLUMN` takes a brief `ACCESS EXCLUSIVE` lock on
+`events` (a nullable column with no default is not a table rewrite, but the statement queues
+behind any long-running query on the table and holds up the queries behind it while it waits),
+and the new table's foreign key takes a brief lock on `sessions`. The migrator runs all pending
+migrations in one transaction, so those locks are held until the whole batch commits. To make
+the migration fail fast instead of waiting behind a long query, set `lock_timeout` for the
+migrating role for the deploy (for example `ALTER ROLE <app role> SET lock_timeout = '10s'`, and
+reset it afterwards): a timeout rolls the batch back and the migration fails, and boot with it; the next start
+retries.
+
+**What the receipts table costs.** Every non-empty managed events batch a supervisor sends
+writes one receipt row, and the retention pass deletes receipts older than 72 hours on every tick, even when
+`eventsRetentionDays` is off. Watch `retention.lastRun.receiptsDeleted` on `GET /api/v1/health`.
+The prune is not under the Postgres advisory lock, so more than one replica may run it at once;
+that is harmless (the loser finds the rows gone). Deleting a session deletes its receipts.
+
+**Upgrade order.** Upgrade the server before the supervisors. An older server ignores the
+delivery id, the replay header and `occurredAt` that a new supervisor sends, so replays are
+de-duplicated only against the newest 50 stored events of the session.
+
+**Rollback.** Rolling the server back below `0018` leaves `managed_delivery_receipts` and the
+new columns in place; an older server never prunes the table, so drop it by hand once you are
+sure you are not going forward again (`DROP TABLE managed_delivery_receipts;`). The columns are
+harmless.
+
+**Per-process limits.** At most four replay requests are worked on at once in a process, and two
+from one supervisor; the rest are answered `503 busy` with `Retry-After: 2`, which a supervisor
+retries. With N replicas the cap is N times as large. Live reports are never refused.

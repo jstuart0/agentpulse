@@ -7,6 +7,7 @@ import {
 	normalizeComparableContent,
 } from "../../../shared/event-authority.js";
 import type { EventCategory, EventSource, SessionEvent } from "../../../shared/types.js";
+import { timeAttribute } from "../../lib/event-time.js";
 import { cn, formatTimeAgo } from "../../lib/utils.js";
 import { MarkdownContent } from "../MarkdownContent.js";
 
@@ -85,24 +86,57 @@ function SourceBadge({ source }: { source: EventSource }) {
 	);
 }
 
+/** The quiet mark on a row that reached the server late: its time is when it happened, not where it sits. */
+const LATE_MARK = "border-l-2 border-dashed border-muted-foreground/40 pl-2";
+
+/** The relative time of an event as a <time> element, with the late-arrival note when it starts a late run. */
+function EventTime({
+	time,
+	lateNote,
+	lateDetail,
+}: { time: string; lateNote?: string; lateDetail?: string }) {
+	return (
+		<>
+			<time dateTime={timeAttribute(time)} title={lateDetail}>
+				{formatTimeAgo(time)}
+				{lateDetail ? <span className="sr-only"> {lateDetail}</span> : null}
+			</time>
+			{lateNote ? (
+				<>
+					<span aria-hidden="true"> · </span>
+					<span>{lateNote}</span>
+				</>
+			) : null}
+		</>
+	);
+}
+
 export function PromptBubble({
 	text,
 	time,
 	source,
+	lateNote,
+	lateDetail,
+	late,
 }: {
 	text: string;
 	time: string;
 	source?: EventSource;
+	lateNote?: string;
+	lateDetail?: string;
+	late?: boolean;
 }) {
 	return (
 		<div className="flex justify-end">
-			<div className="max-w-[80%]">
+			<div className={cn("max-w-[80%]", late && LATE_MARK)}>
 				<div className="rounded-2xl rounded-br-sm bg-primary/15 border border-primary/20 px-4 py-3">
 					<MarkdownContent content={text} compact />
 				</div>
 				<div className="mt-1 flex items-center justify-end gap-2">
 					{source ? <SourceBadge source={source} /> : null}
-					<p className="text-[10px] text-muted-foreground text-right">{formatTimeAgo(time)}</p>
+					<p className="text-[10px] text-muted-foreground text-right">
+						<EventTime time={time} lateNote={lateNote} lateDetail={lateDetail} />
+					</p>
 				</div>
 			</div>
 		</div>
@@ -113,19 +147,27 @@ export function AssistantBubble({
 	text,
 	time,
 	source,
+	lateNote,
+	lateDetail,
+	late,
 }: {
 	text: string;
 	time: string;
 	source?: EventSource;
+	lateNote?: string;
+	lateDetail?: string;
+	late?: boolean;
 }) {
 	return (
 		<div className="flex justify-start">
-			<div className="max-w-[80%]">
+			<div className={cn("max-w-[80%]", late && LATE_MARK)}>
 				<div className="rounded-2xl rounded-bl-sm bg-sky-500/10 border border-sky-500/20 px-4 py-3">
 					<MarkdownContent content={text} compact />
 				</div>
 				<div className="mt-1 flex items-center gap-2">
-					<p className="text-[10px] text-muted-foreground">{formatTimeAgo(time)}</p>
+					<p className="text-[10px] text-muted-foreground">
+						<EventTime time={time} lateNote={lateNote} lateDetail={lateDetail} />
+					</p>
 					{source ? <SourceBadge source={source} /> : null}
 				</div>
 			</div>
@@ -139,12 +181,21 @@ export function TimelineCard({
 	label,
 	tone = "default",
 	source,
+	lateNote,
+	lateDetail,
+	late,
+	plainText,
 }: {
 	text: string;
 	time: string;
 	label: string;
 	tone?: "default" | "emerald" | "amber" | "muted";
 	source?: EventSource;
+	lateNote?: string;
+	lateDetail?: string;
+	late?: boolean;
+	/** Shown as text, never as Markdown (for content that is not the user's or the agent's own writing). */
+	plainText?: boolean;
 }) {
 	const toneClasses = {
 		default: "border-border bg-card/60",
@@ -153,19 +204,28 @@ export function TimelineCard({
 		muted: "border-border/70 bg-muted/30",
 	};
 
+	// The mark goes on a wrapper: on the card itself its border classes would replace the tone's border colour.
 	return (
-		<div className={cn("rounded-xl border px-3 py-2.5", toneClasses[tone])}>
-			<div className="flex items-center justify-between gap-3">
-				<div className="flex items-center gap-2">
-					<span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-						{label}
+		<div className={cn(late && LATE_MARK)}>
+			<div className={cn("rounded-xl border px-3 py-2.5", toneClasses[tone])}>
+				<div className="flex items-center justify-between gap-3">
+					<div className="flex items-center gap-2">
+						<span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+							{label}
+						</span>
+						{source ? <SourceBadge source={source} /> : null}
+					</div>
+					<span className="text-[10px] text-muted-foreground">
+						<EventTime time={time} lateNote={lateNote} lateDetail={lateDetail} />
 					</span>
-					{source ? <SourceBadge source={source} /> : null}
 				</div>
-				<span className="text-[10px] text-muted-foreground">{formatTimeAgo(time)}</span>
-			</div>
-			<div className="mt-1.5">
-				<MarkdownContent content={text} compact />
+				<div className="mt-1.5">
+					{plainText ? (
+						<p className="whitespace-pre-wrap break-words text-sm">{text}</p>
+					) : (
+						<MarkdownContent content={text} compact />
+					)}
+				</div>
 			</div>
 		</div>
 	);

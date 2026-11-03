@@ -25,10 +25,20 @@ type SessionLike = { displayName: string | null; metadata: unknown };
 // they do NOT call broadcast() directly. The exception is notifyChannel()
 // which forwards typed channel messages — it has no session-state semantics
 // and is not bus-routed.
+/**
+ * `late` marks a report a supervisor delivered from its offline queue rather
+ * than as it happened (decided only by the authenticated sender's replay
+ * header). Listeners that react to "something just happened" (the watcher, the
+ * inline embedder, Live Activity) skip it; the WS broadcast does not.
+ */
+export interface SessionUpdateMeta {
+	late?: true;
+}
+
 type SessionBusEvents = {
 	session_created: [Session];
-	session_updated: [Session];
-	session_event: [{ sessionId: string; event: SessionEvent }];
+	session_updated: [Session, SessionUpdateMeta?];
+	session_event: [{ sessionId: string; event: SessionEvent; late?: true }];
 	// A turn boundary (a turn ended, the session ended, a turn began) in a session
 	// someone is watching. Emitted by ingest for hook events, so the watcher hears
 	// about them without every hook event being broadcast on `session_event`.
@@ -78,15 +88,24 @@ export function notifySessionCreated<T extends SessionLike>(session: T) {
 	sessionBus.emit("session_created", mapSessionDto(session) as unknown as Session);
 }
 
-export function notifySessionUpdated<T extends SessionLike>(session: T) {
+export function notifySessionUpdated<T extends SessionLike>(session: T, opts?: { late?: boolean }) {
 	// Bus-only. initWsBroadcaster broadcasts "session_updated".
-	sessionBus.emit("session_updated", mapSessionDto(session) as unknown as Session);
+	const mapped = mapSessionDto(session) as unknown as Session;
+	if (opts?.late) sessionBus.emit("session_updated", mapped, { late: true });
+	else sessionBus.emit("session_updated", mapped);
 }
 
-export function notifySessionEvents(sessionId: string, events: SessionEvent[]) {
+export function notifySessionEvents(
+	sessionId: string,
+	events: SessionEvent[],
+	opts?: { late?: boolean },
+) {
 	for (const event of events) {
 		// Bus-only. initWsBroadcaster handles the broadcastToSession call.
-		sessionBus.emit("session_event", { sessionId, event });
+		sessionBus.emit(
+			"session_event",
+			opts?.late ? { sessionId, event, late: true } : { sessionId, event },
+		);
 	}
 }
 

@@ -75,23 +75,40 @@ async function readBoundedBody(c: Context, limit: number): Promise<string | null
 	return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
+/**
+ * A heartbeat's body, read once and bounded: nothing (an older supervisor, or a current one with nothing to
+ * say), a JSON object, or something that could not be read (too long, a stream failure, not JSON, not an
+ * object). Every field of the heartbeat is judged from this one read.
+ */
+export type HeartbeatBody =
+	| { kind: "empty" }
+	| { kind: "object"; value: Record<string, unknown> }
+	| { kind: "unreadable" };
+
+export async function readHeartbeatBody(c: Context): Promise<HeartbeatBody> {
+	const text = await readBoundedBody(c, MAX_HEARTBEAT_BODY_BYTES);
+	if (text === null) return { kind: "unreadable" };
+	if (text.trim() === "") return { kind: "empty" };
+	try {
+		const parsed: unknown = JSON.parse(text);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			return { kind: "object", value: parsed as Record<string, unknown> };
+		}
+	} catch {
+		// falls through
+	}
+	return { kind: "unreadable" };
+}
+
 /** What a heartbeat's body says to do with the flag. */
 type Reported = "set" | "clear" | "leave";
 
-async function readReported(c: Context): Promise<Reported> {
-	const text = await readBoundedBody(c, MAX_HEARTBEAT_BODY_BYTES);
-	if (text === null) return "leave";
+function reportedState(body: HeartbeatBody): Reported {
 	// No body at all, or an empty one: an older supervisor, which cannot be saying "invalid".
-	if (text.trim() === "") return "clear";
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(text);
-	} catch {
-		return "leave";
-	}
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "leave";
-	if (!Object.hasOwn(parsed, "excludeRulesState")) return "leave";
-	const state = parseReportedState((parsed as { excludeRulesState?: unknown }).excludeRulesState);
+	if (body.kind === "empty") return "clear";
+	if (body.kind === "unreadable") return "leave";
+	if (!Object.hasOwn(body.value, "excludeRulesState")) return "leave";
+	const state = parseReportedState(body.value.excludeRulesState);
 	if (state === null) return "leave";
 	return state === "invalid" ? "set" : "clear";
 }
@@ -125,16 +142,16 @@ async function writeFlag(supervisorId: string, state: ExcludeRulesState | null) 
 }
 
 /**
- * Applies what a heartbeat says about the flag. Called once from the heartbeat
+ * Applies what a heartbeat's body says about the flag. Called once from the heartbeat
  * handler, before the supervisor row is read back for the response. Never throws.
  */
 export async function recordHeartbeatExcludeState(
-	c: Context,
 	supervisorId: string,
+	body: HeartbeatBody,
 	write: FlagWriter = writeFlag,
 ): Promise<void> {
 	try {
-		const reported = await readReported(c);
+		const reported = reportedState(body);
 		if (reported === "leave") return;
 		await write(supervisorId, reported === "set" ? "invalid" : null);
 	} catch (error) {

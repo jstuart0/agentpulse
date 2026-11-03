@@ -2,7 +2,11 @@
 // no json_extract, no datetime('now') literals. The heartbeat-lease timestamp
 // (Date.now() + ms).toISOString() is pure JS — fully portable to Postgres.
 import { desc, eq, sql } from "drizzle-orm";
-import type { SupervisorRecord, SupervisorRegistrationInput } from "../../shared/types.js";
+import type {
+	SupervisorOutboxState,
+	SupervisorRecord,
+	SupervisorRegistrationInput,
+} from "../../shared/types.js";
 import { assertOwnerActive, assertOwnerAssignable } from "../auth/owner-state.js";
 import {
 	prepareSupervisorCredential,
@@ -20,6 +24,7 @@ import {
 	deriveSupervisorStatus,
 	isSupervisorLive,
 } from "./supervisor-liveness.js";
+import { type OutboxChange, outboxStateOf, sameOutboxState } from "./supervisor-outbox-state.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -27,6 +32,12 @@ function nowIso() {
 
 function leaseExpiryIso(base = Date.now()) {
 	return new Date(base + HEARTBEAT_LEASE_MS).toISOString();
+}
+
+/** The outbox state, present only when the row holds one. */
+function outboxField(row: object): { outbox?: SupervisorOutboxState } {
+	const outbox = outboxStateOf(row);
+	return outbox ? { outbox } : {};
 }
 
 function mapSupervisor(row: typeof supervisors.$inferSelect, nowMs = Date.now()): SupervisorRecord {
@@ -44,6 +55,7 @@ function mapSupervisor(row: typeof supervisors.$inferSelect, nowMs = Date.now())
 		lastHeartbeatAt: row.lastHeartbeatAt,
 		heartbeatLeaseExpiresAt: row.heartbeatLeaseExpiresAt,
 		excludeRulesState: excludeRulesStateOf(row),
+		...outboxField(row),
 		enrollmentState: (row.enrollmentState as SupervisorRecord["enrollmentState"]) ?? "active",
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
@@ -166,6 +178,7 @@ async function writeSupervisor(
 				// statement (not a second connection) so it holds inside the admin-lock
 				// transaction too.
 				excludeRulesState: null,
+				outboxState: null,
 			},
 		});
 
@@ -178,7 +191,49 @@ async function writeSupervisor(
 	};
 }
 
-export async function heartbeatSupervisor(id: string) {
+/** How the outbox column is written; replaceable so a test can make the write fail. */
+type OutboxWriter = (id: string, text: string | null) => Promise<void>;
+
+async function writeOutboxState(id: string, text: string | null) {
+	await getDb().update(supervisors).set({ outboxState: text }).where(eq(supervisors.id, id));
+}
+
+let outboxWriteWarned = false;
+
+/**
+ * Stores the host's outbox when it differs from what the row holds (compared in JS), as its own statement:
+ * a failure to write it is logged once and swallowed, because a heartbeat that fails makes the supervisor exit.
+ */
+async function recordOutboxState(
+	id: string,
+	existing: object,
+	change: OutboxChange | undefined,
+	write: OutboxWriter,
+) {
+	if (!change || change.kind === "leave") return;
+	const stored = outboxStateOf(existing);
+	const next = change.kind === "set" ? change.value : null;
+	if (sameOutboxState(stored, next)) return;
+	try {
+		await write(id, next ? JSON.stringify(next) : null);
+	} catch (error) {
+		if (outboxWriteWarned) return;
+		outboxWriteWarned = true;
+		console.warn(
+			JSON.stringify({
+				kind: "heartbeat_outbox_state_failed",
+				level: "warn",
+				error: error instanceof Error ? error.message : String(error),
+			}),
+		);
+	}
+}
+
+export async function heartbeatSupervisor(
+	id: string,
+	outbox?: OutboxChange,
+	writeOutbox: OutboxWriter = writeOutboxState,
+) {
 	const timestamp = nowIso();
 	const leaseExpiry = leaseExpiryIso();
 	const [existing] = await getDb()
@@ -197,6 +252,7 @@ export async function heartbeatSupervisor(id: string) {
 			updatedAt: timestamp,
 		})
 		.where(eq(supervisors.id, id));
+	await recordOutboxState(id, existing, outbox, writeOutbox);
 
 	const [row] = await getDb().select().from(supervisors).where(eq(supervisors.id, id)).limit(1);
 	return row ? mapSupervisor(row) : null;

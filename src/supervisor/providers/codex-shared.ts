@@ -23,10 +23,13 @@ export type ManagedCodexRuntime = {
 };
 
 export type LaunchCallbacks = {
-	reportState: (
-		input: ManagedSessionStateInput,
-	) => Promise<{ session: Session; managedSession: ManagedSession }>;
-	reportEvents: (events: ManagedSessionEventInput[]) => Promise<void>;
+	reportState: (input: ManagedSessionStateInput) => Promise<{
+		session: Session;
+		managedSession: ManagedSession;
+		/** What became of the report; "queued" means the server hasn't seen it yet and `session` is empty. */
+		outcome?: "sent" | "queued" | "excluded" | "blocked";
+	}>;
+	reportEvents: (events: ManagedSessionEventInput[]) => Promise<unknown>;
 };
 
 export function buildPrompt(launch: LaunchRequest) {

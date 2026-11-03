@@ -36,6 +36,8 @@ export interface LaunchDispatchDeps {
 	trustedRoots: string[];
 	providers: LaunchProviders;
 	executePrelaunchActions: typeof executePrelaunchActions;
+	/** The terminal-bridge spool drain; an interactive launch admits its bridge directory to it. */
+	bridgeSpool?: { admit(sessionId: string): void };
 	/** The host's own log: the only place the reason for a refusal is written. */
 	log?: (line: string) => void;
 	warn?: (line: string) => void;
@@ -50,7 +52,9 @@ export function createLaunchDispatcher(
 
 	/** Why this host will not start anything in the launch's directory, or null. Specifics are for the local log only. */
 	function refusalReason(launch: LaunchRequest): string | null {
-		if (!gate.noteLaunch(launch.id, launch.launchCorrelationId, launch.cwd)) {
+		const interactive =
+			launch.agentType === "claude_code" && launch.requestedLaunchMode === "interactive_terminal";
+		if (!gate.noteLaunch(launch.id, launch.launchCorrelationId, launch.cwd, { interactive })) {
 			return "too_many_live_sessions: this host is following as many sessions as it can";
 		}
 		const verdict = gate.verdict(launch.id, launch.cwd);
@@ -172,6 +176,7 @@ export function createLaunchDispatcher(
 		return {
 			reportState: (body) => gate.reportState(body),
 			reportEvents: (events) => gate.reportEvents(launch.launchCorrelationId, events),
+			admitBridgeSpool: (sessionId) => deps.bridgeSpool?.admit(sessionId),
 		};
 	}
 

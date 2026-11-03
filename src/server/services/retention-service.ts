@@ -76,9 +76,17 @@ import {
 	or,
 	sql,
 } from "drizzle-orm";
+import { DELIVERY_RECEIPT_RETENTION_MS } from "../../shared/late-arrival.js";
 import { config } from "../config.js";
 import { getDb, getSqlite } from "../db/client.js";
-import { events, aiSessionSummaries, apiKeys, pairingCodes, settings } from "../db/schema/index.js";
+import {
+	events,
+	aiSessionSummaries,
+	apiKeys,
+	managedDeliveryReceipts,
+	pairingCodes,
+	settings,
+} from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { summaryLeaseSeconds } from "./ai/session-summary/service-limits.js";
 import { deleteRevokedDevices } from "./mobile-devices-service.js";
@@ -127,6 +135,8 @@ export interface RetentionRunResult {
 	rowsDeleted: number;
 	/** Session summaries (AGEN-69) deleted by this pass; 0 when skipped or disabled. */
 	summariesDeleted: number;
+	/** Managed-delivery receipts (AGEN-83) deleted by this pass. Pruned whether or not event retention is on. */
+	receiptsDeleted: number;
 	batches: number;
 	retentionDays: number;
 	/** true when the setting was unset/0/invalid — the pass did nothing. */
@@ -367,6 +377,54 @@ export async function deleteExpiredSummaries(
 	return { deleted, lockLost: false };
 }
 
+/**
+ * How long a managed-delivery receipt is kept: the supervisor outbox keeps an entry at most 24 h,
+ * so a replay can arrive up to a day after the original; the rest is margin.
+ */
+export const RECEIPT_RETENTION_MS = DELIVERY_RECEIPT_RETENTION_MS;
+
+/**
+ * The prune's batch select, exported so the plan test explains the very statement the prune runs.
+ * Ordered by created_at alone so both planners walk idx_managed_delivery_receipts_created_at.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+export function expiredReceiptBatchQuery(db: any, cutoff: string, limit: number) {
+	return db
+		.select({ id: managedDeliveryReceipts.id })
+		.from(managedDeliveryReceipts)
+		.where(lt(managedDeliveryReceipts.createdAt, cutoff))
+		.orderBy(asc(managedDeliveryReceipts.createdAt))
+		.limit(limit);
+}
+
+/**
+ * Deletes managed-delivery receipts (AGEN-83) older than RECEIPT_RETENTION_MS, in batches, running
+ * until a batch comes back short or MAX_BATCHES_PER_PASS batches (1,000,000 rows at the production
+ * batch size) have gone; the rest waits for the next tick. Its own loop, independent of the events
+ * retention setting and of the Postgres advisory lock: receipts are append-only and a second
+ * replica deleting the same rows just finds them gone. `created_at` is `toDbTimestamp` text on both
+ * sides, so the compare is lexicographic like the events cutoff.
+ */
+export async function pruneExpiredReceipts(now: Date = new Date()): Promise<number> {
+	const cutoff = toDbTimestamp(new Date(now.getTime() - RECEIPT_RETENTION_MS));
+	const db = getDb();
+	let deleted = 0;
+	for (let i = 0; i < MAX_BATCHES_PER_PASS; i++) {
+		const rows: Array<{ id: number }> = await expiredReceiptBatchQuery(db, cutoff, batchSize);
+		if (rows.length === 0) break;
+		await db.delete(managedDeliveryReceipts).where(
+			inArray(
+				managedDeliveryReceipts.id,
+				rows.map((r) => r.id),
+			),
+		);
+		deleted += rows.length;
+		if (rows.length < batchSize) break;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	return deleted;
+}
+
 /** How long an unredeemed pairing code is kept after it expired. */
 export const PAIRING_CODE_GRACE_MS = 24 * 60 * 60 * 1000;
 
@@ -419,6 +477,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 			durationMs: 0,
 			rowsDeleted: 0,
 			summariesDeleted: 0,
+			receiptsDeleted: 0,
 			batches: 0,
 			retentionDays: 0,
 			disabled: false,
@@ -436,6 +495,11 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 		await deleteRevokedDevices(now).catch((err) => {
 			console.error("[retention] revoked device purge failed:", err);
 		});
+		// Before the disabled early return: receipts age out even when event retention is off.
+		const receiptsDeleted = await pruneExpiredReceipts(now).catch((err) => {
+			console.error("[retention] delivery receipt prune failed:", err);
+			return 0;
+		});
 		const days = await readRetentionDays();
 		if (days <= 0) {
 			lastRun = {
@@ -444,6 +508,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 				durationMs: 0,
 				rowsDeleted: 0,
 				summariesDeleted: 0,
+				receiptsDeleted,
 				batches: 0,
 				retentionDays: 0,
 				disabled: true,
@@ -488,6 +553,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 			durationMs: finishedAtMs - startedAtMs,
 			rowsDeleted,
 			summariesDeleted,
+			receiptsDeleted,
 			batches,
 			retentionDays: days,
 			disabled: false,

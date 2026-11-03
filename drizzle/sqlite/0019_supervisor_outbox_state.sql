@@ -1,0 +1,1 @@
+ALTER TABLE `supervisors` ADD `outbox_state` text;

@@ -9,11 +9,13 @@
  * closes the client-side mirror of it.
  *
  * Registration now retries forever on any SupervisorRequestError (HTTP
- * failure from the server) with exponential backoff and jitter. Any other
- * error — a config load failure, a malformed success-body JSON parse — is
- * NOT retried; it propagates immediately and is fatal, exactly as before.
+ * failure from the server) or SupervisorNetworkError (no answer at all: the
+ * server is down or unreachable, as it is during an outage the supervisor is
+ * meant to ride out) with exponential backoff and jitter. Any other error —
+ * a config load failure, a malformed success-body JSON parse — is NOT
+ * retried; it propagates immediately and is fatal, exactly as before.
  */
-import { SupervisorRequestError } from "./report-resilience.js";
+import { SupervisorNetworkError, SupervisorRequestError } from "./report-resilience.js";
 
 export const REGISTRATION_BASE_DELAY_MS = 5_000;
 export const REGISTRATION_MAX_DELAY_MS = 5 * 60_000;
@@ -43,15 +45,19 @@ export const defaultBackoffDeps: BackoffDeps = {
 };
 
 /**
- * Retries `fn` forever on a SupervisorRequestError. `onRetryableFailure` is
- * called before each sleep so the caller can log status/statusText/body
- * error — it never decides whether to retry (that's unconditional for any
- * SupervisorRequestError). `deps` makes the delay and sleep functions
+ * Retries `fn` forever on a SupervisorRequestError or SupervisorNetworkError.
+ * `onRetryableFailure` is called before each sleep so the caller can log
+ * what happened — it never decides whether to retry (that's unconditional
+ * for those two). `deps` makes the delay and sleep functions
  * injectable so tests can run the retry loop without real timers.
  */
 export async function retryWithBackoff<T>(
 	fn: () => Promise<T>,
-	onRetryableFailure: (error: SupervisorRequestError, attempt: number, delayMs: number) => void,
+	onRetryableFailure: (
+		error: SupervisorRequestError | SupervisorNetworkError,
+		attempt: number,
+		delayMs: number,
+	) => void,
 	deps: BackoffDeps = defaultBackoffDeps,
 ): Promise<T> {
 	let attempt = 0;
@@ -59,7 +65,7 @@ export async function retryWithBackoff<T>(
 		try {
 			return await fn();
 		} catch (error) {
-			if (!(error instanceof SupervisorRequestError)) {
+			if (!(error instanceof SupervisorRequestError || error instanceof SupervisorNetworkError)) {
 				// Config or parse errors stay fatal — never retried (D10).
 				throw error;
 			}

@@ -557,6 +557,8 @@ export interface SessionEvent {
 	toolResponse: string | null;
 	rawPayload: Record<string, unknown>;
 	createdAt: string;
+	/** When the sender says the event happened; display only, omitted when unknown. */
+	occurredAt?: string;
 }
 
 export interface LiveSessionEvent {
@@ -573,6 +575,8 @@ export interface LiveSessionEvent {
 	toolResponse: string | null;
 	rawPayload: Record<string, unknown>;
 	createdAt: string;
+	/** When the sender says the event happened; display only, omitted when unknown. */
+	occurredAt?: string;
 }
 
 // API key info (never includes the actual key)
@@ -1009,6 +1013,15 @@ export interface SupervisorCapabilities {
 	};
 }
 
+/** A host's offline outbox as it last reported it. Times are ISO; counts are 0 to 10,000,000. */
+export interface SupervisorOutboxState {
+	pending: number;
+	oldestPendingAt: string | null;
+	lastFlushAt: string | null;
+	lastFlushDelivered: number;
+	lastFlushLost: number;
+}
+
 export interface SupervisorRecord {
 	id: string;
 	hostName: string;
@@ -1024,6 +1037,8 @@ export interface SupervisorRecord {
 	heartbeatLeaseExpiresAt: string;
 	/** "invalid" when the supervisor last reported that the exclude file on its host has an error; null or absent otherwise (nothing to act on, or an older supervisor). */
 	excludeRulesState?: "invalid" | null;
+	/** What the host last said about its offline outbox; absent when it holds nothing to show (or an older supervisor). */
+	outbox?: SupervisorOutboxState;
 	enrollmentState?: "pending" | "active" | "revoked";
 	createdAt: string;
 	updatedAt: string;
@@ -1128,6 +1143,12 @@ export interface ManagedSessionEventInput {
 	isNoise?: boolean;
 	providerEventType?: string | null;
 	rawPayload?: Record<string, unknown>;
+	/**
+	 * When the event happened, set by the supervisor when it replays a report it
+	 * could not deliver at the time. Display only: the server keeps it only
+	 * inside a plausible window and never uses it for ordering or any decision.
+	 */
+	occurredAt?: string | null;
 }
 
 export interface SupervisorRegistrationInput {

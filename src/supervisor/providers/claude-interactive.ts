@@ -1,12 +1,18 @@
 import { spawn } from "node:child_process";
-import type { Stats } from "node:fs";
-import { chmod, lstat, mkdir } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { chmod, mkdir } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { privilegeMetadata } from "../../shared/launch-privileges.js";
+import { writePrivateFileAtomicNoFollow } from "../../shared/private-file.js";
 import type { LaunchRequest } from "../../shared/types.js";
 import { loadSupervisorConfig, resolveHomeDir } from "../config.js";
+import {
+	SESSION_ID_PATTERN,
+	isPrivateOwnEntry,
+	isPrivateOwnStat,
+} from "../services/private-store.js";
 import type {
 	ClaudePromptAction,
 	InteractiveBridge,
@@ -24,37 +30,16 @@ import {
 	quoteShell,
 } from "./claude-shared.js";
 
+export { isPrivateOwnStat };
+
 const bridgeScriptPath = fileURLToPath(
 	new URL("../../../scripts/claude_terminal_bridge.py", import.meta.url),
 );
 
-const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const OWNER_FILE = "owner.json";
 
 function bridgeDirFor(sessionId: string) {
 	return join(resolveHomeDir(), ".agentpulse", "interactive", sessionId);
-}
-
-/** The bridge this supervisor created for the session, or null when it didn't (or the id isn't one of ours). */
-/** What lstat says about an entry that may hold a bridge: this user's, private, and the right kind (never a symlink). */
-export function isPrivateOwnStat(
-	info: Pick<Stats, "uid" | "mode" | "isSymbolicLink" | "isDirectory" | "isSocket">,
-	kind: "directory" | "socket",
-	uid: number | null,
-): boolean {
-	if (info.isSymbolicLink()) return false;
-	if (kind === "directory" ? !info.isDirectory() : !info.isSocket()) return false;
-	if (uid !== null && info.uid !== uid) return false;
-	return (info.mode & 0o077) === 0;
-}
-
-async function isPrivateOwnEntry(path: string, kind: "directory" | "socket"): Promise<boolean> {
-	try {
-		const uid = typeof process.getuid === "function" ? process.getuid() : null;
-		return isPrivateOwnStat(await lstat(path), kind, uid);
-	} catch {
-		return false;
-	}
 }
 
 /**
@@ -83,11 +68,7 @@ async function readTerminalOwner(controlDir: string): Promise<TerminalOwner | nu
 	return null;
 }
 
-async function createInteractiveBridge(
-	launch: LaunchRequest,
-	config: Awaited<ReturnType<typeof loadSupervisorConfig>>,
-	command: string[],
-) {
+async function createInteractiveBridge(launch: LaunchRequest, command: string[]) {
 	// The id becomes a directory name, so it is checked before anything is created.
 	if (!SESSION_ID_PATTERN.test(launch.launchCorrelationId)) {
 		throw new Error("The launch id can't be used as an interactive bridge name.");
@@ -97,19 +78,19 @@ async function createInteractiveBridge(
 	const configPath = join(controlDir, "bridge.json");
 	await mkdir(controlDir, { recursive: true });
 	await chmod(controlDir, 0o700);
+	// The bridge holds no credential and opens no connection: it spools its reports to disk and this
+	// supervisor sends them. The nonce only tells a report written for this launch from a stale file left
+	// in the directory by an earlier one; it is not a security control (any process of this user can read
+	// this file).
 	const bridgeConfig = {
 		session_id: launch.launchCorrelationId,
 		cwd: launch.cwd,
 		command,
 		env: buildLaunchEnv(launch),
-		server_url: config.serverUrl,
-		supervisor_id: config.id ?? "",
-		supervisor_token: config.supervisorCredential ?? null,
-		api_key: config.apiKey ?? null,
 		socket_path: socketPath,
+		launchNonce: randomBytes(16).toString("hex"),
 	};
-	await Bun.write(configPath, JSON.stringify(bridgeConfig, null, 2));
-	await chmod(configPath, 0o600);
+	writePrivateFileAtomicNoFollow(configPath, JSON.stringify(bridgeConfig, null, 2));
 	return {
 		socketPath,
 		configPath,
@@ -196,7 +177,8 @@ export async function launchClaudeInteractiveRequest(
 	const privileges = claudeLaunchPrivileges(launch);
 	const args = buildLaunchBaseArgs(launch, executable);
 	args.push("--", buildPrompt(launch));
-	const bridge = await createInteractiveBridge(launch, config, args);
+	const bridge = await createInteractiveBridge(launch, args);
+	callbacks?.admitBridgeSpool?.(launch.launchCorrelationId);
 	const bridgeCommand = ["python3", bridgeScriptPath, "--config", bridge.configPath];
 
 	const shellCommand = [

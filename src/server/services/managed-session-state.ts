@@ -1,4 +1,6 @@
 import { and, eq, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { isWithinWindow } from "../../shared/time-window.js";
+import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type {
 	ManagedSession,
 	ManagedSessionEventInput,
@@ -15,7 +17,13 @@ import {
 	users,
 } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
-import { insertNormalizedEvents } from "./event-processor.js";
+import type { NormalizedEvent } from "./event-normalizer.js";
+import {
+	type ManagedInsertDeps,
+	type ManagedInsertResult,
+	insertManagedEvents,
+	insertNormalizedEvents,
+} from "./event-processor.js";
 import { cleanMachineName } from "./machine-name.js";
 import { generateSessionName } from "./name-generator.js";
 import { ownerForNewSession } from "./session-attribution.js";
@@ -287,15 +295,45 @@ function isReservedEvent(event: ManagedSessionEventInput): boolean {
 	);
 }
 
-export async function appendManagedSessionEvents(
+/** How far back, and ahead, a supervisor-stamped occurrence time is believed (display only). */
+export const OCCURRED_AT_PAST_MS = 25 * 60 * 60 * 1000;
+export const OCCURRED_AT_FUTURE_MS = 5 * 60 * 1000;
+
+const occurredAtRejectionLogged = new Set<string>();
+
+/** Test seam: forget which supervisors already had a rejected occurrence time logged. */
+export function _resetOccurredAtRejectionLogForTest(): void {
+	occurredAtRejectionLogged.clear();
+}
+
+/**
+ * The occurrence time to store: the sender's value as normalized ISO when it
+ * parses and lies inside the accepted window, else null. A value outside the
+ * window (clock skew, a very old replay) is never an error; it is logged once
+ * per supervisor per boot, without the value.
+ */
+function acceptedOccurredAt(supervisorId: string, value: unknown, nowMs: number): string | null {
+	if (value === undefined || value === null) return null;
+	if (isWithinWindow(value, nowMs, OCCURRED_AT_PAST_MS, OCCURRED_AT_FUTURE_MS)) {
+		return new Date(parseStoredTimestamp(value as string) as number).toISOString();
+	}
+	if (!occurredAtRejectionLogged.has(supervisorId)) {
+		occurredAtRejectionLogged.add(supervisorId);
+		console.warn(JSON.stringify({ kind: "occurred_at_rejected", supervisorId }));
+	}
+	return null;
+}
+
+async function prepareManagedEvents(
 	supervisorId: string,
 	sessionId: string,
 	events: ManagedSessionEventInput[],
-) {
+): Promise<NormalizedEvent[]> {
 	await assertSupervisorCanWriteSession(supervisorId, sessionId);
 	// The whole batch is refused: one forged event poisons the rest.
 	if (events.some(isReservedEvent)) throw new ReservedEventTypeError();
-	const normalized = events.map((event) => ({
+	const nowMs = Date.now();
+	return events.map((event) => ({
 		eventType: event.eventType,
 		category: event.category,
 		source: event.source ?? (event.category === "prompt" ? "managed_control" : "launch_system"),
@@ -306,8 +344,39 @@ export async function appendManagedSessionEvents(
 		toolInput: null,
 		toolResponse: null,
 		rawPayload: event.rawPayload ?? {},
+		occurredAt: acceptedOccurredAt(supervisorId, event.occurredAt, nowMs),
 	}));
-	return insertNormalizedEvents(sessionId, normalized);
+}
+
+export async function appendManagedSessionEvents(
+	supervisorId: string,
+	sessionId: string,
+	events: ManagedSessionEventInput[],
+) {
+	return insertNormalizedEvents(
+		sessionId,
+		await prepareManagedEvents(supervisorId, sessionId, events),
+	);
+}
+
+/**
+ * The same append for a delivery that carries a delivery id: the receipt and the
+ * events are written in one transaction, and a delivery already received stores
+ * nothing (`replay: true`). `deps` is the rollback / receipt seam for tests.
+ */
+export async function appendManagedSessionDelivery(
+	supervisorId: string,
+	sessionId: string,
+	events: ManagedSessionEventInput[],
+	delivery: { deliveryId: string; bodyDigest: string },
+	deps?: Partial<ManagedInsertDeps>,
+): Promise<ManagedInsertResult> {
+	return insertManagedEvents(
+		sessionId,
+		await prepareManagedEvents(supervisorId, sessionId, events),
+		{ senderId: supervisorId, ...delivery },
+		deps,
+	);
 }
 
 export async function attachManagedSessionToLaunch(input: {

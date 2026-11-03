@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 /**
  * The one place a supervisor report about a session leaves the machine.
  *
@@ -25,9 +26,11 @@
  * in a private file next to the stamp, so a restart forgets nothing: a session
  * excluded before it stays excluded and is closed exactly once.
  *
- * A host with no rules file pays nothing for any of this. While there are no rules
- * and nothing is excluded, the gate keeps its memory in the process only (no state
- * file is created or written), and a full memory forgets its oldest session instead
+ * A host with no rules file pays nothing for any of this. While there are no rules,
+ * nothing is excluded and no interactive terminal session has been launched, the gate
+ * keeps its memory in the process only (no state file is created or written); an
+ * interactive launch is remembered on disk regardless, because its terminal bridge
+ * outlives the supervisor and has to be found again after a restart. A full memory forgets its oldest session instead
  * of refusing a launch. When rules appear the memory is saved at the next decision
  * or scan. A session is let go (its slot reusable) once a terminal state report for
  * it has been delivered; with rules in place a launch is refused for capacity only
@@ -44,24 +47,19 @@
  * The supervisor does not see AGENTPULSE_SKIP of the agent it launched; the path
  * rules are what cover it.
  */
-import {
-	constants,
-	closeSync,
-	existsSync,
-	fstatSync,
-	lstatSync,
-	openSync,
-	readFileSync,
-	realpathSync,
-} from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
 	type LoadExcludeRulesResult,
 	MAX_CWD_LENGTH,
-	checkWindowsSecurityAt,
 	evaluateExclusion,
 } from "../../shared/exclude-rules.js";
-import { SUPERVISOR_EXCLUDE_STATE_STAMP_RELATIVE_PATH } from "../../shared/hook-headers.js";
+import {
+	DELIVERY_ID_HEADER,
+	REPLAY_HEADER,
+	SUPERVISOR_EXCLUDE_STATE_STAMP_RELATIVE_PATH,
+} from "../../shared/hook-headers.js";
+import { clampEventContent } from "../../shared/managed-report-limits.js";
 import { writePrivateFileAtomicNoFollow } from "../../shared/private-file.js";
 import type {
 	ManagedSession,
@@ -70,6 +68,20 @@ import type {
 	Session,
 } from "../../shared/types.js";
 import { type RulesWatch, createRulesWatch } from "./exclude-rules-watch.js";
+import {
+	readPrivateFileNoFollow,
+	isTrustedStateFileStat as storeIsTrustedStateFileStat,
+	trustedDirectory,
+} from "./private-store.js";
+import type { OutboxEntry, OutboxSummary, ReportOutbox } from "./report-outbox.js";
+import {
+	BACKOFF_BUDGET_MS,
+	type CredentialTripwire,
+	SupervisorRequestError,
+	classifyReportFailure,
+	markCredentialHandled,
+	sessionBackoffMs,
+} from "./report-resilience.js";
 
 /** The one sentence a refused launch or control action reports, whatever the reason. */
 export const LAUNCH_REFUSED_MESSAGE = "This host doesn't allow launches in that directory.";
@@ -83,7 +95,6 @@ const GATE_STATE_VERSION = 1;
 /** A state file larger than this is not read (the bound on entries and on a directory's length is far below it). */
 const MAX_GATE_STATE_BYTES = 32 * 1024 * 1024;
 const MAX_SESSION_ID_LENGTH = 1_024;
-const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
 /** What the gate knows about one session id. */
 type SessionRecord = {
@@ -96,6 +107,8 @@ type SessionRecord = {
 	closed?: boolean;
 	/** A terminal state report (completed, failed, stopped) was delivered: it no longer needs a closing report, and its slot is free for reuse. */
 	done?: boolean;
+	/** This id is the correlation id of an interactive terminal launch this supervisor started: the only kind of id whose terminal bridge directory the spool drain may follow without being told. */
+	interactive?: boolean;
 };
 
 export type LaunchStatusBody = {
@@ -113,7 +126,19 @@ export type ControlStatusBody = {
 
 export type StateReportResult = { session: Session; managedSession: ManagedSession };
 
-export interface ReportGateDeps {
+/**
+ * What became of a report handed to the gate: `sent` (the server took it), `queued` (kept for later
+ * delivery), `excluded` (a rule covers the session: nothing left the host) or `blocked` (the rules or the
+ * gate's saved state can't be trusted: nothing left, and nothing was kept). A caller that must tell "held
+ * back, try again once the rules are valid" from "dropped for good" reads this.
+ */
+export type ReportOutcome = "sent" | "queued" | "excluded" | "blocked";
+
+/** Options for events: a stable delivery id (generated when omitted) the server dedupes on, and whether this is a late replay. */
+export type ReportEventsOptions = { deliveryId?: string; replay?: boolean };
+export type ReportStateOptions = { replay?: boolean };
+
+interface ReportGateBaseDeps {
 	/** The supervisor's request function: the gate's only way out. */
 	request: (path: string, options?: RequestInit) => Promise<unknown>;
 	supervisorId: string;
@@ -127,7 +152,43 @@ export interface ReportGateDeps {
 	rules?: RulesWatch;
 	/** How many sessions are remembered at most; defaults to a generous bound. */
 	maxTrackedSessions?: number;
+	/**
+	 * The offline outbox. Without one the gate behaves exactly as it always has: a report that can't be
+	 * delivered throws. With one, a state or events report the server can't take right now is kept
+	 * (and sent later, in order) instead.
+	 */
+	outbox?: ReportOutbox;
+	/**
+	 * Whether this session's terminal bridge is still in use (followed by the spool drain, or alive): such a
+	 * record is not forgotten to make room, since forgetting it would strand the bridge's reports.
+	 */
+	isBridgeActive?: (sessionId: string) => boolean;
+	/** Jitter and backoff draw from this; a test passes a fixed one. */
+	random?: () => number;
+	/** Runs `fn` after `ms`. The default is an unref'd timer; a test resolves it at once. */
+	schedule?: (fn: () => void, ms: number) => void;
 }
+
+/**
+ * A tripwire and the handler that acts on its confirmation come together: a gate that counts credential
+ * rejections must say what happens when they are confirmed.
+ */
+export type CredentialDeps =
+	| { credentialTripwire?: undefined; onCredentialRejected?: undefined }
+	| {
+			/** The one tripwire a rejected credential feeds; shared with the heartbeat and the bridge drain. */
+			credentialTripwire: CredentialTripwire;
+			/** Called once the tripwire confirms the credential was rejected (the supervisor then disposes its runtimes and exits). */
+			onCredentialRejected: () => void | Promise<void>;
+	  };
+
+export type ReportGateDeps = ReportGateBaseDeps & CredentialDeps;
+
+/** Most queued reports sent for one session, and in all, by one flush. A flush every 3 s makes about 33 requests a second at most. */
+export const FLUSH_MAX_PER_SESSION = 50;
+export const FLUSH_MAX_PER_PASS = 100;
+/** After the server is reachable again a flush waits up to this long (random), so a fleet doesn't reconnect in step. */
+const RECONNECT_JITTER_MS = 5_000;
 
 /** What may leave for an id: "send" it, "excluded" (drop; this session is covered by a rule or its directory is unknown), "blocked" (drop; the rules file is invalid). */
 export type ReportVerdict = "send" | "excluded" | "blocked" | "refused";
@@ -145,7 +206,14 @@ export interface ReportGate {
 	 * Neither is forgotten to make room for the other, so a launch the gate accepts can always be judged by
 	 * both ids. False (a capacity refusal, or an unusable id or directory) when it must be refused.
 	 */
-	noteLaunch(launchId: string, correlationId: string, cwd: string): boolean;
+	noteLaunch(
+		launchId: string,
+		correlationId: string,
+		cwd: string,
+		opts?: { interactive?: boolean },
+	): boolean;
+	/** Whether this id is the correlation id of an interactive launch this supervisor started (persisted, so it survives a restart). */
+	isInteractiveLaunch(id: string): boolean;
 	/**
 	 * Whether data about this id may leave now. Action handlers ask before they execute anything, with
 	 * the directory the action names (never trusted over the one known): "excluded" when either is covered
@@ -156,8 +224,15 @@ export interface ReportGate {
 	/** For an action that is not about a session: judged by the directory it names alone. */
 	verdictForDirectory(cwd: string | undefined): ReportVerdict;
 	rulesState(): "none" | "ok" | "invalid";
-	reportState(body: ManagedSessionStateInput): Promise<StateReportResult>;
-	reportEvents(sessionId: string, events: ManagedSessionEventInput[]): Promise<void>;
+	reportState(
+		body: ManagedSessionStateInput,
+		opts?: ReportStateOptions,
+	): Promise<StateReportResult & { outcome: ReportOutcome }>;
+	reportEvents(
+		sessionId: string,
+		events: ManagedSessionEventInput[],
+		opts?: ReportEventsOptions,
+	): Promise<ReportOutcome>;
 	reportLaunchStatus(launchId: string, body: LaunchStatusBody): Promise<void>;
 	/** The one fixed status for a launch this host will not start, sent whatever the reason and whatever the rules say. */
 	refuseLaunch(launchId: string): Promise<void>;
@@ -172,6 +247,15 @@ export interface ReportGate {
 	): Promise<void>;
 	/** Refreshes the rules (also following moved symlinks), writes the stamp, and closes any reported session a rule now covers. Called on a timer. */
 	scan(): Promise<void>;
+	/** Sends what the offline outbox holds, oldest first, a bounded amount per call. Called on a timer; a no-op without an outbox or while the server is unreachable. */
+	flush(): Promise<void>;
+	/** The server could not be reached: later reports are queued without trying it. Cleared by the next sign of life. */
+	noteServerUnreachable(): void;
+	/** The server answered (a heartbeat, a send): reports go to it again, and the credential tripwire is cleared. */
+	noteServerReachable(): void;
+	/** The server answered with an error status (a heartbeat or a send): it can be reached, so the offline latch clears; the credential tripwire is not reset. */
+	noteServerContact(): void;
+	isOffline(): boolean;
 }
 
 /** What a provider reads from a state report that was dropped: nothing it can use, but nothing that makes it throw. */
@@ -180,14 +264,36 @@ const DROPPED_STATE_RESULT = {
 	managedSession: {},
 } as unknown as StateReportResult;
 
+/** How long after a flush the host keeps saying what it delivered and lost. */
+const OUTBOX_REPORT_AFTER_FLUSH_MS = 24 * 60 * 60 * 1000;
+
 /**
- * The body of a heartbeat, given what the gate says about the rules: only "invalid" is said (it is the one
- * state somebody has to act on). Every other state sends no body, so the wire never tells the server
- * whether a host uses exclusion; the server reads a heartbeat with no body as "nothing to act on" and
- * clears an earlier warning.
+ * What the heartbeat says about the offline outbox: only while it holds something, or within a day of a
+ * flush (so a person can see a host has caught up). Otherwise nothing, and the server clears what it had.
  */
-export function heartbeatBody(state: "none" | "ok" | "invalid"): string | undefined {
-	return state === "invalid" ? JSON.stringify({ excludeRulesState: "invalid" }) : undefined;
+export function heartbeatOutbox(summary: OutboxSummary, nowMs: number): OutboxSummary | undefined {
+	if (summary.pending > 0) return summary;
+	const flushedAt = summary.lastFlushAt ? Date.parse(summary.lastFlushAt) : Number.NaN;
+	return Number.isFinite(flushedAt) && nowMs - flushedAt <= OUTBOX_REPORT_AFTER_FLUSH_MS
+		? summary
+		: undefined;
+}
+
+/**
+ * The body of a heartbeat. Exclusion says only "invalid" (the one state somebody has to act on); every other
+ * state is "none", so the wire never tells the server whether a host uses exclusion. With nothing to say
+ * about either, there is no body, which the server reads as "nothing to act on" and clears earlier ones.
+ * A body always carries `excludeRulesState`, so an older flag is cleared by a newer body too.
+ */
+export function heartbeatBody(
+	state: "none" | "ok" | "invalid",
+	outbox?: OutboxSummary,
+): string | undefined {
+	if (state !== "invalid" && !outbox) return undefined;
+	return JSON.stringify({
+		excludeRulesState: state === "invalid" ? "invalid" : "none",
+		...(outbox ? { outbox } : {}),
+	});
 }
 
 export function launchRefusalBody() {
@@ -214,11 +320,6 @@ function closingStateBody(sessionId: string) {
 	};
 }
 
-function isMissing(error: unknown): boolean {
-	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return code === "ENOENT" || code === "ENOTDIR";
-}
-
 /** A state report that says the session has ended. */
 function isTerminalReport(body: ManagedSessionStateInput): boolean {
 	return (
@@ -230,36 +331,15 @@ function isTerminalReport(body: ManagedSessionStateInput): boolean {
 	);
 }
 
-type DirectoryStat = { isDirectory(): boolean; uid: number; mode: number };
-type FileStat = { isFile(): boolean; nlink: number; size: number; uid: number; mode: number };
-
 /** A directory this account owns that nobody else can write into (POSIX; Windows is judged by its ACL instead). */
-export function isTrustedDirectoryStat(st: DirectoryStat, uid: number | undefined): boolean {
-	if (!st.isDirectory()) return false;
-	if (uid !== undefined && st.uid !== uid) return false;
-	return (st.mode & 0o022) === 0;
-}
+export { isTrustedDirectoryStat } from "./private-store.js";
 
-/** A plain file with one link, within the size bound, that only this account can read or write (POSIX). */
-export function isTrustedStateFileStat(st: FileStat, uid: number | undefined): boolean {
-	return (
-		st.isFile() &&
-		st.nlink === 1 &&
-		st.size <= MAX_GATE_STATE_BYTES &&
-		(uid === undefined || st.uid === uid) &&
-		(st.mode & 0o077) === 0
-	);
-}
-
-function trustedDirectory(dir: string): boolean {
-	try {
-		const st = lstatSync(dir);
-		if (process.platform === "win32")
-			return st.isDirectory() && checkWindowsSecurityAt(dir) === null;
-		return isTrustedDirectoryStat(st, process.getuid?.());
-	} catch {
-		return false;
-	}
+/** A plain file with one link, within the gate's state-file size bound, that only this account can read or write (POSIX). */
+export function isTrustedStateFileStat(
+	st: Parameters<typeof storeIsTrustedStateFileStat>[0],
+	uid: number | undefined,
+): boolean {
+	return storeIsTrustedStateFileStat(st, uid, MAX_GATE_STATE_BYTES);
 }
 
 /**
@@ -298,14 +378,106 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	let persistWarned = false;
 	let skipWarned = false;
 
-	const post = (path: string, body: unknown) =>
-		deps.request(`${base}${path}`, { method: "POST", body: JSON.stringify(body) });
+	const outbox = deps.outbox;
+	const tripwire = deps.credentialTripwire;
+	const random = deps.random ?? Math.random;
+	const schedule =
+		deps.schedule ??
+		((fn: () => void, ms: number) => {
+			const timer = setTimeout(fn, ms);
+			timer.unref?.();
+		});
+
+	/** The server could not be reached; reports are queued behind this until something gets through. */
+	let offline = false;
+	/** The server has just come back: the next flush waits a random moment first. */
+	let settling = false;
+	let flushOpen = false;
+	/** Something in front of the server (a proxy, an auth edge) is refusing everything: no pass sends before this. */
+	let edgeHoldUntilMs = 0;
+	let flushing: Promise<void> | null = null;
+	/** A session whose sends failed waits before the next one: until when, and how many failures in a row. */
+	const backoffs = new Map<string, { untilMs: number; failures: number }>();
+	/** How long a queue head has waited on the server's back-pressure in all. */
+	const backoffBudgets = new Map<string, { seq: number; waitedMs: number }>();
+	const chains = new Map<string, Promise<unknown>>();
+	/** Network failures on replay sends so far in this pass: the first backs its session off, a second means the server is gone. */
+	let passNetworkFailures = 0;
+	/** Moves on whenever the server took a send; a stuck head counts only if it moved since the head last failed. A heartbeat answering proves nothing about the sends. */
+	let successEpoch = 0;
+	const networkFailEpochs = new Map<string, number>();
+
+	function markOffline() {
+		offline = true;
+	}
+	function markReachable() {
+		if (!offline) return;
+		offline = false;
+		settling = true;
+	}
+	/** The server was reached and took a request: the credential is good and the path is open. */
+	function onContact() {
+		successEpoch++;
+		tripwire?.reset();
+		markReachable();
+	}
+
+	async function handleCredential(error: unknown) {
+		markCredentialHandled(error);
+		if (!tripwire || !deps.onCredentialRejected) return;
+		if (tripwire.record() === "confirmed") {
+			log("[supervisor] the server rejected this supervisor's credential twice");
+			await deps.onCredentialRejected();
+		}
+	}
+
+	/**
+	 * Every request that leaves the gate. `headers` is only ever the delivery id and replay marker. A
+	 * success clears the credential tripwire and the offline latch; a credential rejection feeds the
+	 * tripwire (which decides whether it ends the supervisor).
+	 */
+	async function sendText(path: string, text: string, headers?: Record<string, string>) {
+		try {
+			const result = await deps.request(`${base}${path}`, {
+				method: "POST",
+				body: text,
+				...(headers ? { headers } : {}),
+			});
+			onContact();
+			return result;
+		} catch (error) {
+			// An answer of any kind (an error status included) shows the server can be reached; only a 2xx
+			// shows the credential is good.
+			if (error instanceof SupervisorRequestError) markReachable();
+			if (classifyReportFailure(error) === "credential") await handleCredential(error);
+			throw error;
+		}
+	}
+
+	/** Runs `fn` after everything already running for this session, so its reports, replays and purge never interleave. */
+	function serialize<T>(id: string, fn: () => Promise<T>): Promise<T> {
+		if (!outbox) return fn();
+		const previous = chains.get(id) ?? Promise.resolve();
+		const next = previous.catch(() => undefined).then(fn);
+		chains.set(id, next);
+		const cleanup = () => {
+			if (chains.get(id) === next) chains.delete(id);
+		};
+		next.then(cleanup, cleanup);
+		return next;
+	}
+
+	const post = (path: string, body: unknown) => sendText(path, JSON.stringify(body));
+	const replayHeader = (replay: boolean | undefined): Record<string, string> =>
+		replay ? { [REPLAY_HEADER]: "1" } : {};
 
 	const isLive = (rec: SessionRecord) =>
 		rec.reported === true && rec.closed !== true && rec.done !== true;
 
 	/** Whether any session is excluded: that exclusion must outlive a restart, so from then on the gate saves whether or not rules exist. */
 	let anyExcluded = false;
+	/** Whether any session is an interactive launch: that must be remembered too. */
+	let anyInteractive = false;
 	/** The memory changed while saving was skipped (no rules, nothing excluded); the next scan with rules in place saves it. */
 	let unsaved = false;
 
@@ -315,11 +487,19 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		return live;
 	}
 
+	/** An interactive launch whose terminal bridge is still in use: forgetting it would strand the bridge's reports. */
+	function protectedBridge(id: string, rec: SessionRecord): boolean {
+		return rec.interactive === true && deps.isBridgeActive?.(id) === true;
+	}
+
+	/** A session with reports queued is not forgotten: its rules and its closing report still need the gate's memory. */
+	const hasQueued = (id: string) => outbox?.hasPending(id) === true;
+
 	/** Makes room for one more session by forgetting one that no longer needs the gate (never one in `keep`); false when there is none. */
 	function evictOne(keep: readonly string[]): boolean {
 		let fallback: string | undefined;
 		for (const [id, rec] of sessions) {
-			if (isLive(rec) || keep.includes(id)) continue;
+			if (isLive(rec) || keep.includes(id) || protectedBridge(id, rec) || hasQueued(id)) continue;
 			if (!rec.excluded) {
 				sessions.delete(id);
 				return true;
@@ -345,7 +525,9 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			if (currentRules().state !== "none") {
 				if (liveCount() >= maxTracked) return undefined;
 			} else {
-				const oldest = [...sessions.keys()].find((key) => !keep.includes(key));
+				const oldest = [...sessions].find(
+					([key, rec]) => !keep.includes(key) && !protectedBridge(key, rec) && !hasQueued(key),
+				)?.[0];
 				if (oldest !== undefined) sessions.delete(oldest);
 			}
 		}
@@ -371,7 +553,9 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	 */
 	function persist(state: LoadExcludeRulesResult["state"] = lastState) {
 		if (!deps.home) return;
-		if (!anyExcluded && state === "none") {
+		// A host that never used exclusion keeps nothing on disk, with one exception: an interactive terminal
+		// launch has to be remembered across a restart, because its bridge outlives the supervisor.
+		if (!anyExcluded && !anyInteractive && state === "none") {
 			unsaved = true;
 			return;
 		}
@@ -411,49 +595,15 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		| { kind: "ok"; entries: [string, SessionRecord][] }
 		| { kind: "untrusted"; why: string } {
 		if (!deps.home) return { kind: "absent" };
-		const dir = dirname(statePath);
+		const found = readPrivateFileNoFollow(statePath, MAX_GATE_STATE_BYTES);
+		if (found.kind !== "ok") return found;
 		try {
-			lstatSync(dir);
-		} catch (error) {
-			return isMissing(error)
-				? { kind: "absent" }
-				: { kind: "untrusted", why: "its directory cannot be inspected" };
-		}
-		if (!trustedDirectory(dir)) {
-			// Nothing in a directory others can write into is believed; no file there is no problem (nothing is saved there either).
-			try {
-				lstatSync(statePath);
-			} catch (error) {
-				return isMissing(error)
-					? { kind: "absent" }
-					: { kind: "untrusted", why: "its directory is not private to this account" };
-			}
-			return { kind: "untrusted", why: "its directory is not private to this account" };
-		}
-		let fd: number;
-		try {
-			fd = openSync(statePath, constants.O_RDONLY | O_NOFOLLOW);
-		} catch (error) {
-			return isMissing(error)
-				? { kind: "absent" }
-				: { kind: "untrusted", why: "it cannot be opened as a plain file" };
-		}
-		try {
-			const st = fstatSync(fd);
-			const trusted =
-				process.platform === "win32"
-					? st.isFile() && st.nlink === 1 && st.size <= MAX_GATE_STATE_BYTES
-					: isTrustedStateFileStat(st, process.getuid?.());
-			if (!trusted)
-				return { kind: "untrusted", why: "it is not a private plain file of this account" };
-			const entries = readSavedSessions(JSON.parse(readFileSync(fd, "utf-8")));
+			const entries = readSavedSessions(JSON.parse(found.text));
 			return entries === null
 				? { kind: "untrusted", why: "it is not a state file this version understands" }
 				: { kind: "ok", entries };
 		} catch {
 			return { kind: "untrusted", why: "it could not be read" };
-		} finally {
-			closeSync(fd);
 		}
 	}
 
@@ -479,6 +629,7 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			for (const [id, rec] of found.entries.slice(-maxTracked)) {
 				sessions.set(id, rec);
 				if (rec.excluded) anyExcluded = true;
+				if (rec.interactive) anyInteractive = true;
 			}
 		}
 	}
@@ -519,11 +670,24 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		return true;
 	}
 
-	function noteLaunch(launchId: string, correlationId: string, cwd: string): boolean {
-		return (
+	function noteLaunch(
+		launchId: string,
+		correlationId: string,
+		cwd: string,
+		opts?: { interactive?: boolean },
+	): boolean {
+		const noted =
 			noteCwd(launchId, cwd, [correlationId]) &&
-			noteCwd(correlationId, cwd, [launchId, correlationId])
-		);
+			noteCwd(correlationId, cwd, [launchId, correlationId]);
+		if (noted && opts?.interactive) {
+			const rec = sessions.get(correlationId);
+			if (rec && !rec.interactive) {
+				rec.interactive = true;
+				anyInteractive = true;
+				persist(currentRules().state);
+			}
+		}
+		return noted;
 	}
 
 	function markExcluded(id: string | null | undefined) {
@@ -660,35 +824,373 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		await post(`/control-actions/${actionId}/status`, controlRefusalBody());
 	}
 
+	// ── offline outbox ──
+
+	/** A report goes behind what is already queued when the server is unreachable, the session has queued reports (order!), or the outbox has not yet listed what an earlier run left. */
+	function queueBehind(id: string): boolean {
+		if (!outbox?.enabled) return false;
+		return offline || !outbox.listed() || outbox.hasPending(id);
+	}
+
+	function keep(
+		id: string,
+		kind: "state" | "events",
+		text: string,
+		attempted: boolean,
+		deliveryId: string | undefined,
+		cause?: unknown,
+	): { outcome: "queued" } {
+		const kept = outbox?.append(id, { kind, body: text, attempted, deliveryId });
+		if (kept === "queued") return { outcome: "queued" };
+		// Nothing could keep it: the caller is told, as it would be without an outbox.
+		throw cause ?? new Error("The offline outbox couldn't keep this report.");
+	}
+
+	/** The wait before this session's next send after a failure; a non-escalating one (back-pressure) doesn't grow the next wait. */
+	function noteSessionFailure(id: string, error: unknown, escalate: boolean): number {
+		const previous = backoffs.get(id) ?? { untilMs: 0, failures: 0 };
+		const retryAfter = error instanceof SupervisorRequestError ? error.retryAfterMs : undefined;
+		const wait = escalate
+			? sessionBackoffMs(previous.failures, retryAfter, random)
+			: Math.max(retryAfter ?? 0, 1_000);
+		backoffs.set(id, {
+			untilMs: now() + wait,
+			failures: previous.failures + (escalate ? 1 : 0),
+		});
+		return wait;
+	}
+
+	/** Sends a state or events report now, or keeps it when the server can't take it. */
+	async function deliver(
+		id: string,
+		kind: "state" | "events",
+		path: string,
+		text: string,
+		headers: Record<string, string> | undefined,
+		deliveryId?: string,
+	): Promise<{ outcome: "sent"; result: unknown } | { outcome: "queued" }> {
+		if (queueBehind(id)) return keep(id, kind, text, false, deliveryId);
+		try {
+			const result = await sendText(path, text, headers);
+			backoffs.delete(id);
+			return { outcome: "sent", result };
+		} catch (error) {
+			if (!outbox?.enabled) throw error;
+			const failure = classifyReportFailure(error);
+			// A 401 or 403 that isn't the server's own credential wording comes from something in front of it:
+			// the report is kept as back-pressure, and the whole flush holds off, as for a queued one.
+			const edge = failure === "stop" && isEdgeRejection(error);
+			if (failure !== "network" && failure !== "server" && failure !== "backoff" && !edge)
+				throw error;
+			if (failure === "network") markOffline();
+			else {
+				const wait = noteSessionFailure(id, error, failure === "server");
+				if (edge) edgeHoldUntilMs = now() + wait;
+			}
+			return keep(id, kind, text, true, deliveryId, error);
+		}
+	}
+
+	/** A 401 or 403 that isn't the server's own credential rejection. */
+	function isEdgeRejection(error: unknown): boolean {
+		return (
+			error instanceof SupervisorRequestError && (error.status === 401 || error.status === 403)
+		);
+	}
+
+	/** Whether the server has a record of this session from us: events for one it has never heard of can't be stored. */
+	const serverKnows = (id: string) => sessions.get(id)?.reported === true;
+
+	/**
+	 * Sends the session's oldest queued state report ahead of the events before it, as it is: it is the one
+	 * that creates the session on a server with no row for it, and the server reads a creating report
+	 * differently from a later one (a title names the session, an agent type sticks), so it is neither folded
+	 * nor reordered with the reports after it, which stay queued in their order.
+	 */
+	async function sendCreator(
+		id: string,
+		creator: OutboxEntry,
+	): Promise<"sent" | "network" | "failed"> {
+		try {
+			await sendText("/managed-session-state", creator.body, replayHeader(true));
+		} catch (error) {
+			if (classifyReportFailure(error) === "network") {
+				markOffline();
+				return "network";
+			}
+			return "failed";
+		}
+		outbox?.remove(id, creator.seq, "delivered");
+		markReported(id, terminalOf(creator.body));
+		backoffs.delete(id);
+		backoffBudgets.delete(id);
+		return "sent";
+	}
+
+	/**
+	 * What to do with a queue head whose send failed. `continue` goes on to the next entry, `next` leaves
+	 * this session for the next pass, `all` ends the pass.
+	 */
+	async function afterFailure(
+		id: string,
+		head: OutboxEntry,
+		error: unknown,
+	): Promise<"continue" | "next" | "all"> {
+		if (!outbox) return "next";
+		const failure = classifyReportFailure(error);
+		let network = failure === "network";
+		if (failure === "credential") {
+			// A rejection the tripwire has not confirmed (the first, or any over plain http to a non-local server,
+			// where none is ever acted on): the entry stays and is not counted against, and the session waits out
+			// a backoff instead of being tried again by the next flush 3 s later.
+			noteSessionFailure(id, error, true);
+			return "next";
+		}
+		if (failure === "session") {
+			outbox.purge(id, { countLost: true });
+			return "next";
+		}
+		if (failure === "entry") {
+			outbox.remove(id, head.seq, "lost");
+			return "continue";
+		}
+		if (failure === "other") {
+			log(
+				`[supervisor] a queued report couldn't be sent for a local reason; will retry: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return "next";
+		}
+		const status = error instanceof SupervisorRequestError ? error.status : 0;
+		// A 500 for events of a session the server has no row for yet: the state report that creates it may be
+		// queued behind them, so it goes first.
+		const missingRow =
+			failure === "server" && status === 500 && head.kind !== "state" && !serverKnows(id);
+		if (missingRow) {
+			const creator = outbox.queuedStates(id)[0];
+			if (creator) {
+				const result = await sendCreator(id, creator);
+				if (result === "sent") return "continue";
+				if (result === "network") network = true;
+			}
+		}
+		// No answer to a replay send. One stuck entry must not stall everyone else's replay, and a genuine
+		// outage must cost nothing: the first such failure in a pass backs this session off without counting
+		// it and moves on; a second means the server is gone, so the pass ends and the gate goes offline.
+		if (network && ++passNetworkFailures >= 2) {
+			markOffline();
+			return "all";
+		}
+		// A 401 or 403 that isn't the server's own credential wording comes from something in front of it (a
+		// proxy, an auth edge, a captive portal) and says nothing about this report.
+		const edge = failure === "stop" && isEdgeRejection(error);
+		// The server's own back-pressure, those, and a row-less 500 are waiting, not failing. They count only
+		// once a head has waited longer than the budget.
+		const waiting = network || failure === "backoff" || missingRow || edge;
+		let counts = !waiting;
+		if (counts) {
+			noteSessionFailure(id, error, true);
+		} else {
+			const wait = noteSessionFailure(id, error, network || missingRow || edge);
+			const budget = backoffBudgets.get(id);
+			const spent = (budget?.seq === head.seq ? budget.waitedMs : 0) + wait;
+			backoffBudgets.set(id, { seq: head.seq, waitedMs: spent });
+			counts = spent > BACKOFF_BUDGET_MS;
+			if (network) {
+				// Counts only if the server took a send since this head last failed: a heartbeat can answer while
+				// every replay times out, which is the host's connection, not this entry.
+				const movedOn = successEpoch > (networkFailEpochs.get(id) ?? -1);
+				networkFailEpochs.set(id, successEpoch);
+				counts = counts && movedOn;
+			}
+			// The edge is in front of every session: the whole pass waits, not just this one.
+			if (edge) edgeHoldUntilMs = now() + wait;
+		}
+		const verdict = outbox.recordFailure(id, head.seq, now(), { counts });
+		if (verdict === "poisoned") {
+			log("[supervisor] a queued report kept failing and was dropped");
+			backoffBudgets.delete(id);
+			return "continue";
+		}
+		return edge ? "all" : "next";
+	}
+
+	function terminalOf(body: string): boolean | undefined {
+		try {
+			return isTerminalReport(JSON.parse(body) as ManagedSessionStateInput);
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** One send for a session, on its chain: judge, take the head, send it, settle the answer. */
+	async function flushStep(id: string, budget: { left: number }): Promise<"sent" | "next" | "all"> {
+		if (!outbox) return "next";
+		const verdict = decide(id);
+		if (verdict === "blocked") return "all";
+		if (verdict === "excluded") {
+			outbox.purge(id);
+			await closeIfNeeded(id);
+			return "next";
+		}
+		if (verdict !== "send") return "next";
+		const wait = backoffs.get(id);
+		if (wait && now() < wait.untilMs) return "next";
+		const head = outbox.head(id);
+		if (head === null || head === "held") return "next";
+		if (head.kind !== "state" && !outbox.markAttempted(id, head.seq)) return "next";
+		budget.left--;
+		try {
+			if (head.kind === "state") {
+				await sendText("/managed-session-state", head.body, replayHeader(true));
+			} else {
+				await sendText(`/managed-sessions/${id}/events`, head.body, {
+					...(head.deliveryId ? { [DELIVERY_ID_HEADER]: head.deliveryId } : {}),
+					...replayHeader(true),
+				});
+			}
+		} catch (error) {
+			const next = await afterFailure(id, head, error);
+			return next === "continue" ? "sent" : next;
+		}
+		outbox.remove(id, head.seq, "delivered");
+		markReported(id, head.kind === "state" ? terminalOf(head.body) : undefined);
+		backoffs.delete(id);
+		backoffBudgets.delete(id);
+		return "sent";
+	}
+
+	/**
+	 * One session's turn in a flush: its sends, one at a time, up to its share. The session's chain is taken
+	 * for each send, not for the whole turn, so a live report for it waits for at most one send.
+	 */
+	async function flushSession(id: string, budget: { left: number }): Promise<"next" | "all"> {
+		let sentHere = 0;
+		while (sentHere < FLUSH_MAX_PER_SESSION && budget.left > 0) {
+			const step = await serialize(id, () => flushStep(id, budget));
+			if (step === "sent") {
+				sentHere++;
+				continue;
+			}
+			return step;
+		}
+		return "next";
+	}
+
+	async function flushPass(): Promise<void> {
+		if (!outbox?.enabled || offline) return;
+		if (now() < edgeHoldUntilMs) return;
+		if (settling && outbox.sessions().length > 0) {
+			settling = false;
+			await new Promise<void>((resolve) =>
+				schedule(resolve, Math.round(random() * RECONNECT_JITTER_MS)),
+			);
+			if (offline) return;
+		}
+		outbox.ageOut(now());
+		if (!flushOpen) {
+			outbox.beginFlush();
+			flushOpen = true;
+		}
+		for (const dir of outbox.unknownDirs()) outbox.purgeDir(dir);
+		const budget = { left: FLUSH_MAX_PER_PASS };
+		passNetworkFailures = 0;
+		for (const id of [...networkFailEpochs.keys()]) {
+			if (!outbox.hasPending(id)) networkFailEpochs.delete(id);
+		}
+		for (const id of outbox.sessions()) {
+			if (budget.left <= 0 || offline) break;
+			if ((await flushSession(id, budget)) === "all") break;
+		}
+		if (flushOpen && outbox.summary().pending === 0) {
+			outbox.endFlush(new Date(now()).toISOString());
+			flushOpen = false;
+		}
+	}
+
+	function flush(): Promise<void> {
+		if (flushing) return flushing;
+		flushing = flushPass().finally(() => {
+			flushing = null;
+		});
+		return flushing;
+	}
+
 	checkStateFile();
 
 	return {
 		noteCwd: (id, cwd) => noteCwd(id, cwd),
 		noteLaunch,
+		isInteractiveLaunch: (id) => sessions.get(id)?.interactive === true,
 		verdict: decide,
 		verdictForDirectory: decideDirectory,
 		rulesState: () => currentRules().state,
 
-		async reportState(body) {
+		async reportState(body, opts) {
 			const id = body.sessionId;
-			const verdict = decide(id);
-			if (verdict === "send") {
-				const result = (await post("/managed-session-state", body)) as StateReportResult;
-				markReported(id, isTerminalReport(body));
-				return result;
-			}
-			if (verdict === "excluded") await closeIfNeeded(id);
-			return DROPPED_STATE_RESULT;
+			return serialize(id, async () => {
+				const verdict = decide(id);
+				if (verdict === "send") {
+					const headers = replayHeader(opts?.replay);
+					const delivery = await deliver(
+						id,
+						"state",
+						"/managed-session-state",
+						JSON.stringify(body),
+						Object.keys(headers).length > 0 ? headers : undefined,
+					);
+					if (delivery.outcome === "queued") return { ...DROPPED_STATE_RESULT, outcome: "queued" };
+					markReported(id, isTerminalReport(body));
+					return {
+						...((delivery.result as StateReportResult | undefined) ?? DROPPED_STATE_RESULT),
+						outcome: "sent",
+					};
+				}
+				if (verdict === "excluded") {
+					if (outbox?.hasPending(id)) outbox.purge(id);
+					await closeIfNeeded(id);
+				}
+				// A copy: the shared dropped result is never written to.
+				return {
+					...DROPPED_STATE_RESULT,
+					outcome: verdict === "excluded" ? "excluded" : "blocked",
+				};
+			});
 		},
 
-		async reportEvents(sessionId, events) {
-			const verdict = decide(sessionId);
-			if (verdict === "send") {
-				await post(`/managed-sessions/${sessionId}/events`, { events });
-				markReported(sessionId);
-			} else if (verdict === "excluded") {
-				await closeIfNeeded(sessionId);
-			}
+		async reportEvents(sessionId, events, opts) {
+			return serialize(sessionId, async () => {
+				const verdict = decide(sessionId);
+				if (verdict === "send") {
+					// One body, built once: a resend of the same delivery id carries the same bytes.
+					const stampedAt = new Date(now()).toISOString();
+					const text = JSON.stringify({
+						events: events.map((event) => ({
+							...event,
+							// What the server would refuse (an over-long content) is cut here, not lost with its batch.
+							content: clampEventContent(event.content),
+							occurredAt: event.occurredAt ?? stampedAt,
+						})),
+					});
+					const deliveryId = opts?.deliveryId ?? randomUUID();
+					const delivery = await deliver(
+						sessionId,
+						"events",
+						`/managed-sessions/${sessionId}/events`,
+						text,
+						{ [DELIVERY_ID_HEADER]: deliveryId, ...replayHeader(opts?.replay) },
+						deliveryId,
+					);
+					if (delivery.outcome === "queued") return "queued";
+					markReported(sessionId);
+					return "sent";
+				}
+				if (verdict === "excluded") {
+					if (outbox?.hasPending(sessionId)) outbox.purge(sessionId);
+					await closeIfNeeded(sessionId);
+					return "excluded";
+				}
+				return "blocked";
+			});
 		},
 
 		async reportLaunchStatus(launchId, body) {
@@ -719,9 +1221,28 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			if (state.state === "invalid") return;
 			for (const [sessionId, rec] of [...sessions]) {
 				if (!isLive(rec)) continue;
-				if (judge(sessionId, state) === "excluded") await closeIfNeeded(sessionId);
+				if (judge(sessionId, state) === "excluded") {
+					await serialize(sessionId, () => closeIfNeeded(sessionId));
+				}
+			}
+			// What the outbox holds for a session a rule now covers goes too, held entries included.
+			for (const sessionId of outbox?.sessions() ?? []) {
+				if (judge(sessionId, state) !== "excluded") continue;
+				await serialize(sessionId, async () => {
+					outbox?.purge(sessionId);
+					await closeIfNeeded(sessionId);
+				});
 			}
 		},
+
+		flush,
+		noteServerUnreachable: markOffline,
+		noteServerReachable() {
+			tripwire?.reset();
+			markReachable();
+		},
+		noteServerContact: markReachable,
+		isOffline: () => offline,
 	};
 }
 
@@ -744,6 +1265,7 @@ function readSavedSessions(parsed: unknown): [string, SessionRecord][] | null {
 		if (entry.reported === true) rec.reported = true;
 		if (entry.closed === true) rec.closed = true;
 		if (entry.done === true) rec.done = true;
+		if (entry.interactive === true) rec.interactive = true;
 		out.push([id, rec]);
 	}
 	return out;

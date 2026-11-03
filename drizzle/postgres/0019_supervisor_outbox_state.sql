@@ -1,0 +1,1 @@
+ALTER TABLE "supervisors" ADD COLUMN "outbox_state" text;

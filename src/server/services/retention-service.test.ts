@@ -8,13 +8,16 @@ import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import "./ai/__test_db.js";
-import { describePostgresOnly, describeSqliteOnly } from "../test-utils/backend.js";
+import { describePostgresOnly, describeSqliteOnly, itSqliteOnly } from "../test-utils/backend.js";
 
 const { eq, sql } = await import("drizzle-orm");
 const { config } = await import("../config.js");
 const { getDb, getSqlite, initializeDatabase } = await import("../db/client.js");
 const { withTransaction } = await import("../db/with-transaction.js");
-const { events, sessions, settings } = await import("../db/schema/index.js");
+const { events, managedDeliveryReceipts, sessions, settings } = await import(
+	"../db/schema/index.js"
+);
+const { seedReceipts } = await import("../test-utils/receipt-fixtures.js");
 const { upsertSetting } = await import("./settings-service.js");
 const { getSearchBackend, __resetSearchBackendForTests } = await import("./search/index.js");
 const { toDbTimestamp } = await import("./util/db-time.js");
@@ -26,6 +29,8 @@ const {
 	getRetentionLimits,
 	PG_RETENTION_LOCK_ID,
 	deleteExpiredSummaries,
+	RECEIPT_RETENTION_MS,
+	pruneExpiredReceipts,
 } = await import("./retention-service.js");
 
 beforeAll(() => {
@@ -605,6 +610,102 @@ describe("retention of session summaries (TC-5.45, 5.56, 5.57)", () => {
 				await holder.end({ timeout: 2 });
 			}
 		}, 60_000);
+	});
+});
+
+describe("managed-delivery receipts (AGEN-83)", () => {
+	const at = (offsetMs: number) => toDbTimestamp(new Date(Date.now() + offsetMs));
+	const receiptCount = async () => (await getDb().select().from(managedDeliveryReceipts)).length;
+
+	async function seedReceipt(sessionId: string, key: string, createdAt: string) {
+		await getDb().insert(managedDeliveryReceipts).values({ sessionId, receiptKey: key, createdAt });
+	}
+
+	test("receipts are pruned even when event retention is off, and the run reports receiptsDeleted", async () => {
+		await seedSession("r1");
+		await seedReceipt("r1", "old", at(-RECEIPT_RETENTION_MS - 60_000));
+		await seedReceipt("r1", "fresh", at(-RECEIPT_RETENTION_MS + 3_600_000));
+		await seedEvent("r1", daysAgo(400));
+
+		const result = await runRetentionPass();
+		expect(result.disabled, "event retention is off").toBe(true);
+		expect(result.receiptsDeleted).toBe(1);
+		expect(await receiptCount()).toBe(1);
+		expect(await countEvents("r1"), "events are untouched while retention is off").toBe(1);
+		expect(getRetentionStatus().lastRun?.receiptsDeleted).toBe(1);
+	});
+
+	test("the boundary: one second older than the cutoff goes, a second inside it stays", async () => {
+		await seedSession("r1");
+		const now = new Date();
+		await seedReceipt(
+			"r1",
+			"older",
+			toDbTimestamp(new Date(now.getTime() - RECEIPT_RETENTION_MS - 1_000)),
+		);
+		await seedReceipt(
+			"r1",
+			"newer",
+			toDbTimestamp(new Date(now.getTime() - RECEIPT_RETENTION_MS + 1_000)),
+		);
+		expect(await pruneExpiredReceipts(now)).toBe(1);
+		const left = await getDb().select().from(managedDeliveryReceipts);
+		expect(left.map((r) => r.receiptKey)).toEqual(["newer"]);
+	});
+
+	test("also pruned in a pass where event retention is on, and reported alongside rowsDeleted", async () => {
+		await seedSession("r1");
+		await upsertSetting("eventsRetentionDays", 7);
+		await seedEvent("r1", daysAgo(30));
+		await seedReceipt("r1", "old", at(-RECEIPT_RETENTION_MS - 60_000));
+		const result = await runRetentionPass();
+		expect(result.disabled).toBe(false);
+		expect(result.rowsDeleted).toBe(1);
+		expect(result.receiptsDeleted).toBe(1);
+	});
+
+	test("100,000 expired receipts are all gone after one pass with event retention off; fresh ones stay", async () => {
+		await seedReceipts({
+			sessionPrefix: "bulk-r-",
+			sessions: 20,
+			total: 100_000,
+			expiredEvery: 1,
+			expiredAt: at(-RECEIPT_RETENTION_MS - 3_600_000),
+			freshAt: at(-3_600_000),
+		});
+		await seedReceipt("bulk-r-0", "fresh-1", at(-3_600_000));
+		await seedReceipt("bulk-r-1", "fresh-2", at(-60_000));
+		expect(await receiptCount(), "positive control: the seed is in place").toBe(100_002);
+
+		const result = await runRetentionPass();
+		expect(result.disabled).toBe(true);
+		expect(result.receiptsDeleted).toBe(100_000);
+		const left = await getDb().select().from(managedDeliveryReceipts);
+		expect(left.map((r) => r.receiptKey).sort()).toEqual(["fresh-1", "fresh-2"]);
+	}, 120_000);
+
+	itSqliteOnly("a prune failure doesn't stop the rest of the pass", async () => {
+		await seedSession("r1");
+		await seedEvent("r1", daysAgo(30));
+		await upsertSetting("eventsRetentionDays", 7);
+		const original = console.error;
+		console.error = () => undefined;
+		try {
+			getSqlite().exec(
+				"ALTER TABLE managed_delivery_receipts RENAME TO managed_delivery_receipts_x",
+			);
+			try {
+				const result = await runRetentionPass();
+				expect(result.receiptsDeleted).toBe(0);
+				expect(result.rowsDeleted, "events retention still ran").toBe(1);
+			} finally {
+				getSqlite().exec(
+					"ALTER TABLE managed_delivery_receipts_x RENAME TO managed_delivery_receipts",
+				);
+			}
+		} finally {
+			console.error = original;
+		}
 	});
 });
 

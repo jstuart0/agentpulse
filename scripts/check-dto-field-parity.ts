@@ -28,6 +28,7 @@ const INTERFACES = [
 	"AuthMeResponse",
 	"DashboardStats",
 	"OwnerScopeEcho",
+	"SessionEvent",
 ] as const;
 
 /** Where an interface's shared declaration lives when it isn't src/shared/types.ts. */

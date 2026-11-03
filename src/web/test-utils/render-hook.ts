@@ -10,6 +10,8 @@ import { createRoot } from "react-dom/client";
 type GlobalStub = Record<string, unknown>;
 const STUBBED = ["IS_REACT_ACT_ENVIRONMENT", "window", "HTMLIFrameElement", "document"] as const;
 const saved = new Map<string, { had: boolean; value: unknown }>();
+/** What the stub document was asked to listen for, so a test can fire it. */
+const listeners = new Map<string, Array<() => void>>();
 
 export function installDomStubs(overrides: { hidden?: boolean } = {}): void {
 	const g = globalThis as unknown as GlobalStub;
@@ -19,13 +21,21 @@ export function installDomStubs(overrides: { hidden?: boolean } = {}): void {
 	g.IS_REACT_ACT_ENVIRONMENT = true;
 	g.window = globalThis;
 	g.HTMLIFrameElement = class {};
+	listeners.clear();
 	g.document = {
 		activeElement: null,
 		body: {},
 		documentElement: {},
 		hidden: overrides.hidden ?? false,
-		addEventListener() {},
-		removeEventListener() {},
+		addEventListener(type: string, fn: () => void) {
+			listeners.set(type, [...(listeners.get(type) ?? []), fn]);
+		},
+		removeEventListener(type: string, fn: () => void) {
+			listeners.set(
+				type,
+				(listeners.get(type) ?? []).filter((candidate) => candidate !== fn),
+			);
+		},
 	};
 }
 
@@ -41,6 +51,12 @@ export function removeDomStubs(): void {
 /** Flip `document.hidden` for a test (a hidden tab is when desktop notifications fire). */
 export function setDocumentHidden(hidden: boolean): void {
 	(globalThis as unknown as { document: { hidden: boolean } }).document.hidden = hidden;
+}
+
+/** The tab goes out of view or comes back: sets `document.hidden` and fires `visibilitychange`. */
+export function fireVisibilityChange(hidden: boolean): void {
+	setDocumentHidden(hidden);
+	for (const fn of listeners.get("visibilitychange") ?? []) fn();
 }
 
 export function renderHook<P, R>(hook: (props: P) => R, initial: P) {

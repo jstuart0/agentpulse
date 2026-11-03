@@ -8,6 +8,7 @@ import {
 	sanitizeReportedByAgent,
 } from "../../shared/launch-privileges.js";
 import type { LaunchRequest, ManagedSession } from "../../shared/types.js";
+import { disposeRuntimesAndExit } from "../services/fatal-exit.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
 import { type JsonRpcNotification, findFreePort, spawnServer, waitForServer } from "./codex-rpc.js";
 import {
@@ -19,13 +20,18 @@ import {
 
 const runtimes = new Map<string, ManagedCodexRuntime>();
 
+/** How many managed Codex agents this supervisor is running; the keep-alive rule reads it. */
+export function managedCodexRuntimeCount(): number {
+	return runtimes.size;
+}
+
 /**
  * F31/D7: best-effort cleanup before a fatal (401 credential-rejected) exit
  * — dispose every managed Codex runtime this process still holds (closes
  * the app-server control channel, kills its process) before the process
  * itself exits.
  */
-function disposeAllManagedCodexRuntimes(): void {
+export function disposeAllManagedCodexRuntimes(): void {
 	for (const runtime of runtimes.values()) {
 		try {
 			runtime.dispose();
@@ -137,6 +143,11 @@ export function assertCodexThreadPrivileges(
 			started.approvalPolicy === "never" ||
 			widened !== null,
 	} as CodexReportedPrivileges;
+}
+
+/** Whether the first title push should happen: not when the bootstrap state was only queued. */
+export function shouldPushBootstrapTitle(outcome: string | undefined): boolean {
+	return outcome !== "queued";
 }
 
 export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks: LaunchCallbacks) {
@@ -279,7 +290,11 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		});
 	}
 
-	await syncTitle(bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8));
+	// A queued bootstrap has no server name to go by: pushing the short id as the thread's title would
+	// stick. The title is left for reconcileManagedCodexTitles, once the server has the session.
+	if (shouldPushBootstrapTitle(bootstrap.outcome)) {
+		await syncTitle(bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8));
+	}
 
 	const runtime: ManagedCodexRuntime = {
 		sessionId: launch.launchCorrelationId,
@@ -287,7 +302,9 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		url,
 		client,
 		serverProcess,
-		currentThreadTitle: bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8),
+		currentThreadTitle: shouldPushBootstrapTitle(bootstrap.outcome)
+			? bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8)
+			: "",
 		protocolVersion: resolveProviderProtocolVersion(initResult),
 		activeTurnId: null,
 		intentionalClose: false,
@@ -313,16 +330,14 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		// rotated, F31/D7), or any other non-2xx, mid-session. Logged and
 		// isolated so a rejection here can never become an unhandled
 		// rejection or skip later notification branches — except a 401,
-		// which is fatal (see reportInSessionSafely).
+		// which is fatal only once the credential tripwire confirms it (see
+		// reportInSessionSafely).
 		await reportInSessionSafely(
 			"codex-managed",
 			launch.launchCorrelationId,
 			"notification",
 			() => handleManagedCodexNotification(notification, launch, runtime, threadId, callbacks),
-			() => {
-				disposeAllManagedCodexRuntimes();
-				process.exit(1);
-			},
+			disposeRuntimesAndExit,
 		);
 	});
 
@@ -347,10 +362,7 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 					providerSyncState: "failed",
 					providerSyncError: error?.message ?? "Codex control channel closed",
 				}),
-			() => {
-				disposeAllManagedCodexRuntimes();
-				process.exit(1);
-			},
+			disposeRuntimesAndExit,
 		);
 		runtimes.delete(launch.launchCorrelationId);
 	});

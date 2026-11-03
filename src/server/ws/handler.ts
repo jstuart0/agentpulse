@@ -614,7 +614,7 @@ interface SessionBusLike {
 	on(event: "session_updated", listener: (session: Session) => void): void;
 	on(
 		event: "session_event",
-		listener: (payload: { sessionId: string; event: SessionEvent }) => void,
+		listener: (payload: { sessionId: string; event: SessionEvent; late?: true }) => void,
 	): void;
 }
 

@@ -4,6 +4,7 @@ import { useConnectionStore } from "../stores/connection-store.js";
 import { useDashboardScopeStore } from "../stores/dashboard-scope-store.js";
 import { useEventStore } from "../stores/event-store.js";
 import { useInboxSignalStore } from "../stores/inbox-signal-store.js";
+import { useReachabilityStore } from "../stores/reachability-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUserStore } from "../stores/user-store.js";
 import { currentOwnershipUi } from "./useOwnershipUi.js";
@@ -185,6 +186,24 @@ export function useWebSocket(enabled = true) {
 			}
 		};
 	}, [connect, enabled]);
+
+	// After an outage the socket has usually given up ("paused" after three failures, about nine seconds in),
+	// and nothing reloads the page now to bring it back. When the server is reachable again, start over. Only
+	// a paused socket is restarted, so a socket that is open, or one already waiting to reconnect, is never
+	// doubled; one that is still trying just gets its failure count back.
+	const recoveries = useReachabilityStore((s) => s.recoveries);
+	const seenRecoveries = useRef(recoveries);
+	useEffect(() => {
+		if (recoveries === seenRecoveries.current) return;
+		seenRecoveries.current = recoveries;
+		if (!enabled) return;
+		// Whatever the socket is doing, a recovery buys one fresh budget of failures: an attempt already
+		// pending (the third, say) would otherwise fail into "paused" with nothing left to fire again.
+		consecutiveFailuresRef.current = 0;
+		if (useConnectionStore.getState().wsState !== "paused") return;
+		setWsState("reconnecting");
+		connect();
+	}, [recoveries, enabled, connect, setWsState]);
 
 	return wsRef;
 }

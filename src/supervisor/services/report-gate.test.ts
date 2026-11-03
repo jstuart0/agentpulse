@@ -75,6 +75,8 @@ type Call = { path: string; method: string; body: unknown };
 
 function recorder(fail?: (call: Call) => Error | null) {
 	const calls: Call[] = [];
+	/** The headers each request in `calls` carried (parallel to it); undefined when it carried none. */
+	const headers: Array<Record<string, string> | undefined> = [];
 	const request = async (path: string, options?: RequestInit) => {
 		const call: Call = {
 			path,
@@ -84,9 +86,10 @@ function recorder(fail?: (call: Call) => Error | null) {
 		const error = fail?.(call);
 		if (error) throw error;
 		calls.push(call);
+		headers.push(options?.headers as Record<string, string> | undefined);
 		return { session: { displayName: "from-server" }, managedSession: {}, events: [] };
 	};
-	return { calls, request };
+	return { calls, headers, request };
 }
 
 function makeGate(
@@ -96,10 +99,11 @@ function makeGate(
 		/** Reuse a recorder so a second gate (a restarted supervisor) reports into the same list. */
 		shared?: ReturnType<typeof recorder>;
 		maxTrackedSessions?: number;
+		isBridgeActive?: (sessionId: string) => boolean;
 		logs?: string[];
 	} = {},
 ) {
-	const { calls, request } = opts.shared ?? recorder(opts.fail);
+	const { calls, headers, request } = opts.shared ?? recorder(opts.fail);
 	const gate = createReportGate({
 		request,
 		supervisorId: SUPERVISOR_ID,
@@ -108,8 +112,9 @@ function makeGate(
 		now: () => clock,
 		log: (line) => opts.logs?.push(line),
 		maxTrackedSessions: opts.maxTrackedSessions,
+		isBridgeActive: opts.isBridgeActive,
 	});
-	return { gate, calls };
+	return { gate, calls, headers };
 }
 
 const stateBody = (sessionId: string, cwd: string, extra: Record<string, unknown> = {}) => ({
@@ -159,7 +164,10 @@ describe("with no rules at all the gate is invisible", () => {
 			`POST ${BASE}/control-actions/act-1/status`,
 		]);
 		expect(calls[1]?.body).toEqual(stateBody("sess-1", work));
-		expect(calls[2]?.body).toEqual({ events: eventsFor() });
+		// events carry the time the gate sent them (its clock), and nothing else is added
+		expect(calls[2]?.body).toEqual({
+			events: eventsFor().map((e) => ({ ...e, occurredAt: new Date(clock).toISOString() })),
+		});
 		expect(calls[3]?.body).toEqual({ status: "succeeded" });
 	});
 
@@ -638,6 +646,31 @@ describe("the gate's memory survives a restart", () => {
 });
 
 describe("a bounded memory never turns a live session into a closing report", () => {
+	for (const rules of [false, true]) {
+		test(`an interactive launch with a live bridge is not the one forgotten to make room (${rules ? "rules in place" : "no rules"})`, () => {
+			const active = new Set(["bridge"]);
+			const { gate } = makeGate({ maxTrackedSessions: 4, isBridgeActive: (id) => active.has(id) });
+			if (rules) writeRules([work]);
+			gate.noteLaunch("launch-1", "bridge", elsewhere, { interactive: true });
+			gate.noteCwd("plain-1", elsewhere);
+			gate.noteCwd("plain-2", elsewhere);
+			gate.noteCwd("plain-3", elsewhere);
+			gate.noteCwd("plain-4", elsewhere);
+			expect(
+				gate.isInteractiveLaunch("bridge"),
+				"the oldest record is kept: its bridge is alive",
+			).toBe(true);
+			// once the bridge is gone it is an ordinary record again
+			active.clear();
+			gate.noteCwd("plain-5", elsewhere);
+			gate.noteCwd("plain-6", elsewhere);
+			gate.noteCwd("plain-7", elsewhere);
+			gate.noteCwd("plain-8", elsewhere);
+			gate.noteCwd("plain-9", elsewhere);
+			expect(gate.isInteractiveLaunch("bridge")).toBe(false);
+		});
+	}
+
 	test("sessions that were reported and not closed are never forgotten: a new one is refused instead", async () => {
 		const { gate, calls } = makeGate({ maxTrackedSessions: 3 });
 		await startSession(gate, "live-1", elsewhere);
@@ -1598,6 +1631,112 @@ describe("what a report costs the filesystem", () => {
 	});
 });
 
+describe("what became of a report (outcome), delivery ids and the replay marker (AGEN-83)", () => {
+	const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+	/** Puts the gate in each of the three situations: no rules (send), a rule over `work` (excluded), an invalid rules file (blocked). */
+	function situation(kind: "send" | "excluded" | "blocked") {
+		const made = makeGate();
+		made.gate.noteCwd("sess-1", work);
+		if (kind === "excluded") writeRules([work]);
+		if (kind === "blocked") writeRules(["not/an/absolute/path"]);
+		return made;
+	}
+
+	for (const kind of ["send", "excluded", "blocked"] as const) {
+		const outcome = kind === "send" ? "sent" : kind;
+		test(`reportEvents resolves "${outcome}" when the verdict is ${kind}`, async () => {
+			const { gate } = situation(kind);
+			expect(await gate.reportEvents("sess-1", eventsFor())).toBe(outcome);
+		});
+
+		test(`reportState resolves outcome "${outcome}" when the verdict is ${kind}, and a send keeps the server's answer`, async () => {
+			const { gate } = situation(kind);
+			const result = await gate.reportState(stateBody("sess-1", work));
+			expect(result.outcome).toBe(outcome);
+			if (kind === "send") expect(result.session.displayName).toBe("from-server");
+			else expect(result.session.displayName).toBe("");
+		});
+	}
+
+	test("a dropped state report is a fresh object each time: the shared dropped result is never written to", async () => {
+		const excluded = situation("excluded");
+		const first = await excluded.gate.reportState(stateBody("sess-1", work));
+		const again = await excluded.gate.reportState(stateBody("sess-1", work));
+		expect(first).not.toBe(again);
+		expect(first.outcome).toBe("excluded");
+		// the same gate later judging by an invalid file: the earlier "excluded" must not leak into it
+		const blocked = situation("blocked");
+		const dropped = await blocked.gate.reportState(stateBody("sess-1", work));
+		expect(dropped.outcome).toBe("blocked");
+		expect(first.outcome).toBe("excluded");
+		first.outcome = "sent";
+		const later = await blocked.gate.reportState(stateBody("sess-2", work));
+		expect(later.outcome).toBe("blocked");
+	});
+
+	test("events carry a UUID delivery id, distinct per send, and a given deliveryId is kept", async () => {
+		const { gate, headers } = makeGate();
+		await gate.reportEvents("sess-1", eventsFor());
+		await gate.reportEvents("sess-1", eventsFor("another"));
+		await gate.reportEvents("sess-1", eventsFor("third"), { deliveryId: "fixed-id-12345" });
+		const ids = headers.map((h) => h?.["X-AgentPulse-Delivery-Id"]);
+		expect(ids[0]).toMatch(UUID);
+		expect(ids[1]).toMatch(UUID);
+		expect(ids[0]).not.toBe(ids[1]);
+		expect(ids[2]).toBe("fixed-id-12345");
+		expect(headers.every((h) => h?.["X-AgentPulse-Replay"] === undefined)).toBe(true);
+	});
+
+	test("replay sets the replay header on events and on state, and only then", async () => {
+		const { gate, headers, calls } = makeGate();
+		await gate.reportEvents("sess-1", eventsFor(), { replay: true });
+		await gate.reportState(stateBody("sess-1", work), { replay: true });
+		await gate.reportState(stateBody("sess-1", work));
+		expect(calls.map((c) => c.path)).toEqual([
+			`${BASE}/managed-sessions/sess-1/events`,
+			`${BASE}/managed-session-state`,
+			`${BASE}/managed-session-state`,
+		]);
+		expect(headers[0]?.["X-AgentPulse-Replay"]).toBe("1");
+		expect(headers[1]).toEqual({ "X-AgentPulse-Replay": "1" });
+		expect(headers[2]).toBeUndefined();
+	});
+
+	test("occurredAt is stamped with the gate's clock on events that have none, and a preset one is kept", async () => {
+		const { gate, calls } = makeGate();
+		await gate.reportEvents("sess-1", [
+			...eventsFor("plain"),
+			{ ...eventsFor("old")[0], occurredAt: "2025-12-31T23:00:00.000Z" } as never,
+			{ ...eventsFor("nulled")[0], occurredAt: null } as never,
+		]);
+		const sent = (calls[0]?.body as { events: Array<{ content: string; occurredAt: string }> })
+			.events;
+		const at = new Date(clock).toISOString();
+		expect(sent.map((e) => [e.content, e.occurredAt])).toEqual([
+			["plain", at],
+			["old", "2025-12-31T23:00:00.000Z"],
+			["nulled", at],
+		]);
+	});
+
+	test("no other kind of request carries the delivery id or the replay marker", async () => {
+		const { gate, headers } = makeGate();
+		gate.noteCwd("launch-1", work);
+		gate.noteCwd("sess-1", work);
+		await gate.reportLaunchStatus("launch-1", { status: "running" });
+		await gate.reportState(stateBody("sess-1", work));
+		await gate.reportControlStatus("act-1", "sess-1", { status: "succeeded" });
+		await gate.refuseLaunch("launch-2");
+		await gate.refuseControlAction("act-2");
+		// the closing report of a newly excluded session
+		writeRules([work]);
+		await gate.scan();
+		expect(headers.length).toBeGreaterThanOrEqual(6);
+		expect(headers.every((h) => h === undefined || Object.keys(h).length === 0)).toBe(true);
+	});
+});
+
 describe("nothing else sends session data (drift guards)", () => {
 	function sourceFiles(dir: string): string[] {
 		const out: string[] = [];
@@ -1901,5 +2040,243 @@ describe("nothing else sends session data (drift guards)", () => {
 		};
 		walk(webDir);
 		expect(offenders).toEqual([]);
+	});
+});
+
+describe("the terminal bridge script has no way to the network (drift guard)", () => {
+	const BRIDGE_PATH = join(
+		import.meta.dir,
+		"..",
+		"..",
+		"..",
+		"scripts",
+		"claude_terminal_bridge.py",
+	);
+
+	/** Every ban the script must satisfy: no HTTP library, no inet socket, no endpoint, no URL, no credential name. */
+	const BANS: Array<[string, RegExp]> = [
+		["urllib", /urllib/],
+		["http.client", /http\.client/],
+		["requests", /\brequests\b/],
+		["httpx", /httpx/],
+		["curl", /\bcurl\b/],
+		["subprocess curl", /subprocess\.run\(\s*\[\s*["']curl/],
+		["AF_INET", /AF_INET/],
+		["AF_INET6", /AF_INET6/],
+		["socket.create_connection", /socket\.create_connection/],
+		["an API path", /\/api\/v1/],
+		["a URL", /https?:\/\//],
+		["supervisor_token", /supervisor_token/],
+		["api_key", /api_key/],
+	];
+
+	const violations = (text: string) =>
+		BANS.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+
+	test("the real script contains none of them", () => {
+		const text = readFileSync(BRIDGE_PATH, "utf-8");
+		expect(violations(text)).toEqual([]);
+		// the scan read the real file and it is the bridge: a local socket and its one child are what it uses
+		expect(text).toContain("AF_UNIX");
+		expect(text).toContain("subprocess.Popen");
+		expect(text).toContain("class ReportSpool");
+	});
+
+	test("each ban fires on a planted copy: the check is not vacuous", () => {
+		const real = readFileSync(BRIDGE_PATH, "utf-8");
+		const plants: Array<[string, string]> = [
+			["urllib", "import urllib.request"],
+			["http.client", "import http.client"],
+			["requests", "import requests"],
+			["httpx", "import httpx"],
+			["curl", "os.system('curl example')"],
+			["subprocess curl", 'subprocess.run(["curl", "x"])'],
+			["AF_INET", "socket.socket(socket.AF_INET, socket.SOCK_STREAM)"],
+			["AF_INET6", "socket.socket(socket.AF_INET6)"],
+			["socket.create_connection", "socket.create_connection(('x', 1))"],
+			["an API path", 'path = "/api/v1/supervisors"'],
+			["a URL", 'url = "https://example.invalid/"'],
+			["supervisor_token", 'config.get("supervisor_token")'],
+			["api_key", 'config["api_key"]'],
+		];
+		expect(plants.length).toBe(BANS.length);
+		for (const [name, line] of plants) {
+			expect(violations(`${real}\n${line}\n`), name).toContain(name);
+		}
+	});
+
+	/** What the script may import: files, processes, terminals, its own local socket, time. Nothing that speaks a network protocol, loads code by name or reaches native code. */
+	const ALLOWED_IMPORTS = new Set([
+		"argparse",
+		"datetime",
+		"json",
+		"os",
+		"pty",
+		"selectors",
+		"signal",
+		"socket",
+		"stat",
+		"subprocess",
+		"sys",
+		"termios",
+		"threading",
+		"time",
+		"tty",
+		"uuid",
+		"pathlib",
+	]);
+
+	/** The only names the script may take from the socket module directly: constants, never a constructor. */
+	const ALLOWED_FROM_SOCKET = new Set(["AF_UNIX", "SOCK_STREAM"]);
+	const ALLOWED_FROM_OS_SUBPROCESS: Record<string, Set<string>> = {
+		os: new Set<string>(),
+		subprocess: new Set<string>(["Popen", "PIPE", "DEVNULL"]),
+	};
+
+	/** Imports outside the allowlist, calls to `socket.socket` that don't name AF_UNIX, and dynamic loading. */
+	const structuralViolations = (text: string): string[] => {
+		const found: string[] = [];
+		// statements, not lines: `import os; import ftplib` is two imports on one line
+		for (const statement of text.split(/[\n;]/)) {
+			const from = /^\s*from\s+([\w.]+)\s+import\s+(.*)$/.exec(statement);
+			const plain = /^\s*import\s+(.+)$/.exec(statement);
+			if (from) {
+				const root = (from[1] as string).split(".")[0] as string;
+				if (!ALLOWED_IMPORTS.has(root)) found.push(`import of ${from[1]}`);
+				if (root === "os" || root === "subprocess") {
+					// `from os import system` dodges the `os.system` pattern: only the names the script uses are allowed
+					for (const name of (from[2] as string)
+						.split(",")
+						.map((x) => x.trim().split(/\s+as\s+/)[0])) {
+						if (!(ALLOWED_FROM_OS_SUBPROCESS[root] as Set<string>).has(name as string)) {
+							found.push(`from ${root} import ${name}`);
+						}
+					}
+				}
+				if (root === "socket") {
+					for (const name of (from[2] as string)
+						.split(",")
+						.map((x) => x.trim().split(/\s+as\s+/)[0])) {
+						if (!ALLOWED_FROM_SOCKET.has(name as string)) found.push(`from socket import ${name}`);
+					}
+				}
+			} else if (plain) {
+				for (const part of (plain[1] as string).split(",")) {
+					const module = part.trim().split(/\s+as\s+/)[0] as string;
+					const root = module.split(".")[0] as string;
+					if (!ALLOWED_IMPORTS.has(root)) found.push(`import of ${module}`);
+				}
+			}
+		}
+		for (const m of text.matchAll(/\bos\.(system|popen|exec\w*|spawn\w*|posix_spawn\w*)\b/g)) {
+			found.push(`os.${m[1]}`);
+		}
+		for (const m of text.matchAll(/\bsubprocess\.(?!Popen\b)(\w+)/g)) {
+			found.push(`subprocess.${m[1]}`);
+		}
+		// `import socket as s` would make every later `s.socket(...)` invisible to the checks below
+		if (/^\s*import\s+(?:[\w., ]*,\s*)?socket\s+as\s+\w+/m.test(text))
+			found.push("import socket as an alias");
+		// an alias of the constructor would dodge the AF_UNIX check below
+		if (/\bsocket\.socket\b(?!\()/.test(text)) found.push("socket.socket used without a call");
+		for (const m of text.matchAll(/\bsocket\.socket\(([^)]*)\)/g)) {
+			if (!/\bAF_UNIX\b/.test(m[1] ?? ""))
+				found.push(`socket.socket(${m[1]}) does not name AF_UNIX`);
+		}
+		for (const [name, pattern] of [
+			["__import__", /__import__\s*\(/],
+			["importlib", /\bimportlib\b/],
+			["exec", /\bexec\s*\(/],
+			["eval", /\beval\s*\(/],
+			["ctypes", /\bctypes\b/],
+			["socket.create_server", /socket\.create_server/],
+			["getaddrinfo", /getaddrinfo|gethostbyname/],
+			["socket.fromfd", /socket\.fromfd/],
+		] as const) {
+			if (pattern.test(text)) found.push(name);
+		}
+		return found;
+	};
+
+	test("the real script's imports are all on the allowlist and every socket it makes is a Unix socket", () => {
+		const text = readFileSync(BRIDGE_PATH, "utf-8");
+		expect(structuralViolations(text)).toEqual([]);
+		// the check saw what it is meant to: the script does import socket and does make a socket
+		expect(text).toMatch(/^import socket$/m);
+		expect(text).toMatch(/socket\.socket\(socket\.AF_UNIX/);
+	});
+
+	test("each structural rule fires on a planted copy", () => {
+		const real = readFileSync(BRIDGE_PATH, "utf-8");
+		const plants: Array<[string, string]> = [
+			["import of http.server", "import http.server"],
+			["import of asyncio", "import asyncio"],
+			["import of ssl", "import json, ssl"],
+			["import of urllib", "from urllib import parse"],
+			["import of ftplib", "import ftplib as f"],
+			["import of ftplib", "import os, ftplib"],
+			["import of ftplib", "import os; import ftplib"],
+			["from socket import socket", "from socket import socket"],
+			["from socket import create_connection", "from socket import AF_UNIX, create_connection"],
+			["socket.socket used without a call", "make = socket.socket"],
+			["from os import system", "from os import system"],
+			["from os import popen", "from os import path, popen"],
+			["from subprocess import run", "from subprocess import run"],
+			["from subprocess import check_output", "from subprocess import Popen, check_output"],
+			["import socket as an alias", "import socket as s"],
+			["os.system", "os.system('curl x')"],
+			["os.popen", "os.popen('curl x')"],
+			["os.execvp", "os.execvp('curl', ['curl'])"],
+			["os.spawnl", "os.spawnl(os.P_WAIT, 'curl')"],
+			["subprocess.run", "subprocess.run(['curl', 'x'])"],
+			["subprocess.check_output", "subprocess.check_output(['curl'])"],
+			["subprocess.getoutput", "subprocess.getoutput('curl x')"],
+			["import of ctypes", "import ctypes"],
+			["socket.socket() does not name AF_UNIX", "s = socket.socket()"],
+			[
+				"socket.socket(socket.AF_INET, socket.SOCK_STREAM) does not name AF_UNIX",
+				"s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
+			],
+			[
+				"socket.socket(socket.SOCK_STREAM) does not name AF_UNIX",
+				"s = socket.socket(socket.SOCK_STREAM)",
+			],
+			["__import__", "m = __import__('urllib.request')"],
+			["importlib", "x = importlib.import_module('http')"],
+			["exec", "exec('import urllib')"],
+			["eval", "eval('1')"],
+			["socket.create_server", "socket.create_server(('', 1))"],
+			["getaddrinfo", "socket.getaddrinfo('x', 1)"],
+			["socket.fromfd", "socket.fromfd(3, 1, 1)"],
+		];
+		for (const [expected, line] of plants) {
+			expect(structuralViolations(`${real}\n${line}\n`), line).toContain(expected);
+		}
+	});
+
+	test("the TypeScript that drains the spool is inside the scanned set and holds no request or fetch", () => {
+		const files = Object.keys(
+			Object.fromEntries(
+				readdirSync(join(import.meta.dir, ".."), {
+					recursive: true,
+					withFileTypes: false,
+				} as never).map((name) => [String(name), true]),
+			),
+		);
+		for (const named of [
+			"services/bridge-spool.ts",
+			"services/report-outbox.ts",
+			"services/fatal-exit.ts",
+			"services/keep-alive.ts",
+		]) {
+			expect(files, named).toContain(named);
+			const code = readFileSync(join(import.meta.dir, "..", named), "utf-8")
+				.replace(/\/\*[\s\S]*?\*\//g, "")
+				.replace(/^\s*\/\/.*$/gm, "");
+			expect(code, named).not.toMatch(/\bfetch\b|(?<![.\w])request\b/);
+			expect(code, named).not.toMatch(
+				/managed-session-state|managed-sessions\/|control-actions|launches\//,
+			);
+		}
 	});
 });

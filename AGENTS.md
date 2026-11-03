@@ -170,6 +170,10 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 
 **MCP:** `agentpulse mcp serve` exposes this API over the Model Context Protocol for external agents (Claude Code, Codex CLI). `list_sessions` accepts `agent_type: "copilot_cli"` for filtering; orchestration tools (launch/template) accept only `claude_code`/`codex_cli`. See `docs/MCP.md` for the full tool catalog and scope model.
 
+## Feature parity across clients
+
+Every new feature must address parity across all clients: the web dashboard (`src/web/`), the MCP server (`packages/agentpulse-mcp/`), the iOS companion app (a separate, closed-source repository that consumes the REST/WebSocket/push contract), and Telegram/Ask where relevant. Each plan has a `Client parity` section. For each client it says one of: implemented (with the phase), follow-up (with the ticket), or not applicable (with the reason). A contract change counts as a parity change even when nothing new is visible, because the iOS app decodes those shapes. See CLAUDE.md, *Feature parity across clients*.
+
 ## OSS Hygiene
 
 - Never commit real domains, IPs, API keys, hostnames, or private infrastructure identifiers

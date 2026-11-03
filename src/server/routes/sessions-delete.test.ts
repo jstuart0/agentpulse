@@ -14,6 +14,7 @@ const {
 	aiWatcherRuns,
 	controlActions,
 	events,
+	managedDeliveryReceipts,
 	managedSessions,
 	sessions,
 	watcherConfigs,
@@ -33,6 +34,7 @@ beforeEach(async () => {
 	// Order matters when FKs are not all cascading yet — start from the
 	// child rows. With cascade in place, deleting sessions alone is enough,
 	// but explicit cleanup is fine and keeps the suite hermetic.
+	await getDb().delete(managedDeliveryReceipts).execute();
 	await getDb().delete(events).execute();
 	await getDb().delete(managedSessions).execute();
 	await getDb().delete(controlActions).execute();
@@ -63,9 +65,21 @@ async function summaryCount(sessionId: string): Promise<number> {
 	return Number(found[0]?.n);
 }
 
+async function receiptCount(sessionId: string): Promise<number> {
+	const rows = await getDb()
+		.select()
+		.from(managedDeliveryReceipts)
+		.where(eq(managedDeliveryReceipts.sessionId, sessionId));
+	return rows.length;
+}
+
 async function seedSessionWithChildren(sessionId: string): Promise<void> {
 	await getDb().insert(sessions).values({ sessionId, agentType: "claude_code" });
 	await seedSummary(sessionId);
+	// managed_delivery_receipts (AGEN-83) is the ninth cascade child.
+	await getDb()
+		.insert(managedDeliveryReceipts)
+		.values({ sessionId, receiptKey: "k-del", createdAt: "2026-11-01 00:00:00" });
 	await getDb()
 		.insert(events)
 		.values({
@@ -112,6 +126,7 @@ describe("DELETE /sessions/:id", () => {
 		const sessionId = `del-${crypto.randomUUID()}`;
 		await seedSessionWithChildren(sessionId);
 		expect(await summaryCount(sessionId), "positive control: the summary row exists").toBe(1);
+		expect(await receiptCount(sessionId), "positive control: the receipt row exists").toBe(1);
 
 		const res = await app.request(`/api/v1/sessions/${sessionId}`, {
 			method: "DELETE",
@@ -164,6 +179,7 @@ describe("DELETE /sessions/:id", () => {
 		expect(runRow.length).toBe(0);
 
 		expect(await summaryCount(sessionId)).toBe(0);
+		expect(await receiptCount(sessionId)).toBe(0);
 	});
 
 	test("TC-1.9a the real DELETE route removes the session's summary row", async () => {

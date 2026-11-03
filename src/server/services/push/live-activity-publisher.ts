@@ -34,7 +34,7 @@ import { mobileDeviceActivities, sessions } from "../../db/schema/index.js";
 import { withTransaction } from "../../db/with-transaction.js";
 import { observeWsRevalidation } from "../../ws/revalidation.js";
 import { getMode } from "../instance-mode.js";
-import type { SessionBus } from "../notifier.js";
+import type { SessionBus, SessionUpdateMeta } from "../notifier.js";
 import { getEligibleDevice, listEligibleDevices } from "./device-source.js";
 import { IntervalScheduler, type PushScheduler } from "./push-scheduler.js";
 import type { ActivityOutcome, PushService } from "./push-service.js";
@@ -63,6 +63,10 @@ export const PUBLISHER_INTERVAL_MS = 15_000;
 /** How long trace updates wait after the relay refused one and gave no better hint. */
 export const BACKOFF_MS = 30_000;
 export const MAX_LIVE_ACTIVITIES_PER_DEVICE = 8;
+/** Late (replayed) session updates for one session settle into a single refresh after this much quiet. */
+export const LATE_UPDATE_QUIET_MS = 2_000;
+/** ...but never later than this after the first deferred update, so a steady trickle can't postpone the refresh forever. */
+export const LATE_UPDATE_MAX_WAIT_MS = 10_000;
 
 /** Sessions looked up per owner query. */
 const OWNER_READ_CHUNK = 500;
@@ -112,6 +116,14 @@ export interface PublisherDeps {
 	clock?: Clock;
 	logger?: PushLogger;
 	intervalMs?: number;
+	/** Runs `fn` once after `ms`; returns the cancel. Tests inject a fake; the default is an unref'd timer. */
+	schedule?: (fn: () => void, ms: number) => () => void;
+}
+
+function defaultSchedule(fn: () => void, ms: number): () => void {
+	const handle = setTimeout(fn, ms);
+	handle.unref?.();
+	return () => clearTimeout(handle);
 }
 
 interface Tracker {
@@ -147,6 +159,11 @@ export class LiveActivityPublisher implements PushScheduler {
 	readonly clock: Clock;
 	private readonly logger: PushLogger;
 	private readonly trackers = new Map<string, Tracker>();
+	/** The latest late update per session, waiting for LATE_UPDATE_QUIET_MS of quiet. */
+	private readonly lateUpdates = new Map<
+		string,
+		{ session: Session; cancel: () => void; firstAtMs: number }
+	>();
 	private readonly scheduler: IntervalScheduler;
 	private unobserve: (() => void) | null = null;
 
@@ -177,6 +194,8 @@ export class LiveActivityPublisher implements PushScheduler {
 		this.unobserve?.();
 		this.unobserve = null;
 		this.scheduler.stop();
+		for (const pending of this.lateUpdates.values()) pending.cancel();
+		this.lateUpdates.clear();
 		this.trackers.clear();
 	}
 
@@ -230,7 +249,10 @@ export class LiveActivityPublisher implements PushScheduler {
 	private readonly onSessionEvent = ({
 		sessionId,
 		event,
-	}: { sessionId: string; event: SessionEvent }): void => {
+		late,
+	}: { sessionId: string; event: SessionEvent; late?: true }): void => {
+		// A replayed event is not activity happening now: it must not fill the trace.
+		if (late) return;
 		const tracker = this.trackers.get(sessionId);
 		if (!tracker) return;
 		const nowMs = this.clock.now();
@@ -243,9 +265,15 @@ export class LiveActivityPublisher implements PushScheduler {
 		tracker.dirty = true;
 	};
 
-	private readonly onSessionUpdated = (session: Session): void => {
+	private readonly onSessionUpdated = (session: Session, meta?: SessionUpdateMeta): void => {
 		const tracker = this.trackers.get(session.sessionId);
 		if (!tracker) return;
+		if (meta?.late) {
+			this.deferLateUpdate(session);
+			return;
+		}
+		// A live update carries the current state, so a late one still waiting is stale.
+		this.dropLateUpdate(session.sessionId);
 		this.handleUpdated(tracker, session).catch((err: unknown) =>
 			this.logger.warn("live activity update failed", {
 				session: tracker.sessionId,
@@ -253,6 +281,41 @@ export class LiveActivityPublisher implements PushScheduler {
 			}),
 		);
 	};
+
+	/**
+	 * A replayed state report, however many of them, becomes one refresh with the latest state
+	 * after LATE_UPDATE_QUIET_MS without another (and at most LATE_UPDATE_MAX_WAIT_MS after the first), so a reconnecting host doesn't burst pushes at a
+	 * phone, and a replayed terminal state still ends the activity.
+	 */
+	private deferLateUpdate(session: Session): void {
+		const sessionId = session.sessionId;
+		const pending = this.lateUpdates.get(sessionId);
+		pending?.cancel();
+		const nowMs = this.clock.now();
+		const firstAtMs = pending?.firstAtMs ?? nowMs;
+		const waitMs = Math.max(
+			0,
+			Math.min(LATE_UPDATE_QUIET_MS, firstAtMs + LATE_UPDATE_MAX_WAIT_MS - nowMs),
+		);
+		const schedule = this.deps.schedule ?? defaultSchedule;
+		const cancel = schedule(() => {
+			this.lateUpdates.delete(sessionId);
+			const tracker = this.trackers.get(sessionId);
+			if (!tracker) return;
+			this.handleUpdated(tracker, session).catch((err: unknown) =>
+				this.logger.warn("live activity update failed", {
+					session: sessionId,
+					error: err instanceof Error ? err.name : "unknown",
+				}),
+			);
+		}, waitMs);
+		this.lateUpdates.set(sessionId, { session, cancel, firstAtMs });
+	}
+
+	private dropLateUpdate(sessionId: string): void {
+		this.lateUpdates.get(sessionId)?.cancel();
+		this.lateUpdates.delete(sessionId);
+	}
 
 	private async handleUpdated(tracker: Tracker, session: Session): Promise<void> {
 		const status = (session.operationalStatus ?? tracker.status) as PushSessionStatus;

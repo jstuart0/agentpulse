@@ -22,6 +22,7 @@ export type {
 // ── core/ ─────────────────────────────────────────────────────────────────────
 export { sessionsPg as sessions } from "./core/sessions.js";
 export { eventsPg as events } from "./core/events.js";
+export { managedDeliveryReceiptsPg as managedDeliveryReceipts } from "./core/managed-delivery-receipts.js";
 export { usersPg as users } from "./core/users.js";
 export { authSessionsPg as authSessions } from "./core/auth-sessions.js";
 export { apiKeysPg as apiKeys } from "./core/api-keys.js";

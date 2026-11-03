@@ -183,6 +183,23 @@ describe("which events wake the watcher", () => {
 		expect(await runsOf(sessionId)).toEqual([]);
 	});
 
+	test("a late event (replayed from a supervisor's offline queue) wakes nothing; the same event live does", async () => {
+		const sessionId = await watched({ managed: true });
+		const done = await newEvent(sessionId, "HeadlessPromptCompleted");
+		sessionBus.emit("session_event", { sessionId, event: done, late: true });
+		await flush();
+		expect(clock.pendingTimers()).toBe(0);
+		clock.advance(BOUNDARY_DEBOUNCE_MS);
+		await flush();
+		expect(await runsOf(sessionId)).toEqual([]);
+
+		// Positive control: not late, the identical event wakes the watcher.
+		sessionBus.emit("session_event", { sessionId, event: done });
+		await flush();
+		clock.advance(BOUNDARY_DEBOUNCE_MS);
+		await until(async () => (await runsOf(sessionId)).length === 1);
+	});
+
 	test("a session nobody watches is never woken, from either path", async () => {
 		const sessionId = newId();
 		await seedWatchedSession({ sessionId, providerId, notify: false, continue: false });

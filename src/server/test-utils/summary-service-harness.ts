@@ -20,6 +20,7 @@ import {
 	aiDailySpend,
 	aiSessionSummaries,
 	llmProviders,
+	managedDeliveryReceipts,
 	sessions,
 	settings,
 } from "../db/schema/index.js";
@@ -396,6 +397,7 @@ export async function resetWorld(stub: LlmStubServer | null): Promise<void> {
 	_resetSummaryGenerationsForTest();
 	const db = getDb();
 	await db.delete(aiSessionSummaries);
+	await db.delete(managedDeliveryReceipts);
 	await db.delete(events);
 	await db.delete(sessions);
 	await db.delete(aiDailySpend);
