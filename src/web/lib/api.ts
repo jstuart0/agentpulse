@@ -61,6 +61,7 @@ export type AiProviderKind = ProviderKind;
 export type AiWatcherPolicy = WatcherPolicy;
 export type { AskMessageRole, DecisionKind, HitlReplyKind } from "../../shared/types.js";
 import {
+	RELOAD_PROBE_TIMEOUT_MS,
 	decideFetchFailure,
 	isOutageResponse,
 	parseRetryAfter,
@@ -129,18 +130,45 @@ export function setNetworkHandler(handler: NetworkHandler | null): void {
 	networkHandler = handler;
 }
 
+/** The probe under way, so requests that failed together ask once. */
+let reloadProbe: Promise<boolean> | null = null;
+
 /**
- * A request that got no answer. The first one in a minute may be an expired
- * sign-in, so it reloads once; every later one is an outage, reported for the
- * visible "can't reach the server" state (which paces its own retries).
+ * Whether the server answers at all, a sign-in redirect or refusal in front of /health included; what a proxy
+ * says while the app is down doesn't count. Not through `request()`, so it can't report or reload by itself.
  */
-function handleFetchFailure(reason: string): void {
+function serverAnswers(): Promise<boolean> {
+	reloadProbe ??= fetch(`${BASE_URL}/health`, {
+		redirect: "manual",
+		cache: "no-store",
+		signal: AbortSignal.timeout(RELOAD_PROBE_TIMEOUT_MS),
+	})
+		.then((res) => !isOutageResponse(res.status, null, "/health"))
+		.catch(() => false)
+		.finally(() => {
+			reloadProbe = null;
+		});
+	return reloadProbe;
+}
+
+/**
+ * The first failure in a minute may be an expired sign-in, so it reloads once; every later one is reported for
+ * the visible "can't reach the server" state (which paces its own retries). With `probe`, the failure is a
+ * request that got no answer, which is also what a server that's down looks like, and reloading into that
+ * swaps the page for the browser's error page: it reloads only if the server answers a probe.
+ */
+function handleFetchFailure(reason: string, probe = false): void {
 	const decision = decideFetchFailure({
 		lastBounceAt: readLastBounce(bounceStorage),
 		now: Date.now(),
 	});
-	if (decision.action === "reload") triggerAuthReload(reason);
-	else networkHandler?.failed();
+	if (decision.action !== "reload") networkHandler?.failed();
+	else if (!probe) triggerAuthReload(reason);
+	else
+		void serverAnswers().then((answers) => {
+			if (answers) triggerAuthReload(reason);
+			else networkHandler?.failed();
+		});
 }
 
 export function looksLikeAuthBounce(res: Response): boolean {
@@ -231,8 +259,8 @@ export function resetAuthBounceForTests(): void {
  * enrollment token, a typed name). An expired sign-in is still caught from the answer itself: with
  * `redirect: "manual"` a forwardauth redirect comes back as an opaque redirect (or status 0), which
  * `looksLikeAuthBounce` reads without any exception, so it reloads here too. The one case a background
- * request cannot tell is a redirect the browser blocks outright (a TypeError); the person's next request of
- * their own still reloads.
+ * request cannot tell is a redirect the browser blocks outright (a TypeError); the next foreground request
+ * still reloads, once a probe shows the server is answering.
  */
 async function request<T>(
 	path: string,
@@ -251,12 +279,10 @@ async function request<T>(
 			...options,
 		});
 	} catch (err) {
-		// Failed to fetch = cross-origin redirect blocked by CORS OR
-		// network error. Either way, reload — the worst case is one
-		// extra full-page refresh.
+		// Failed to fetch = cross-origin redirect blocked by CORS OR network error.
 		if (err instanceof TypeError) {
 			if (opts?.background) networkHandler?.failed();
-			else handleFetchFailure(`fetch threw (${err.message})`);
+			else handleFetchFailure(`fetch threw (${err.message})`, true);
 		}
 		throw err;
 	}

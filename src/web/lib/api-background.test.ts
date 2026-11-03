@@ -1,7 +1,7 @@
 /**
  * A background request (the Hosts page's quiet refetch) must never be what reloads the page: a failed fetch
  * is an outage there, not a possible expired sign-in. An expired sign-in that shows as a redirect response
- * still reloads. Every other caller is unchanged.
+ * still reloads. A foreground request reloads only once a health probe shows the server is answering.
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { reachabilityNetworkHandler, useReachabilityStore } from "../stores/reachability-store.js";
@@ -53,6 +53,13 @@ const throwing = () => {
 		throw new TypeError("Failed to fetch");
 	}) as unknown as typeof fetch;
 };
+/** The request itself gets no answer; /health answers with this status (null: it gets none either). */
+const throwingExceptHealth = (status: number | null) => {
+	globalThis.fetch = (async (url: string) => {
+		if (status !== null && String(url).endsWith("/health")) return new Response("{}", { status });
+		throw new TypeError("Failed to fetch");
+	}) as unknown as typeof fetch;
+};
 const reloadSoon = () => new Promise((resolve) => setTimeout(resolve, 120));
 
 describe("a fetch that throws a TypeError", () => {
@@ -64,8 +71,8 @@ describe("a fetch that throws a TypeError", () => {
 		expect(failed).toBe(1);
 	});
 
-	test("in the foreground (the default): unchanged, the first one reloads and does not report an outage", async () => {
-		throwing();
+	test("in the foreground with the server answering /health: a blocked sign-in, so it reloads once and reports no outage", async () => {
+		throwingExceptHealth(200);
 		await expect(api.getSupervisors()).rejects.toBeInstanceOf(TypeError);
 		await reloadSoon();
 		expect(reloads).toBe(1);
@@ -73,10 +80,66 @@ describe("a fetch that throws a TypeError", () => {
 	});
 
 	test("the explicit foreground flag is the default too", async () => {
-		throwing();
+		throwingExceptHealth(200);
 		await expect(api.getSupervisors({ background: false })).rejects.toBeInstanceOf(TypeError);
 		await reloadSoon();
 		expect(reloads).toBe(1);
+	});
+
+	test("AGEN-85: in the foreground with the server refusing connections: no reload, the outage is reported, and no reload is remembered", async () => {
+		throwingExceptHealth(null);
+		await expect(api.getSupervisors()).rejects.toBeInstanceOf(TypeError);
+		await reloadSoon();
+		expect(reloads).toBe(0);
+		expect(failed).toBe(1);
+		expect(stored).toEqual({});
+	});
+
+	test("AGEN-85: a gateway answering for a stopped app is an outage too", async () => {
+		for (const status of [502, 503, 504]) {
+			throwingExceptHealth(status);
+			failed = 0;
+			await expect(api.getSupervisors()).rejects.toBeInstanceOf(TypeError);
+			await reloadSoon();
+			expect(reloads).toBe(0);
+			expect(failed).toBe(1);
+		}
+	});
+
+	test("a sign-in redirect or refusal in front of /health means something answered: it reloads", async () => {
+		throwingExceptHealth(401);
+		await expect(api.getSupervisors()).rejects.toBeInstanceOf(TypeError);
+		await reloadSoon();
+		expect(reloads).toBe(1);
+	});
+
+	test("requests that fail together probe once", async () => {
+		let probes = 0;
+		globalThis.fetch = (async (url: string) => {
+			if (String(url).endsWith("/health")) {
+				probes++;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			throw new TypeError("Failed to fetch");
+		}) as unknown as typeof fetch;
+		await Promise.allSettled([api.getSupervisors(), api.getSupervisors(), api.getSupervisors()]);
+		await reloadSoon();
+		expect(probes).toBe(1);
+		expect(reloads).toBe(0);
+		expect(failed).toBe(3);
+	});
+
+	test("a reload already recorded in the last minute needs no probe", async () => {
+		let probes = 0;
+		stored["agentpulse.authBounceAt"] = String(Date.now());
+		globalThis.fetch = (async (url: string) => {
+			if (String(url).endsWith("/health")) probes++;
+			throw new TypeError("Failed to fetch");
+		}) as unknown as typeof fetch;
+		await expect(api.getSupervisors()).rejects.toBeInstanceOf(TypeError);
+		await reloadSoon();
+		expect(probes).toBe(0);
+		expect(failed).toBe(1);
 	});
 });
 
