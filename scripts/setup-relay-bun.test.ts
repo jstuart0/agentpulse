@@ -8,25 +8,13 @@
  * never runs the installer's network/write side effects.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { BASHES, fn as extractFn, run } from "./lib/installer-test-utils.ts";
 
 const SCRIPT = readFileSync(join(import.meta.dir, "setup-relay.sh"), "utf-8");
 
-function fn(name: string): string {
-	const match = new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}$`, "m").exec(SCRIPT);
-	if (!match) throw new Error(`${name} not found in setup-relay.sh`);
-	return match[0];
-}
-
-// macOS runs `curl | bash` with its own bash 3.2 (Bun.spawnSync only needs a
-// bash on PATH for the second entry to exist).
-const BASHES = ["bash", ...(existsSync("/bin/bash") ? ["/bin/bash"] : [])];
-
-function run(bash: string, body: string, ...args: string[]) {
-	const proc = Bun.spawnSync([bash, "-c", `set -euo pipefail\n${body}`, "test", ...args]);
-	return { code: proc.exitCode, out: proc.stdout.toString().trim(), err: proc.stderr.toString() };
-}
+const fn = (name: string) => extractFn(SCRIPT, name);
 
 describe("F200: version_at_least, at the floor's patch boundary", () => {
 	const floor = "1.3.12";
@@ -42,14 +30,13 @@ describe("F200: version_at_least, at the floor's patch boundary", () => {
 		["garbage", false],
 		["", false],
 	];
-	for (const bash of BASHES) {
+	for (const { bash } of BASHES) {
 		for (const [version, accepted] of table) {
 			test(`${bash}: ${JSON.stringify(version)} -> ${accepted ? "accepted" : "rejected"}`, () => {
 				const res = run(
 					bash,
 					`${fn("version_at_least")}\nversion_at_least "$1" "$2" && echo yes || echo no`,
-					version,
-					floor,
+					[version, floor],
 				);
 				expect(res.err).toBe("");
 				expect(res.out).toBe(accepted ? "yes" : "no");
@@ -72,8 +59,7 @@ describe("F200: version_at_least, at the floor's patch boundary", () => {
 		const res = run(
 			"bash",
 			`${fn("version_at_least")}\nversion_at_least "$1" "$2" && echo yes || echo no`,
-			version,
-			floorVersion,
+			[version, floorVersion],
 		);
 		expect(res.out).toBe("no"); // the real function gets it right
 	});
@@ -99,11 +85,7 @@ describe("F197: the Bun release asset and its pinned SHA256 per platform", () =>
 			const res = run(
 				"bash",
 				`${fn("bun_asset_for")}\n${fn("bun_asset_sha256")}\na="$(bun_asset_for "$@")"; echo "$a $(bun_asset_sha256 "$a")"`,
-				os,
-				arch,
-				avx2,
-				musl,
-				rosetta,
+				[os, arch, avx2, musl, rosetta],
 			);
 			const [picked, sha] = res.out.split(" ");
 			expect(picked).toBe(asset);
@@ -137,7 +119,7 @@ describe("F197: the Bun release asset and its pinned SHA256 per platform", () =>
 		};
 		expect(SCRIPT).toContain('BUN_VERSION="1.3.12"');
 		for (const [asset, sha] of Object.entries(published)) {
-			const res = run("bash", `${fn("bun_asset_sha256")}\nbun_asset_sha256 "$1"`, asset);
+			const res = run("bash", `${fn("bun_asset_sha256")}\nbun_asset_sha256 "$1"`, [asset]);
 			expect([asset, res.out]).toEqual([asset, sha]);
 		}
 	});

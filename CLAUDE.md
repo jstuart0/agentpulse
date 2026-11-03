@@ -382,6 +382,7 @@ Rules:
 - **K8s base (SQLite):** `kubectl apply -k deploy/k8s/` (uses Authentik SSO + Traefik IngressRoute; image pinned by SHA; see `deploy/k8s/README.md`)
 - **K8s Postgres overlay:** `kubectl apply -k deploy/overlays/postgres/` — see `deploy/overlays/postgres/README.md` for pre-flight steps (context check, DB + user creation, `secret-patch.yaml` fill-in). Rolling deploys are safe: boot serialization uses a session-level `pg_advisory_lock` on the migration client connection.
 - **Relay:** `curl -fsSL --proto '=https' https://your-server.example.com/setup-relay.sh | bash` (asks for the key on the terminal; `AGENTPULSE_KEY` or `--key` for unattended installs). The served installers are embedded in the server at build time (`src/server/installers.ts`, Bun text imports), and `/health`'s `clients` checksums hash the same strings; `bun run check:bundled-installers` proves the bundled build serves them. Tests import `scripts/relay.ts` as a module only via `"./relay.ts?module"` (Bun caches by path; `check:installers` enforces it).
+- **Installers:** `scripts/install-local.sh` and `scripts/setup-relay.sh` share the `agentpulse-bun` and `agentpulse-pkg-hint` blocks, held byte-equal by `scripts/installer-shared-blocks.test.ts`, so a Bun bump happens in one place.
 - **Docker image:** `ghcr.io/jstuart0/agentpulse:<sha>` (linux/amd64; tagged by commit SHA — see `scripts/build-and-push.sh`)
 - **Telemetry:** Cloudflare Worker + D1 (default homelab endpoint; configurable via `TELEMETRY_ENDPOINT`)
 

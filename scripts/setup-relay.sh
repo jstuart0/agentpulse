@@ -39,9 +39,14 @@ set -euo pipefail
 # leave curl writing into a closed pipe.
 {
 
+# A trailing slash on HOME would put "//" in every path derived from it.
+while [[ "$HOME" == */ && "$HOME" != / ]]; do HOME="${HOME%/}"; done
+
 REMOTE_URL_DEFAULT=""
 DEFAULT_PORT=4000
-RELAY_DIR="$HOME/.agentpulse"
+RELAY_DIR="${HOME%/}/.agentpulse"
+# Set here, with RELAY_DIR, because the Bun check below runs before the rest of the setup.
+PRIVATE_BUN_DIR="$RELAY_DIR/bun"
 CONFIG_FILE="$RELAY_DIR/config.json"
 KEY_RE='^[A-Za-z0-9._~+/-]+=*$'
 # Where the key prompt reads from; tests point it elsewhere.
@@ -834,6 +839,448 @@ fail() {
   exit 1
 }
 
+# >>> agentpulse-bun
+# Shared by scripts/setup-relay.sh and scripts/install-local.sh: the pinned Bun
+# release, how a Bun on this machine is judged, and how the pinned one is
+# fetched. Byte-identical in both scripts and in the copies the server serves
+# (scripts/installer-shared-blocks.test.ts checks it); change all or none.
+# Rules for this block: every function ends in an explicit `return`, a
+# predicate is used only inside `if` or with `||`, nothing expands a whole
+# array, no substitution puts `&` in a pattern-replacement (bash 5.2 reads it
+# as the matched text), no exit handler is installed, and nothing is printed on
+# success. Failures print a ✗ line on stderr. AP_REASON carries why the last
+# path check refused.
+
+BUN_VERSION="1.3.12"
+BUN_MIN_VERSION="$BUN_VERSION"
+
+# True when version $1 is at least $2 (numeric x.y.z; anything else is false).
+version_at_least() {
+  local IFS=. i x y
+  local -a have want
+  read -r -a have <<<"${1%%[-+]*}"
+  read -r -a want <<<"$2"
+  for i in 0 1 2; do
+    x="${have[i]:-0}"
+    y="${want[i]:-0}"
+    [[ "$x" =~ ^[0-9]+$ ]] || return 1
+    if (( x > y )); then return 0; fi
+    if (( x < y )); then return 1; fi
+  done
+  return 0
+}
+
+# The Bun release asset for this machine. Args: os (`uname -s`), arch
+# (`uname -m`), avx2 (yes/no — CPU supports AVX2), musl (yes/no — musl libc),
+# rosetta (yes/no — x86_64 uname under Rosetta 2 on Apple Silicon). Echoes
+# nothing for a platform with no pinned asset.
+bun_asset_for() {
+  local os="$1" arch="$2" avx2="$3" musl="$4" rosetta="$5"
+  case "$os" in
+    Darwin)
+      if [[ "$arch" == "arm64" || "$rosetta" == "yes" ]]; then
+        echo "darwin-aarch64"
+      elif [[ "$arch" == "x86_64" ]]; then
+        [[ "$avx2" == "yes" ]] && echo "darwin-x64" || echo "darwin-x64-baseline"
+      fi ;;
+    Linux)
+      case "$arch" in
+        x86_64|amd64)
+          if [[ "$musl" == "yes" ]]; then
+            [[ "$avx2" == "yes" ]] && echo "linux-x64-musl" || echo "linux-x64-musl-baseline"
+          else
+            [[ "$avx2" == "yes" ]] && echo "linux-x64" || echo "linux-x64-baseline"
+          fi ;;
+        aarch64|arm64)
+          [[ "$musl" == "yes" ]] && echo "linux-aarch64-musl" || echo "linux-aarch64" ;;
+      esac ;;
+  esac
+}
+
+# SHA256 of the Bun 1.3.12 release zip for the given asset name — taken from
+# https://github.com/oven-sh/bun/releases/download/bun-v1.3.12/SHASUMS256.txt
+# and independently re-verified by downloading and hashing each file.
+# TO UPGRADE: bump BUN_VERSION above and every hash here together, from that
+# release's own SHASUMS256.txt — re-download and re-hash at least one asset
+# yourself rather than trusting the file alone.
+bun_asset_sha256() {
+  case "$1" in
+    darwin-aarch64) echo "6c4bb87dd013ed1a8d6a16e357a3d094959fd5530b4d7061f7f3680c3c7cea1c" ;;
+    darwin-x64) echo "0f58c53a3e7947f1e626d2f8d285f97c14b7cadcca9c09ebafc0ae9d35b58c3d" ;;
+    darwin-x64-baseline) echo "cc4e22130c2bc2d944d3a286de08f2ed37fa74136e59760f3a4661e610246474" ;;
+    linux-x64) echo "11dc3ee11bc1695e149737c6ca3d5619302cf4346e6b8a6ec7988967ef01ddc5" ;;
+    linux-x64-baseline) echo "f8bb377a9ae93d44697ff91a2611164d2aedc9263415d623b0c3af24a6f55dab" ;;
+    linux-x64-musl) echo "5a9f9a2102d4bd0d5210b4f6bd345151d2310623947085177c1b306e8587dce6" ;;
+    linux-x64-musl-baseline) echo "a95e079aef96f1387b86e27b69f9a6babbd08154d9a59483f29d9de285b8e3ad" ;;
+    linux-aarch64) echo "c40bc0ebca11bde7d75af497a654a874d0c7fd8d6a8d6031c173c10c9064297b" ;;
+    linux-aarch64-musl) echo "731baab945bc471c17248ea375e66f71442879d2595c54045b3e861f4e8b9ab1" ;;
+  esac
+}
+
+# The pinned release asset for this machine, or nothing when there is none.
+# $1 is where CPU flags are read on Linux (an argument, so a test can point it
+# at a file).
+ap_bun_asset() {
+  local cpuinfo="${1:-/proc/cpuinfo}" s m rosetta="no" avx2="no" musl="no" ldd_out
+  s="$(uname -s)"
+  m="$(uname -m)"
+  if [[ "$s" == "Darwin" ]]; then
+    if [[ "$(sysctl -in sysctl.proc_translated 2>/dev/null)" == "1" ]]; then rosetta="yes"; fi
+    if [[ "$(sysctl -n hw.optional.avx2_0 2>/dev/null)" == "1" ]]; then avx2="yes"; fi
+  elif [[ "$s" == "Linux" ]]; then
+    if grep -qm1 avx2 "$cpuinfo" 2>/dev/null; then avx2="yes"; fi
+    # musl's ldd prints its version and exits 1, which pipefail would turn into "not musl".
+    if command -v ldd >/dev/null 2>&1; then
+      ldd_out="$(ldd --version 2>&1 || true)"
+      if grep -qi musl <<<"$ldd_out"; then musl="yes"; fi
+    fi
+  fi
+  bun_asset_for "$s" "$m" "$avx2" "$musl" "$rosetta"
+  return 0
+}
+
+# Whether $1 is a path a service file can hold. Sets AP_REASON when it isn't.
+# Absolute; no empty, "." or ".." component and no trailing "/"; and only
+# A-Za-z0-9 / . _ + - @. With "wide" as $2 (the relay, whose service files
+# quote their paths) a space and valid UTF-8 are allowed too. The byte ranges
+# are listed under LC_ALL=C so the result doesn't depend on the locale.
+ap_safe_path() {
+  local p="$1" wide="${2:-}" rest high
+  AP_REASON=""
+  case "$p" in
+    /*) ;;
+    *) AP_REASON="its path isn't absolute"; return 1 ;;
+  esac
+  case "$p" in
+    *//*|*/./*|*/../*|*/.|*/..|*/)
+      AP_REASON="its path has an empty, . or .. component"; return 1 ;;
+  esac
+  rest="$(printf '%s#' "$p" | LC_ALL=C tr -d 'A-Za-z0-9/._+@-')"
+  if [[ "$wide" == "wide" ]]; then rest="$(printf '%s' "$rest" | LC_ALL=C tr -d ' \200-\377')"; fi
+  if [[ "$rest" != "#" ]]; then
+    AP_REASON="its path has characters a service file can't hold"; return 1
+  fi
+  if [[ "$wide" == "wide" ]]; then
+    high="$(printf '%s' "$p" | LC_ALL=C tr -cd '\200-\377')"
+    if [[ -n "$high" ]]; then
+      if ! command -v iconv >/dev/null 2>&1; then
+        AP_REASON="its path has non-ASCII characters, and iconv isn't installed to check them"; return 1
+      fi
+      if ! printf '%s' "$p" | LC_ALL=C iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+        AP_REASON="its path isn't valid UTF-8"; return 1
+      fi
+      if printf '%s' "$p" | LC_ALL=C grep -q "$(printf '\302[\200-\237]')"; then
+        AP_REASON="its path has control characters"; return 1
+      fi
+    fi
+  fi
+  return 0
+}
+
+# Whether the file or directory $1 (a symlink is judged by its target) belongs
+# to you or root and can't be changed by anyone else. The one group-write
+# allowance is Darwin's `admin` group (gid 80), which owns Homebrew's bin and
+# whose members can already become root. Sets AP_REASON when it refuses.
+ap_owner_ok() {
+  local mode uid gid
+  AP_REASON="it or its directory isn't owned by you or root"
+  read -r mode _ uid gid _ <<<"$(ls -ldnL "$1" 2>/dev/null)" || return 1
+  # With "ancestor" as $2 a sticky directory (/tmp, mode 1777) is let through when root or
+  # you own it: others can add to it but not rename or remove what is yours.
+  if [[ "${2:-}" == "ancestor" && "${mode:9:1}" == [tT] && ( "$uid" == "$(id -u)" || "$uid" == "0" ) ]]; then
+    AP_REASON=""
+    return 0
+  fi
+  if [[ "${mode:8:1}" == "w" ]]; then
+    AP_REASON="it or its directory is writable by everyone"; return 1
+  fi
+  if [[ "$uid" != "$(id -u)" && "$uid" != "0" ]]; then return 1; fi
+  if [[ "${mode:5:1}" == "w" ]]; then
+    if [[ "$(uname -s)" != "Darwin" || "$gid" != "80" ]]; then
+      AP_REASON="it or its directory is writable by its group"; return 1
+    fi
+  fi
+  AP_REASON=""
+  return 0
+}
+
+# Removes group and other write from the directory $1 when it exists, is not a
+# symbolic link (chmod would follow it) and is owned by the current user; a directory owned by anyone else is left alone, and
+# a mode is never widened. Directories AgentPulse itself made under a umask of
+# 002 (the default for Fedora and Debian user-private-group accounts) are 775,
+# which ap_owner_ok would then refuse.
+ap_tighten_dir() {
+  local mode uid
+  if [[ ! -d "$1" || -L "$1" ]]; then return 0; fi
+  read -r mode _ uid _ <<<"$(ls -ldn "$1" 2>/dev/null)" || return 0
+  if [[ "$uid" == "$(id -u)" && ( "${mode:5:1}" == "w" || "${mode:8:1}" == "w" ) ]]; then
+    chmod go-w "$1" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# Prints a ✗ line and returns 1 for the first directory given that is a symbolic link:
+# they are chmod'ed and written into, so they have to be real directories.
+ap_refuse_linked_dirs() {
+  local d
+  for d in "$@"; do
+    if [[ -L "$d" ]]; then
+      printf '  ✗ %q is a symbolic link; it must be a real directory. Nothing was installed.\n' "$d" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+# Whether the directory $1 and every directory above it up to / may be trusted: $1 itself
+# by ap_owner_ok, the ones above it by the same rule except that a sticky directory like /tmp
+# passes. Sets AP_REASON.
+ap_bun_dir_chain_ok() {
+  local d="$1"
+  AP_REASON="its symbolic link goes through a directory that is writable by others or isn't owned by you or root"
+  if ! ap_owner_ok "$d"; then
+    AP_REASON="its symbolic link goes through a directory that is writable by others or isn't owned by you or root"
+    return 1
+  fi
+  while [[ "$d" != "/" ]]; do
+    d="$(dirname "$d")"
+    if ! ap_owner_ok "$d" ancestor; then
+      AP_REASON="its symbolic link goes through a directory that is writable by others or isn't owned by you or root"
+      return 1
+    fi
+  done
+  AP_REASON=""
+  return 0
+}
+
+# Whether the symbolic link $1 leads somewhere that can be trusted: the directory of every
+# link in the chain (at most 40) and of the final target, each with everything above it up to
+# / (ap_bun_dir_chain_ok). The target file itself is judged by the caller. Sets AP_REASON.
+ap_bun_link_ok() {
+  local p="$1" hops=0 d t
+  while [[ -L "$p" ]]; do
+    if [[ "$hops" -ge 40 ]]; then AP_REASON="it is a chain of more than 40 symbolic links"; return 1; fi
+    hops=$((hops + 1))
+    d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+    ap_bun_dir_chain_ok "$d" || return 1
+    t="$(readlink "$p")" || return 1
+    case "$t" in
+      /*) p="$t" ;;
+      *) p="$d/$t" ;;
+    esac
+  done
+  d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+  ap_bun_dir_chain_ok "$d" || return 1
+  AP_REASON=""
+  return 0
+}
+
+# The one place the Bun a user already has under BUN_INSTALL (or ~/.bun) is derived.
+ap_bun_install_candidate() {
+  local base="${BUN_INSTALL:-${HOME%/}/.bun}"
+  echo "${base%/}/bin/bun"
+  return 0
+}
+
+# Whether the Bun at $1 may run in a service: a safe path, an executable file
+# (a symlink is followed), owned and unwritable by others, itself and its
+# directory as written, for a symbolic link also everything ap_bun_link_ok
+# checks, and at least BUN_MIN_VERSION. Sets AP_REASON, prints
+# nothing. "wide" as $2 is passed to ap_safe_path.
+ap_bun_acceptable() {
+  local p="$1" v
+  ap_safe_path "$p" "${2:-}" || return 1
+  if [[ ! -f "$p" || ! -x "$p" ]]; then AP_REASON="isn't an executable file"; return 1; fi
+  ap_owner_ok "$p" || return 1
+  ap_owner_ok "$(dirname "$p")" || return 1
+  if [[ -L "$p" ]]; then ap_bun_link_ok "$p" || return 1; fi
+  v="$("$p" --version </dev/null 2>/dev/null | head -n 1 || true)"
+  if ! version_at_least "$v" "$BUN_MIN_VERSION"; then
+    AP_REASON="Bun ${v:-of unknown version} is older than $BUN_MIN_VERSION"; return 1
+  fi
+  return 0
+}
+
+# Chooses the Bun to run: the BUN_INSTALL-or-~/.bun one, then the one on PATH,
+# then $1/bin/bun; the first that ap_bun_acceptable takes wins (symlinks stay as
+# written, so a Homebrew path survives an upgrade). Sets BUN_BIN and BUN_DIR.
+# When none qualifies, BUN_BIN is $1/bin/bun and BUN_NEEDS_INSTALL is 1. A
+# candidate that exists but is refused is reported on stdout. "wide" as $2.
+ap_resolve_bun() {
+  local install_dir="$1" wide="${2:-}" seen=" " cand
+  BUN_NEEDS_INSTALL=0
+  for cand in "$(ap_bun_install_candidate)" "$(command -v bun 2>/dev/null || true)" "$install_dir/bin/bun"; do
+    if [[ -z "$cand" ]]; then continue; fi
+    case "$seen" in *" $cand "*) continue ;; esac
+    seen="$seen$cand "
+    if ap_bun_acceptable "$cand" "$wide"; then
+      BUN_BIN="$cand"
+      BUN_DIR="$(dirname "$cand")"
+      return 0
+    fi
+    if [[ -e "$cand" || -L "$cand" ]]; then
+      printf '  ! Not using %q: %s\n' "$cand" "$AP_REASON"
+    fi
+  done
+  BUN_BIN="$install_dir/bin/bun"
+  BUN_DIR="$install_dir/bin"
+  BUN_NEEDS_INSTALL=1
+  return 0
+}
+
+# The tools downloading the pinned Bun needs and this machine lacks, as words:
+# unzip, and sha256sum when neither it nor shasum is present.
+ap_missing_bun_tools() {
+  local out=""
+  if ! command -v unzip >/dev/null 2>&1; then out="unzip"; fi
+  if ! command -v shasum >/dev/null 2>&1 && ! command -v sha256sum >/dev/null 2>&1; then
+    out="${out:+$out }sha256sum"
+  fi
+  echo "$out"
+  return 0
+}
+
+# Prints a ✗ line for each tool ap_missing_bun_tools names and returns 1; returns 0 when none is missing.
+ap_require_bun_tools() {
+  local missing t hint
+  missing="$(ap_missing_bun_tools)"
+  if [[ -z "$missing" ]]; then return 0; fi
+  for t in $missing; do
+    hint="$(ap_install_hint "$t")"
+    if [[ -n "$hint" ]]; then
+      echo "  ✗ $t is required to install Bun. Install it with: $hint" >&2
+    else
+      echo "  ✗ $t is required to install Bun. Install it with your system's package manager." >&2
+    fi
+  done
+  return 1
+}
+
+# Before installing Bun at $1: the path must be safe ($2 "wide" as above) and
+# the nearest directory that already exists above it must be ours and
+# unwritable by others. Prints the reason on stderr when it refuses.
+ap_check_bun_target() {
+  local p="$1" d
+  if ! ap_safe_path "$p" "${2:-}"; then
+    printf "  ✗ Can't install Bun at %q: %s. Install Bun 1.3.12 or newer yourself and set BUN_INSTALL to where it is.\n" "$p" "$AP_REASON" >&2
+    return 1
+  fi
+  d="$(dirname "$p")"
+  while [[ ! -d "$d" && "$d" != "/" ]]; do d="$(dirname "$d")"; done
+  if ap_owner_ok "$d"; then return 0; fi
+  printf "  ✗ Can't install Bun at %q: %s. Run chmod go-w on %q if you own it, or install Bun 1.3.12 or newer yourself and set BUN_INSTALL to where it is.\n" "$p" "$AP_REASON" "$d" >&2
+  return 1
+}
+
+# Downloads the Bun release zip, checks its SHA256, and installs the binary at
+# $4. Args: url, sha256, asset, dest_bin, work_dir (made here, mode 700), proto
+# (the only scheme curl may use, also for redirects). The binary is staged next
+# to its destination and renamed into place. <dir> and <dir>/bin are created at
+# 755 whatever the umask; ones that already exist only lose group/other write,
+# so a deliberate 700 stays 700. Prints a ✗ line on stderr and returns 1 on failure.
+ap_fetch_bun_zip() {
+  local url="$1" want="$2" asset="$3" dest="$4" work="$5" proto="$6"
+  local got member dest_dir stage d
+  ap_require_bun_tools || return 1
+  if ! mkdir -p "$work" || ! chmod 700 "$work"; then
+    printf "  ✗ couldn't create a temporary directory under %q\n" "$(dirname "$work")" >&2
+    return 1
+  fi
+  rm -rf "${work:?}/x" "${work:?}/bun.zip"
+  if ! curl -q --proto "=$proto" --proto-redir "=$proto" -fsSL "$url" -o "$work/bun.zip" </dev/null; then
+    echo "  ✗ couldn't download Bun from $url" >&2
+    return 1
+  fi
+  # Hashed here rather than with `-c`: macOS's BSD sha256sum rejects GNU's
+  # --quiet, which made a good download look like a mismatch.
+  if command -v shasum >/dev/null 2>&1; then
+    got="$(shasum -a 256 "$work/bun.zip" | awk '{print $1}')"
+  else
+    got="$(sha256sum "$work/bun.zip" | awk '{print $1}')"
+  fi
+  if [[ -z "$want" || "$got" != "$want" ]]; then
+    echo "  ✗ the downloaded Bun release's checksum doesn't match the pinned one; not installing it" >&2
+    return 1
+  fi
+  if ! unzip -q "$work/bun.zip" "bun-$asset/bun" -d "$work/x" </dev/null; then
+    echo "  ✗ couldn't unzip the downloaded Bun release" >&2
+    return 1
+  fi
+  member="$work/x/bun-$asset/bun"
+  if [[ ! -f "$member" || -L "$member" ]]; then
+    echo "  ✗ the Bun release didn't contain a regular file at bun-$asset/bun" >&2
+    return 1
+  fi
+  dest_dir="$(dirname "$dest")"
+  for d in "$(dirname "$dest_dir")" "$dest_dir"; do
+    if [[ -d "$d" ]]; then
+      ap_tighten_dir "$d"
+    elif ! mkdir -p "$d" || ! chmod 755 "$d"; then
+      printf "  ✗ couldn't create the directory %q for Bun\n" "$d" >&2
+      return 1
+    fi
+  done
+  if ! stage="$(mktemp "$dest_dir/.bun.XXXXXX")"; then
+    printf "  ✗ couldn't create a temporary file in %q\n" "$dest_dir" >&2
+    return 1
+  fi
+  if ! cp "$member" "$stage" || ! chmod 755 "$stage" || ! mv -f "$stage" "$dest"; then
+    rm -f "$stage"
+    printf "  ✗ couldn't install Bun at %q\n" "$dest" >&2
+    return 1
+  fi
+  return 0
+}
+
+# The only place the pinned URL, bun_asset_sha256 and https meet. Tests drive
+# ap_fetch_bun_zip with a file:// URL instead, so production needs no override.
+# Args: asset, dest_bin, work_dir.
+ap_install_pinned_bun() {
+  ap_fetch_bun_zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-$1.zip" "$(bun_asset_sha256 "$1")" "$1" "$2" "$3" https || return 1
+  return 0
+}
+# <<< agentpulse-bun
+
+# >>> agentpulse-pkg-hint
+# Shared by scripts/setup-relay.sh and scripts/install-local.sh, byte-identical
+# in both and in the copies the server serves; change all or none.
+
+# The command that installs the given tools (python3, unzip, sha256sum, git…)
+# with this machine's package manager, or nothing when none is found. First
+# match wins: on macOS brew; elsewhere apt-get, dnf, yum, zypper, pacman, apk,
+# then brew. sudo is dropped for root and never added for brew.
+ap_install_hint() {
+  local mgr="" m t p pkgs="" sudo=""
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    if command -v brew >/dev/null 2>&1; then mgr="brew"; fi
+  else
+    for m in apt-get dnf yum zypper pacman apk brew; do
+      if command -v "$m" >/dev/null 2>&1; then mgr="$m"; break; fi
+    done
+  fi
+  if [[ -z "$mgr" ]]; then return 0; fi
+  if [[ "$mgr" != "brew" && "$(id -u)" != "0" ]]; then sudo="sudo "; fi
+  for t in "$@"; do
+    p="$t"
+    case "$t" in
+      python3) if [[ "$mgr" == "pacman" || "$mgr" == "brew" ]]; then p="python"; fi ;;
+      sha256sum) p="coreutils" ;;
+    esac
+    pkgs="${pkgs:+$pkgs }$p"
+  done
+  case "$mgr" in
+    apt-get) echo "${sudo}apt-get update && ${sudo}apt-get install -y $pkgs" ;;
+    dnf) echo "${sudo}dnf install -y $pkgs" ;;
+    yum) echo "${sudo}yum install -y $pkgs" ;;
+    zypper) echo "${sudo}zypper install -y $pkgs" ;;
+    pacman) echo "${sudo}pacman -S --needed $pkgs" ;;
+    apk) echo "${sudo}apk add $pkgs" ;;
+    brew) echo "brew install $pkgs" ;;
+  esac
+  return 0
+}
+# <<< agentpulse-pkg-hint
+
 need_value() {
   if [[ -z "${2-}" || "${2-}" == --* ]]; then
     fail "$1 needs a value"
@@ -854,6 +1301,34 @@ done
 
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
+
+# ── Choose Bun, and refuse here if it can't be had ──
+# A machine that can't get Bun (no unzip, no checksum tool, no pinned
+# release) is refused before the key prompt, not after it. systemd expands %
+# and $ even inside quotes, so a HOME holding either is refused too.
+if ! ap_safe_path "$RELAY_DIR" wide; then
+  fail "The relay keeps its files and Bun under $(printf %q "${HOME%/}")/.agentpulse, and that path can't be used ($AP_REASON). It may hold only letters, digits, spaces, UTF-8 text and / . _ + - @. Run the installer as a user whose home path fits."
+fi
+# These are chmod'ed and written into, so a symbolic link in their place is refused, one level at
+# a time: each is checked only after the one above it has been tightened (a umask of 002 leaves
+# the directories an earlier run, or the supervisor, made group-writable), so nobody who isn't
+# you can swap it for a link in between. What stays open is the top level, whose parent is your
+# home directory: someone who can rename entries there already controls your shell startup
+# files, and closing it would take a chmod that works on an open directory, which bash can't do.
+ap_refuse_linked_dirs "$RELAY_DIR" || exit 1
+ap_tighten_dir "$RELAY_DIR"
+ap_refuse_linked_dirs "$PRIVATE_BUN_DIR" || exit 1
+ap_tighten_dir "$PRIVATE_BUN_DIR"
+ap_refuse_linked_dirs "$PRIVATE_BUN_DIR/bin" || exit 1
+ap_tighten_dir "$PRIVATE_BUN_DIR/bin"
+ap_resolve_bun "$PRIVATE_BUN_DIR" wide
+if [[ "$BUN_NEEDS_INSTALL" == 1 ]]; then
+  AP_BUN_ASSET="$(ap_bun_asset)"
+  [[ -n "$AP_BUN_ASSET" ]] \
+    || fail "There's no pinned Bun $BUN_VERSION release for $(uname -s)/$(uname -m). Install Bun $BUN_MIN_VERSION or newer and run this installer again, or set BUN_INSTALL to where it is."
+  ap_require_bun_tools || exit 1
+  ap_check_bun_target "$BUN_BIN" wide || exit 1
+fi
 
 # Prints one field of the existing config.json, or nothing. Read-only.
 existing_config() {
@@ -1080,154 +1555,29 @@ if [[ ! -s "$SRC_DIR/relay.ts" || ! -s "$SRC_DIR/statusline.sh" ]]; then
   fi
 fi
 
-# ── Find Bun ──
+# ── Install Bun ──
 # F190: the relay keeps its state files private (0600) through appendFile's
 # `mode`, which Bun 1.1.30 ignores (F171). So the service only ever runs a Bun
-# at or above the floor: the one on PATH, ~/.bun's, or a private copy of the
-# pinned release in ~/.agentpulse/bun (installed if none qualifies, without
-# touching the user's own Bun or shell profile).
+# at or above the floor, chosen above: ~/.bun's (or $BUN_INSTALL's), the one on
+# PATH, or a private copy of the pinned release in ~/.agentpulse/bun, which is
+# installed here when none qualified, without touching the user's own Bun or
+# shell profile.
 
-BUN_VERSION="1.3.12"
-BUN_MIN_VERSION="$BUN_VERSION"
-PRIVATE_BUN_DIR="$RELAY_DIR/bun"
-
-# True when version $1 is at least $2 (numeric x.y.z; anything else is false).
-version_at_least() {
-  local IFS=. i x y
-  local -a have want
-  read -r -a have <<<"${1%%[-+]*}"
-  read -r -a want <<<"$2"
-  for i in 0 1 2; do
-    x="${have[i]:-0}"
-    y="${want[i]:-0}"
-    [[ "$x" =~ ^[0-9]+$ ]] || return 1
-    if (( x > y )); then return 0; fi
-    if (( x < y )); then return 1; fi
-  done
-  return 0
-}
-
-# F197: the Bun release asset for this machine. Args: os (`uname -s`), arch
-# (`uname -m`), avx2 (yes/no — CPU supports AVX2), musl (yes/no — musl libc),
-# rosetta (yes/no — x86_64 uname under Rosetta 2 on Apple Silicon). Echoes
-# nothing for a platform with no pinned asset.
-bun_asset_for() {
-  local os="$1" arch="$2" avx2="$3" musl="$4" rosetta="$5"
-  case "$os" in
-    Darwin)
-      if [[ "$arch" == "arm64" || "$rosetta" == "yes" ]]; then
-        echo "darwin-aarch64"
-      elif [[ "$arch" == "x86_64" ]]; then
-        [[ "$avx2" == "yes" ]] && echo "darwin-x64" || echo "darwin-x64-baseline"
-      fi ;;
-    Linux)
-      case "$arch" in
-        x86_64|amd64)
-          if [[ "$musl" == "yes" ]]; then
-            [[ "$avx2" == "yes" ]] && echo "linux-x64-musl" || echo "linux-x64-musl-baseline"
-          else
-            [[ "$avx2" == "yes" ]] && echo "linux-x64" || echo "linux-x64-baseline"
-          fi ;;
-        aarch64|arm64)
-          [[ "$musl" == "yes" ]] && echo "linux-aarch64-musl" || echo "linux-aarch64" ;;
-      esac ;;
-  esac
-}
-
-# SHA256 of the Bun 1.3.12 release zip for the given asset name — taken from
-# https://github.com/oven-sh/bun/releases/download/bun-v1.3.12/SHASUMS256.txt
-# and independently re-verified by downloading and hashing each file.
-# TO UPGRADE: bump BUN_VERSION above and every hash here together, from that
-# release's own SHASUMS256.txt — re-download and re-hash at least one asset
-# yourself rather than trusting the file alone (S-L2).
-bun_asset_sha256() {
-  case "$1" in
-    darwin-aarch64) echo "6c4bb87dd013ed1a8d6a16e357a3d094959fd5530b4d7061f7f3680c3c7cea1c" ;;
-    darwin-x64) echo "0f58c53a3e7947f1e626d2f8d285f97c14b7cadcca9c09ebafc0ae9d35b58c3d" ;;
-    darwin-x64-baseline) echo "cc4e22130c2bc2d944d3a286de08f2ed37fa74136e59760f3a4661e610246474" ;;
-    linux-x64) echo "11dc3ee11bc1695e149737c6ca3d5619302cf4346e6b8a6ec7988967ef01ddc5" ;;
-    linux-x64-baseline) echo "f8bb377a9ae93d44697ff91a2611164d2aedc9263415d623b0c3af24a6f55dab" ;;
-    linux-x64-musl) echo "5a9f9a2102d4bd0d5210b4f6bd345151d2310623947085177c1b306e8587dce6" ;;
-    linux-x64-musl-baseline) echo "a95e079aef96f1387b86e27b69f9a6babbd08154d9a59483f29d9de285b8e3ad" ;;
-    linux-aarch64) echo "c40bc0ebca11bde7d75af497a654a874d0c7fd8d6a8d6031c173c10c9064297b" ;;
-    linux-aarch64-musl) echo "731baab945bc471c17248ea375e66f71442879d2595c54045b3e861f4e8b9ab1" ;;
-  esac
-}
-
-SEEN_BUNS=" "
-for candidate in "$(command -v bun 2>/dev/null || true)" "$HOME/.bun/bin/bun" "$PRIVATE_BUN_DIR/bin/bun"; do
-  [[ -n "$candidate" && -x "$candidate" && "$SEEN_BUNS" != *" $candidate "* ]] || continue
-  SEEN_BUNS+="$candidate "
-  candidate_version="$("$candidate" --version 2>/dev/null | head -n 1 || true)"
-  if version_at_least "$candidate_version" "$BUN_MIN_VERSION"; then
-    BUN_PATH="$candidate"
-    break
-  fi
-  echo "  ! Not using $candidate (Bun ${candidate_version:-of unknown version}): the relay needs Bun $BUN_MIN_VERSION or newer to keep its files private"
-done
-
-if [[ -z "$BUN_PATH" ]]; then
+if [[ "$BUN_NEEDS_INSTALL" == 1 ]]; then
+  # On a first run ~/.agentpulse doesn't exist yet. Made by the installer's mkdir -p
+  # under a umask of 002 it would be 775 until the chmod below, with Bun already in
+  # it, so it is made private before anything is fetched. Here and not with the
+  # checks above, so a run refused for its key writes nothing.
+  (umask 077 && mkdir -p "$RELAY_DIR") || fail "couldn't create $(printf %q "$RELAY_DIR")"
+  if [[ -O "$RELAY_DIR" ]]; then chmod go-rwx "$RELAY_DIR" 2>/dev/null || true; fi
   echo "  Installing Bun $BUN_VERSION for the relay into $PRIVATE_BUN_DIR..."
-  # F197: pin Bun to a specific release's *binary*, not just an installer
-  # script — downloading github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/
-  # directly and checking it against a hash pinned to that exact file means
-  # nothing between here and the binary running is trusted on faith (S-L2/S-L3).
-  BUN_UNAME_S="$(uname -s)"
-  BUN_UNAME_M="$(uname -m)"
-  BUN_ROSETTA="no"
-  BUN_AVX2="no"
-  BUN_MUSL="no"
-  if [[ "$BUN_UNAME_S" == "Darwin" ]]; then
-    [[ "$(sysctl -in sysctl.proc_translated 2>/dev/null)" == "1" ]] && BUN_ROSETTA="yes"
-    [[ "$(sysctl -n hw.optional.avx2_0 2>/dev/null)" == "1" ]] && BUN_AVX2="yes"
-  elif [[ "$BUN_UNAME_S" == "Linux" ]]; then
-    grep -qm1 avx2 /proc/cpuinfo 2>/dev/null && BUN_AVX2="yes"
-    { command -v ldd &>/dev/null && ldd --version 2>&1 | grep -qi musl; } && BUN_MUSL="yes"
+  ap_install_pinned_bun "$AP_BUN_ASSET" "$BUN_BIN" "$SRC_DIR/bun" || exit 1
+  if ! ap_bun_acceptable "$BUN_BIN" wide; then
+    rm -f "$BUN_BIN"
+    fail "the Bun just installed at $(printf %q "$BUN_BIN") isn't usable ($AP_REASON)"
   fi
-  BUN_ASSET="$(bun_asset_for "$BUN_UNAME_S" "$BUN_UNAME_M" "$BUN_AVX2" "$BUN_MUSL" "$BUN_ROSETTA")"
-  [[ -n "$BUN_ASSET" ]] \
-    || fail "no pinned Bun $BUN_VERSION release for this platform ($BUN_UNAME_S/$BUN_UNAME_M); install Bun $BUN_MIN_VERSION or newer yourself and re-run"
-  BUN_ASSET_SHA256="$(bun_asset_sha256 "$BUN_ASSET")"
-
-  BUN_ZIP_URL="https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-${BUN_ASSET}.zip"
-  BUN_ZIP_TMP="$(mktemp)"
-  curl -fsSL "$BUN_ZIP_URL" -o "$BUN_ZIP_TMP" \
-    || { rm -f "$BUN_ZIP_TMP"; fail "couldn't download Bun from $BUN_ZIP_URL"; }
-
-  # Verify checksum before extracting (S-L2). The hash is computed and
-  # compared here rather than with `-c`: macOS ships a BSD sha256sum first on
-  # PATH that rejects GNU's --quiet, which made a good download look like a
-  # mismatch. Without shasum or sha256sum, abort — do not silently skip
-  # supply-chain verification on minimal environments (e.g. Alpine, CI runners).
-  if command -v shasum &>/dev/null; then
-    BUN_ZIP_ACTUAL="$(shasum -a 256 "$BUN_ZIP_TMP" | awk '{print $1}')"
-  elif command -v sha256sum &>/dev/null; then
-    BUN_ZIP_ACTUAL="$(sha256sum "$BUN_ZIP_TMP" | awk '{print $1}')"
-  else
-    rm -f "$BUN_ZIP_TMP"
-    fail "no shasum or sha256sum found; install one (e.g. coreutils) and retry"
-  fi
-  if [[ "$BUN_ZIP_ACTUAL" != "$BUN_ASSET_SHA256" ]]; then
-    rm -f "$BUN_ZIP_TMP"
-    fail "the downloaded Bun release's checksum doesn't match the pinned one; not installing it"
-  fi
-
-  command -v unzip &>/dev/null \
-    || { rm -f "$BUN_ZIP_TMP"; fail "unzip is required to install Bun; install it and retry"; }
-  BUN_UNZIP_DIR="$(mktemp -d)"
-  unzip -q "$BUN_ZIP_TMP" "bun-${BUN_ASSET}/bun" -d "$BUN_UNZIP_DIR" \
-    || { rm -f "$BUN_ZIP_TMP"; rm -rf "$BUN_UNZIP_DIR"; fail "couldn't unzip the downloaded Bun release"; }
-  rm -f "$BUN_ZIP_TMP"
-
-  mkdir -p "$PRIVATE_BUN_DIR/bin"
-  mv "$BUN_UNZIP_DIR/bun-${BUN_ASSET}/bun" "$PRIVATE_BUN_DIR/bin/bun"
-  chmod +x "$PRIVATE_BUN_DIR/bin/bun"
-  rm -rf "$BUN_UNZIP_DIR"
-
-  BUN_PATH="$PRIVATE_BUN_DIR/bin/bun"
-  version_at_least "$("$BUN_PATH" --version 2>/dev/null || true)" "$BUN_MIN_VERSION" \
-    || fail "the Bun just installed at $BUN_PATH isn't $BUN_MIN_VERSION or newer"
 fi
+BUN_PATH="$BUN_BIN"
 echo "  ✓ Bun: $BUN_PATH ($("$BUN_PATH" --version 2>/dev/null || true))"
 
 # ── Install the relay ──
