@@ -190,14 +190,17 @@ export function useWebSocket(enabled = true) {
 	// After an outage the socket has usually given up ("paused" after three failures, about nine seconds in),
 	// and nothing reloads the page now to bring it back. When the server is reachable again, start over. Only
 	// a paused socket is restarted, so a socket that is open, or one already waiting to reconnect, is never
-	// doubled.
+	// doubled; one that is still trying just gets its failure count back.
 	const recoveries = useReachabilityStore((s) => s.recoveries);
 	const seenRecoveries = useRef(recoveries);
 	useEffect(() => {
 		if (recoveries === seenRecoveries.current) return;
 		seenRecoveries.current = recoveries;
-		if (!enabled || useConnectionStore.getState().wsState !== "paused") return;
+		if (!enabled) return;
+		// Whatever the socket is doing, a recovery buys one fresh budget of failures: an attempt already
+		// pending (the third, say) would otherwise fail into "paused" with nothing left to fire again.
 		consecutiveFailuresRef.current = 0;
+		if (useConnectionStore.getState().wsState !== "paused") return;
 		setWsState("reconnecting");
 		connect();
 	}, [recoveries, enabled, connect, setWsState]);

@@ -31,18 +31,24 @@ const g = globalThis as unknown as Record<string, unknown>;
 const saved = { WebSocket: g.WebSocket, location: g.location, setTimeout: globalThis.setTimeout };
 /** The socket's 3 s reconnect timers started by a test: all cleared after it, so none fires into a later test. */
 let reconnectTimers: Array<ReturnType<typeof setTimeout>> = [];
+/** The same timers' callbacks, so a test can fire a 3 s reconnect without waiting for it. */
+let reconnectCallbacks: Array<() => void> = [];
 
 beforeAll(() => installDomStubs());
 afterAll(() => removeDomStubs());
 beforeEach(() => {
 	reconnectTimers = [];
+	reconnectCallbacks = [];
 	globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
 		const handle = (saved.setTimeout as (...a: unknown[]) => ReturnType<typeof setTimeout>)(
 			fn,
 			ms,
 			...rest,
 		);
-		if (ms === 3000) reconnectTimers.push(handle);
+		if (ms === 3000) {
+			reconnectTimers.push(handle);
+			reconnectCallbacks.push(fn);
+		}
 		return handle;
 	}) as unknown as typeof setTimeout;
 	FakeSocket.instances = [];
@@ -133,6 +139,41 @@ describe("the socket after an outage", () => {
 		await recover();
 		await flush(2);
 		expect(FakeSocket.instances).toHaveLength(0);
+		await h.unmount();
+	});
+
+	test("K1: a recovery that arrives while an attempt is pending is not lost: the budget starts over, still one socket at a time", async () => {
+		const h = await mount();
+		const fireNextReconnect = () =>
+			act(async () => {
+				const fire = reconnectCallbacks.shift();
+				fire?.();
+			});
+		// two attempts fail, the third upgrade is pending
+		await act(async () => FakeSocket.instances[0]?.onclose?.());
+		await fireNextReconnect();
+		await act(async () => FakeSocket.instances[1]?.onclose?.());
+		await fireNextReconnect();
+		expect(FakeSocket.instances).toHaveLength(3);
+		expect(useConnectionStore.getState().wsState).toBe("reconnecting");
+		// an HTTP probe succeeds meanwhile: the recovery is counted, no second socket is opened
+		await recover();
+		await flush(2);
+		expect(FakeSocket.instances).toHaveLength(3);
+		// the pending upgrade fails: it used to reach the threshold and pause for good
+		await act(async () => FakeSocket.instances[2]?.onclose?.());
+		expect(useConnectionStore.getState().wsState).toBe("reconnecting");
+		expect(reconnectCallbacks.length).toBeGreaterThan(0);
+		// one recovery bought one fresh budget of three; an upgrade that keeps failing still ends paused
+		await fireNextReconnect();
+		await act(async () => FakeSocket.instances[3]?.onclose?.());
+		expect(useConnectionStore.getState().wsState).toBe("reconnecting");
+		await fireNextReconnect();
+		await act(async () => FakeSocket.instances[4]?.onclose?.());
+		expect(useConnectionStore.getState().wsState).toBe("paused");
+		expect(FakeSocket.instances).toHaveLength(5);
+		await flush(2);
+		expect(FakeSocket.instances, "paused means paused: no retry loop").toHaveLength(5);
 		await h.unmount();
 	});
 });
