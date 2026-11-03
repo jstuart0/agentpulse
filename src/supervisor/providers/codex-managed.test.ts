@@ -1,9 +1,17 @@
-import { beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { LaunchRequest } from "../../shared/types.js";
+import { installFakeCodex, readFakeLog } from "./__fixtures__/fake-codex.js";
+import { configureCodexApprovals, createCodexApprovalTracker } from "./codex-approvals.js";
 import {
+	INTERRUPT_TIMEOUT_MS,
 	_resetWarnedProtocolVersionsForTest,
+	launchManagedCodexRequest,
 	resolveProviderProtocolVersion,
 	shouldPushBootstrapTitle,
+	stopManagedCodexSession,
 } from "./codex-managed.js";
 
 describe("the first title push after a bootstrap report", () => {
@@ -105,4 +113,122 @@ describe("resolveProviderProtocolVersion", () => {
 			warnSpy.mockRestore();
 		}
 	});
+});
+
+describe("interrupt timeout", () => {
+	let home: string;
+	let logPath: string;
+	const saved: Record<string, string | undefined> = {};
+	const KEYS = [
+		"HOME",
+		"AGENTPULSE_CODEX_COMMAND",
+		"AGENTPULSE_SUPERVISOR_DRY_RUN",
+		"FAKE_CODEX_LOG",
+		"FAKE_CODEX_REQUESTS",
+		"FAKE_CODEX_IGNORE_INTERRUPT",
+	];
+	beforeAll(() => {
+		for (const key of KEYS) saved[key] = process.env[key];
+		home = mkdtempSync(join(tmpdir(), "ap-codex-stop-"));
+		logPath = join(home, "fake.log");
+		process.env.HOME = home;
+		process.env.AGENTPULSE_CODEX_COMMAND = installFakeCodex(home);
+		process.env.AGENTPULSE_SUPERVISOR_DRY_RUN = "false";
+		process.env.FAKE_CODEX_LOG = logPath;
+	});
+	afterAll(() => {
+		for (const key of KEYS) {
+			if (saved[key] === undefined) delete process.env[key];
+			else process.env[key] = saved[key];
+		}
+		rmSync(home, { recursive: true, force: true });
+	});
+
+	async function launchWithPendingRequest() {
+		rmSync(logPath, { force: true });
+		process.env.FAKE_CODEX_IGNORE_INTERRUPT = "1";
+		process.env.FAKE_CODEX_REQUESTS = JSON.stringify([
+			{
+				method: "item/commandExecution/requestApproval",
+				params: { command: "touch x", cwd: home },
+			},
+		]);
+		const id = crypto.randomUUID();
+		const result = await launchManagedCodexRequest(
+			{
+				id: "launch-1",
+				launchCorrelationId: id,
+				agentType: "codex_cli",
+				cwd: home,
+				baseInstructions: "",
+				taskPrompt: "go",
+				model: "m",
+				approvalPolicy: null,
+				sandboxMode: null,
+				requestedLaunchMode: "managed_codex",
+				env: {},
+				launchSpec: {},
+				status: "claimed",
+			} as unknown as LaunchRequest,
+			{
+				reportState: async () => ({ session: { displayName: "n" }, managedSession: {} }),
+				reportEvents: async () => {},
+			} as never,
+		);
+		const deadline = Date.now() + 8_000;
+		while (!readFakeLog(logPath).some((e) => e.answer) && Date.now() < deadline)
+			await Bun.sleep(10);
+		return { id, result };
+	}
+
+	test("a stop whose turn/interrupt is never answered gives up at the limit, disposes, and leaves the request declined", async () => {
+		const { id, result } = await launchWithPendingRequest();
+
+		const began = Date.now();
+		await stopManagedCodexSession(id, { interruptTimeoutMs: 150 });
+		const took = Date.now() - began;
+
+		const log = readFakeLog(logPath);
+		expect(log.some((e) => e.method === "turn/interrupt")).toBe(true);
+		expect(took).toBeGreaterThanOrEqual(140);
+		expect(took).toBeLessThan(4_000);
+		expect(log.filter((e) => e.answer)).toEqual([
+			{ answer: { id: 0, result: { decision: "decline" } } },
+		]);
+		expect(log.some((e) => e.stdinEnd)).toBe(true);
+		expect(() => process.kill(result.pid, 0)).toThrow();
+		await expect(stopManagedCodexSession(id)).rejects.toThrow(/not available/);
+	});
+	test("the stop fences approvals before it interrupts the turn", async () => {
+		const real = createCodexApprovalTracker();
+		const order: string[] = [];
+		configureCodexApprovals({
+			...real,
+			fence: (sessionId) => {
+				order.push(
+					readFakeLog(logPath).some((e) => e.method === "turn/interrupt")
+						? "interrupt then fence"
+						: "fence",
+				);
+				real.fence(sessionId);
+			},
+		});
+		try {
+			const { id } = await launchWithPendingRequest();
+			await stopManagedCodexSession(id, { interruptTimeoutMs: 100 });
+			expect(order).toEqual(["fence"]);
+		} finally {
+			configureCodexApprovals(null);
+		}
+	});
+
+	test("with no limit given, turn/interrupt gets 5 s", async () => {
+		expect(INTERRUPT_TIMEOUT_MS).toBe(5_000);
+		const { id } = await launchWithPendingRequest();
+		const began = Date.now();
+		await stopManagedCodexSession(id);
+		const took = Date.now() - began;
+		expect(took).toBeGreaterThanOrEqual(4_900);
+		expect(took).toBeLessThan(9_000);
+	}, 20_000);
 });

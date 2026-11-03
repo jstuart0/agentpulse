@@ -16,11 +16,16 @@ import {
 	promptClaudeInteractiveSession,
 } from "./providers/claude.js";
 import {
+	configureCodexApprovals,
+	createCodexApprovalTracker,
+} from "./providers/codex-approvals.js";
+import {
 	launchManagedCodexRequest,
 	managedCodexRuntimeCount,
 	reconcileManagedCodexTitles,
 	stopManagedCodexSession,
 } from "./providers/codex-managed.js";
+import { warmCodexProtocolVerdict } from "./providers/codex-protocol.js";
 import { createBridgeSpoolDrain } from "./services/bridge-spool.js";
 import { executeCleanupWorkArea } from "./services/cleanup-workarea.js";
 import { isCodexObserverEnabled, startCodexObserver } from "./services/codex-observer.js";
@@ -210,6 +215,11 @@ async function main() {
 		log: (line) => console.warn(line),
 	});
 	setSharedCredentialTripwire(credentialTripwire);
+
+	// Every approval a managed Codex session asks for is answered here; until a person's answer can reach it,
+	// each is declined and said so. The protocol check is started now so it is normally ready by a first launch.
+	configureCodexApprovals(createCodexApprovalTracker());
+	warmCodexProtocolVerdict();
 
 	// Every report about a session leaves through this gate (see report-gate.ts): it holds the
 	// directories sessions and launches were started in, and the one closing report a newly
