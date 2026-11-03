@@ -1840,3 +1840,71 @@ describe("a bridge that was asleep is followed again when it wakes (AGEN-83 fina
 		).toEqual(["before", "after"]);
 	});
 });
+
+describe("a report that can't be removed is not sent again for ever (AGEN-83 K2)", () => {
+	/** A drain whose unlink always fails (a read-only reports directory); the bridge is gone, so the directory is dropped when idle. */
+	function stuckDrain() {
+		const { gate, calls } = recorder();
+		const drain = createBridgeSpoolDrain({
+			gate: gate as never,
+			home,
+			now: () => clock,
+			log: () => undefined,
+			credentialTripwire: createCredentialTripwire({ now: () => clock }),
+			onCredentialRejected: () => undefined,
+			unlink: () => {
+				throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+			},
+		});
+		return { drain, calls };
+	}
+
+	async function scans(drain: { drain(): Promise<void> }, count: number) {
+		for (let i = 0; i < count; i++) {
+			await drain.drain();
+			clock += SCAN_INTERVAL_MS + 1_000;
+		}
+	}
+
+	test("K2: a finished bridge's report that can't be unlinked is sent three times in all, however many scans follow", async () => {
+		makeBridge("stuck");
+		put("stuck", 1, envelope("events", eventBody({ content: "stays" })));
+		const { drain, calls } = stuckDrain();
+		await scans(drain, 12);
+		expect(calls.length).toBeLessThanOrEqual(3);
+		expect(remaining("stuck")).toHaveLength(1);
+	});
+
+	test("and a report written later into the same directory is still found and delivered", async () => {
+		makeBridge("stuck2");
+		put("stuck2", 1, envelope("events", eventBody({ content: "stays" })));
+		const { drain, calls } = stuckDrain();
+		await scans(drain, 6);
+		const before = calls.length;
+		put("stuck2", 2, envelope("events", eventBody({ content: "late" })));
+		await scans(drain, 4);
+		const late = calls
+			.slice(before)
+			.filter(
+				(c) => (c as { events?: Array<{ content?: string }> }).events?.[0]?.content === "late",
+			);
+		expect(late.length).toBeGreaterThanOrEqual(1);
+		// and the stuck one was not sent again meanwhile
+		const stays = calls.filter(
+			(c) => (c as { events?: Array<{ content?: string }> }).events?.[0]?.content === "stays",
+		);
+		expect(stays.length).toBeLessThanOrEqual(3);
+	});
+
+	test("a different file that takes the name of an exhausted one is a new report and is sent", async () => {
+		makeBridge("stuck3");
+		put("stuck3", 1, envelope("events", eventBody({ content: "first" })));
+		const { drain, calls } = stuckDrain();
+		await scans(drain, 6);
+		const before = calls.length;
+		rmSync(seqFile("stuck3", 1));
+		put("stuck3", 1, envelope("events", eventBody({ content: "replacement" })));
+		await scans(drain, 3);
+		expect(calls.length).toBeGreaterThan(before);
+	});
+});

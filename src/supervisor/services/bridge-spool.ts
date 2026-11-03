@@ -64,6 +64,8 @@ const MAX_PENDING_ADMIT = 4_096;
 /** The scan gives the event loop a turn this often. */
 const SCAN_YIELD_EVERY = 200;
 const MAX_UNLINK_FAILURES = 3;
+/** Files whose removal has failed for good, remembered across a directory being dropped and followed again. */
+const MAX_REMEMBERED_STUCK = 1_024;
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_CONFIG_BYTES = 64 * 1024;
 const MAX_CONTENT_CHARS = 64 * 1024;
@@ -262,6 +264,14 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 	const followed = new Map<string, Followed>();
 	/** Names seen by the parent scan: the directory's mtime when last examined, and reports/'s too when it was dead and empty. */
 	const known = new Map<string, { dir: number; reports?: number }>();
+	/**
+	 * Report files that could not be removed three times (an unwritable directory), by directory and name,
+	 * with the file's identity. A directory dropped and followed again starts with no memory of its own, so
+	 * without this each scan would send such a file three more times for ever. Bounded; forgotten at a
+	 * restart (a restart sends the file up to three more times, then it is remembered again).
+	 */
+	const stuck = new Map<string, Map<string, string>>();
+	let stuckCount = 0;
 	/** Directories the scan found that wait for room among the followed ones: name, mtime, probed nonce. */
 	const pendingAdmit = new Map<string, { mtimeMs: number; nonce: string }>();
 	/** The first pass after the drain starts treats every file it finds as a replay: it was written before this process existed. */
@@ -376,6 +386,7 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 				const failures = (entry.unlinkFailures.get(name) ?? 0) + 1;
 				entry.unlinkFailures.set(name, failures);
 				if (failures >= MAX_UNLINK_FAILURES) {
+					rememberStuck(entry.id, name, join(entry.reportsDir, name));
 					warnOnce(
 						entry,
 						`unlink-${name}`,
@@ -387,7 +398,59 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 		}
 		entry.firstSeen.delete(name);
 		entry.unlinkFailures.delete(name);
+		forgetStuck(entry.id, name);
 		if (countLost) lostCount++;
+	}
+
+	function identityOf(path: string): string | null {
+		try {
+			const st = lstatSync(path);
+			return `${st.ino}:${st.size}`;
+		} catch {
+			return null;
+		}
+	}
+
+	function rememberStuck(id: string, name: string, path: string) {
+		const identity = identityOf(path);
+		if (identity === null) return;
+		let names = stuck.get(id);
+		if (!names) {
+			names = new Map();
+			stuck.set(id, names);
+		}
+		if (!names.has(name)) stuckCount++;
+		names.set(name, identity);
+		// Over the bound, the oldest directory's memory goes first: its files are sent again, up to three times.
+		while (stuckCount > MAX_REMEMBERED_STUCK) {
+			const oldest = stuck.keys().next().value as string | undefined;
+			if (oldest === undefined) break;
+			stuckCount -= stuck.get(oldest)?.size ?? 0;
+			stuck.delete(oldest);
+		}
+	}
+
+	function forgetStuck(id: string, name: string) {
+		const names = stuck.get(id);
+		if (names?.delete(name)) stuckCount--;
+		if (names && names.size === 0) stuck.delete(id);
+	}
+
+	/** Carries what is remembered about this directory's unremovable files into its (possibly new) entry, for those still there and still the same file. */
+	function restoreStuck(entry: Followed, listed: Set<string>) {
+		const names = stuck.get(entry.id);
+		if (!names) return;
+		for (const [name, identity] of [...names]) {
+			if (!listed.has(name)) {
+				forgetStuck(entry.id, name); // gone: removed by someone else
+			} else if (!entry.unlinkFailures.has(name)) {
+				if (identityOf(join(entry.reportsDir, name)) === identity) {
+					entry.unlinkFailures.set(name, MAX_UNLINK_FAILURES);
+				} else {
+					forgetStuck(entry.id, name); // a different file under that name: a new report
+				}
+			}
+		}
 	}
 
 	async function credentialRejected(): Promise<void> {
@@ -609,6 +672,7 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 		for (const known of [...entry.firstSeen.keys()]) {
 			if (!listed.has(known)) entry.firstSeen.delete(known);
 		}
+		restoreStuck(entry, listed);
 		for (const name of files) {
 			if ((entry.unlinkFailures.get(name) ?? 0) >= MAX_UNLINK_FAILURES) continue;
 			if (!entry.firstSeen.has(name)) {
