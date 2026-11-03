@@ -4,7 +4,7 @@
  * still reloads. Every other caller is unchanged.
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { useReachabilityStore } from "../stores/reachability-store.js";
+import { reachabilityNetworkHandler, useReachabilityStore } from "../stores/reachability-store.js";
 import { api, resetAuthBounceForTests, setNetworkHandler } from "./api.js";
 import { runRetryProbe } from "./retry-probe.js";
 
@@ -40,7 +40,9 @@ beforeEach(() => {
 });
 afterEach(() => {
 	globalThis.fetch = realFetch;
-	setNetworkHandler(null);
+	// The app's handler goes back: module state is shared by every test file, and a later one (the first
+	// identity check) relies on the store's wiring being there.
+	setNetworkHandler(reachabilityNetworkHandler);
 	warn.mockRestore();
 	if (savedWindow.had) g.window = savedWindow.value;
 	else g.window = undefined;
@@ -112,10 +114,7 @@ describe("the outage notice's probe and the fingerprint poll never reload the pa
 	test("a failed probe counts once against the retry backoff, however many ways it is reported", async () => {
 		useReachabilityStore.setState({ unreachable: true, attempt: 0 });
 		// the wiring the app has: a request that gets no answer reports a failure to the store
-		setNetworkHandler({
-			failed: () => useReachabilityStore.getState().reportFailure(),
-			ok: () => {},
-		});
+		setNetworkHandler(reachabilityNetworkHandler);
 		throwing();
 		await runRetryProbe({
 			identityPending: false,
