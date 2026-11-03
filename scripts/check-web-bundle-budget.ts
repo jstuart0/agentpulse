@@ -12,8 +12,9 @@
  * + 1 kB; measured after the phase 8 review fixes: 22,260, 23,003 and 117,056; the lazy panel 11,582. The Summary panel is a lazy chunk the page loads only when the tab opens, so a person
  * who never opens it never pays for it. After merging v0.7.2 (the dashboard machine filter, which grew the base
  * to DashboardPage 26,258 and index 116,943 on its own) the limits were re-based on that base + the same
- * modest headroom; measured with the Summary work: DashboardPage 26,341, index 117,586. No chunk may carry zod (the validating schema is
- * server-only).
+ * modest headroom; measured with the Summary work: DashboardPage 26,341, index 117,586. AGEN-85 and AGEN-86 (the probe before a reload, the
+ * paused socket's slow retry) measured index 118,197 and moved its limit to 118,400. No chunk may carry zod (the
+ * validating schema is server-only).
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -40,7 +41,7 @@ export const BUDGETS: Budget[] = [
 	{ chunk: "SessionDetailPage", maxGzip: 23_500, measured: 22_260 },
 	{ chunk: "SessionSummaryTab", maxGzip: 12_500, measured: 11_582 },
 	{ chunk: "DashboardPage", maxGzip: 27_200, measured: 26_341 },
-	{ chunk: "index", maxGzip: 118_100, measured: 117_586 },
+	{ chunk: "index", maxGzip: 118_400, measured: 118_197 },
 ];
 
 /** A missing chunk fails: a renamed chunk must not silently escape its budget. `scale` shrinks every limit (the self-test). */

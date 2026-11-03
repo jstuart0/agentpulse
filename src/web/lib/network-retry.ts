@@ -118,12 +118,3 @@ export function isOutageResponse(status: number, code: string | null, path: stri
 	if (path === IDENTITY_PATH) return status >= 500 || status === 429;
 	return GATEWAY_STATUSES.has(status) && code !== BUSY_CODE && code !== SHUTTING_DOWN_CODE;
 }
-
-/**
- * Whether the health probe's answer says the server is there, so a request that got no answer was something
- * else (a blocked sign-on redirect) and a reload can help. Any answer counts, a sign-in redirect or refusal in
- * front of /health included, except what a proxy says while the app is down.
- */
-export function probeAnswerAllowsReload(status: number): boolean {
-	return !isOutageResponse(status, null, "/health");
-}

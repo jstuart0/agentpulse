@@ -65,7 +65,6 @@ import {
 	decideFetchFailure,
 	isOutageResponse,
 	parseRetryAfter,
-	probeAnswerAllowsReload,
 	readLastBounce,
 	recordBounce,
 } from "./network-retry.js";
@@ -131,32 +130,20 @@ export function setNetworkHandler(handler: NetworkHandler | null): void {
 	networkHandler = handler;
 }
 
-/**
- * An answer that looks like an expired sign-in. The first one in a minute
- * reloads; later ones are reported for the visible "can't reach the server"
- * state (which paces its own retries).
- */
-function handleFetchFailure(reason: string): void {
-	const decision = decideFetchFailure({
-		lastBounceAt: readLastBounce(bounceStorage),
-		now: Date.now(),
-	});
-	if (decision.action === "reload") triggerAuthReload(reason);
-	else networkHandler?.failed();
-}
-
 /** The probe under way, so requests that failed together ask once. */
 let reloadProbe: Promise<boolean> | null = null;
 
-/** Whether the server answers at all. Never goes through `request()`, so it can't report or reload by itself. */
+/**
+ * Whether the server answers at all, a sign-in redirect or refusal in front of /health included; what a proxy
+ * says while the app is down doesn't count. Not through `request()`, so it can't report or reload by itself.
+ */
 function serverAnswers(): Promise<boolean> {
 	reloadProbe ??= fetch(`${BASE_URL}/health`, {
 		redirect: "manual",
-		credentials: "same-origin",
 		cache: "no-store",
 		signal: AbortSignal.timeout(RELOAD_PROBE_TIMEOUT_MS),
 	})
-		.then((res) => looksLikeAuthBounce(res) || probeAnswerAllowsReload(res.status))
+		.then((res) => !isOutageResponse(res.status, null, "/health"))
 		.catch(() => false)
 		.finally(() => {
 			reloadProbe = null;
@@ -165,23 +152,23 @@ function serverAnswers(): Promise<boolean> {
 }
 
 /**
- * A foreground request that threw. It may be a sign-on redirect the browser blocked, which a reload fixes, or
- * a server that isn't answering, where a reload would swap the page for the browser's error page and lose
- * what's on it. Only a reload that would otherwise happen costs a probe.
+ * The first failure in a minute may be an expired sign-in, so it reloads once; every later one is reported for
+ * the visible "can't reach the server" state (which paces its own retries). With `probe`, the failure is a
+ * request that got no answer, which is also what a server that's down looks like, and reloading into that
+ * swaps the page for the browser's error page: it reloads only if the server answers a probe.
  */
-function handleFetchThrow(reason: string): void {
+function handleFetchFailure(reason: string, probe = false): void {
 	const decision = decideFetchFailure({
 		lastBounceAt: readLastBounce(bounceStorage),
 		now: Date.now(),
 	});
-	if (decision.action !== "reload") {
-		networkHandler?.failed();
-		return;
-	}
-	void serverAnswers().then((answers) => {
-		if (answers) triggerAuthReload(reason);
-		else networkHandler?.failed();
-	});
+	if (decision.action !== "reload") networkHandler?.failed();
+	else if (!probe) triggerAuthReload(reason);
+	else
+		void serverAnswers().then((answers) => {
+			if (answers) triggerAuthReload(reason);
+			else networkHandler?.failed();
+		});
 }
 
 export function looksLikeAuthBounce(res: Response): boolean {
@@ -295,7 +282,7 @@ async function request<T>(
 		// Failed to fetch = cross-origin redirect blocked by CORS OR network error.
 		if (err instanceof TypeError) {
 			if (opts?.background) networkHandler?.failed();
-			else handleFetchThrow(`fetch threw (${err.message})`);
+			else handleFetchFailure(`fetch threw (${err.message})`, true);
 		}
 		throw err;
 	}
