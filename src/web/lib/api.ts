@@ -61,9 +61,11 @@ export type AiProviderKind = ProviderKind;
 export type AiWatcherPolicy = WatcherPolicy;
 export type { AskMessageRole, DecisionKind, HitlReplyKind } from "../../shared/types.js";
 import {
+	RELOAD_PROBE_TIMEOUT_MS,
 	decideFetchFailure,
 	isOutageResponse,
 	parseRetryAfter,
+	probeAnswerAllowsReload,
 	readLastBounce,
 	recordBounce,
 } from "./network-retry.js";
@@ -130,9 +132,9 @@ export function setNetworkHandler(handler: NetworkHandler | null): void {
 }
 
 /**
- * A request that got no answer. The first one in a minute may be an expired
- * sign-in, so it reloads once; every later one is an outage, reported for the
- * visible "can't reach the server" state (which paces its own retries).
+ * An answer that looks like an expired sign-in. The first one in a minute
+ * reloads; later ones are reported for the visible "can't reach the server"
+ * state (which paces its own retries).
  */
 function handleFetchFailure(reason: string): void {
 	const decision = decideFetchFailure({
@@ -141,6 +143,45 @@ function handleFetchFailure(reason: string): void {
 	});
 	if (decision.action === "reload") triggerAuthReload(reason);
 	else networkHandler?.failed();
+}
+
+/** The probe under way, so requests that failed together ask once. */
+let reloadProbe: Promise<boolean> | null = null;
+
+/** Whether the server answers at all. Never goes through `request()`, so it can't report or reload by itself. */
+function serverAnswers(): Promise<boolean> {
+	reloadProbe ??= fetch(`${BASE_URL}/health`, {
+		redirect: "manual",
+		credentials: "same-origin",
+		cache: "no-store",
+		signal: AbortSignal.timeout(RELOAD_PROBE_TIMEOUT_MS),
+	})
+		.then((res) => looksLikeAuthBounce(res) || probeAnswerAllowsReload(res.status))
+		.catch(() => false)
+		.finally(() => {
+			reloadProbe = null;
+		});
+	return reloadProbe;
+}
+
+/**
+ * A foreground request that threw. It may be a sign-on redirect the browser blocked, which a reload fixes, or
+ * a server that isn't answering, where a reload would swap the page for the browser's error page and lose
+ * what's on it. Only a reload that would otherwise happen costs a probe.
+ */
+function handleFetchThrow(reason: string): void {
+	const decision = decideFetchFailure({
+		lastBounceAt: readLastBounce(bounceStorage),
+		now: Date.now(),
+	});
+	if (decision.action !== "reload") {
+		networkHandler?.failed();
+		return;
+	}
+	void serverAnswers().then((answers) => {
+		if (answers) triggerAuthReload(reason);
+		else networkHandler?.failed();
+	});
 }
 
 export function looksLikeAuthBounce(res: Response): boolean {
@@ -231,8 +272,8 @@ export function resetAuthBounceForTests(): void {
  * enrollment token, a typed name). An expired sign-in is still caught from the answer itself: with
  * `redirect: "manual"` a forwardauth redirect comes back as an opaque redirect (or status 0), which
  * `looksLikeAuthBounce` reads without any exception, so it reloads here too. The one case a background
- * request cannot tell is a redirect the browser blocks outright (a TypeError); the person's next request of
- * their own still reloads.
+ * request cannot tell is a redirect the browser blocks outright (a TypeError); the next foreground request
+ * still reloads, once a probe shows the server is answering.
  */
 async function request<T>(
 	path: string,
@@ -251,12 +292,10 @@ async function request<T>(
 			...options,
 		});
 	} catch (err) {
-		// Failed to fetch = cross-origin redirect blocked by CORS OR
-		// network error. Either way, reload — the worst case is one
-		// extra full-page refresh.
+		// Failed to fetch = cross-origin redirect blocked by CORS OR network error.
 		if (err instanceof TypeError) {
 			if (opts?.background) networkHandler?.failed();
-			else handleFetchFailure(`fetch threw (${err.message})`);
+			else handleFetchThrow(`fetch threw (${err.message})`);
 		}
 		throw err;
 	}

@@ -5,14 +5,18 @@
  *
  * A failed fetch is ambiguous in a browser: it is what an expired single
  * sign-on session looks like (the redirect is blocked), and it is also what an
- * unreachable server looks like. One reload per visit window covers the first;
- * anything after that is treated as an outage, which gets a visible notice and
- * a growing wait instead of another reload. With no way to remember the reload
- * (storage unavailable), the reload is never tried.
+ * unreachable server looks like. A health probe tells them apart before any
+ * reload: reloading into a server that isn't answering lands on the browser's
+ * own error page. One reload per visit window covers the first; anything after
+ * that is treated as an outage, which gets a visible notice and a growing wait
+ * instead of another reload. With no way to remember the reload (storage
+ * unavailable), the reload is never tried.
  */
 export const RETRY_BASE_MS = 1_000;
 export const RETRY_MAX_MS = 30_000;
 export const AUTH_BOUNCE_WINDOW_MS = 60_000;
+/** How long the probe before a reload waits for an answer. No answer in time reads as an outage. */
+export const RELOAD_PROBE_TIMEOUT_MS = 5_000;
 
 /** Wait before retry number `attempt` (1-based): 1 s, 2 s, 4 s, then 30 s at most. */
 export function retryDelayMs(attempt: number): number {
@@ -113,4 +117,13 @@ export const SHUTTING_DOWN_CODE = "shutting_down";
 export function isOutageResponse(status: number, code: string | null, path: string): boolean {
 	if (path === IDENTITY_PATH) return status >= 500 || status === 429;
 	return GATEWAY_STATUSES.has(status) && code !== BUSY_CODE && code !== SHUTTING_DOWN_CODE;
+}
+
+/**
+ * Whether the health probe's answer says the server is there, so a request that got no answer was something
+ * else (a blocked sign-on redirect) and a reload can help. Any answer counts, a sign-in redirect or refusal in
+ * front of /health included, except what a proxy says while the app is down.
+ */
+export function probeAnswerAllowsReload(status: number): boolean {
+	return !isOutageResponse(status, null, "/health");
 }

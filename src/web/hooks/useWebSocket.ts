@@ -40,6 +40,9 @@ export function useNotificationPermission() {
 	}, []);
 }
 
+/** How often a paused socket tries one upgrade. Polling carries the page meanwhile, so this can be slow. */
+export const PAUSED_RETRY_MS = 120_000;
+
 /**
  * Live updates over the dashboard socket. Pass `enabled: false` until the
  * viewer may use the app: a signed-out or must-change-password viewer is
@@ -62,6 +65,8 @@ export function useWebSocket(enabled = true) {
 	// ask the app to reload (top-level nav completes the reauth dance).
 	const consecutiveFailuresRef = useRef(0);
 	const FAILURE_RELOAD_THRESHOLD = 3;
+	// A paused socket's own slow attempt is under way: it stays "paused" unless it opens.
+	const pausedAttemptRef = useRef(false);
 
 	const connect = useCallback(() => {
 		const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -74,6 +79,7 @@ export function useWebSocket(enabled = true) {
 		ws.onopen = () => {
 			console.log("[ws] Connected");
 			consecutiveFailuresRef.current = 0;
+			pausedAttemptRef.current = false;
 			// A reconnect (not the first connection) may follow a role or mode change made elsewhere.
 			const isReconnect = useConnectionStore.getState().lastConnectedAt !== null;
 			markConnected();
@@ -150,6 +156,7 @@ export function useWebSocket(enabled = true) {
 		};
 
 		ws.onclose = () => {
+			pausedAttemptRef.current = false;
 			consecutiveFailuresRef.current += 1;
 			if (consecutiveFailuresRef.current >= FAILURE_RELOAD_THRESHOLD) {
 				// Give up on WS; polling is the fallback update path.
@@ -157,6 +164,20 @@ export function useWebSocket(enabled = true) {
 				// live updates have degraded. If auth is genuinely expired, the
 				// polling path will surface that via its own error handling.
 				setWsState("paused");
+				// An upgrade can fail while HTTP stays healthy, so no recovery would ever restart this socket.
+				// One quiet attempt at a time; a failure lands back here. A hidden tab, or an outage the
+				// recovery below will end, skips its turn.
+				const tryAgainLater = () => {
+					reconnectTimeoutRef.current = setTimeout(() => {
+						if (document.hidden || useReachabilityStore.getState().unreachable) {
+							tryAgainLater();
+							return;
+						}
+						pausedAttemptRef.current = true;
+						connect();
+					}, PAUSED_RETRY_MS);
+				};
+				tryAgainLater();
 				return;
 			}
 			setWsState("reconnecting");
@@ -201,6 +222,9 @@ export function useWebSocket(enabled = true) {
 		// pending (the third, say) would otherwise fail into "paused" with nothing left to fire again.
 		consecutiveFailuresRef.current = 0;
 		if (useConnectionStore.getState().wsState !== "paused") return;
+		// Its slow attempt is already the one socket; with the budget back, a failure retries in 3 s.
+		if (pausedAttemptRef.current) return;
+		clearTimeout(reconnectTimeoutRef.current);
 		setWsState("reconnecting");
 		connect();
 	}, [recoveries, enabled, connect, setWsState]);

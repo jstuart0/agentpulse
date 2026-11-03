@@ -7,8 +7,14 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { act } from "react";
 import { useConnectionStore } from "../stores/connection-store.js";
 import { useReachabilityStore } from "../stores/reachability-store.js";
-import { flush, installDomStubs, removeDomStubs, renderHook } from "../test-utils/render-hook.js";
-import { useWebSocket } from "./useWebSocket.js";
+import {
+	flush,
+	installDomStubs,
+	removeDomStubs,
+	renderHook,
+	setDocumentHidden,
+} from "../test-utils/render-hook.js";
+import { PAUSED_RETRY_MS, useWebSocket } from "./useWebSocket.js";
 
 class FakeSocket {
 	static instances: FakeSocket[] = [];
@@ -28,17 +34,33 @@ class FakeSocket {
 }
 
 const g = globalThis as unknown as Record<string, unknown>;
-const saved = { WebSocket: g.WebSocket, location: g.location, setTimeout: globalThis.setTimeout };
+const saved = {
+	WebSocket: g.WebSocket,
+	location: g.location,
+	setTimeout: globalThis.setTimeout,
+	clearTimeout: globalThis.clearTimeout,
+};
 /** The socket's 3 s reconnect timers started by a test: all cleared after it, so none fires into a later test. */
 let reconnectTimers: Array<ReturnType<typeof setTimeout>> = [];
 /** The same timers' callbacks, so a test can fire a 3 s reconnect without waiting for it. */
 let reconnectCallbacks: Array<() => void> = [];
+/** The paused socket's slow timers, cleared and fired the same way. */
+let pausedCallbacks: Array<() => void> = [];
+let pausedHandles: Array<ReturnType<typeof setTimeout>> = [];
+let cleared: unknown[] = [];
 
 beforeAll(() => installDomStubs());
 afterAll(() => removeDomStubs());
 beforeEach(() => {
 	reconnectTimers = [];
 	reconnectCallbacks = [];
+	pausedCallbacks = [];
+	pausedHandles = [];
+	cleared = [];
+	globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout>) => {
+		cleared.push(handle);
+		saved.clearTimeout(handle);
+	}) as typeof clearTimeout;
 	globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
 		const handle = (saved.setTimeout as (...a: unknown[]) => ReturnType<typeof setTimeout>)(
 			fn,
@@ -49,6 +71,11 @@ beforeEach(() => {
 			reconnectTimers.push(handle);
 			reconnectCallbacks.push(fn);
 		}
+		if (ms === PAUSED_RETRY_MS) {
+			reconnectTimers.push(handle);
+			pausedCallbacks.push(fn);
+			pausedHandles.push(handle);
+		}
 		return handle;
 	}) as unknown as typeof setTimeout;
 	FakeSocket.instances = [];
@@ -58,7 +85,9 @@ beforeEach(() => {
 	useConnectionStore.setState({ wsState: "reconnecting" });
 });
 afterEach(() => {
+	setDocumentHidden(false);
 	globalThis.setTimeout = saved.setTimeout;
+	globalThis.clearTimeout = saved.clearTimeout;
 	for (const handle of reconnectTimers) clearTimeout(handle);
 	g.WebSocket = saved.WebSocket;
 	g.location = saved.location;
@@ -173,7 +202,90 @@ describe("the socket after an outage", () => {
 		expect(useConnectionStore.getState().wsState).toBe("paused");
 		expect(FakeSocket.instances).toHaveLength(5);
 		await flush(2);
-		expect(FakeSocket.instances, "paused means paused: no retry loop").toHaveLength(5);
+		expect(FakeSocket.instances, "paused: nothing retries before the slow timer").toHaveLength(5);
+		await h.unmount();
+	});
+});
+
+describe("a socket that gave up while HTTP stayed healthy (AGEN-86)", () => {
+	const firePaused = () =>
+		act(async () => {
+			pausedCallbacks.shift()?.();
+		});
+
+	test("tries one upgrade on the slow timer, stays paused while it is pending, and goes live when it opens", async () => {
+		const h = await mount();
+		await giveUp(FakeSocket.instances[0] as FakeSocket);
+		expect(FakeSocket.instances).toHaveLength(1);
+		expect(pausedCallbacks).toHaveLength(1);
+		await firePaused();
+		expect(FakeSocket.instances).toHaveLength(2);
+		expect(useConnectionStore.getState().wsState).toBe("paused");
+		await act(async () => FakeSocket.instances[1]?.onopen?.());
+		expect(useConnectionStore.getState().wsState).toBe("connected");
+		expect(pausedCallbacks).toHaveLength(0);
+		await h.unmount();
+	});
+
+	test("an attempt that fails goes back to waiting: no 3 s loop, one timer", async () => {
+		const h = await mount();
+		await giveUp(FakeSocket.instances[0] as FakeSocket);
+		const fastTimers = reconnectCallbacks.length;
+		await firePaused();
+		await act(async () => FakeSocket.instances[1]?.onclose?.());
+		expect(useConnectionStore.getState().wsState).toBe("paused");
+		expect(reconnectCallbacks).toHaveLength(fastTimers);
+		expect(pausedCallbacks).toHaveLength(1);
+		await h.unmount();
+	});
+
+	test("a hidden tab and an outage skip their turn and keep the timer going", async () => {
+		const h = await mount();
+		await giveUp(FakeSocket.instances[0] as FakeSocket);
+		setDocumentHidden(true);
+		await firePaused();
+		expect(FakeSocket.instances).toHaveLength(1);
+		setDocumentHidden(false);
+		useReachabilityStore.setState({ unreachable: true });
+		await firePaused();
+		expect(FakeSocket.instances).toHaveLength(1);
+		useReachabilityStore.setState({ unreachable: false });
+		await firePaused();
+		expect(FakeSocket.instances).toHaveLength(2);
+		await h.unmount();
+	});
+
+	test("a recovery while the timer waits replaces it: the old timer opens nothing more", async () => {
+		const h = await mount();
+		await giveUp(FakeSocket.instances[0] as FakeSocket);
+		await recover();
+		await flush(2);
+		expect(FakeSocket.instances).toHaveLength(2);
+		expect(cleared).toContain(pausedHandles[0]);
+		await h.unmount();
+	});
+
+	test("a recovery during the slow attempt doesn't open a second socket", async () => {
+		const h = await mount();
+		await giveUp(FakeSocket.instances[0] as FakeSocket);
+		await firePaused();
+		expect(FakeSocket.instances).toHaveLength(2);
+		await recover();
+		await flush(2);
+		expect(FakeSocket.instances).toHaveLength(2);
+		// it failed with a fresh budget: the fast retry takes over
+		await act(async () => FakeSocket.instances[1]?.onclose?.());
+		expect(useConnectionStore.getState().wsState).toBe("reconnecting");
+		await h.unmount();
+	});
+
+	test("a viewer signed out while paused has no timer left", async () => {
+		const h = await mount();
+		await giveUp(FakeSocket.instances[0] as FakeSocket);
+		await h.render(false);
+		await flush(2);
+		expect(cleared).toContain(pausedHandles[0]);
+		expect(FakeSocket.instances).toHaveLength(1);
 		await h.unmount();
 	});
 });
