@@ -135,7 +135,7 @@ export function hostsRefreshNotice(
 	return `Couldn't refresh hosts. Showing what we last heard at ${at}.`;
 }
 
-/** How often the page refetches hosts while one is catching up, and how often it redraws so leases run out. */
+/** How often the page refetches hosts while one is catching up (`OUTBOX_POLL_MS`), and how often it refetches them quietly otherwise (`HOSTS_TICK_MS`), so a lease that ran out shows. Neither redraws on its own: the page's `now` moves only when a fetch succeeds. */
 export const OUTBOX_POLL_MS = 15_000;
 export const HOSTS_TICK_MS = 30_000;
 
