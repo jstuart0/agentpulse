@@ -1771,6 +1771,11 @@ describe("a bridge's final reports are not stranded (AGEN-83 final review)", () 
 		);
 		put("ending", 2, envelope("events", eventBody({ content: "ended" })));
 		expect(statSync(bridgeDir("ending")).mtimeMs).toBe(parentBefore);
+		// A file system with a coarse clock (Linux: a few milliseconds) can leave reports/'s mtime where it
+		// was when the files land within the same tick; move it as a later write would, so the test is
+		// about the drain, not about the clock.
+		const bumped = new Date(statSync(reportsDir("ending")).mtimeMs + 2_000);
+		utimesSync(reportsDir("ending"), bumped, bumped);
 		clock += SCAN_INTERVAL_MS + 1_000;
 		await drain.drain();
 		expect(calls.map((c) => c.kind)).toEqual(["state", "events"]);
