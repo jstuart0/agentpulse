@@ -163,6 +163,28 @@ describe("approving from Telegram", () => {
 		expect(await promptActions(w.sessionId)).toHaveLength(0);
 	});
 
+	test("a host that is offline or was removed says the host isn't connected, leaves the request open and sends nothing", async () => {
+		const offline = await world();
+		await getDb()
+			.update(supervisors)
+			.set({ heartbeatLeaseExpiresAt: new Date(Date.now() - 1_000).toISOString() });
+		const offlineTap = await tap(offline, "approve");
+		expect(offlineTap.answers).toEqual([
+			"This session's host isn't connected, so nothing was sent.",
+		]);
+		expect(await hitlStatus(offline.hitlId)).toBe("awaiting_reply");
+		expect(await promptActions(offline.sessionId)).toHaveLength(0);
+
+		const removed = await world();
+		await getDb().delete(supervisors);
+		const removedTap = await tap(removed, "approve");
+		expect(removedTap.answers).toEqual([
+			"This session's host isn't connected, so nothing was sent.",
+		]);
+		expect(await hitlStatus(removed.hitlId)).toBe("awaiting_reply");
+		expect(await promptActions(removed.sessionId)).toHaveLength(0);
+	});
+
 	test("a request whose turn moved on is out of date; one past its expiry has expired; a second tap is already resolved", async () => {
 		const stale = await world();
 		await seedEvent(stale.sessionId, { eventType: "UserPromptSubmit", category: "prompt" });

@@ -18,6 +18,7 @@ import { SessionPromptComposer } from "../components/session-detail/SessionPromp
 import {
 	AgentObserveOnlyHint,
 	CodexStatusHint,
+	HostControlHint,
 	ManagedClaudeStatus,
 	ManagedCodexStatus,
 	selectStatusHint,
@@ -28,6 +29,10 @@ import {
 	getVisibleEvents,
 	mergeSessionEvents,
 } from "../components/session-detail/TimelineView.js";
+import {
+	hostRefusalMessage,
+	showProviderSyncState,
+} from "../components/session-detail/host-control-view.js";
 import { useDirectoryInitials } from "../hooks/useDirectoryInitials.js";
 import { useEventReveal } from "../hooks/useEventReveal.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
@@ -478,7 +483,10 @@ export function SessionDetailPage() {
 			await loadSessionWorkspace();
 		} catch (error) {
 			console.error("Failed to stop session:", error);
-			toast.error(describeApiError(error, "Couldn't stop the session."));
+			toast.error(
+				hostRefusalMessage(error, { managedSession: session?.managedSession }) ??
+					describeApiError(error, "Couldn't stop the session."),
+			);
 		}
 	}
 
@@ -675,7 +683,12 @@ export function SessionDetailPage() {
 				const sel = selectStatusHint(session, displayName);
 				switch (sel.component) {
 					case "ManagedCodexStatus":
-						return <ManagedCodexStatus managedSession={sel.managedSession} />;
+						return (
+							<ManagedCodexStatus
+								managedSession={sel.managedSession}
+								showSyncState={showProviderSyncState(session)}
+							/>
+						);
 					case "ManagedClaudeStatus":
 						return <ManagedClaudeStatus managedSession={sel.managedSession} />;
 					case "CodexStatusHint":
@@ -684,6 +697,8 @@ export function SessionDetailPage() {
 						return <AgentObserveOnlyHint agentType={sel.agentType} />;
 				}
 			})()}
+
+			<HostControlHint session={session} />
 
 			<ControlHistory actions={controlActions} />
 

@@ -26,6 +26,7 @@ import { FilterToggle, ModeButton, ScrollJumpControls } from "./SharedControls.j
 import type { TimelineMode } from "./TimelineView.js";
 import { WorkspaceTabBar } from "./WorkspaceTabBar.js";
 import { buildExportMarkdown } from "./export-markdown.js";
+import { controlBlockedReason } from "./host-control-view.js";
 
 interface SessionHeaderProps {
 	session: Session;
@@ -119,6 +120,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 	const canStop =
 		session.agentType === "codex_cli" && session.managedSession?.managedState === "managed";
 	const hostLabel = sessionHostLabel(session);
+	const stopBlockedReason = canStop ? controlBlockedReason(session) : null;
 
 	return (
 		<div
@@ -255,10 +257,17 @@ export function SessionHeader(props: SessionHeaderProps) {
 							<button
 								type="button"
 								onClick={onStop}
-								className="rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-800 dark:text-red-300 hover:bg-red-500/20 transition-colors"
+								disabled={stopBlockedReason !== null}
+								aria-describedby={stopBlockedReason ? "stop-blocked-reason" : undefined}
+								className="rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-800 dark:text-red-300 hover:bg-red-500/20 transition-colors disabled:opacity-50 disabled:hover:bg-red-500/10"
 							>
 								Stop
 							</button>
+						)}
+						{stopBlockedReason && (
+							<span id="stop-blocked-reason" className="text-[11px] text-muted-foreground">
+								{stopBlockedReason}
+							</span>
 						)}
 						<button
 							type="button"
@@ -326,7 +335,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 							session={session}
 							displayName={displayName}
 							allEvents={allEvents}
-							canStop={canStop}
+							canStop={canStop && stopBlockedReason === null}
 							onJumpTop={onJumpTop}
 							onJumpBottom={onJumpBottom}
 							onStop={onStop}

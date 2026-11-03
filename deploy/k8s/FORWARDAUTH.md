@@ -344,6 +344,18 @@ WHERE EXISTS (SELECT 1 FROM launch_requests lr
 ```
 <!-- ownership-repair-sql:end -->
 
+**What a re-enrolled host looks like (AGEN-66)** — re-enrolling a machine creates a
+supervisor with a new id, and the sessions the old one ran stay with the old
+enrollment: nothing transfers them, because no proof survives losing the credential,
+and the new process has no connection to the old runtime. Stop and prompt on such a
+session are refused at once with `409 host_offline` (the old host's lease has run
+out) or `409 host_gone` (it was revoked or removed), with nothing queued, instead of
+waiting 90 seconds and failing. The session page says the host has been offline since
+a time and that a re-enrolled host does not take its sessions over; archive the
+session, or use the reassign section below if you mean to hand it to another host.
+Retry still works against an offline host (the new launch waits for it) and is refused
+`host_gone` only when the launch's requested host no longer exists or is revoked.
+
 **Reassign host** — moves *one* session to another supervisor. There is no dashboard
 flow for this; it's a manual escape hatch for a host that was re-enrolled under a new
 id, or a session deliberately handed to a different host. Updating

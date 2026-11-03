@@ -494,6 +494,10 @@ function refusalForEnqueue(reason: string): Refusal {
 			return refusal(409, "launch_missing");
 		case "launch_mismatch":
 			return refusal(409, "prompt_not_deliverable", "launch_mismatch");
+		case "host_offline":
+			return refusal(409, "prompt_not_deliverable", "supervisor_offline");
+		case "host_gone":
+			return refusal(409, "prompt_not_deliverable", "host_gone");
 		default:
 			return refusal(409, "prompt_not_deliverable", "control_busy");
 	}

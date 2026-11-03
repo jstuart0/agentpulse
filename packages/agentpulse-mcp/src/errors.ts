@@ -115,6 +115,9 @@ const ERROR_TABLE: ReadonlyArray<{
 			if (reason === "control_busy") {
 				return "AgentPulse is busy: another action is already running on that session, so the prompt was NOT sent and the request is still open. Retryable: wait a few seconds and call decide_hitl again.";
 			}
+			if (reason === "host_gone") {
+				return "AgentPulse can't type into that session: the host that ran it was removed, so the prompt was NOT sent and the request is still open. Decline it, or answer in the session.";
+			}
 			return `AgentPulse can't type into that session${reason ? ` (${reason})` : ""}, so the prompt was NOT sent and the request is still open. Decline it, or answer in the session.`;
 		},
 	},

@@ -162,6 +162,14 @@ export interface ResolvedProjectData {
 	defaultLaunchMode: LaunchMode | null;
 }
 
+export type HostControlState = "live" | "offline" | "gone";
+
+export interface HostControl {
+	state: HostControlState;
+	/** The host's last heartbeat; null when it is gone or never beat. */
+	lastSeenAt: string | null;
+}
+
 export interface ManagedSession {
 	sessionId: string;
 	launchRequestId: string;
@@ -233,6 +241,8 @@ export interface Session {
 	 */
 	machine?: string | null;
 	managedSession?: ManagedSession | null;
+	/** Detail response only, and only for a managed session: whether its host can take a stop or a prompt. Absent means "can't tell". */
+	hostControl?: HostControl;
 	managed?: boolean;
 	// F86 (ian mid-build, D14/Phase 2): optional for backward-compat with a
 	// server predating mapSessionDto — a get_session response from a

@@ -12,6 +12,7 @@ import { apiKeys, sessions } from "../db/schema/index.js";
 import { type InstanceMode, modeFromStoredColumn, storedModeColumn } from "./instance-mode.js";
 import { getManagedSession } from "./managed-session-state.js";
 import { mapSessionDto } from "./session-dto.js";
+import { type SessionHostStatus, getSessionOwnerHostStates } from "./session-ownership.js";
 
 export interface ReportingKeyRow {
 	id: string;
@@ -20,7 +21,7 @@ export interface ReportingKeyRow {
 }
 
 export interface SessionDetailRead {
-	session: ReturnType<typeof mapSessionDto>;
+	session: ReturnType<typeof mapSessionDto> & { hostControl?: SessionHostStatus };
 	/** True when the session names an ingest key, even one that no longer exists. */
 	keyRecorded: boolean;
 	/** The named key's row; null when none is named or the key is gone. */
@@ -43,8 +44,15 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
 		.limit(1);
 	if (!row) return null;
 	const managedSession = await getManagedSession(sessionId);
+	// One more statement, and only for a managed session: whether its host can take a stop or a prompt.
+	const hostControl = managedSession
+		? ((await getSessionOwnerHostStates([sessionId])).get(sessionId) ?? null)
+		: null;
 	return {
-		session: mapSessionDto(row.session, { managedSession }),
+		session: {
+			...mapSessionDto(row.session, { managedSession }),
+			...(hostControl ? { hostControl } : {}),
+		},
 		keyRecorded: row.session.ingestKeyId !== null,
 		reportingKey:
 			row.keyId === null

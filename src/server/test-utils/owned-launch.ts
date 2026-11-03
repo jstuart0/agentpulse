@@ -9,7 +9,7 @@
  * hand-rolled `launch_requests` inserts drifting on required columns.
  */
 import { getDb } from "../db/client.js";
-import { launchRequests } from "../db/schema/index.js";
+import { launchRequests, supervisors } from "../db/schema/index.js";
 
 /**
  * Insert (or reset) a `launch_requests` row whose `launchCorrelationId` is
@@ -23,6 +23,11 @@ import { launchRequests } from "../db/schema/index.js";
  * Never creates a `sessions` or `managed_sessions` row — callers own those
  * fixtures themselves.
  *
+ * Also seeds the owning host as a live `supervisors` row (lease an hour out,
+ * left untouched when the row already exists), because stop and prompt are
+ * refused for a host that is offline or gone. Pass `host: "none"` for a test
+ * that needs the missing-host case.
+ *
  * Status defaults to "running", which `findPendingLaunchForObservedSession`
  * ignores. That keeps `associateObservedSession` a no-op against this
  * fixture, so seeding ownership doesn't also trigger launch-attachment
@@ -31,9 +36,10 @@ import { launchRequests } from "../db/schema/index.js";
 export async function seedOwnedLaunch(
 	sessionId: string,
 	supervisorId: string,
-	opts?: { status?: string },
+	opts?: { status?: string; host?: "live" | "none" },
 ): Promise<{ launchId: string }> {
 	const status = opts?.status ?? "running";
+	if (opts?.host !== "none") await seedLiveHostIfAbsent(supervisorId);
 	const [row] = await getDb()
 		.insert(launchRequests)
 		.values({
@@ -55,4 +61,51 @@ export async function seedOwnedLaunch(
 		.returning();
 
 	return { launchId: row.id };
+}
+
+const LIVE_LEASE_MS = 60 * 60_000;
+
+async function seedLiveHostIfAbsent(supervisorId: string): Promise<void> {
+	const now = new Date().toISOString();
+	await getDb()
+		.insert(supervisors)
+		.values({
+			id: supervisorId,
+			hostName: supervisorId,
+			platform: "linux",
+			arch: "x64",
+			version: "1.0.0",
+			// Capable enough that a retry of a fixture launch passes the host's own checks.
+			capabilities: {
+				version: 1,
+				agentTypes: ["claude_code", "codex_cli"],
+				launchModes: ["headless", "interactive_terminal", "managed_codex"],
+				os: "linux",
+				terminalSupport: ["terminal"],
+				features: [],
+				executables: {
+					claude: {
+						available: true,
+						command: "claude",
+						resolvedPath: "/usr/bin/claude",
+						source: "auto",
+					},
+					codex: {
+						available: true,
+						command: "codex",
+						resolvedPath: "/usr/bin/codex",
+						source: "auto",
+					},
+				},
+			},
+			trustedRoots: ["/"],
+			capabilitySchemaVersion: 2,
+			configSchemaVersion: 1,
+			lastHeartbeatAt: now,
+			heartbeatLeaseExpiresAt: new Date(Date.now() + LIVE_LEASE_MS).toISOString(),
+			enrollmentState: "active",
+			createdAt: now,
+			updatedAt: now,
+		})
+		.onConflictDoNothing();
 }

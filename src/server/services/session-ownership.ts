@@ -88,6 +88,34 @@ export function sessionOwnedBy(supervisorId: string): SQL {
 /** Join condition linking a managed row to its owner-of-record supervisor. */
 const ownerSupervisorJoin = eq(supervisors.id, sessionOwnerSql);
 
+interface OwnerHostRow {
+	sessionId: string;
+	hostId: string | null;
+	lease: string | null;
+	enrollmentState: string | null;
+	lastHeartbeatAt: string | null;
+}
+
+/** The one query behind both host readers: each managed session joined to its owner-of-record host. */
+async function readOwnerHostRows(
+	sessionIds: readonly string[],
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+): Promise<OwnerHostRow[]> {
+	return db
+		.select({
+			sessionId: managedSessions.sessionId,
+			hostId: supervisors.id,
+			lease: supervisors.heartbeatLeaseExpiresAt,
+			enrollmentState: supervisors.enrollmentState,
+			lastHeartbeatAt: supervisors.lastHeartbeatAt,
+		})
+		.from(managedSessions)
+		.leftJoin(launchRequests, ownerLaunchJoin)
+		.leftJoin(supervisors, ownerSupervisorJoin)
+		.where(inArray(managedSessions.sessionId, [...sessionIds]));
+}
+
 /**
  * Batch "is this managed session's owner of record connected?" (D18, F20).
  * A key is present iff `sessionId` has a managed_sessions row; its value is
@@ -103,25 +131,48 @@ export async function getSessionOwnerConnections(
 	db: any = getDb(),
 ): Promise<Map<string, boolean>> {
 	if (sessionIds.length === 0) return new Map();
-
-	const rows = await db
-		.select({
-			sessionId: managedSessions.sessionId,
-			lease: supervisors.heartbeatLeaseExpiresAt,
-			enrollmentState: supervisors.enrollmentState,
-		})
-		.from(managedSessions)
-		.leftJoin(launchRequests, ownerLaunchJoin)
-		.leftJoin(supervisors, ownerSupervisorJoin)
-		.where(inArray(managedSessions.sessionId, [...sessionIds]));
-
 	const result = new Map<string, boolean>();
-	for (const row of rows as Array<{
-		sessionId: string;
-		lease: string | null;
-		enrollmentState: string | null;
-	}>) {
+	for (const row of await readOwnerHostRows(sessionIds, db)) {
 		result.set(row.sessionId, isSupervisorLive(row.lease, row.enrollmentState, nowMs));
+	}
+	return result;
+}
+
+/**
+ * `live`: the owner's lease is unexpired. `offline`: the host exists but its
+ * lease has run out, so it may come back. `gone`: no host row, or revoked.
+ */
+export type SessionHostState = "live" | "offline" | "gone";
+
+/** Same shape as `HostControl` in shared/types.ts; this module stays a leaf, so it declares its own. */
+export interface SessionHostStatus {
+	state: SessionHostState;
+	/** The owner host's last heartbeat; null when the host is gone or never beat. */
+	lastSeenAt: string | null;
+}
+
+/**
+ * Batch host state for managed sessions, from the same query as
+ * `getSessionOwnerConnections` (so the two can't disagree about which host
+ * owns a session) and the same liveness rule. Unmanaged sessions are absent.
+ * Pass the transaction handle as `db` inside a locked body; the default is
+ * the shared connection.
+ */
+export async function getSessionOwnerHostStates(
+	sessionIds: readonly string[],
+	nowMs: number = Date.now(),
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any = getDb(),
+): Promise<Map<string, SessionHostStatus>> {
+	if (sessionIds.length === 0) return new Map();
+	const result = new Map<string, SessionHostStatus>();
+	for (const row of await readOwnerHostRows(sessionIds, db)) {
+		if (row.hostId === null || row.enrollmentState === "revoked") {
+			result.set(row.sessionId, { state: "gone", lastSeenAt: null });
+			continue;
+		}
+		const state = isSupervisorLive(row.lease, row.enrollmentState, nowMs) ? "live" : "offline";
+		result.set(row.sessionId, { state, lastSeenAt: row.lastHeartbeatAt });
 	}
 	return result;
 }

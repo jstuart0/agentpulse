@@ -367,6 +367,34 @@ describe("a person approves", () => {
 		expect(await hitlStatus(w.hitlId)).toBe("awaiting_reply");
 	});
 
+	test("a host that was removed refuses a person's approval with host_gone, and an offline one with supervisor_offline; the request stays open and nothing is queued", async () => {
+		const gone = await world();
+		await getDb().delete(supervisors);
+		expect(await approve(gone)).toMatchObject({
+			ok: false,
+			status: 409,
+			code: "prompt_not_deliverable",
+			reason: "host_gone",
+		});
+		expect(await promptActions(gone.sessionId)).toHaveLength(0);
+		expect(await hitlStatus(gone.hitlId)).toBe("awaiting_reply");
+
+		const revoked = await world();
+		await getDb().update(supervisors).set({ enrollmentState: "revoked" });
+		expect(await approve(revoked)).toMatchObject({ reason: "host_gone" });
+
+		await reset();
+		await enableAiRuntime();
+		providerId = await seedProvider();
+		const offline = await world({ supervisor: "offline" });
+		expect(await approve(offline)).toMatchObject({
+			ok: false,
+			code: "prompt_not_deliverable",
+			reason: "supervisor_offline",
+		});
+		expect(await hitlStatus(offline.hitlId)).toBe("awaiting_reply");
+	});
+
 	test("a prompt that trips the safety filter or the sanitiser is refused with 400 and the request stays open", async () => {
 		const w = await world({ approvable: false });
 		const blocked = await resolveProposal({

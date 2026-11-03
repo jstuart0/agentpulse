@@ -377,7 +377,9 @@ function hitlOutcomeReply(
 	if (result.ok) return action === "approve" ? "Sent to the session." : "Declined ✗";
 	switch (result.code) {
 		case "prompt_not_deliverable":
-			return "This session can't receive prompts; copy it from the dashboard.";
+			return result.reason === "supervisor_offline" || result.reason === "host_gone"
+				? "This session's host isn't connected, so nothing was sent."
+				: "This session can't receive prompts; copy it from the dashboard.";
 		case "dispatch_blocked":
 		case "prompt_unsafe":
 			return "Blocked by the safety filter.";

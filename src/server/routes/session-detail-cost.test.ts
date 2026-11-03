@@ -127,6 +127,49 @@ describe("statements per GET /sessions/:id", () => {
 	});
 });
 
+describe("hostControl on the detail", () => {
+	test("a managed session costs one more statement than an unmanaged one, and carries hostControl", async () => {
+		const { managedSessions, launchRequests, supervisors } = await import("../db/schema/index.js");
+		const { seedManagedSession, seedSupervisor } = await import(
+			"../test-utils/supervisor-fixture.js"
+		);
+		await reset();
+		await setStoredMode("solo");
+		const headers = await headersFor("manage key");
+		await seedSession("cost-plain", null);
+		await seedSupervisor("cost-host", { leaseOffsetMs: -60_000, leaseBaseMs: Date.now() });
+		await seedManagedSession({
+			sessionId: "cost-managed",
+			supervisorId: "cost-host",
+			managedState: "managed",
+		});
+		const read = async (sessionId: string) => {
+			let body: { session: { hostControl?: { state: string; lastSeenAt: string | null } } } = {
+				session: {},
+			};
+			const statements = await countDbCalls(async () => {
+				const res = await app.request(`/api/v1/sessions/${sessionId}`, { headers });
+				expect(res.status).toBe(200);
+				body = (await res.json()) as typeof body;
+			});
+			return { statements, hostControl: body.session.hostControl };
+		};
+		try {
+			const plain = await read("cost-plain");
+			const managed = await read("cost-managed");
+			expect(plain.hostControl).toBeUndefined();
+			expect(managed.hostControl?.state).toBe("offline");
+			expect(typeof managed.hostControl?.lastSeenAt).toBe("string");
+			// The managed-session lookup the DTO already makes is in both; the host read is the one extra.
+			expect(managed.statements).toBe(plain.statements + 1);
+		} finally {
+			await getDb().delete(managedSessions);
+			await getDb().delete(launchRequests);
+			await getDb().delete(supervisors);
+		}
+	});
+});
+
 async function getCounted(sessionId: string): Promise<number> {
 	return countDbCalls(async () => {
 		const res = await app.request(`/api/v1/sessions/${sessionId}`);

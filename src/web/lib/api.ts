@@ -1530,6 +1530,7 @@ export interface AiWatcherConfig {
 export type PromptNotDeliverableReason =
 	| "observed"
 	| "supervisor_offline"
+	| "host_gone"
 	| "managed_state"
 	| "control_busy";
 

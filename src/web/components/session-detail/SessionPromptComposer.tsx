@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import type { Session } from "../../../shared/types.js";
 import { describeApiError } from "../../lib/api-errors.js";
 import { api } from "../../lib/api.js";
+import { controlBlockedReason, hostRefusalMessage } from "./host-control-view.js";
 
 export function SessionPromptComposer({
 	session,
@@ -37,6 +38,7 @@ export function SessionPromptComposer({
 				capabilitySnapshot?.interactiveTerminalControl?.reason ||
 				"This host can launch the interactive session, but AgentPulse cannot hand prompts into the terminal yet."
 			: null;
+	const hostBlockedReason = controlBlockedReason(session);
 	const label = interactive ? "Send to terminal" : "Send task";
 	const hint = interactive
 		? "This sends your prompt into the owned interactive Claude session and keeps the terminal and workspace on the same session."
@@ -80,7 +82,10 @@ export function SessionPromptComposer({
 			await onSubmitted();
 		} catch (error) {
 			console.error("Failed to send prompt", error);
-			toast.error(describeApiError(error, "Couldn't send the prompt. Try again."));
+			toast.error(
+				hostRefusalMessage(error, session) ??
+					describeApiError(error, "Couldn't send the prompt. Try again."),
+			);
 		} finally {
 			setSending(false);
 		}
@@ -99,23 +104,27 @@ export function SessionPromptComposer({
 								? "What should the interactive Claude session do next?"
 								: "Describe the next task for this headless session."
 						}
-						disabled={!interactiveControlReady}
+						disabled={!interactiveControlReady || hostBlockedReason !== null}
 						className="min-h-20 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
 					/>
 					<div className="flex flex-col gap-2 md:w-40">
 						<button
 							onClick={submit}
-							disabled={sending || !prompt.trim() || !interactiveControlReady}
+							disabled={
+								sending || !prompt.trim() || !interactiveControlReady || hostBlockedReason !== null
+							}
 							className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
 						>
 							{sending ? "Sending..." : label}
 						</button>
 						<div className="text-[11px] text-muted-foreground">
-							{interactiveControlReason
-								? interactiveControlReason
-								: interactive
-									? "AgentPulse will also log the prompt in the session timeline."
-									: "Visible output lands in Activity and Launch."}
+							{hostBlockedReason
+								? hostBlockedReason
+								: interactiveControlReason
+									? interactiveControlReason
+									: interactive
+										? "AgentPulse will also log the prompt in the session timeline."
+										: "Visible output lands in Activity and Launch."}
 						</div>
 					</div>
 				</div>

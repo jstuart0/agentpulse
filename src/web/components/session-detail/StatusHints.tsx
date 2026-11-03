@@ -1,6 +1,7 @@
 import { AGENT_METADATA } from "../../../shared/constants.js";
 import type { AgentType, Session } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
+import { hostControlHint } from "./host-control-view.js";
 
 /**
  * F24 (D35): the caveat text for an observe-only agent (Copilot CLI), or
@@ -86,10 +87,33 @@ export function CodexStatusHint({ displayName }: { displayName: string }) {
 	);
 }
 
+/** Standing notice for a managed session whose host is offline or gone. Its id is what the disabled controls point at. */
+export const HOST_CONTROL_HINT_ID = "host-control-hint";
+
+export function HostControlHint({
+	session,
+}: {
+	session: Pick<Session, "hostControl" | "managedSession">;
+}) {
+	const text = hostControlHint(session);
+	if (!text) return null;
+	return (
+		<div
+			id={HOST_CONTROL_HINT_ID}
+			className="mx-3 md:mx-6 mt-2 md:mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5"
+		>
+			<p className="text-[11px] leading-relaxed text-foreground">{text}</p>
+		</div>
+	);
+}
+
 export function ManagedCodexStatus({
 	managedSession,
+	showSyncState = true,
 }: {
 	managedSession: NonNullable<Session["managedSession"]>;
+	/** False when the host isn't live: a "synced" pill would describe a connection that isn't there. */
+	showSyncState?: boolean;
 }) {
 	const syncTone =
 		managedSession.providerSyncState === "synced"
@@ -132,9 +156,11 @@ export function ManagedCodexStatus({
 						<p className="mt-1 text-[11px] text-red-300">{managedSession.providerSyncError}</p>
 					)}
 				</div>
-				<span className={`rounded-full border px-2 py-1 text-[10px] font-medium ${syncTone}`}>
-					{managedSession.providerSyncState}
-				</span>
+				{showSyncState && (
+					<span className={`rounded-full border px-2 py-1 text-[10px] font-medium ${syncTone}`}>
+						{managedSession.providerSyncState}
+					</span>
+				)}
 			</div>
 		</div>
 	);

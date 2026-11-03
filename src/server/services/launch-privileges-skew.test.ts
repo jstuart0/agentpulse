@@ -27,7 +27,9 @@ const { createValidatedLaunchRequest } = await import("./launch-validator.js");
 const { claimNextLaunchRequest, updateLaunchDispatchStatus, privilegeMismatch } = await import(
 	"./launch-dispatch.js"
 );
-const { queuePromptAction, retryLaunchForSession } = await import("./control-actions.js");
+const { HostGoneError, queuePromptAction, retryLaunchForSession } = await import(
+	"./control-actions.js"
+);
 const { listSupervisors } = await import("./supervisor-registry.js");
 const { normalizeTemplateInput, validateTemplateInput } = await import("./template-preview.js");
 
@@ -366,11 +368,41 @@ describe("retry re-validates the launch as a new one", () => {
 		expect(await getDb().select().from(launchRequests)).toHaveLength(1);
 	});
 
-	test("a host that no longer exists is refused when privileges are set, and allowed when none are", async () => {
+	test("a gone requested host is refused with host_gone, with or without privileges, and nothing is cloned", async () => {
 		await seedManaged("retry-2", "gone", { approvalPolicy: "manual" });
-		await expect(retryLaunchForSession("retry-2", ACTOR)).rejects.toThrow("host is gone");
+		await expect(retryLaunchForSession("retry-2", ACTOR)).rejects.toBeInstanceOf(HostGoneError);
 		await seedManaged("retry-3", "gone", {});
-		await expect(retryLaunchForSession("retry-3", ACTOR)).resolves.toBeDefined();
+		await expect(retryLaunchForSession("retry-3", ACTOR)).rejects.toBeInstanceOf(HostGoneError);
+
+		await seedHost("revoked", NEW);
+		await getDb()
+			.update(supervisors)
+			.set({ enrollmentState: "revoked" })
+			.where(eq(supervisors.id, "revoked"));
+		await seedManaged("retry-3b", "revoked", {});
+		await expect(retryLaunchForSession("retry-3b", ACTOR)).rejects.toBeInstanceOf(HostGoneError);
+
+		expect(await getDb().select().from(launchRequests)).toHaveLength(3);
+		expect(await getDb().select().from(controlActions)).toHaveLength(0);
+	});
+
+	test("a launch that only names a resolved host keeps the old rule when that host is gone", async () => {
+		const gone = { requestedSupervisorId: null, resolvedSupervisorId: "gone" };
+		await seedManaged("retry-2b", "gone", { approvalPolicy: "manual", ...gone });
+		await expect(retryLaunchForSession("retry-2b", ACTOR)).rejects.toThrow("host is gone");
+		await seedManaged("retry-3c", "gone", gone);
+		await expect(retryLaunchForSession("retry-3c", ACTOR)).resolves.toBeDefined();
+	});
+
+	test("a retry to an offline host still works: the clone waits, validated, for the host", async () => {
+		await seedHost("sleepy", NEW);
+		await getDb()
+			.update(supervisors)
+			.set({ heartbeatLeaseExpiresAt: new Date(Date.now() - 3_600_000).toISOString() })
+			.where(eq(supervisors.id, "sleepy"));
+		await seedManaged("retry-3d", "sleepy", {});
+		const { launchRequest } = await retryLaunchForSession("retry-3d", ACTOR);
+		expect(launchRequest.status).toBe("validated");
 	});
 
 	test("a launch whose recorded values the mapping now refuses is not retried", async () => {

@@ -25,7 +25,12 @@ import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
 import { buildStoredCliArgs, validateAgainstSupervisor } from "./launch-compatibility.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { bumpVersionAndReload } from "./projects/cache.js";
-import { ownerLaunchJoin, resolveSessionOwner, sessionOwnedBy } from "./session-ownership.js";
+import {
+	getSessionOwnerHostStates,
+	ownerLaunchJoin,
+	resolveSessionOwner,
+	sessionOwnedBy,
+} from "./session-ownership.js";
 import { getSupervisor } from "./supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "./template-preview.js";
 import { parseDbTimestamp } from "./util/db-time.js";
@@ -294,12 +299,34 @@ export class EmptyPromptError extends Error {
 	}
 }
 
+/**
+ * The host that owns the session is not connected, so nothing queued now would
+ * be taken within the 90 s the control lock lasts. The host may come back.
+ */
+export class HostOfflineError extends Error {
+	readonly code = "host_offline";
+	constructor() {
+		super("The host running this session is offline, so it can't be controlled right now.");
+		this.name = "HostOfflineError";
+	}
+}
+/** The host that owns the session was removed (or never existed), so it will not come back. */
+export class HostGoneError extends Error {
+	readonly code = "host_gone";
+	constructor() {
+		super("The host that ran this session was removed from AgentPulse.");
+		this.name = "HostGoneError";
+	}
+}
+
 export type EnqueueRefusal =
 	| "not_managed"
 	| "session_missing"
 	| "launch_missing"
 	| "launch_mismatch"
-	| "control_busy";
+	| "control_busy"
+	| "host_offline"
+	| "host_gone";
 
 function refusalToError(reason: EnqueueRefusal): Error {
 	switch (reason) {
@@ -313,7 +340,27 @@ function refusalToError(reason: EnqueueRefusal): Error {
 			return new LaunchNotFoundError();
 		case "launch_mismatch":
 			return new LaunchMismatchError();
+		case "host_offline":
+			return new HostOfflineError();
+		case "host_gone":
+			return new HostGoneError();
 	}
+}
+
+/**
+ * Stop and prompt are taken by the owning host within seconds or not at all, so
+ * a host that isn't live is refused here instead of failing 90 s later. Read on
+ * the caller's transaction. A lease that runs out between this read and the
+ * insert is accepted: the action then fails by the existing lock expiry.
+ */
+async function hostRefusal(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	sessionId: string,
+): Promise<Extract<EnqueueRefusal, "host_offline" | "host_gone"> | null> {
+	const host = (await getSessionOwnerHostStates([sessionId], Date.now(), tx)).get(sessionId);
+	if (!host || host.state === "live") return null;
+	return host.state === "offline" ? "host_offline" : "host_gone";
 }
 
 /**
@@ -367,6 +414,8 @@ export async function enqueueStopInTx(
 	if (stopLaunch && !(await launchOwnedBySessionOwner(tx, sessionId, stopLaunch))) {
 		return { ok: false, reason: "launch_mismatch" };
 	}
+	const stopHostRefusal = await hostRefusal(tx, sessionId);
+	if (stopHostRefusal) return { ok: false, reason: stopHostRefusal };
 
 	const timestamp = nowIso();
 	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp))) {
@@ -440,6 +489,8 @@ export async function enqueuePromptInTx(
 	if (!(await launchOwnedBySessionOwner(tx, sessionId, launch))) {
 		return { ok: false, reason: "launch_mismatch" };
 	}
+	const promptHostRefusal = await hostRefusal(tx, sessionId);
+	if (promptHostRefusal) return { ok: false, reason: promptHostRefusal };
 
 	const timestamp = nowIso();
 	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp))) {
@@ -539,8 +590,13 @@ export async function retryLaunchForSession(sessionId: string, actor: Actor) {
 	if (templateErrors.length > 0) {
 		throw new Error(`Launch can't be retried: ${templateErrors.join(" ")}`);
 	}
+	// A retry to an offline host still works: the clone stays validated until that host
+	// claims it. One aimed at a host that was removed never will, so nothing is cloned.
 	const retryHostId = original.requestedSupervisorId ?? original.resolvedSupervisorId;
 	const retryHost = retryHostId ? await getSupervisor(retryHostId) : null;
+	if (original.requestedSupervisorId && (!retryHost || retryHost.enrollmentState === "revoked")) {
+		throw new HostGoneError();
+	}
 	if (retryHost) {
 		const { errors } = validateAgainstSupervisor(
 			retryTemplate,
