@@ -407,7 +407,12 @@ def main() -> int:
                         elif char.isprintable():
                             typed_buffer += char
                 else:
-                    output = os.read(master_fd, 4096)
+                    try:
+                        output = os.read(master_fd, 4096)
+                    except OSError:
+                        # Linux raises EIO on the pty master once the child has gone, where macOS returns
+                        # end of file: either way the session is over, and the final reports follow.
+                        break
                     if not output:
                         break
                     os.write(stdout_fd, output)

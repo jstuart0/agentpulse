@@ -525,3 +525,12 @@ elif mode == "symlink":
 		expect(readdirSync(real)).toEqual([]);
 	});
 });
+
+describe("the pty master read at the child's exit (Linux raises EIO where macOS returns end of file)", () => {
+	test("a read error on the master is the end of the session, not a crash", () => {
+		const text = readFileSync(BRIDGE, "utf-8");
+		expect(text).toMatch(
+			/try:\s+output = os\.read\(master_fd, 4096\)\s+except OSError:\s+(?:#[^\n]*\s+)*break/,
+		);
+	});
+});
