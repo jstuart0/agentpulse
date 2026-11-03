@@ -405,7 +405,9 @@ export function createBridgeSpoolDrain(deps: BridgeSpoolDeps): BridgeSpoolDrain 
 	function identityOf(path: string): string | null {
 		try {
 			const st = lstatSync(path);
-			return `${st.ino}:${st.size}`;
+			// ctime moves on any rewrite or replacement and cannot be set back with utimes, so a changed file never
+			// matches; a link-count or mode change moves it too, which only costs up to three more sends.
+			return `${st.ino}:${st.size}:${st.ctimeMs}:${st.mtimeMs}`;
 		} catch {
 			return null;
 		}

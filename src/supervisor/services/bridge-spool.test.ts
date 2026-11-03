@@ -1907,4 +1907,85 @@ describe("a report that can't be removed is not sent again for ever (AGEN-83 K2)
 		await scans(drain, 3);
 		expect(calls.length).toBeGreaterThan(before);
 	});
+
+	test("K2/codex: the same inode and size with a changed ctime is a different report and is delivered", async () => {
+		makeBridge("stuck4");
+		put(
+			"stuck4",
+			1,
+			envelope("events", eventBody({ content: "AAAAAA" }), {
+				deliveryId: "delivery-aaaaaaaa-0001",
+			}),
+		);
+		const { drain, calls } = stuckDrain();
+		await scans(drain, 6);
+		const exhausted = calls.length;
+		expect(exhausted).toBeLessThanOrEqual(3);
+		const file = seqFile("stuck4", 1);
+		const before = statSync(file);
+		// rewritten in place with the same length, and the times put back as they were: only ctime can tell
+		await Bun.sleep(20);
+		writeFileSync(
+			file,
+			JSON.stringify(
+				envelope("events", eventBody({ content: "BBBBBB" }), {
+					deliveryId: "delivery-bbbbbbbb-0002",
+				}),
+			),
+		);
+		utimesSync(file, before.atimeMs / 1000, before.mtimeMs / 1000);
+		const after = statSync(file);
+		expect(after.ino).toBe(before.ino);
+		expect(after.size).toBe(before.size);
+		expect(after.mtimeMs).toBe(before.mtimeMs);
+		await scans(drain, 3);
+		const rewritten = calls
+			.slice(exhausted)
+			.filter(
+				(c) => (c as { events?: Array<{ content?: string }> }).events?.[0]?.content === "BBBBBB",
+			);
+		expect(rewritten.length).toBeGreaterThanOrEqual(1);
+	});
+
+	test("the same file, untouched, ctime included, stays exhausted however long it sits", async () => {
+		makeBridge("stuck5");
+		put("stuck5", 1, envelope("events", eventBody({ content: "stays" })));
+		const { drain, calls } = stuckDrain();
+		await scans(drain, 4);
+		const settled = calls.length;
+		await Bun.sleep(20);
+		await scans(drain, 20);
+		expect(calls.length).toBe(settled);
+	});
+
+	test("a directory reused by a new launch (a new nonce) whose new report has the same name, size and times is not mistaken for the exhausted one", async () => {
+		const NONCE2 = "fedcba9876543210fedcba9876543210";
+		makeBridge("stuck6");
+		put("stuck6", 1, envelope("events", eventBody({ content: "oldrun" })));
+		const { drain, calls } = stuckDrain();
+		await scans(drain, 6);
+		const exhausted = calls.length;
+		expect(exhausted).toBeLessThanOrEqual(3);
+		const file = seqFile("stuck6", 1);
+		const before = statSync(file);
+		// the next launch under this id: a new nonce in bridge.json, and its first report under the same name
+		await Bun.sleep(20);
+		makeBridge("stuck6", NONCE2);
+		rmSync(file);
+		writeFileSync(
+			file,
+			JSON.stringify(envelope("events", eventBody({ content: "newrun" }), { nonce: NONCE2 })),
+			{
+				mode: 0o600,
+			},
+		);
+		utimesSync(file, before.atimeMs / 1000, before.mtimeMs / 1000);
+		await scans(drain, 3);
+		const fresh = calls
+			.slice(exhausted)
+			.filter(
+				(c) => (c as { events?: Array<{ content?: string }> }).events?.[0]?.content === "newrun",
+			);
+		expect(fresh.length).toBeGreaterThanOrEqual(1);
+	});
 });
