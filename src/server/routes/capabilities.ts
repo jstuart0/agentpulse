@@ -116,6 +116,13 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		value: true,
 	},
 	{
+		// A person can read and answer a managed Codex session's command and file-change approvals. Judged per
+		// runtime (the list's `host`), so this is advertised whenever the routes are mounted.
+		name: "codexApprovals",
+		proof: { kind: "route", method: "GET", path: "/sessions/:sessionId/approvals" },
+		value: true,
+	},
+	{
 		// `stuck` and `risky` pushes from the health job; it runs only while AI is active, beside push.
 		name: "healthPush",
 		proof: { kind: "route", method: "GET", path: "/ai/inbox" },

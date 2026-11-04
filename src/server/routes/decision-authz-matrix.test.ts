@@ -1266,6 +1266,11 @@ describe("coverage", () => {
 			file: "routes/ask-thread-owner.test.ts",
 			marker: "archive (DELETE /ai/ask/threads/:id)",
 		},
+		// Codex approvals are not HITL: their own grid (owner state x caller, key vs person) is in this suite.
+		"POST /sessions/:sessionId/approvals/:approvalId/decision": {
+			file: "routes/codex-approvals.test.ts",
+			marker: "viewer.canAccept is what the POST would do",
+		},
 	};
 
 	test("every route in OWNER_CHECKED_ROUTES is either an entry of the matrix or named as covered by another suite", () => {

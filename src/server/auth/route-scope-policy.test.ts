@@ -1559,3 +1559,107 @@ describe("respond S5 — decisions, inbox, snooze and delivery", () => {
 		expect(await res.json()).toMatchObject({ error: "not_found" });
 	});
 });
+
+describe("no approval grant (AGEN-87, D12): the Codex approval routes belong to a person or a manage key", () => {
+	// The respond grant as it stood before the approval routes, written out. Adding a route to a grant
+	// is a decision made in the change that installs its guard; this set changes only then.
+	const BASE_RESPOND_READS = [
+		"/sessions",
+		"/sessions/stats",
+		"/sessions/:sessionId",
+		"/sessions/:sessionId/timeline",
+		"/sessions/:sessionId/events/:eventId/context",
+		"/sessions/:sessionId/claude-md",
+		"/search",
+		"/ai/digest",
+		"/ai/sessions/:sessionId/intelligence",
+		"/ai/spend",
+		"/ai/diagnostics",
+		"/ai/status",
+		"/projects/summary",
+		"/users/directory",
+		"/instance",
+		"/capabilities",
+		"/devices",
+		"/ai/inbox",
+		"/ai/inbox/snoozes",
+		"/ai/proposals/:id/delivery",
+		"/ai/ask/threads/:id",
+		"/ai/ask/threads",
+	];
+	const BASE_RESPOND_WRITES = [
+		"POST /sessions/:sessionId/acknowledge",
+		"DELETE /sessions/:sessionId/acknowledge",
+		"POST /devices",
+		"PATCH /devices/:id",
+		"DELETE /devices/:id",
+		"POST /devices/:id/test",
+		"POST /devices/:id/activities",
+		"DELETE /devices/:id/activities/:sessionId",
+		"POST /ai/proposals/:id/decision",
+		"POST /ai/proposals/:id/delivery/retry",
+		"POST /ai/inbox/snooze",
+		"DELETE /ai/inbox/snooze/:id",
+		"DELETE /ai/inbox/snooze",
+		"POST /ai/ask/threads/:id/cancel",
+	];
+	const APPROVAL_ROUTES = [
+		["GET", "/sessions/s1/approvals"],
+		["GET", "/sessions/s1/approvals/a1"],
+		["POST", "/sessions/s1/approvals/a1/decision"],
+	] as const;
+
+	test("respond's reads and writes are exactly the recorded base sets, and no approval route is in any grant", () => {
+		expect(BASE_RESPOND_READS.length).toBeGreaterThanOrEqual(22);
+		expect(BASE_RESPOND_WRITES).toContain("POST /sessions/:sessionId/acknowledge");
+		expect([...SCOPE_GRANTS.respond.reads].sort()).toEqual([...BASE_RESPOND_READS].sort());
+		expect([...SCOPE_GRANTS.respond.writes].sort()).toEqual([...BASE_RESPOND_WRITES].sort());
+		for (const scope of [SCOPE_OBSERVE, SCOPE_INGEST, SCOPE_RESPOND] as const) {
+			for (const [method, path] of APPROVAL_ROUTES) {
+				expect({ scope, method, path, allowed: scopeGrantAllows(scope, method, path) }).toEqual({
+					scope,
+					method,
+					path,
+					allowed: false,
+				});
+			}
+		}
+	});
+
+	test("the reads are manage-only and the decision is owner-checked", async () => {
+		const { OWNER_CHECKED_ROUTES } = await import("./route-scope-policy.js");
+		expect(INTENTIONALLY_MANAGE_ONLY.has("/sessions/:sessionId/approvals")).toBe(true);
+		expect(INTENTIONALLY_MANAGE_ONLY.has("/sessions/:sessionId/approvals/:approvalId")).toBe(true);
+		expect(
+			OWNER_CHECKED_ROUTES.has("POST /sessions/:sessionId/approvals/:approvalId/decision"),
+		).toBe(true);
+		expect(classifyRoute("GET", "/sessions/s1/approvals")).toBe(SCOPE_MANAGE);
+		expect(classifyRoute("GET", "/sessions/s1/approvals/a1")).toBe(SCOPE_MANAGE);
+	});
+
+	test("an observe, ingest and respond key are each refused on all three routes (real requests, both mounts)", async () => {
+		const keys = [
+			(await createApiKey("noappr-observe", [SCOPE_OBSERVE])).key,
+			(await createApiKey("noappr-ingest", [SCOPE_INGEST])).key,
+			(await createApiKey("noappr-respond", [SCOPE_RESPOND])).key,
+		];
+		for (const mount of ["/api/v1", "/app-api/v1"]) {
+			for (const key of keys) {
+				for (const [method, path] of APPROVAL_ROUTES) {
+					const res = await app.request(`${mount}${path}`, {
+						method,
+						headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+						body: method === "POST" ? JSON.stringify({ decision: "decline" }) : undefined,
+					});
+					expect({ mount, method, path, status: res.status }).toEqual({
+						mount,
+						method,
+						path,
+						status: 403,
+					});
+					expect(await res.json()).toEqual({ error: "insufficient_scope", required: "manage" });
+				}
+			}
+		}
+	});
+});

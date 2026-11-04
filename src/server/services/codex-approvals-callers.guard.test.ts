@@ -80,16 +80,15 @@ describe("only the approval service writes its tables", () => {
 	});
 });
 
-describe("answerApproval has no caller outside the routes", () => {
-	test("no AI, Ask, Telegram or channel code can answer", () => {
+describe("answerApproval has one caller, the person route", () => {
+	test("the files that call it are exactly the approvals route, and no AI, Ask, Telegram or channel code is among them", () => {
 		const callers = [...source.entries()]
 			.filter(([file]) => file !== "src/server/services/codex-approvals.ts")
 			.filter(([, text]) => /\banswerApproval\s*\(/.test(text))
-			.map(([file]) => file);
-		for (const file of callers) expect(file.startsWith("src/server/routes/")).toBe(true);
-		for (const prefix of ["services/ai/", "services/ask/", "services/channels/"]) {
-			expect(callers.some((file) => file.includes(prefix))).toBe(false);
-		}
+			.map(([file]) => file)
+			.sort();
+		expect(callers.length).toBeGreaterThanOrEqual(1);
+		expect(callers).toEqual(["src/server/routes/codex-approvals.ts"]);
 	});
 
 	test("nothing outside the server reaches it either (supervisor, web, MCP)", () => {

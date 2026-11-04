@@ -1,0 +1,65 @@
+{
+	"v": 1,
+	"approvals": [
+		{
+			"id": "<id>",
+			"requestKind": "command",
+			"state": "pending",
+			"outcome": null,
+			"decision": null,
+			"answeredAt": null,
+			"revision": 1,
+			"presentationHash": "<presentationHash>",
+			"approvable": true,
+			"notApprovableReason": null,
+			"canCancel": true,
+			"createdAt": "<createdAt>",
+			"expiresAt": "<expiresAt>",
+			"expiresInSeconds": "<seconds>",
+			"preview": {
+				"cwd": "/work/project",
+				"commandHead": "npm test -- --runInBand",
+				"lastLines": "npm test -- --runInBand",
+				"lineCount": 1,
+				"charCount": 23,
+				"pathOutsideCwd": false,
+				"nonAscii": false
+			}
+		},
+		{
+			"id": "<id>",
+			"requestKind": "file_change",
+			"state": "pending",
+			"outcome": null,
+			"decision": null,
+			"answeredAt": null,
+			"revision": 1,
+			"presentationHash": "<presentationHash>",
+			"approvable": true,
+			"notApprovableReason": null,
+			"canCancel": true,
+			"createdAt": "<createdAt>",
+			"expiresAt": "<expiresAt>",
+			"expiresInSeconds": "<seconds>",
+			"preview": {
+				"cwd": "/work/project",
+				"fileCount": 1,
+				"paths": [
+					{
+						"path": "/work/project/a.txt",
+						"kind": "add"
+					}
+				],
+				"pathOutsideCwd": false,
+				"nonAscii": false
+			}
+		}
+	],
+	"host": {
+		"state": "live",
+		"name": "build-host"
+	},
+	"viewer": {
+		"canAccept": true
+	}
+}

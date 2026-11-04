@@ -1,0 +1,47 @@
+{
+	"v": 1,
+	"approval": {
+		"id": "<id>",
+		"requestKind": "file_change",
+		"state": "pending",
+		"outcome": null,
+		"decision": null,
+		"answeredAt": null,
+		"revision": 1,
+		"presentationHash": "<presentationHash>",
+		"approvable": true,
+		"notApprovableReason": null,
+		"canCancel": true,
+		"createdAt": "<createdAt>",
+		"expiresAt": "<expiresAt>",
+		"expiresInSeconds": "<seconds>",
+		"preview": {
+			"cwd": "/work/project",
+			"fileCount": 1,
+			"paths": [
+				{
+					"path": "/work/project/a.txt",
+					"kind": "add"
+				}
+			],
+			"pathOutsideCwd": false,
+			"nonAscii": false
+		}
+	},
+	"presentation": {
+		"v": 1,
+		"requestKind": "file_change",
+		"changes": [
+			{
+				"path": "/work/project/a.txt",
+				"kind": "add",
+				"movePath": null,
+				"diff": "+hello\n"
+			}
+		],
+		"cwd": "/work/project",
+		"reason": "add a greeting",
+		"grantRoot": null
+	},
+	"reasonText": "add a greeting"
+}
