@@ -187,7 +187,8 @@ $scriptFile = Join-Path $tempProfile "hook-cmd.ps1"
 Set-Content -Path $scriptFile -Value $cmd -Encoding UTF8
 
 $fixture = '{"session_id":"pwsh-test-session","hook_event_name":"Stop"}'
-$fixture | powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptFile
+$hookElapsed = Measure-Command { $fixture | powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptFile }
+Write-Host "measured: the hook process returned in $([int]$hookElapsed.TotalMilliseconds) ms"
 
 $captured = $null
 if ($asyncResult.AsyncWaitHandle.WaitOne(10000)) {
@@ -206,25 +207,6 @@ if ($asyncResult.AsyncWaitHandle.WaitOne(10000)) {
 $listener.Stop()
 
 Assert-True ($null -ne $captured) "the generated command delivered a request to the listener"
-
-# DIAGNOSTIC, one run only: does the hook deliver when its parent waits for the job?
-$diagListener = New-Object System.Net.HttpListener
-$diagPort = Get-Random -Minimum 49152 -Maximum 65000
-$diagListener.Prefixes.Add("http://127.0.0.1:$diagPort/")
-$diagListener.Start()
-$diagAsync = $diagListener.BeginGetContext($null, $null)
-$diagCmd = New-ApHookCommand -BaseUrl "http://127.0.0.1:$diagPort" -Direct $true -AgentType "codex_cli" -EventName "Stop"
-$diagWait = $diagCmd.Replace("`nexit 0", "`nGet-Job | Wait-Job -Timeout 15 | Receive-Job *>&1 | ForEach-Object { Write-Host `"job output: `$_`" }`nGet-Job | ForEach-Object { Write-Host `"job state: `$(`$_.State) reason: `$(`$_.JobStateInfo.Reason)`" }`nexit 0")
-Write-Host "diagnostic: replaced exit: $($diagWait -ne $diagCmd)"
-$diagFile = Join-Path $tempProfile "hook-cmd-diag.ps1"
-Set-Content -Path $diagFile -Value $diagWait -Encoding UTF8
-$fixture | powershell.exe -NoProfile -ExecutionPolicy Bypass -File $diagFile
-$diagDelivered = $diagAsync.AsyncWaitHandle.WaitOne(10000)
-if ($diagDelivered) { $diagCtx = $diagListener.EndGetContext($diagAsync); $diagCtx.Response.StatusCode = 200; $diagCtx.Response.Close() }
-$diagListener.Stop()
-Write-Host "diagnostic: delivered when the parent waits for the job: $diagDelivered"
-powershell.exe -NoProfile -Command 'Write-Host "diagnostic: child HOME=$HOME USERPROFILE=$env:USERPROFILE version=$($PSVersionTable.PSVersion)"'
-Write-Host "diagnostic: test HOME=$HOME auth file present: $(Test-Path (Join-Path $HOME '.agentpulse\hook-auth-header'))"
 if ($null -ne $captured) {
 	Assert-True ($captured.Path -eq "/api/v1/hooks") "request path is /api/v1/hooks"
 	Assert-True ($captured.Query -eq "?event=Stop") "request query is ?event=Stop"
@@ -275,6 +257,15 @@ Assert-True ($entries.Count -eq 0) "a sid containing '/' leaves no marker file"
 
 $entries = Test-ApMarkerCase '{"session_id":"../../etc/passwd"}'
 Assert-True ($entries.Count -eq 0) "a sid containing '..' leaves no marker file"
+
+# The working directory goes to the detached process as a quoted argument, so a
+# quote in it must not break the command. The marker is written only if it runs.
+$quotedCwd = Join-Path $tempProfile "it's a dir"
+New-Item -ItemType Directory -Force -Path $quotedCwd | Out-Null
+Push-Location -LiteralPath $quotedCwd
+$entries = Test-ApMarkerCase "{`"session_id`":`"$validSid`"}"
+Pop-Location
+Assert-True ($entries.Count -eq 1 -and $entries[0].Name -eq $validSid) "a working directory containing a quote still runs the hook"
 
 $tooLongSid = "a" * 129
 $entries = Test-ApMarkerCase "{`"session_id`":`"$tooLongSid`"}"

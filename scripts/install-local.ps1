@@ -691,7 +691,7 @@ $t = Join-Path $d ([guid]::NewGuid().ToString())
 $raw = [Console]::In.ReadToEnd()
 [IO.File]::WriteAllText($t, $raw)
 @@AP_HEADER_FILE@@
-Start-Job -ScriptBlock {
+$apJob = {
   param($t, $f, $url, $agent, $apJobCwd, $apJobSkip)
   try {
 @@AP_PRELUDE@@
@@ -704,7 +704,10 @@ Start-Job -ScriptBlock {
   } finally {
     Remove-Item -Force $t -ErrorAction SilentlyContinue
   }
-} -ArgumentList $t, $f, '@@AP_URL@@', '@@AP_AGENT@@', (Get-Location).Path, $env:AGENTPULSE_SKIP | Out-Null
+}
+$apArgs = foreach ($apV in @($t, $f, '@@AP_URL@@', '@@AP_AGENT@@', (Get-Location).Path, $env:AGENTPULSE_SKIP)) { if ($null -eq $apV) { '$null' } else { "'" + ([string]$apV).Replace("'", "''") + "'" } }
+$apCmd = '& {' + $apJob.ToString() + '} ' + ($apArgs -join ' ')
+Start-Process -FilePath (Get-Process -Id $PID).Path -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($apCmd)))
 Get-ChildItem $d -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-5) } | Remove-Item -Force -ErrorAction SilentlyContinue
 exit 0
 '@
@@ -812,7 +815,7 @@ function New-ApHookCommand {
   $url = "$BaseUrl/api/v1/hooks?event=$EventName"
   $headerFile = if ($Direct) { "`$f = Join-Path `$HOME '.agentpulse\hook-auth-header'" } else { "`$f = `$null" }
   $authArg = "`$headerArgs = @()`n    if (`$f -and (Test-Path `$f -ErrorAction SilentlyContinue) -and (Get-Item `$f -ErrorAction SilentlyContinue).Length -gt 0) { `$headerArgs = @('-H', `"@`$f`") }"
-  # The marker runs INSIDE the Start-Job block, reading the temp file there; the
+  # The marker runs INSIDE the detached block, reading the temp file there; the
   # parent only drains stdin and writes the temp file.
   $marker = ""
   if ($AgentType -eq "codex_cli") {

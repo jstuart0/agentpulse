@@ -190,9 +190,10 @@ export function buildBashHookCommand(opts: HookCommandOptions): string {
 }
 
 /**
- * D13's PowerShell equivalent (r6, detached). `Start-Process` launches
- * `curl.exe` hidden and disowned, so the parent process (Codex's synchronous
- * hook runner) returns immediately after queuing it. Stale temp files older
+ * D13's PowerShell equivalent (r6, detached). `Start-Process` starts a hidden
+ * PowerShell that runs the block and outlives this one, so the parent process
+ * (Codex's synchronous hook runner) returns at once. A `Start-Job` would die
+ * with its parent, which exits immediately: measured on Windows, it delivered nothing. Stale temp files older
  * than 5 minutes are swept on every invocation, then the script exits 0 with
  * no stdout.
  */
@@ -202,7 +203,7 @@ export function buildPowerShellHookCommand(opts: HookCommandOptions): string {
 	const headerFile = opts.direct
 		? "$f = Join-Path $HOME '.agentpulse\\hook-auth-header'"
 		: "$f = $null";
-	// Marker extraction/write runs INSIDE the Start-Job block, reading from the
+	// Marker extraction/write runs INSIDE the detached block, reading from the
 	// temp file there — the synchronous (parent-process) path is stdin-drain +
 	// temp-file-write only. The job's
 	// script block runs in an isolated runspace with no access to parent
@@ -1155,7 +1156,7 @@ ${PS_SECURITY_FN.replace(/^/gm, "      ")}
  * the expression form yields $null when the condition is false, and
  * `@(...) + $null` appends a null element that Start-Process -ArgumentList
  * rejects, which would send nothing in relay mode and in direct mode with an
- * empty key file. NEVER EXECUTED.
+ * empty key file.
  */
 export const PS_AUTH_ARG =
 	"$headerArgs = @()\n    if ($f -and (Test-Path $f -ErrorAction SilentlyContinue) -and (Get-Item $f -ErrorAction SilentlyContinue).Length -gt 0) { $headerArgs = @('-H', \"@$f\") }";
@@ -1169,7 +1170,7 @@ export const PS_COMMAND_TEMPLATE = [
 	"$raw = [Console]::In.ReadToEnd()",
 	"[IO.File]::WriteAllText($t, $raw)",
 	"@@AP_HEADER_FILE@@",
-	"Start-Job -ScriptBlock {",
+	"$apJob = {",
 	"  param($t, $f, $url, $agent, $apJobCwd, $apJobSkip)",
 	"  try {",
 	"@@AP_PRELUDE@@",
@@ -1182,7 +1183,10 @@ export const PS_COMMAND_TEMPLATE = [
 	"  } finally {",
 	"    Remove-Item -Force $t -ErrorAction SilentlyContinue",
 	"  }",
-	"} -ArgumentList $t, $f, '@@AP_URL@@', '@@AP_AGENT@@', (Get-Location).Path, $env:AGENTPULSE_SKIP | Out-Null",
+	"}",
+	"$apArgs = foreach ($apV in @($t, $f, '@@AP_URL@@', '@@AP_AGENT@@', (Get-Location).Path, $env:AGENTPULSE_SKIP)) { if ($null -eq $apV) { '$null' } else { \"'\" + ([string]$apV).Replace(\"'\", \"''\") + \"'\" } }",
+	"$apCmd = '& {' + $apJob.ToString() + '} ' + ($apArgs -join ' ')",
+	"Start-Process -FilePath (Get-Process -Id $PID).Path -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($apCmd)))",
 	"Get-ChildItem $d -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-5) } | Remove-Item -Force -ErrorAction SilentlyContinue",
 	"exit 0",
 	"",
