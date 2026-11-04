@@ -1,6 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
-import { sanitizeForLog } from "../services/log-sanitize.js";
 import { resolveCodex } from "./codex-protocol.js";
 
 /** JSON-RPC ids are numbers or strings; the server's and ours are separate id spaces. */
@@ -372,7 +371,6 @@ export const DEFAULT_SHUTDOWN_TIMINGS: ShutdownTimings = {
 	killMs: 1_000,
 };
 
-const STDERR_TAIL_BYTES = 8 * 1024;
 const GONE_POLL_MS = 25;
 
 export type CodexAppServer = {
@@ -471,12 +469,11 @@ export async function startCodexAppServer(
 		timers: options.timers,
 	});
 
-	let stderrTail = Buffer.alloc(0);
+	// Drained so the pipe never blocks the child. Its text is never kept or logged: it can echo
+	// credentials or session content, and no sanitiser can tell which.
+	let stderrBytes = 0;
 	child.stderr.on("data", (chunk: Buffer) => {
-		stderrTail = Buffer.concat([stderrTail, chunk]);
-		if (stderrTail.length > STDERR_TAIL_BYTES) {
-			stderrTail = stderrTail.subarray(stderrTail.length - STDERR_TAIL_BYTES);
-		}
+		stderrBytes += chunk.length;
 	});
 	child.stdout.on("data", (chunk: Buffer) => client.receive(chunk));
 
@@ -488,11 +485,7 @@ export async function startCodexAppServer(
 		exited = true;
 		if (!requested) {
 			log(
-				`[codex-rpc] app-server exited unexpectedly (code=${code ?? "none"}, signal=${signal ?? "none"})${
-					stderrTail.length > 0
-						? `; stderr tail: ${sanitizeForLog(stderrTail.toString("utf8"))}`
-						: ""
-				}`,
+				`[codex-rpc] app-server exited unexpectedly (code=${code ?? "none"}, signal=${signal ?? "none"}, stderr=${stderrBytes} bytes, not logged; run Codex by hand to see its output)`,
 			);
 		}
 		finish(

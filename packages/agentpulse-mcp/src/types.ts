@@ -988,6 +988,39 @@ export interface ActionRequest {
 export type CodexApprovalStatus = "pending" | "answered" | "closed";
 export type CodexApprovalDecision = "accept" | "decline" | "cancel";
 export type CodexApprovalRequestKind = "command" | "file_change";
+// The closed sets this version knows (held equal to src/shared/codex-approvals.ts by
+// src/shared/codex-approvals-mcp-parity.test.ts). A newer or older server can send a value
+// outside them; the tools only pass these through and never branch on them, so an unknown
+// value is shown, not thrown on.
+export type CodexApprovalOutcome =
+	| "sending_accept"
+	| "sending_decline"
+	| "approved_sent"
+	| "declined"
+	| "declined_stopped"
+	| "expired"
+	| "answer_lapsed"
+	| "answer_withdrawn"
+	| "revision_changed"
+	| "may_have_run"
+	| "turn_ended"
+	| "codex_shut_down"
+	| "session_stopped"
+	| "approved_then_stopped";
+export type CodexApprovalNotApprovableReason =
+	| "redacted"
+	| "invisible_chars"
+	| "padded_text"
+	| "lookalike_text"
+	| "too_long"
+	| "no_diff"
+	| "no_command"
+	| "no_cwd"
+	| "write_stdin"
+	| "network"
+	| "grant_root"
+	| "unknown_param"
+	| "accept_not_offered";
 
 export interface CodexApprovalHost {
 	state: "live" | "offline" | "gone";
@@ -1019,14 +1052,13 @@ export interface CodexApprovalSummary {
 	id: string;
 	requestKind: CodexApprovalRequestKind;
 	state: CodexApprovalStatus;
-	/** A closed-set code from the server (applied, declined, expired, may_have_run, ...); read it as text. */
-	outcome: string | null;
+	outcome: CodexApprovalOutcome | null;
 	decision: CodexApprovalDecision | null;
 	answeredAt: string | null;
 	revision: number;
 	presentationHash: string;
 	approvable: boolean;
-	notApprovableReason: string | null;
+	notApprovableReason: CodexApprovalNotApprovableReason | null;
 	canCancel: boolean;
 	createdAt: string;
 	expiresAt: string;

@@ -1,0 +1,22 @@
+{
+	"v": 1,
+	"approval": {
+		"id": "<id>",
+		"requestKind": "command",
+		"state": "closed",
+		"outcome": "session_stopped",
+		"decision": null,
+		"answeredAt": null,
+		"revision": 1,
+		"presentationHash": "<presentationHash>",
+		"approvable": false,
+		"notApprovableReason": null,
+		"canCancel": true,
+		"createdAt": "<createdAt>",
+		"expiresAt": "<expiresAt>",
+		"expiresInSeconds": "<seconds>",
+		"preview": null
+	},
+	"presentation": null,
+	"reasonText": null
+}

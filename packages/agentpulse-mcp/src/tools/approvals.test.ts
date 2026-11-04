@@ -188,3 +188,32 @@ describe("decline_approval", () => {
 		]);
 	});
 });
+
+describe("forward compatibility", () => {
+	test("an outcome or reason this version doesn't know is passed through, not thrown on", async () => {
+		const odd = {
+			...summary("x", "closed"),
+			outcome: "a_future_outcome",
+			notApprovableReason: "a_future_reason",
+		} as unknown as CodexApprovalSummary;
+		const open = { ...odd, state: "pending" } as CodexApprovalSummary;
+		const client = fakeClient({
+			listApprovals: async () => ({
+				v: 1,
+				approvals: [odd, open],
+				host: { state: "live", name: null },
+				viewer: { canAccept: true },
+			}),
+		});
+		const { mcpClient } = await connect(client);
+		const result = await mcpClient.callTool({
+			name: "list_pending_approvals",
+			arguments: { session_id: "s1" },
+		});
+		expect(result.isError).toBeFalsy();
+		const body = JSON.parse(text(result));
+		expect(body.approvals).toHaveLength(1);
+		expect(body.approvals[0].outcome).toBe("a_future_outcome");
+		expect(body.approvals[0].notApprovableReason).toBe("a_future_reason");
+	});
+});

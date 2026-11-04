@@ -216,7 +216,7 @@ describe("the verdict", () => {
 		const { generator } = counting();
 		for (const url of [
 			"http://ap.example.com",
-			"http://192.168.1.5:3000",
+			"http://192.0.2.5:3000",
 			"ftp://x",
 			"",
 			"not a url",

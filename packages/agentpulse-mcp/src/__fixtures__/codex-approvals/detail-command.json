@@ -1,0 +1,37 @@
+{
+	"v": 1,
+	"approval": {
+		"id": "<id>",
+		"requestKind": "command",
+		"state": "pending",
+		"outcome": null,
+		"decision": null,
+		"answeredAt": null,
+		"revision": 1,
+		"presentationHash": "<presentationHash>",
+		"approvable": true,
+		"notApprovableReason": null,
+		"canCancel": true,
+		"createdAt": "<createdAt>",
+		"expiresAt": "<expiresAt>",
+		"expiresInSeconds": "<seconds>",
+		"preview": {
+			"cwd": "/work/project",
+			"commandHead": "npm test -- --runInBand",
+			"lastLines": "npm test -- --runInBand",
+			"lineCount": 1,
+			"charCount": 23,
+			"pathOutsideCwd": false,
+			"nonAscii": false
+		}
+	},
+	"presentation": {
+		"v": 1,
+		"requestKind": "command",
+		"command": "npm test -- --runInBand",
+		"cwd": "/work/project",
+		"reason": "run the unit tests",
+		"grantRoot": null
+	},
+	"reasonText": "run the unit tests"
+}

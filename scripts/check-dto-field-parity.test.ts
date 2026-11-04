@@ -148,3 +148,48 @@ describe("Session.reportedHost parity — real files", () => {
 		expect(read("scripts/check-dto-field-parity.ts")).toContain('"reportedHost"');
 	});
 });
+
+describe("codex approvals", () => {
+	const root = new URL("..", import.meta.url).pathname;
+	const read = (path: string) => readFileSync(join(root, path), "utf8");
+	const shared = read("src/shared/codex-approvals.ts");
+	const vendored = read("packages/agentpulse-mcp/src/types.ts");
+	const guard = read("scripts/check-dto-field-parity.ts");
+	const listed = (() => {
+		const block = /const INTERFACES = \[([\s\S]*?)\] as const;/.exec(guard)?.[1] ?? "";
+		return [...block.matchAll(/"(Codex\w+)"/g)].map((m) => m[1]);
+	})();
+
+	test("the guard lists every person DTO and no supervisor wire shape", () => {
+		expect(listed.length).toBeGreaterThanOrEqual(7);
+		expect(listed).toContain("CodexApprovalSummary");
+		for (const name of listed) {
+			expect(extractInterfaceFields(shared, name).length, name).toBeGreaterThan(0);
+		}
+		for (const supervisorOnly of [
+			"CodexApprovalReportRequest",
+			"CodexApprovalReportResponse",
+			"CodexApprovalSyncRequest",
+			"CodexApprovalSyncResponse",
+			"CodexApprovalDecisionRequest",
+		]) {
+			expect(listed).not.toContain(supervisorOnly);
+		}
+	});
+
+	test("every listed interface matches today, and removing a vendored field is detected", () => {
+		for (const name of listed) {
+			const sharedFields = extractInterfaceFields(shared, name);
+			expect(sameSet(sharedFields, extractInterfaceFields(vendored, name)), name).toBe(true);
+		}
+		// Positive control: drop one field from the vendored copy and the comparison must fail.
+		const broken = vendored.replace(/^\s*presentationHash: string;\n/m, "");
+		expect(broken).not.toBe(vendored);
+		expect(
+			sameSet(
+				extractInterfaceFields(shared, "CodexApprovalSummary"),
+				extractInterfaceFields(broken, "CodexApprovalSummary"),
+			),
+		).toBe(false);
+	});
+});

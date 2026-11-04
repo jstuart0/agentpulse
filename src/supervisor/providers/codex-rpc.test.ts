@@ -289,14 +289,16 @@ describe("drains stderr", () => {
 	);
 
 	test(
-		"the stderr tail is kept to 8 KiB, goes only to the local log on an unexpected exit, and reaches no notification",
+		"stderr text is never logged or notified: an unexpected exit logs a fixed line with counts only",
 		async () => {
+			const SENTINEL = "sk-SENTINEL-secret-token-9f3a";
 			const lines: string[] = [];
 			const app = await startCodexAppServer({
 				executable: fakeCodex,
 				env: {
 					...process.env,
 					FAKE_CODEX_LOG: logPath,
+					FAKE_CODEX_STDERR_TEXT: SENTINEL,
 					FAKE_CODEX_STDERR_BYTES: String(512 * 1024),
 				},
 				log: (line) => lines.push(line),
@@ -311,9 +313,11 @@ describe("drains stderr", () => {
 			await waitUntil(() => lines.length > 0);
 			expect(lines).toHaveLength(1);
 			expect(lines[0]).toContain("exited unexpectedly");
-			expect(lines[0]).toContain("stderr tail:");
-			expect(lines[0].length).toBeLessThan(8 * 1024);
-			expect(notifications).toEqual([]);
+			expect(lines[0]).toContain("signal=SIGKILL");
+			expect(lines[0]).toMatch(/stderr=\d+ bytes, not logged/);
+			expect(lines.join("\n")).not.toContain(SENTINEL);
+			expect(lines[0]).not.toContain("eeee");
+			expect(JSON.stringify(notifications)).not.toContain(SENTINEL);
 		},
 		TEST_TIMEOUT_MS,
 	);

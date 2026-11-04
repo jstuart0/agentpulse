@@ -1220,12 +1220,22 @@ async function real(workArg: string, minutes: number): Promise<number> {
 			.stdout.split("\n")
 			.filter(Boolean)
 			.filter((pid) => Number(pid) !== process.pid);
-		const codexLeft = spawnSync("pgrep", ["-x", "codex"], { encoding: "utf8" }).stdout.trim();
+		// Only this run's own Codex processes count: another campaign's `codex exec` may be running on
+		// this machine, so a machine-wide check would fail for the wrong reason. Ours are the ones whose
+		// environment names our throwaway CODEX_HOME. Nothing is signalled here; this only looks.
+		const codexLeft = spawnSync("pgrep", ["-x", "codex"], { encoding: "utf8" })
+			.stdout.split("\n")
+			.filter(Boolean)
+			.filter((pid) =>
+				spawnSync("ps", ["-Eww", "-p", pid, "-o", "command="], {
+					encoding: "utf8",
+				}).stdout.includes(`CODEX_HOME=${codexHome}`),
+			);
 		console.log(
 			JSON.stringify({
 				authCopyRemoved: !existsSync(join(codexHome, "auth.json")),
 				leftover: left,
-				pgrepCodex: codexLeft,
+				ownCodexLeft: codexLeft,
 			}),
 		);
 		console.log(JSON.stringify({ results }, null, 2));

@@ -8,6 +8,7 @@
  *   FAKE_CODEX_EARLY_EXIT=<n>          exit with code n at once
  *   FAKE_CODEX_SILENT=1                never answer anything
  *   FAKE_CODEX_STDERR_BYTES=<n>        write n bytes to stderr before the first answer
+ *   FAKE_CODEX_STDERR_TEXT=<text>      write this text to stderr before the first answer
  *   FAKE_CODEX_IGNORE_STDIN_CLOSE=1    keep running when stdin ends
  *   FAKE_CODEX_IGNORE_TERM=1           keep running on SIGTERM
  *   FAKE_CODEX_GRANDCHILD=1            start a grandchild in this process group (its pid is logged)
@@ -93,8 +94,10 @@ const SANDBOX_TYPE: Record<string, string> = {
 const send = (frame: unknown) => process.stdout.write(`${JSON.stringify(frame)}\n`);
 let wroteStderr = false;
 const beforeFirstAnswer = () => {
-	if (wroteStderr || !env.FAKE_CODEX_STDERR_BYTES) return;
+	if (wroteStderr || !(env.FAKE_CODEX_STDERR_BYTES || env.FAKE_CODEX_STDERR_TEXT)) return;
 	wroteStderr = true;
+	if (env.FAKE_CODEX_STDERR_TEXT) process.stderr.write(`${env.FAKE_CODEX_STDERR_TEXT}\n`);
+	if (!env.FAKE_CODEX_STDERR_BYTES) return;
 	const chunk = "e".repeat(64 * 1024);
 	let left = Number(env.FAKE_CODEX_STDERR_BYTES);
 	while (left > 0) {
