@@ -26,20 +26,20 @@ setDefaultTimeout(30_000);
 const CLI = join(import.meta.dir, "cli.ts");
 const UNREACHABLE_RELAY = "http://127.0.0.1:1";
 
-/** Windows can't start PowerShell for the ACL query without these; the rest of the env stays bare. */
+/**
+ * Measured on a Windows runner: Windows PowerShell takes about 23 s to start with
+ * a small env and 0.4 s with the full one, past the ACL query's 5 s limit. Windows
+ * children inherit everything except what could point the CLI somewhere else;
+ * elsewhere the env stays bare.
+ */
 const WINDOWS_BASE_ENV: Record<string, string> =
 	process.platform === "win32"
 		? Object.fromEntries(
-				[
-					"SystemRoot",
-					"windir",
-					"ComSpec",
-					"TEMP",
-					"TMP",
-					"PATHEXT",
-					"LOCALAPPDATA",
-					"APPDATA",
-				].flatMap((k) => (process.env[k] ? [[k, process.env[k] as string]] : [])),
+				Object.entries(process.env).filter(
+					(entry): entry is [string, string] =>
+						entry[1] !== undefined &&
+						!/^(HOME|USERPROFILE|PSMODULEPATH|AGENTPULSE_.*|CLAUDE_.*|CODEX_.*)$/i.test(entry[0]),
+				),
 			)
 		: {};
 
@@ -716,6 +716,7 @@ describe("agentpulse exclude add", () => {
 				stdout: "pipe",
 				stderr: "pipe",
 				env: {
+					...WINDOWS_BASE_ENV,
 					PATH: process.env.PATH ?? "/usr/bin:/bin",
 					AGENTPULSE_RELAY_LOCAL_URL: UNREACHABLE_RELAY,
 					// Deliberately no HOME, no USERPROFILE.
@@ -1749,7 +1750,7 @@ describe("agentpulse exclude add — safe, serialised, validated writes", () => 
 					cwd: home,
 					stdout: "pipe",
 					stderr: "pipe",
-					env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
+					env: { ...WINDOWS_BASE_ENV, PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
 				});
 				let timedOut = false;
 				const timer = setTimeout(() => {

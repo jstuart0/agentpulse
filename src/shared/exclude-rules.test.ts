@@ -25,6 +25,7 @@ import {
 	openSync,
 	readFileSync,
 	realpathSync,
+	rmdirSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -1883,7 +1884,9 @@ describe("reresolveRules", () => {
 				[a, join(home, "later")].map(slashes),
 			);
 
-			rmSync(link);
+			// Bun's rmSync answers EFAULT for a directory symlink on Windows.
+			if (process.platform === "win32") rmdirSync(link);
+			else rmSync(link);
 			symlinkSync(b, link);
 			symlinkSync(a, join(home, "later"));
 			const next = reresolveRules(loaded.rules, home);
