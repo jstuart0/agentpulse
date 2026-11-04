@@ -212,7 +212,7 @@ if ($null -ne $captured) {
 	Assert-True ($captured.Query -eq "?event=Stop") "request query is ?event=Stop"
 	Assert-True ($captured.AgentType -eq "codex_cli") "X-Agent-Type header is codex_cli (found [$($captured.AgentType)])"
 	Assert-True ($captured.Authorization -eq "Bearer ap_test_key_123") "Authorization header present with the saved key"
-	Assert-True ($captured.Body -eq $fixture) "body arrives byte-exact (found [$($captured.Body)], $($captured.Body.Length) chars)"
+	Assert-True ($captured.Body.TrimEnd("`r", "`n") -eq $fixture) "body arrives intact, apart from the line ending this test's pipe adds (found [$($captured.Body)], $($captured.Body.Length) chars)"
 }
 
 # ── The native-coverage marker sid gate, executed for real ──
@@ -382,7 +382,7 @@ if ($null -ne $copilotCaptured) {
 	Assert-True ($copilotCaptured.Path -eq "/api/v1/hooks") "Copilot: request path is /api/v1/hooks"
 	Assert-True ($copilotCaptured.Query -eq "?event=sessionStart") "Copilot: request query is ?event=sessionStart"
 	Assert-True ($copilotCaptured.AgentType -eq "copilot_cli") "Copilot: X-Agent-Type header is copilot_cli (found [$($copilotCaptured.AgentType)])"
-	Assert-True ($copilotCaptured.Body -eq $copilotFixture) "Copilot: body arrives byte-exact (found [$($copilotCaptured.Body)], $($copilotCaptured.Body.Length) chars)"
+	Assert-True ($copilotCaptured.Body.TrimEnd("`r", "`n") -eq $copilotFixture) "Copilot: body arrives intact, apart from the line ending this test's pipe adds (found [$($copilotCaptured.Body)], $($copilotCaptured.Body.Length) chars)"
 }
 
 # ── F232/F233 (xander, Medium): Test-ApReparsePoint / Write-ApFileNoFollow — real execution ──

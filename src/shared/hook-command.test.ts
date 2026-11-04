@@ -872,7 +872,9 @@ describe("buildPowerShellHookCommand — the gate in front of the send; the chec
 
 	test("the block runs in a detached process, which outlives the hook, within the Windows command line limit", () => {
 		const cmd = build("codex_cli");
-		expect(cmd).toContain("Start-Process -FilePath (Get-Process -Id $PID).Path -WindowStyle Hidden");
+		expect(cmd).toContain(
+			"Start-Process -FilePath (Get-Process -Id $PID).Path -WindowStyle Hidden",
+		);
 		expect(cmd).toContain("'-EncodedCommand'");
 		expect(cmd).not.toContain("Start-Job");
 		// UTF-16 doubles the block, base64 adds a third; CreateProcess allows 32,767 characters.
