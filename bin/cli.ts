@@ -32,6 +32,7 @@ import {
 	buildBashExcludeScript,
 	buildCodexHooksFile,
 	buildCopilotHooksFile,
+	buildPowerShellExcludeScript,
 } from "../src/shared/hook-command.js";
 import {
 	CODEX_APPROVE_LINE,
@@ -758,14 +759,13 @@ function runShellExcludeCheck(
 	cwd: string,
 	skip: string | undefined,
 	script: ExcludeScriptState,
+	scriptPs: ExcludeScriptState | null,
 ): boolean | null {
+	if (process.platform === "win32") return runPowerShellExcludeCheck(home, cwd, skip, scriptPs);
 	const installedAndTrusted = script.state === "current" || script.state === "stale";
-	// The hook names /bin/sh; Windows has no such path, and its PowerShell hooks
-	// run the PowerShell twin instead, so there the cross-check uses whatever sh is on PATH.
-	const interpreter = process.platform === "win32" ? "sh" : "/bin/sh";
 	const argv = installedAndTrusted
-		? [interpreter, excludeScriptPath(home)]
-		: [interpreter, "-c", buildBashExcludeScript()];
+		? ["/bin/sh", excludeScriptPath(home)]
+		: ["/bin/sh", "-c", buildBashExcludeScript()];
 	let result: ReturnType<typeof Bun.spawnSync>;
 	try {
 		result = Bun.spawnSync(argv, {
@@ -781,6 +781,51 @@ function runShellExcludeCheck(
 	// way (0 from an empty or truncated file, 2 from a syntax error) sends nothing.
 	if (result.exitCode === EXCLUDE_SCRIPT_SEND_STATUS) return false;
 	return result.exitCode === null ? null : true;
+}
+
+/**
+ * The Windows side of the cross-check: Windows hooks run the PowerShell twin,
+ * so that is the evaluator to compare with. POSIX sh on the same machine (Git
+ * for Windows puts one on PATH) can't judge Windows ACLs or paths and would
+ * report a disagreement that means nothing. PowerShell's $HOME follows
+ * USERPROFILE, not HOME. Windows PowerShell can't load Get-Acl from the module
+ * path PowerShell 7 hands down. Returns null when it could not run at all.
+ */
+function runPowerShellExcludeCheck(
+	home: string,
+	cwd: string,
+	skip: string | undefined,
+	scriptPs: ExcludeScriptState | null,
+): boolean | null {
+	const installedAndTrusted = scriptPs?.state === "current" || scriptPs?.state === "stale";
+	const target = installedAndTrusted
+		? ["-File", excludeScriptPath(home, "ps1")]
+		: [
+				"-EncodedCommand",
+				Buffer.from(buildPowerShellExcludeScript(), "utf16le").toString("base64"),
+			];
+	try {
+		const result = Bun.spawnSync(
+			["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", ...target],
+			{
+				cwd,
+				env: {
+					...Object.fromEntries(
+						Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"),
+					),
+					HOME: home,
+					USERPROFILE: home,
+					AGENTPULSE_SKIP: skip ?? "",
+				},
+				stdout: "pipe",
+				stderr: "pipe",
+			},
+		);
+		if (result.exitCode === EXCLUDE_SCRIPT_SEND_STATUS) return false;
+		return result.exitCode === null ? null : true;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -1066,7 +1111,8 @@ async function excludeCheck(dirArg: string | undefined) {
 	const script = inspectExcludeScript(home);
 	const scriptPs = wantsPowerShellCheck() ? inspectExcludeScript(home, undefined, "ps1") : null;
 	const shellExcluded =
-		resolveForcedShellResultForTests() ?? runShellExcludeCheck(home, targetDir, skip, script);
+		resolveForcedShellResultForTests() ??
+		runShellExcludeCheck(home, targetDir, skip, script, scriptPs);
 
 	if (shellExcluded !== null && shellExcluded !== tsResult.excluded) {
 		console.error(

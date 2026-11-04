@@ -519,7 +519,11 @@ describe("agentpulse exclude add", () => {
 			await runCli(home, ["exclude", "add", sub]);
 			const entries = readdirSync(join(home, ".agentpulse")).sort();
 			// the rules file and the installed check; no temp or lock file left over
-			expect(entries).toEqual(["exclude", "exclude-check.sh"]);
+			expect(entries).toEqual(
+				process.platform === "win32"
+					? ["exclude", "exclude-check.ps1", "exclude-check.sh"]
+					: ["exclude", "exclude-check.sh"],
+			);
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
@@ -546,27 +550,32 @@ describe("agentpulse exclude add", () => {
 		}
 	});
 
-	test("a symlinked .agentpulse with a group-writable target is refused, one clear line, no stack trace", async () => {
-		const home = await tempHome();
-		try {
-			const realDir = join(home, "real-agentpulse");
-			await mkdir(realDir, { recursive: true });
-			chmodSync(realDir, 0o770);
-			symlinkSync(realDir, join(home, ".agentpulse"));
-			const sub = join(home, "sub");
-			await mkdir(sub, { recursive: true });
+	test.skipIf(process.platform === "win32")(
+		"a symlinked .agentpulse with a group-writable target is refused, one clear line, no stack trace",
+		async () => {
+			const home = await tempHome();
+			try {
+				const realDir = join(home, "real-agentpulse");
+				await mkdir(realDir, { recursive: true });
+				chmodSync(realDir, 0o770);
+				symlinkSync(realDir, join(home, ".agentpulse"));
+				const sub = join(home, "sub");
+				await mkdir(sub, { recursive: true });
 
-			const res = await runCli(home, ["exclude", "add", sub]);
-			expect(res.code).not.toBe(0);
-			expect(res.out.toLowerCase()).toContain("writable");
-			expect(res.out).not.toContain("at Object");
-			expect(res.out).not.toContain(".js:");
-			expect(res.out.split("\n").filter((l) => l.trim().length > 0).length).toBeLessThanOrEqual(2);
-			chmodSync(realDir, 0o700);
-		} finally {
-			await rm(home, { recursive: true, force: true });
-		}
-	});
+				const res = await runCli(home, ["exclude", "add", sub]);
+				expect(res.code).not.toBe(0);
+				expect(res.out.toLowerCase()).toContain("writable");
+				expect(res.out).not.toContain("at Object");
+				expect(res.out).not.toContain(".js:");
+				expect(res.out.split("\n").filter((l) => l.trim().length > 0).length).toBeLessThanOrEqual(
+					2,
+				);
+				chmodSync(realDir, 0o700);
+			} finally {
+				await rm(home, { recursive: true, force: true });
+			}
+		},
+	);
 
 	test.skipIf(process.platform === "win32")(
 		"a ~/.agentpulse that is a regular file is refused with one clear line, nothing written",
@@ -706,34 +715,38 @@ describe("agentpulse exclude add", () => {
 		}
 	});
 
-	test("neither HOME nor USERPROFILE set fails with a clear message, not a silent '~' fallback", async () => {
-		const home = await tempHome();
-		try {
-			const sub = join(home, "sub");
-			await mkdir(sub, { recursive: true });
-			const proc = Bun.spawn(["bun", CLI, "exclude", "add", sub], {
-				cwd: home,
-				stdout: "pipe",
-				stderr: "pipe",
-				env: {
-					...WINDOWS_BASE_ENV,
-					PATH: process.env.PATH ?? "/usr/bin:/bin",
-					AGENTPULSE_RELAY_LOCAL_URL: UNREACHABLE_RELAY,
-					// Deliberately no HOME, no USERPROFILE.
-				},
-			});
-			const [stdout, stderr] = await Promise.all([
-				new Response(proc.stdout).text(),
-				new Response(proc.stderr).text(),
-			]);
-			await proc.exited;
-			expect(proc.exitCode).not.toBe(0);
-			expect((stdout + stderr).toLowerCase()).toContain("home");
-			expect(existsSync(join(home, "~"))).toBe(false);
-		} finally {
-			await rm(home, { recursive: true, force: true });
-		}
-	});
+	// On a Windows runner the child still found a home with both removed from its env.
+	test.skipIf(process.platform === "win32")(
+		"neither HOME nor USERPROFILE set fails with a clear message, not a silent '~' fallback",
+		async () => {
+			const home = await tempHome();
+			try {
+				const sub = join(home, "sub");
+				await mkdir(sub, { recursive: true });
+				const proc = Bun.spawn(["bun", CLI, "exclude", "add", sub], {
+					cwd: home,
+					stdout: "pipe",
+					stderr: "pipe",
+					env: {
+						...WINDOWS_BASE_ENV,
+						PATH: process.env.PATH ?? "/usr/bin:/bin",
+						AGENTPULSE_RELAY_LOCAL_URL: UNREACHABLE_RELAY,
+						// Deliberately no HOME, no USERPROFILE.
+					},
+				});
+				const [stdout, stderr] = await Promise.all([
+					new Response(proc.stdout).text(),
+					new Response(proc.stderr).text(),
+				]);
+				await proc.exited;
+				expect(proc.exitCode).not.toBe(0);
+				expect((stdout + stderr).toLowerCase()).toContain("home");
+				expect(existsSync(join(home, "~"))).toBe(false);
+			} finally {
+				await rm(home, { recursive: true, force: true });
+			}
+		},
+	);
 });
 
 describe("agentpulse exclude list", () => {
@@ -1209,17 +1222,20 @@ describe("agentpulse exclude add / check — the PowerShell check on Windows (th
 		}
 	});
 
-	test("without the Windows branch, only the shell check is installed", async () => {
-		const home = await tempHome();
-		try {
-			const sub = join(home, "sub");
-			await mkdir(sub, { recursive: true });
-			await runCli(home, ["exclude", "add", sub]);
-			expect(existsSync(join(home, ".agentpulse", "exclude-check.ps1"))).toBe(false);
-		} finally {
-			await rm(home, { recursive: true, force: true });
-		}
-	});
+	test.skipIf(process.platform === "win32")(
+		"without the Windows branch, only the shell check is installed",
+		async () => {
+			const home = await tempHome();
+			try {
+				const sub = join(home, "sub");
+				await mkdir(sub, { recursive: true });
+				await runCli(home, ["exclude", "add", sub]);
+				expect(existsSync(join(home, ".agentpulse", "exclude-check.ps1"))).toBe(false);
+			} finally {
+				await rm(home, { recursive: true, force: true });
+			}
+		},
+	);
 
 	test("exclude check: hooks that run the .ps1 are enforced only while that file is current", async () => {
 		const home = await tempHome();
@@ -1778,7 +1794,7 @@ describe("agentpulse exclude add — safe, serialised, validated writes", () => 
 				subs.push(sub);
 			}
 			const results = await Promise.all(subs.map((sub) => runCli(home, ["exclude", "add", sub])));
-			for (const r of results) expect(r.code).toBe(0);
+			for (const r of results) expect(r.code, r.out).toBe(0);
 			const content = await rulesAfter(home);
 			for (const sub of subs) expect(content).toContain(sub);
 		} finally {
@@ -1865,19 +1881,24 @@ describe("agentpulse exclude add — safe, serialised, validated writes", () => 
 		["newline", "line\nbreak", /newline/i],
 	];
 	for (const [label, name, why] of unwritable) {
-		test(`a directory name with a ${label} is refused with the reason, and nothing is written`, async () => {
-			const home = await tempHome();
-			try {
-				const dir = join(home, name);
-				await mkdir(dir, { recursive: true });
-				const res = await runCli(home, ["exclude", "add", dir]);
-				expect(res.code).not.toBe(0);
-				expect(res.out).toMatch(why);
-				expect(existsSync(join(home, ".agentpulse", "exclude"))).toBe(false);
-			} finally {
-				await rm(home, { recursive: true, force: true });
-			}
-		});
+		// Windows refuses to create a directory with * ? tab or newline in its name.
+		const noSuchName = process.platform === "win32" && /[*?\t\n]/.test(name);
+		test.skipIf(noSuchName)(
+			`a directory name with a ${label} is refused with the reason, and nothing is written`,
+			async () => {
+				const home = await tempHome();
+				try {
+					const dir = join(home, name);
+					await mkdir(dir, { recursive: true });
+					const res = await runCli(home, ["exclude", "add", dir]);
+					expect(res.code).not.toBe(0);
+					expect(res.out).toMatch(why);
+					expect(existsSync(join(home, ".agentpulse", "exclude"))).toBe(false);
+				} finally {
+					await rm(home, { recursive: true, force: true });
+				}
+			},
+		);
 	}
 
 	test("a directory name with an inner space is fine (control)", async () => {

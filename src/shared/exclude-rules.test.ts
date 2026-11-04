@@ -25,8 +25,8 @@ import {
 	openSync,
 	readFileSync,
 	realpathSync,
-	rmdirSync,
 	rmSync,
+	rmdirSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
