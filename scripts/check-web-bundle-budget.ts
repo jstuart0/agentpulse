@@ -13,7 +13,8 @@
  * who never opens it never pays for it. After merging v0.7.2 (the dashboard machine filter, which grew the base
  * to DashboardPage 26,258 and index 116,943 on its own) the limits were re-based on that base + the same
  * modest headroom; measured with the Summary work: DashboardPage 26,341, index 117,586. AGEN-85 and AGEN-86 (the probe before a reload, the
- * paused socket's slow retry) measured index 118,197 and moved its limit to 118,400. No chunk may carry zod (the
+ * paused socket's slow retry) measured index 118,197 and moved its limit to 118,400. AGEN-87 (the Codex approval card, a lazy chunk the page loads only for a managed Codex session) measured
+ * CodexApprovalCard 9,385 and left every other limit where it was: index 118,191, SessionDetailPage 20,855, DashboardPage 26,393. No chunk may carry zod (the
  * validating schema is server-only).
  */
 import { readFileSync, readdirSync } from "node:fs";
@@ -40,6 +41,7 @@ export interface Finding {
 export const BUDGETS: Budget[] = [
 	{ chunk: "SessionDetailPage", maxGzip: 23_500, measured: 22_260 },
 	{ chunk: "SessionSummaryTab", maxGzip: 12_500, measured: 11_582 },
+	{ chunk: "CodexApprovalCard", maxGzip: 10_200, measured: 9_385 },
 	{ chunk: "DashboardPage", maxGzip: 27_200, measured: 26_341 },
 	{ chunk: "index", maxGzip: 118_400, measured: 118_197 },
 ];

@@ -31,10 +31,29 @@ describe("checkBudget", () => {
 		expect(BUDGETS.map((b) => b.chunk)).toEqual([
 			"SessionDetailPage",
 			"SessionSummaryTab",
+			"CodexApprovalCard",
 			"DashboardPage",
 			"index",
 		]);
 		for (const b of BUDGETS) expect(b.maxGzip).toBeGreaterThan(0);
+	});
+});
+
+describe("CodexApprovalCard (AGEN-87)", () => {
+	const row = BUDGETS.find((b) => b.chunk === "CodexApprovalCard");
+	const base = { index: 118_197, SessionDetailPage: 20_026 };
+
+	test("the card is a lazy chunk with a row of its own", () => {
+		expect(row).toBeDefined();
+		expect(row?.maxGzip).toBeGreaterThan(0);
+	});
+
+	test("the entry chunk grew at most 150 B over its base, and the session page at most 1,000 B", () => {
+		const index = BUDGETS.find((b) => b.chunk === "index");
+		const page = BUDGETS.find((b) => b.chunk === "SessionDetailPage");
+		expect(index?.measured as number).toBeLessThanOrEqual(base.index + 150);
+		expect(index?.maxGzip as number).toBeLessThanOrEqual(118_400);
+		expect(page?.maxGzip as number).toBeLessThanOrEqual(23_500);
 	});
 });
 

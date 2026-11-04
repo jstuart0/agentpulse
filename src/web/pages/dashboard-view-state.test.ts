@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { CODEX_APPROVAL_NOTE_CAN_ANSWER } from "../lib/codex-approval-wait.js";
 import { canAcknowledgeSession } from "../lib/utils.js";
 import {
 	ACK_ACTION_LABEL,
 	AUTO_ACK_DWELL_MS,
 	type MarkAllPageResult,
+	PERMISSION_WAIT_NOTE,
 	SEARCH_DEBOUNCE_MS,
 	UNDO_WINDOW_MS,
 	ackActionLabel,
@@ -799,5 +801,41 @@ describe("mark all as seen never reaches for sessions the viewer doesn't own", (
 			() => false,
 		);
 		expect(targets).toEqual([]);
+	});
+});
+
+describe("codex approval note", () => {
+	const waiting = (ids: string[]) =>
+		baseSession({ isWorking: true, metadata: { permissionWait: { ids, anon: 0 } } });
+
+	test("a Codex approval does not tell the person to answer in the terminal", () => {
+		for (const canAcknowledge of [true, false]) {
+			const note = deriveAckAction(waiting(["approval:a1"]), canAcknowledge).permissionWaitNote;
+			expect(note).toBe(CODEX_APPROVAL_NOTE_CAN_ANSWER);
+			expect(note).not.toMatch(/terminal/i);
+		}
+	});
+
+	test("a Claude permission wait still does", () => {
+		const note = deriveAckAction(waiting(["toolu_01"]), true).permissionWaitNote;
+		expect(note).toBe(PERMISSION_WAIT_NOTE);
+		expect(note).toContain("answer it in the terminal");
+	});
+
+	test("an anonymous wait (no id) is a Claude wait", () => {
+		const session = baseSession({
+			isWorking: true,
+			metadata: { permissionWait: { ids: [], anon: 1 } },
+		});
+		expect(deriveAckAction(session, true).permissionWaitNote).toBe(PERMISSION_WAIT_NOTE);
+	});
+
+	test("an approval beside a Claude id still counts as Codex asking", () => {
+		const note = deriveAckAction(waiting(["toolu_01", "approval:a1"]), true).permissionWaitNote;
+		expect(note).toBe(CODEX_APPROVAL_NOTE_CAN_ANSWER);
+	});
+
+	test("it is still no button: acknowledging can't clear it", () => {
+		expect(deriveAckAction(waiting(["approval:a1"]), true).kind).toBeNull();
 	});
 });

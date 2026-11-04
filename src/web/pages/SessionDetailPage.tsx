@@ -39,6 +39,11 @@ import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
 import { useSessionSummaryPage } from "../hooks/useSessionSummaryPage.js";
 import { describeApiError } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
+import {
+	CHUNK_LOAD_FAILED_COPY,
+	hasPendingCodexApproval,
+	showsApprovalCard,
+} from "../lib/codex-approval-wait.js";
 import { EVENT_LOAD_FAILED_COPY } from "../lib/event-deep-link.js";
 import { applyManualRename } from "../lib/name-source.js";
 import { ownerChip } from "../lib/owner-chip.js";
@@ -72,6 +77,23 @@ const SessionSummaryTab = lazy(() =>
 // The AI tab (watcher modes, reports, approval cards) loads when the tab opens: most visits never use it.
 const AiPanel = lazy(() =>
 	import("../components/session-detail/AiPanel.js").then((m) => ({ default: m.AiPanel })),
+);
+
+// The approval card for a managed Codex session: a separate chunk, so no other session pays for it.
+// If the chunk can't load while Codex is asking, say so, because nothing else on the page can answer.
+const CodexApprovalCard = lazy(() =>
+	import("../components/session-detail/CodexApprovalCard.js")
+		.then((m) => ({ default: m.CodexApprovalCard }))
+		.catch(() => ({
+			default: ({ session }: { session: Session }) =>
+				hasPendingCodexApproval(session) ? (
+					<p role="alert" className="mx-3 mt-2 text-sm text-foreground md:mx-6">
+						{CHUNK_LOAD_FAILED_COPY}
+					</p>
+				) : (
+					<></>
+				),
+		})),
 );
 
 /** Scrolls to an event's element and flashes it; false while it isn't in the DOM yet. */
@@ -640,7 +662,7 @@ export function SessionDetailPage() {
 	const hostLabel = sessionHostLabel(session);
 
 	return (
-		<div className="flex flex-col h-full">
+		<div className="flex flex-col h-full [&:has([data-codex-approval])>[data-tab-panel]]:min-h-[24rem]">
 			<div aria-live="polite" className="sr-only">
 				{liveAnnouncement}
 			</div>
@@ -666,7 +688,9 @@ export function SessionDetailPage() {
 				onStop={handleStop}
 				ackAction={ackAction}
 				headerRef={headerRef}
-				permissionWaitNote={ackDerivation.permissionWaitNote}
+				permissionWaitNote={
+					hasPendingCodexApproval(session) ? null : ackDerivation.permissionWaitNote
+				}
 				notOwnerNote={ackDerivation.notOwnerNote}
 				ownerChip={
 					showOwnerFields
@@ -700,6 +724,12 @@ export function SessionDetailPage() {
 
 			<HostControlHint session={session} />
 
+			{showsApprovalCard(session) ? (
+				<Suspense fallback={null}>
+					<CodexApprovalCard session={session} announce={setLiveAnnouncement} />
+				</Suspense>
+			) : null}
+
 			<ControlHistory actions={controlActions} />
 
 			{workspaceTab === "activity" && reveal.notice ? (
@@ -723,7 +753,7 @@ export function SessionDetailPage() {
 				</div>
 			) : null}
 
-			<div className="flex-1 min-h-0">
+			<div className="flex-1 min-h-0" data-tab-panel="">
 				{workspaceTab === null ? (
 					<div aria-busy="true" className="space-y-3 p-6">
 						<div className="h-4 w-1/3 rounded bg-muted motion-safe:animate-pulse" />

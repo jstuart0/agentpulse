@@ -262,7 +262,7 @@ export function resetAuthBounceForTests(): void {
  * request cannot tell is a redirect the browser blocks outright (a TypeError); the next foreground request
  * still reloads, once a probe shows the server is answering.
  */
-async function request<T>(
+export async function request<T>(
 	path: string,
 	options?: RequestInit,
 	opts?: { background?: boolean },

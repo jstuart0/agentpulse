@@ -7,6 +7,10 @@ import type { Session } from "../../shared/types.js";
 import { useOwnershipUi } from "../hooks/useOwnershipUi.js";
 import { describeApiError } from "../lib/api-errors.js";
 import { type SessionIntelligence, api } from "../lib/api.js";
+import {
+	codexApprovalNoteOtherOwner,
+	hasPendingCodexApproval,
+} from "../lib/codex-approval-wait.js";
 import type { OwnerChipModel } from "../lib/owner-chip.js";
 import { sessionActionAccess } from "../lib/ownership-ui.js";
 import { sessionHostLabel } from "../lib/session-host.js";
@@ -146,10 +150,13 @@ export function SessionCard({ session, intelligence, ownerChip }: SessionCardPro
 	// Only what the viewer can act on: another person's session carries no
 	// acknowledge control on its card (the status badge and owner chip say whose
 	// turn it is); an admin's override lives on the session's own page.
-	const ackAction = deriveCardAckAction(
-		session,
-		canAcknowledgeSession(session, viewerUserId, disableAuth),
-	);
+	const canAck = canAcknowledgeSession(session, viewerUserId, disableAuth);
+	const ackAction = deriveCardAckAction(session, canAck);
+	// Codex is asking the owner for approval: say whose turn it is, since the card has no button for it.
+	const askingOwner =
+		!canAck && hasPendingCodexApproval(session)
+			? codexApprovalNoteOtherOwner(ownerChip?.kind === "user" ? ownerChip.text : null)
+			: null;
 	const modeStyle = getSessionMode(session);
 	const projectColorsEnabled = useUiPrefsStore((s) => s.projectColors);
 	// Deterministic tint per project so sessions in the same repo
@@ -651,13 +658,13 @@ export function SessionCard({ session, intelligence, ownerChip }: SessionCardPro
 					<Undo2 className="w-3.5 h-3.5" aria-hidden="true" />
 					Restore error
 				</button>
-			) : ackAction.permissionWaitNote ? (
+			) : ackAction.permissionWaitNote || askingOwner ? (
 				<p
 					className="mb-2 inline-flex items-center gap-1.5 text-xs text-foreground"
 					onClick={(e) => e.stopPropagation()}
 				>
 					<Info className="w-3.5 h-3.5 flex-shrink-0 text-muted-foreground" aria-hidden="true" />
-					{ackAction.permissionWaitNote}
+					{ackAction.permissionWaitNote || askingOwner}
 				</p>
 			) : null}
 
@@ -714,7 +721,9 @@ export function SessionCard({ session, intelligence, ownerChip }: SessionCardPro
 				>
 					{modeStyle.label}
 				</span>
-				{intelligenceEnabled && intelligence && <IntelligenceBadge intelligence={intelligence} />}
+				{intelligenceEnabled && intelligence && !hasPendingCodexApproval(session) && (
+					<IntelligenceBadge intelligence={intelligence} />
+				)}
 				<span
 					className="text-xs text-muted-foreground"
 					title={`Last activity ${session.lastActivityAt} · started ${session.startedAt}`}
