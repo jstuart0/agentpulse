@@ -1286,7 +1286,14 @@ function queryWindowsSecurity(targetPath: string): RawWindowsSecurityQuery | nul
 		raw = execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
 			encoding: "utf-8",
 			timeout: 5000,
-			env: { ...process.env, AP_SECURITY_TARGET_PATH: targetPath },
+			// A parent started from PowerShell 7 hands down a module path that Windows
+			// PowerShell can't load Get-Acl from, which would read as "rules invalid".
+			env: {
+				...Object.fromEntries(
+					Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"),
+				),
+				AP_SECURITY_TARGET_PATH: targetPath,
+			},
 		});
 	} catch {
 		return null;
