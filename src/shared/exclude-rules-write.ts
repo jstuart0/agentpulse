@@ -48,9 +48,11 @@ import { writePrivateFileAtomicNoFollow } from "./private-file.js";
 
 const EXCLUDE_FILE_NAME = EXCLUDE_RULES_RELATIVE_PATH.split("/")[1] as string;
 const LOCK_FILE_NAME = `${EXCLUDE_FILE_NAME}.lock`;
-const LOCK_WAIT_MS = 3000;
+// Windows checks ACLs through PowerShell while holding the lock, about a second
+// per add, so a few adds started together need longer than a POSIX machine does.
+const LOCK_WAIT_MS = process.platform === "win32" ? 15_000 : 3000;
 const LOCK_POLL_MS = 40;
-/** A lock this old is from a crashed writer whatever its pid says (a live add holds it for milliseconds). */
+/** A lock this old is from a crashed writer whatever its pid says (a live add holds it for a second at most). */
 const LOCK_STALE_MS = 60_000;
 const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0;
 

@@ -1800,7 +1800,7 @@ describe("agentpulse exclude add — safe, serialised, validated writes", () => 
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
-	});
+	}, 60_000);
 
 	test.skipIf(process.platform === "win32")(
 		"an unreadable existing rules file aborts with nothing written and its mode untouched",
