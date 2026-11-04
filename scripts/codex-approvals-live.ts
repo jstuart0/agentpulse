@@ -7,16 +7,25 @@
  *
  *   bun scripts/codex-approvals-live.ts --spike --work <dir> --raw <dir> [--only S2,S4]
  *   bun scripts/codex-approvals-live.ts --scrub --raw <dir> --out <fixtures dir> --work <dir>
- *   bun scripts/codex-approvals-live.ts --full-path --work <dir> [--minutes 8] [--only accept,decline,fc-accept,fc-decline,fc-patch]
+ *   bun scripts/codex-approvals-live.ts --real --work <dir> [--minutes 12] [--only argv,decline,fc-accept,fc-decline,fc-patch]
  *
- * `--full-path` (phase 5) drives a real Codex through the whole of AgentPulse and nothing else: a
- * throwaway server on 127.0.0.1 with a temp SQLite database, the real report gate and tracker, a real
- * managed launch, and a person's answer through the real route. For a command, and again for a file
- * change made with `apply_patch`: one accept (the file must appear) and one decline (it must not). A last
- * run accepts one patch that updates a file, moves another and deletes a third, and reports what changed on
- * disk. If Codex doesn't ask for approval for a file change under this configuration, that is reported as
- * it was seen, not forced. It uses a throwaway CODEX_HOME holding only a copy of `auth.json`,
- * which is deleted at the end; `~/.codex` is never written. It spends real model usage.
+ * `--real` is the per-release canary (D18). It drives a real Codex through the whole of AgentPulse and
+ * nothing else: a throwaway server on 127.0.0.1 with a temp SQLite database, the real report gate and
+ * tracker, a real managed launch, and a person's answer through the real HTTP routes. It exits non-zero
+ * unless every one of these held:
+ *   - the protocol verdict is `supported`;
+ *   - an approved command that writes its own argv wrote exactly the arguments the person was shown;
+ *   - a declined command left no effect;
+ *   - an approved file change left content equal to the diff the person was shown (add), and an approved
+ *     mixed patch (update, move, delete) left the disk as the shown changes say;
+ *   - a declined file change left no effect;
+ *   - with a request pending, no process in the Codex child's tree has a listening socket (`lsof`), and
+ *     after stop none of that tree is left.
+ * Codex is asked in a way that cannot be answered without an approval (escalated command, exact patch
+ * text); if it asks nothing anyway, that scenario fails, because a canary that passes without asking
+ * proves nothing. It uses a throwaway CODEX_HOME holding only a copy of `auth.json`, which is deleted at
+ * the end; `~/.codex` is never written and the running supervisor is never touched. It spends real model
+ * usage, and a kill timer (`--minutes`, default 12) ends everything whatever else happens.
  *
  * `--work` must sit under a scratch location (path containing /scratchpad/ or
  * the OS temp dir), never in a repo checkout or a home directory.
@@ -1101,13 +1110,68 @@ function shapeHashes(dir: string): Record<string, string> {
 	return out;
 }
 
+/** Split a shell command line into words: single and double quotes, backslash escapes. No expansion. */
+function shellWords(text: string): string[] {
+	const words: string[] = [];
+	let current = "";
+	let inWord = false;
+	let quote: "'" | '"' | null = null;
+	for (let i = 0; i < text.length; i++) {
+		const ch = text[i]!;
+		if (quote === "'") {
+			if (ch === "'") quote = null;
+			else current += ch;
+		} else if (quote === '"') {
+			if (ch === '"') quote = null;
+			else if (ch === "\\" && i + 1 < text.length) current += text[++i];
+			else current += ch;
+		} else if (ch === "'" || ch === '"') {
+			quote = ch;
+			inWord = true;
+		} else if (ch === "\\" && i + 1 < text.length) {
+			current += text[++i];
+			inWord = true;
+		} else if (/\s/.test(ch)) {
+			if (inWord) words.push(current);
+			current = "";
+			inWord = false;
+		} else {
+			current += ch;
+			inWord = true;
+		}
+	}
+	if (quote) throw new Error(`unterminated quote in: ${text}`);
+	if (inWord) words.push(current);
+	return words;
+}
+
+/** The arguments after `script` in a shown command, looking through one `shell -lc "<command>"` wrapper. */
+function argsAfterScript(shown: string, script: string): string[] {
+	let words = shellWords(shown);
+	if (words.length === 3 && /^-\w*c$/.test(words[1]!)) words = shellWords(words[2]!);
+	const at = words.indexOf(script);
+	if (at < 0) throw new Error(`${script} is not in the shown command: ${shown}`);
+	return words.slice(at + 1);
+}
+
+/** TCP listeners, and any `--listen` flag, across a Codex child's process group. */
+function listenersIn(pgid: number): { pids: number[]; listeners: string; listenFlag: boolean } {
+	const pids = groupPids(pgid);
+	const listeners = pids.length
+		? spawnSync("lsof", ["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-p", pids.join(",")], {
+				encoding: "utf8",
+			}).stdout.trim()
+		: "";
+	return { pids, listeners, listenFlag: pids.some((pid) => /--listen/.test(argvOf(pid))) };
+}
+
 /**
  * The whole path with a real Codex. Everything it touches is under `work` (a scratch directory): the
  * throwaway CODEX_HOME, a HOME for the supervisor's config, the SQLite database, and the project
  * directories Codex runs in. A kill timer ends it whatever happens, and every Codex child is in its own
  * process group, so the shutdown reaches the native binary too.
  */
-async function fullPath(workArg: string, minutes: number): Promise<number> {
+async function real(workArg: string, minutes: number): Promise<number> {
 	const root = assertScratch(workArg);
 	const codexHome = join(root, "codex-home");
 	const home = join(root, "home");
@@ -1130,7 +1194,7 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 	// Real model usage and real processes: a hard stop whatever else happens.
 	const killTimer = setTimeout(
 		() => {
-			console.error(`[full-path] kill timer (${minutes} min) fired; shutting everything down`);
+			console.error(`[real] kill timer (${minutes} min) fired; shutting everything down`);
 			void cleanup(2);
 		},
 		minutes * 60 * 1000,
@@ -1156,7 +1220,7 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 			.stdout.split("\n")
 			.filter(Boolean)
 			.filter((pid) => Number(pid) !== process.pid);
-		const codexLeft = spawnSync("pgrep", ["-fl", "codex"], { encoding: "utf8" }).stdout.trim();
+		const codexLeft = spawnSync("pgrep", ["-x", "codex"], { encoding: "utf8" }).stdout.trim();
 		console.log(
 			JSON.stringify({
 				authCopyRemoved: !existsSync(join(codexHome, "auth.json")),
@@ -1191,23 +1255,23 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 		server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: app.fetch });
 		const base = `http://127.0.0.1:${server.port}`;
 		process.env.AGENTPULSE_SERVER_URL = base;
-		console.log("[full-path] throwaway server on", base);
+		console.log("[real] throwaway server on", base);
 
 		// A person, a manage key to enroll with, and an enrolled host: the real flow over real HTTP.
-		const person = await team.seedLocalUser("full-path-person", "admin");
-		const manage = await createApiKey("full-path-manage", ["manage"]);
+		const person = await team.seedLocalUser("real-person", "admin");
+		const manage = await createApiKey("real-manage", ["manage"]);
 		const json = { "Content-Type": "application/json" };
 		const enrolled = await fetch(`${base}/api/v1/admin/supervisors/enroll`, {
 			method: "POST",
 			headers: { ...json, Authorization: `Bearer ${manage.key}` },
-			body: JSON.stringify({ name: "full-path-host" }),
+			body: JSON.stringify({ name: "real-host" }),
 		});
 		const { token: enrollmentToken } = (await enrolled.json()) as { token: string };
 		const registered = await fetch(`${base}/api/v1/supervisors/register`, {
 			method: "POST",
 			headers: json,
 			body: JSON.stringify({
-				hostName: "full-path-host",
+				hostName: "real-host",
 				platform: "macos",
 				arch: "arm64",
 				version: "1.0.0",
@@ -1253,7 +1317,7 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 			request,
 			supervisorId,
 			home,
-			version: "full-path",
+			version: "real",
 			rules,
 			outbox: createReportOutbox({ home, supervisorId }),
 			credentialTripwire: resilience.createCredentialTripwire({ now: Date.now }),
@@ -1306,6 +1370,13 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 			/** How long to wait for a request before reporting that none came. */
 			askWaitMs?: number;
 		};
+		const failures: string[] = [];
+		const expect = (name: string, ok: unknown, detail?: unknown) => {
+			if (!ok) {
+				failures.push(name);
+				console.error(`[real] FAILED: ${name}`, detail === undefined ? "" : JSON.stringify(detail));
+			}
+		};
 		const listing = (dir: string) =>
 			Object.fromEntries(
 				readdirSync(dir)
@@ -1321,7 +1392,7 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 			for (const [file, content] of Object.entries(plan.seed ?? {})) {
 				writeFileSync(join(dir, file), content);
 			}
-			const sessionId = `full-path-${name}-${crypto.randomUUID().slice(0, 6)}`;
+			const sessionId = `real-${name}-${crypto.randomUUID().slice(0, 6)}`;
 			sessions.push(sessionId);
 			await getDb()
 				.insert(launchRequests)
@@ -1381,10 +1452,27 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 			if (!row) {
 				out.directoryAfter = plan.observe ? plan.observe(dir) : listing(dir);
 				await managed.stopManagedCodexSession(sessionId).catch(() => {});
-				void started;
+				out.treeAfterStop = await treeAfterStop(started.pid);
 				return out;
 			}
 			out.asked = true;
+			// With the request pending, nothing in Codex's tree may be listening on a socket.
+			const tree = listenersIn(started.pid);
+			out.pendingTree = {
+				processes: tree.pids.length,
+				tcpListeners: tree.listeners || "none",
+				listenFlag: tree.listenFlag,
+			};
+			expect(
+				`${name}: the Codex child's tree is not empty while a request is pending`,
+				tree.pids.length > 0,
+			);
+			expect(
+				`${name}: a listening socket in the child's tree`,
+				tree.listeners === "",
+				tree.listeners,
+			);
+			expect(`${name}: a --listen flag in the child's tree`, !tree.listenFlag);
 			const list = await (
 				await fetch(`${base}/api/v1/sessions/${sessionId}/approvals`, {
 					headers: await personHeaders(),
@@ -1396,8 +1484,18 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 					headers: await personHeaders(),
 				})
 			).json()) as {
-				presentation?: { changes?: Array<{ path: string; kind: string; movePath: string | null }> };
+				presentation?: {
+					command?: string | null;
+					changes?: Array<{ path: string; kind: string; movePath: string | null; diff: string }>;
+				};
 			};
+			out.shownCommand = detail.presentation?.command ?? null;
+			out.shownDiffs = detail.presentation?.changes?.map((c) => ({
+				path: c.path,
+				kind: c.kind,
+				movePath: c.movePath,
+				diff: c.diff,
+			}));
 			out.shown = {
 				approvable: summary.approvable,
 				kind: summary.requestKind,
@@ -1441,94 +1539,182 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 				decision: r.decision,
 			}));
 			await managed.stopManagedCodexSession(sessionId);
-			void started;
+			out.treeAfterStop = await treeAfterStop(started.pid);
+			expect(`${name}: processes left after stop`, out.treeAfterStop === "none", out.treeAfterStop);
 			return out;
 		}
+		async function treeAfterStop(pgid: number): Promise<string> {
+			const deadline = Date.now() + 15_000;
+			for (;;) {
+				const left = groupPids(pgid).filter(pidAlive);
+				if (left.length === 0) return "none";
+				if (Date.now() > deadline) return `still running: ${left.join(",")}`;
+				await sleepMs(300);
+			}
+		}
 
+		const ESCALATE =
+			"with escalated permissions (ask for approval, do not try it inside the sandbox first)";
 		const command = (name: string, marker: string, decision: "accept" | "decline"): Plan => ({
 			name,
 			decision,
 			prompt: () =>
-				`Run exactly this one shell command with escalated permissions (ask for approval, do not try it inside the sandbox first) and then stop. Do not do anything else: touch ${marker}`,
+				`Run exactly this one shell command ${ESCALATE} and then stop. Do not do anything else: touch ${marker}`,
 		});
-		const writeFile = (name: string, file: string, decision: "accept" | "decline"): Plan => ({
+		const patchFor = (file: string, line: string) =>
+			["*** Begin Patch", `*** Add File: ${file}`, `+${line}`, "*** End Patch"].join("\n");
+		const writeFile = (
+			name: string,
+			file: string,
+			line: string,
+			decision: "accept" | "decline",
+		): Plan => ({
 			name,
 			decision,
 			prompt: () =>
-				`Use the apply_patch tool, and nothing else, to add a new file named ${file} whose whole content is the single line: hello from the full path. Do not run shell commands. Then stop.`,
+				`Call apply_patch once, and use no other tool, with exactly this patch text, then stop:\n${patchFor(file, line)}`,
 		});
-		const only = (opt("--only") ?? "accept,decline,fc-accept,fc-decline,fc-patch").split(",");
-		const skipped = { skipped: true };
-		results.accept = only.includes("accept")
-			? await scenario(command("accept", "accepted.txt", "accept"))
-			: skipped;
-		results.decline = only.includes("decline")
-			? await scenario(command("decline", "declined.txt", "decline"))
-			: skipped;
-		results.fileChangeAccept = only.includes("fc-accept")
-			? await scenario(writeFile("fc-accept", "fc-accepted.txt", "accept"))
-			: skipped;
-		results.fileChangeDecline = only.includes("fc-decline")
-			? await scenario(writeFile("fc-decline", "fc-declined.txt", "decline"))
-			: skipped;
-		results.fileChangePatch = !only.includes("fc-patch")
-			? skipped
-			: await scenario({
-					name: "fc-patch",
-					decision: "accept",
-					seed: {
-						"update-me.txt": "line one\nline two\nline three\n",
-						"move-me.txt": "move me\n",
-						"delete-me.txt": "delete me\n",
-					},
-					prompt: () =>
-						[
-							"Make all three changes in ONE apply_patch call, and use no other tool, with exactly this patch text:",
-							"*** Begin Patch",
-							"*** Update File: update-me.txt",
-							"@@",
-							" line one",
-							"-line two",
-							"+LINE TWO CHANGED",
-							" line three",
-							"*** Update File: move-me.txt",
-							"*** Move to: moved.txt",
-							"@@",
-							"-move me",
-							"+moved me",
-							"*** Delete File: delete-me.txt",
-							"*** End Patch",
-							"Then stop.",
-						].join("\n"),
-				});
-		const accept = results.accept as any;
+		const ARGV_SCRIPT = 'printf "%s\\n" "$0" "$@" > argv-out.txt\n';
+		const only = (opt("--only") ?? "argv,decline,fc-accept,fc-decline,fc-patch").split(",");
+		const run = async (id: string, plan: () => Plan) =>
+			only.includes(id) ? await scenario(plan()) : { skipped: true };
+		const every = (name: string, out: any) => {
+			if (out.skipped) return;
+			expect(
+				`${name}: the protocol verdict is supported`,
+				out.verdict === "supported",
+				out.verdict,
+			);
+			expect(
+				`${name}: Codex asked for approval`,
+				out.asked === true,
+				out.sawNoRequest ?? out.timeline,
+			);
+			expect(
+				`${name}: the answer was accepted by the server`,
+				out.answerStatus === 200,
+				out.answerStatus,
+			);
+		};
+		const has = (out: any, file: string) => Object.hasOwn(out.directoryAfter ?? {}, file);
+
+		results.argv = await run("argv", () => ({
+			name: "argv",
+			decision: "accept",
+			seed: { "argv.sh": ARGV_SCRIPT },
+			prompt: () =>
+				`Run exactly this shell command ${ESCALATE}, do not do anything else: sh argv.sh alpha 'beta gamma' delta`,
+		}));
+		results.decline = await run("decline", () => command("decline", "declined.txt", "decline"));
+		results.fileChangeAccept = await run("fc-accept", () =>
+			writeFile("fc-accept", "fc-accepted.txt", "hello from the real run", "accept"),
+		);
+		results.fileChangeDecline = await run("fc-decline", () =>
+			writeFile("fc-decline", "fc-declined.txt", "should never exist", "decline"),
+		);
+		results.fileChangePatch = await run("fc-patch", () => ({
+			name: "fc-patch",
+			decision: "accept",
+			seed: {
+				"update-me.txt": "line one\nline two\nline three\n",
+				"move-me.txt": "move me\n",
+				"delete-me.txt": "delete me\n",
+			},
+			prompt: () =>
+				[
+					"Make all three changes in ONE apply_patch call, and use no other tool, with exactly this patch text:",
+					"*** Begin Patch",
+					"*** Update File: update-me.txt",
+					"@@",
+					" line one",
+					"-line two",
+					"+LINE TWO CHANGED",
+					" line three",
+					"*** Update File: move-me.txt",
+					"*** Move to: moved.txt",
+					"@@",
+					"-move me",
+					"+moved me",
+					"*** Delete File: delete-me.txt",
+					"*** End Patch",
+					"Then stop.",
+				].join("\n"),
+		}));
+
+		const argv = results.argv as any;
+		every("argv", argv);
+		if (!argv.skipped && argv.asked) {
+			const written = String(argv.directoryAfter?.["argv-out.txt"] ?? "").split("\n");
+			written.pop();
+			try {
+				const shownArgs = argsAfterScript(String(argv.shownCommand), "argv.sh");
+				argv.shownArgs = shownArgs;
+				expect("argv: $0 is the script the person was shown", written[0] === "argv.sh", written);
+				expect(
+					"argv: the command wrote exactly the arguments it was shown",
+					JSON.stringify(written.slice(1)) === JSON.stringify(shownArgs),
+					{ shown: shownArgs, wrote: written.slice(1) },
+				);
+			} catch (error) {
+				expect("argv: the shown command could not be read", false, String(error));
+			}
+			expect("argv: the row closed applied", argv.closedReason === "applied", argv.closedReason);
+		}
+
 		const decline = results.decline as any;
+		every("decline", decline);
+		if (!decline.skipped) {
+			expect("decline: no effect", !has(decline, "declined.txt"), decline.directoryAfter);
+		}
+
 		const fcAccept = results.fileChangeAccept as any;
+		every("fc-accept", fcAccept);
+		if (!fcAccept.skipped && fcAccept.asked) {
+			const shown = fcAccept.shownDiffs?.[0];
+			expect("fc-accept: shown as a file change", fcAccept.shown?.kind === "file_change");
+			expect(
+				"fc-accept: one add of the expected file",
+				fcAccept.shownDiffs?.length === 1 && shown?.kind === "add",
+			);
+			expect(
+				"fc-accept: the file's content equals the diff the person was shown",
+				shown !== undefined && fcAccept.directoryAfter?.["fc-accepted.txt"] === shown.diff,
+				{ shown: shown?.diff, wrote: fcAccept.directoryAfter?.["fc-accepted.txt"] },
+			);
+		}
+
 		const fcDecline = results.fileChangeDecline as any;
-		const commandOk =
-			(accept.skipped === true ||
-				(accept.verdict === "supported" &&
-					accept.answerStatus === 200 &&
-					Object.hasOwn(accept.directoryAfter ?? {}, "accepted.txt") &&
-					accept.closedReason === "applied")) &&
-			(decline.skipped === true ||
-				(decline.answerStatus === 200 &&
-					!Object.hasOwn(decline.directoryAfter ?? {}, "declined.txt")));
-		// A file change is judged only if Codex asked; if it never did, that is the finding and is reported.
-		const fileChangeOk =
-			(fcAccept.skipped === true ||
-				fcAccept.asked === false ||
-				(fcAccept.shown?.kind === "file_change" &&
-					fcAccept.answerStatus === 200 &&
-					Object.hasOwn(fcAccept.directoryAfter ?? {}, "fc-accepted.txt"))) &&
-			(fcDecline.skipped === true ||
-				fcDecline.asked === false ||
-				(fcDecline.shown?.kind === "file_change" &&
-					fcDecline.answerStatus === 200 &&
-					!Object.hasOwn(fcDecline.directoryAfter ?? {}, "fc-declined.txt")));
-		results.commandOk = commandOk;
-		results.fileChangeOk = fileChangeOk;
-		results.ok = commandOk && fileChangeOk;
+		every("fc-decline", fcDecline);
+		if (!fcDecline.skipped) {
+			expect("fc-decline: shown as a file change", fcDecline.shown?.kind === "file_change");
+			expect("fc-decline: no effect", !has(fcDecline, "fc-declined.txt"), fcDecline.directoryAfter);
+		}
+
+		const patch = results.fileChangePatch as any;
+		every("fc-patch", patch);
+		if (!patch.skipped && patch.asked) {
+			const kinds = (patch.shownDiffs ?? []).map((c: any) => c.kind).sort();
+			expect(
+				"fc-patch: the person saw an update, a move and a delete",
+				kinds.join() === "delete,update,update",
+				kinds,
+			);
+			const after = patch.directoryAfter ?? {};
+			expect(
+				"fc-patch: the update landed",
+				after["update-me.txt"] === "line one\nLINE TWO CHANGED\nline three\n",
+				after["update-me.txt"],
+			);
+			expect(
+				"fc-patch: the file moved",
+				has(patch, "moved.txt") && !has(patch, "move-me.txt"),
+				Object.keys(after),
+			);
+			expect("fc-patch: the file was deleted", !has(patch, "delete-me.txt"), Object.keys(after));
+		}
+
+		results.failures = failures;
+		results.ok = failures.length === 0;
 		return await cleanup(results.ok ? 0 : 1);
 	} catch (error) {
 		results.error = String(error instanceof Error ? error.stack : error);
@@ -1536,8 +1722,8 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 	}
 }
 
-if (flag("--full-path")) {
-	process.exit(await fullPath(opt("--work") ?? "", Number(opt("--minutes") ?? 8)));
+if (flag("--real")) {
+	process.exit(await real(opt("--work") ?? "", Number(opt("--minutes") ?? 12)));
 } else if (flag("--parent-helper")) {
 	const i = args.indexOf("--parent-helper");
 	await parentHelper(args[i + 1]!, args[i + 2]!);

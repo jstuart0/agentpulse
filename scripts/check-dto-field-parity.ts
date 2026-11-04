@@ -29,11 +29,36 @@ const INTERFACES = [
 	"DashboardStats",
 	"OwnerScopeEcho",
 	"SessionEvent",
+	// AGEN-87: the managed Codex approval person DTOs (D17), declared in src/shared/codex-approvals.ts.
+	"CodexApprovalHost",
+	"CodexApprovalViewer",
+	"CodexApprovalPathPreview",
+	"CodexApprovalPreview",
+	"CodexApprovalSummary",
+	"CodexApprovalList",
+	"CodexApprovalPresentationChange",
+	"CodexApprovalCommandPresentation",
+	"CodexApprovalFileChangePresentation",
+	"CodexApprovalDetail",
+	"CodexApprovalDecisionResponse",
 ] as const;
+
+const CODEX_APPROVALS_SOURCE = "src/shared/codex-approvals.ts";
 
 /** Where an interface's shared declaration lives when it isn't src/shared/types.ts. */
 const SHARED_SOURCE_OVERRIDES: Partial<Record<(typeof INTERFACES)[number], string>> = {
 	OwnerScopeEcho: "src/shared/owner-scope.ts",
+	CodexApprovalHost: CODEX_APPROVALS_SOURCE,
+	CodexApprovalViewer: CODEX_APPROVALS_SOURCE,
+	CodexApprovalPathPreview: CODEX_APPROVALS_SOURCE,
+	CodexApprovalPreview: CODEX_APPROVALS_SOURCE,
+	CodexApprovalSummary: CODEX_APPROVALS_SOURCE,
+	CodexApprovalList: CODEX_APPROVALS_SOURCE,
+	CodexApprovalPresentationChange: CODEX_APPROVALS_SOURCE,
+	CodexApprovalCommandPresentation: CODEX_APPROVALS_SOURCE,
+	CodexApprovalFileChangePresentation: CODEX_APPROVALS_SOURCE,
+	CodexApprovalDetail: CODEX_APPROVALS_SOURCE,
+	CodexApprovalDecisionResponse: CODEX_APPROVALS_SOURCE,
 };
 
 /**
@@ -98,7 +123,7 @@ function main() {
 
 		if (!sameSet(sharedFieldsForComparison, mcpFields)) {
 			errors.push(
-				`${name}: src/shared/types.ts has ${describe(sharedFieldsForComparison)} (after INTENTIONAL_VENDOR_OMISSIONS), packages/agentpulse-mcp/src/types.ts has ${describe(mcpFields)} — these must match`,
+				`${name}: ${sharedPath} has ${describe(sharedFieldsForComparison)} (after INTENTIONAL_VENDOR_OMISSIONS), packages/agentpulse-mcp/src/types.ts has ${describe(mcpFields)} — these must match`,
 			);
 		}
 		// ownerUserId/ownerKind must actually be present on both sides, not
@@ -125,6 +150,17 @@ function main() {
 					errors.push(`${name}: "${field}" must be declared on both sides`);
 				}
 			}
+		}
+	}
+
+	// The wire name of the optional per-file flag must be on both sides: a client that drops it reads
+	// "can't tell", which is the safe direction, but a rename on one side would go unnoticed.
+	for (const [label, content] of [
+		[CODEX_APPROVALS_SOURCE, readFile(CODEX_APPROVALS_SOURCE)],
+		["packages/agentpulse-mcp/src/types.ts", mcpContent],
+	] as const) {
+		if (!extractInterfaceFields(content, "CodexApprovalDetail").includes("outsideCwd")) {
+			errors.push(`${label} CodexApprovalDetail: "outsideCwd" must be declared`);
 		}
 	}
 

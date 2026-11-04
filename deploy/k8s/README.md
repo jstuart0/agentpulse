@@ -1094,3 +1094,66 @@ harmless.
 **Per-process limits.** At most four replay requests are worked on at once in a process, and two
 from one supervisor; the rest are answered `503 busy` with `Retry-After: 2`, which a supervisor
 retries. With N replicas the cap is N times as large. Live reports are never refused.
+
+## Upgrading to migration 0020 (SQLite and Postgres): managed Codex approvals
+
+`drizzle/sqlite/0020_codex_approvals.sql` and `drizzle/postgres/0020_codex_approvals.sql` create two
+tables and no column on an existing one: `codex_approvals` (one row per command or file-change
+request from a managed Codex session, with a cascade foreign key to `sessions.session_id`) and
+`codex_approval_audit` (append-only, no foreign keys, outside event retention). Both dialects'
+folders now end at `0020`. Plain `CREATE TABLE`; on Postgres the foreign key takes a brief lock on
+`sessions`, so the `lock_timeout` advice under the `0018`/`0019` section applies. Existing SQLite installs on the legacy
+`initializeDatabase()` path get the same tables and triggers through its additive steps.
+
+**Backup first.** The migration is forward-only. Take a `sqlite3 .backup` copy (or the backup
+sidecar's snapshot) before deploying, and confirm the copy opens.
+
+**Upgrade order.** Server first, then supervisors. An older server doesn't answer `serverFeatures`,
+so a new supervisor declines every approval itself; an older supervisor never reports one, so the
+card says to update the supervisor. Upgrading supervisors also moves managed Codex from a local
+WebSocket listener to stdio: after upgrading, kill any `codex app-server --listen` process an older
+supervisor left behind. The supervisor must reach the server over https (or loopback) to answer
+approvals.
+
+**What the audit table is.** Every answer is written to `codex_approval_audit` in the answer's
+transaction: who, which hash, which decision, and later the outcome. Triggers refuse deletes and any
+update except finalizing `outcome` once. Deleting a session deletes its approvals (and with them the
+command text) but not the audit; a pending audit row for a deleted session is finalized as
+`session_deleted` (or `session_deleted_after_issue` when an accept had been issued, which may have
+run). The triggers stop the application, not a database owner: running the application as a role
+that does not own the tables and cannot `DROP` them is deployment posture, as for every other
+table, and this feature doesn't change it.
+
+**Rollback.** Redeploy the previous image. Both tables and their triggers stay and are never read
+by older code; leave them, since the audit is the record of who approved what. If you must remove
+them, `DROP TABLE` works despite the triggers, and a later re-upgrade then also needs the migration's
+row removed from the journal. Supervisors on a new build see no `serverFeatures` from the older
+server and go back to declining; **a supervisor rolled back to an older build returns to the local
+WebSocket listener.** An older server has no sweep, and its boundary events clear every wait id, so a session
+that was waiting on an approval when you rolled back can stay WAITING until its next boundary event
+(its next prompt or stop) or until it is archived; marking it seen doesn't clear a permission wait.
+
+**Per-process limits.** The report (240 a minute) and sync (120 a minute) limiters are per host and
+per process, so with N replicas a host is admitted N times as many. Creation caps (32 open per session, 60
+created per 10 minutes per session, 64 open per host) are counted from rows and hold across replicas.
+The wait's id list is updated by a read-modify-write in each process; under `RollingUpdate` a
+concurrent write can briefly restore a cleared id, and the next sweep repairs it.
+
+### Release checklist: Codex approvals
+
+Run this on every Codex release you want supervisors to answer approvals for, and when you touch the
+approval code:
+
+1. `bun scripts/codex-approvals-live.ts --real --work <scratch directory>` against the new Codex
+   (real model usage; a throwaway `CODEX_HOME` with only a copy of your `auth.json`, deleted at the end;
+   `~/.codex` is not touched). It must exit 0. It checks the verdict is `supported`, an approved
+   command ran with the arguments it showed, a declined one did nothing, file changes (an add, and one
+   patch that updates, moves and deletes) land as shown or not at all, and no process in Codex's tree is
+   listening while a request is pending or left after stop.
+2. A new approval shape that passes: add its hash to `SUPPORTED_CODEX_SHAPES` in
+   `src/supervisor/providers/codex-protocol.ts` (`--schema-hash <generated schema directory>` in the same script prints it, from the output of `codex app-server generate-json-schema --experimental --out <dir>`), and
+   record the new frames under `src/supervisor/providers/__fixtures__/`.
+3. A version that misbehaves: add it to `BLOCKED_CODEX_VERSIONS` (one line). It declines from the next
+   supervisor release.
+4. The pull-request workflow `.github/workflows/codex-approvals-postgres.yml` must be green for any
+   change under the approval paths.
