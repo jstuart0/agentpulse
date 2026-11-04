@@ -950,14 +950,17 @@ export function resolvePhysicalPath(raw: string, p: ResolvedProvider): string {
  */
 export function resolveStepByStep(raw: string, p: ResolvedProvider): string {
 	const { prefix, segments } = splitPathForPlatform(raw);
-	let resolved = p.realpath(prefix);
+	// parentOf reads "/" separators, and a Windows realpath answers with "\\".
+	// Left as it came, ".." would find no separator and stay where it was.
+	const slashed = (v: string) => (WINDOWS_DRIVE_PREFIX_RE.test(v) ? v.replace(/\\/g, "/") : v);
+	let resolved = slashed(p.realpath(prefix));
 	for (const seg of segments) {
 		if (seg === ".") continue;
 		if (seg === "..") {
 			resolved = parentOf(resolved);
 			continue;
 		}
-		resolved = p.realpath(join(resolved, seg));
+		resolved = slashed(p.realpath(join(resolved, seg)));
 	}
 	return resolved;
 }
@@ -1185,8 +1188,17 @@ function queryWindowsSecurity(targetPath: string): RawWindowsSecurityQuery | nul
 		].join("; ");
 		raw = execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
 			encoding: "utf-8",
-			timeout: 5000,
-			env: { ...process.env, AP_SECURITY_TARGET_PATH: targetPath },
+			// Not 5 s: the first Windows PowerShell start on a cold machine measured past
+			// that on a CI runner (about 0.4 s once warm), and a timeout reads as invalid rules.
+			timeout: 15_000,
+			// A parent started from PowerShell 7 hands down a module path that Windows
+			// PowerShell can't load Get-Acl from, which would read as "rules invalid".
+			env: {
+				...Object.fromEntries(
+					Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"),
+				),
+				AP_SECURITY_TARGET_PATH: targetPath,
+			},
 		});
 	} catch {
 		return null;

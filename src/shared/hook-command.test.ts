@@ -237,15 +237,15 @@ describe("buildBashHookCommand / buildPowerShellHookCommand — base URL validat
 	}
 });
 
-describe("buildPowerShellHookCommand — marker extraction runs inside Start-Job, not on the synchronous parent path (never executed)", () => {
-	test("the codex_cli marker snippet appears AFTER Start-Job in the generated text, not before it", () => {
+describe("buildPowerShellHookCommand — marker extraction runs inside the detached block, not on the synchronous parent path (never executed)", () => {
+	test("the codex_cli marker snippet appears AFTER the detached block starts in the generated text, not before it", () => {
 		const cmd = buildPowerShellHookCommand({
 			baseUrl: "http://localhost:4000",
 			direct: true,
 			agent: "codex_cli",
 			event: "Stop",
 		});
-		const startJobIdx = cmd.indexOf("Start-Job");
+		const startJobIdx = cmd.indexOf("$apJob = {");
 		const markerIdx = cmd.indexOf("session_id");
 		expect(startJobIdx).toBeGreaterThan(-1);
 		expect(markerIdx).toBeGreaterThan(-1);
@@ -262,25 +262,25 @@ describe("buildPowerShellHookCommand — marker extraction runs inside Start-Job
 		expect(cmd).toContain("[IO.File]::ReadAllText($t)");
 		// The parent-scope $raw is still used, but only for the synchronous
 		// stdin-drain + temp-file write (D13) — never re-read for the marker.
-		const markerSection = cmd.slice(cmd.indexOf("Start-Job"));
+		const markerSection = cmd.slice(cmd.indexOf("$apJob = {"));
 		expect(markerSection).not.toMatch(/\[regex\]::Match\(\$raw,/);
 	});
 
-	test("only the synchronous stdin-drain + temp-file write happen before Start-Job", () => {
+	test("only the synchronous stdin-drain + temp-file write happen before the detached block", () => {
 		const cmd = buildPowerShellHookCommand({
 			baseUrl: "http://localhost:4000",
 			direct: true,
 			agent: "codex_cli",
 			event: "Stop",
 		});
-		const beforeJob = cmd.slice(0, cmd.indexOf("Start-Job"));
+		const beforeJob = cmd.slice(0, cmd.indexOf("$apJob = {"));
 		expect(beforeJob).toContain("[Console]::In.ReadToEnd()");
 		expect(beforeJob).toContain("[IO.File]::WriteAllText($t, $raw)");
 		expect(beforeJob).not.toContain("session_id");
 		expect(beforeJob).not.toContain("codex-native");
 	});
 
-	test("copilot_cli carries no marker snippet at all, before or after Start-Job", () => {
+	test("copilot_cli carries no marker snippet at all, before or after the detached block starts", () => {
 		const cmd = buildPowerShellHookCommand({
 			baseUrl: "http://localhost:4000",
 			direct: true,
@@ -848,7 +848,7 @@ describe("buildPowerShellHookCommand — the gate in front of the send; the chec
 	const build = (agent: string, direct = true) =>
 		buildPowerShellHookCommand({ baseUrl: BASE, direct, agent, event: "Stop" });
 	/** Well under cmd.exe's 8,191 characters even if the string passes through it once. */
-	const PS_COMMAND_SIZE_LIMIT = 6000;
+	const PS_COMMAND_SIZE_LIMIT = 6500;
 
 	test("the command stays small and carries no copy of the check", () => {
 		for (const agent of ["codex_cli", "copilot_cli"]) {
@@ -862,26 +862,37 @@ describe("buildPowerShellHookCommand — the gate in front of the send; the chec
 		}
 	});
 
-	test("the parent passes its current location and the skip variable through -ArgumentList", () => {
+	test("the parent passes its current location and the skip variable to the detached block", () => {
 		const cmd = build("codex_cli");
-		expect(cmd).toMatch(
-			/-ArgumentList \$t, \$f, 'http:\/\/localhost:4000\/api\/v1\/hooks\?event=Stop', 'codex_cli', \(Get-Location\)\.Path, \$env:AGENTPULSE_SKIP \| Out-Null/,
+		expect(cmd).toContain(
+			"foreach ($apV in @($t, $f, 'http://localhost:4000/api/v1/hooks?event=Stop', 'codex_cli', (Get-Location).Path, $env:AGENTPULSE_SKIP))",
 		);
 		expect(cmd).toContain("param($t, $f, $url, $agent, $apJobCwd, $apJobSkip)");
 	});
 
+	test("the block runs in a detached process, which outlives the hook, within the Windows command line limit", () => {
+		const cmd = build("codex_cli");
+		expect(cmd).toContain(
+			"Start-Process -FilePath (Get-Process -Id $PID).Path -WindowStyle Hidden",
+		);
+		expect(cmd).toContain("'-EncodedCommand'");
+		expect(cmd).not.toContain("Start-Job");
+		// UTF-16 doubles the block, base64 adds a third; CreateProcess allows 32,767 characters.
+		expect(Math.ceil((cmd.length * 2 * 4) / 3)).toBeLessThan(32_000);
+	});
+
 	test("inside the job the gate reads those parameters, never the location or the environment", () => {
 		const cmd = build("codex_cli");
-		const job = cmd.slice(cmd.indexOf("Start-Job"), cmd.indexOf("} -ArgumentList"));
+		const job = cmd.slice(cmd.indexOf("$apJob = {"), cmd.indexOf("$apArgs = "));
 		expect(job).not.toContain("(Get-Location)");
 		expect(job).not.toContain("$env:AGENTPULSE_SKIP");
 		expect(job).toContain("$apJobCwd");
 		expect(job).toContain("$apJobSkip");
 	});
 
-	test("before Start-Job the parent does no file or process work beyond the stdin drain and temp write", () => {
+	test("before the detached block the parent does no file or process work beyond the stdin drain and temp write", () => {
 		const cmd = build("codex_cli");
-		const before = cmd.slice(0, cmd.indexOf("Start-Job"));
+		const before = cmd.slice(0, cmd.indexOf("$apJob = {"));
 		expect(before).not.toContain("Get-Location");
 		expect(before).not.toContain("ApCheckSecurity");
 		expect(before).not.toContain("exclude");
@@ -897,7 +908,7 @@ describe("buildPowerShellHookCommand — the gate in front of the send; the chec
 		expect(curl).toBeGreaterThan(gate);
 		expect(cmd).toMatch(/if \(\$apGo\) \{\n {4}\$headerArgs/);
 		expect(cmd).toMatch(
-			/\} finally \{\n {4}Remove-Item -Force \$t -ErrorAction SilentlyContinue\n {2}\}\n\} -ArgumentList/,
+			/\} finally \{\n {4}Remove-Item -Force \$t -ErrorAction SilentlyContinue\n {2}\}\n\}\n\$apArgs = /,
 		);
 		expect(cmd.indexOf("try {")).toBeLessThan(marker);
 	});

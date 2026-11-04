@@ -37,7 +37,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildPowerShellExcludeSnippet } from "../src/shared/hook-command.js";
@@ -86,7 +86,7 @@ function runPwsh(home: string, cwd: string, skip: string | undefined): PsRunResu
 	}
 	const result = spawnSync(PWSH_BIN, ["-NoProfile", "-NonInteractive", "-File", SNIPPET_FILE], {
 		cwd,
-		env: { ...process.env, HOME: home, AGENTPULSE_SKIP: skip ?? "" },
+		env: { ...process.env, HOME: home, USERPROFILE: home, AGENTPULSE_SKIP: skip ?? "" },
 		encoding: "utf-8",
 	});
 	const stdout = result.stdout ?? "";
@@ -199,13 +199,22 @@ describe("exclude-shim-parity-ps — ACL-independent fixtures (runs wherever pws
 // so the snippet fails closed (treats the file as invalid) regardless of
 // the fixture's actual expectation — that's correct fail-safe behavior,
 // not something this suite can assert agreement on off real Windows.
+/**
+ * These need a real working directory Windows won't give a process: a name
+ * holding a double quote, a path over the 4,096-character cap, and an
+ * unresolved ".." (the OS collapses it before the snippet reads the cwd).
+ */
+const NOT_CONSTRUCTIBLE_ON_WINDOWS =
+	/^(quotes-in-path|cwd-exactly-4096-.*|cwd-over-4096-.*|cwd-with-unresolvable-dotdot-no-cwd)$/;
+
 const winOnlyCandidates = fixtures.filter(
 	(f) =>
 		!ACL_INDEPENDENT_NAMES.has(f.name) &&
 		f.expectedSkip === undefined &&
 		f.cwd !== undefined &&
 		isFixtureApplicable(f, "win32") &&
-		!f.dedicated,
+		!f.dedicated &&
+		!NOT_CONSTRUCTIBLE_ON_WINDOWS.test(f.name),
 );
 
 describe("exclude-shim-parity-ps — generic fixture sweep (full coverage: win32 + pwsh only)", () => {
@@ -222,9 +231,14 @@ describe("exclude-shim-parity-ps — generic fixture sweep (full coverage: win32
 			const home = tempHome("ap-shim-ps-home-");
 			try {
 				const rawContent = rawContentFor(fixture);
-				if (rawContent !== undefined) writeRulesFile(home, rawContent);
+				// A win32 fixture spells its rules out in full, so they move with the cwd.
+				const moved =
+					fixture.platform === "win32" && fixture.home
+						? rawContent?.replaceAll(fixture.home, home)
+						: rawContent;
+				if (moved !== undefined) writeRulesFile(home, moved);
 				const cwd = rewriteUnderHome(fixture.cwd, fixture.home, home) ?? home;
-				mkdirSync(cwd, { recursive: true });
+				if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true });
 				const result = runPwsh(home, cwd, undefined);
 				diagnose(fixture.name, result.excluded, fixture.expected.excluded);
 				expect(result.stdout).toBe("");
