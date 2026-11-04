@@ -98,6 +98,19 @@ export function isTerminalStateReport(input: ManagedSessionStateInput): boolean 
 	);
 }
 
+/**
+ * `permissionWait` is the server's own record of what a session is blocked on, written
+ * from hook events and approval rows. A supervisor's metadata must not be able to set
+ * or clear it.
+ */
+function withoutServerOwnedMetadata(
+	metadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null | undefined {
+	if (!metadata || !("permissionWait" in metadata)) return metadata;
+	const { permissionWait: _serverOwned, ...rest } = metadata;
+	return rest;
+}
+
 export async function upsertManagedSessionState(
 	supervisorId: string,
 	input: ManagedSessionStateInput,
@@ -112,6 +125,7 @@ export async function upsertManagedSessionState(
 	await assertSupervisorCanWriteSession(supervisorId, input.sessionId, {
 		launchRequestId: input.launchRequestId,
 	});
+	const supervisorMetadata = withoutServerOwnedMetadata(input.metadata);
 	const timestamp = nowIso();
 	const [existingManaged] = await getDb()
 		.select()
@@ -173,7 +187,7 @@ export async function upsertManagedSessionState(
 				model: input.model ?? null,
 				startedAt: timestamp,
 				lastActivityAt: timestamp,
-				metadata: input.metadata ?? {},
+				metadata: supervisorMetadata ?? {},
 				ownerUserId: owner.ownerUserId,
 				ingestKeyId: owner.ingestKeyId,
 			})
@@ -181,7 +195,7 @@ export async function upsertManagedSessionState(
 	} else {
 		await withTransaction(async (tx) => {
 			const updates: Record<string, unknown> = { ...sessionUpdates };
-			if (input.metadata) {
+			if (supervisorMetadata) {
 				// Late read-modify-write inside the transaction: re-read metadata
 				// immediately before writing so a concurrent writer's keys (e.g.
 				// applyPermissionWaitTransition's permissionWait) aren't clobbered
@@ -194,7 +208,7 @@ export async function upsertManagedSessionState(
 					.limit(1);
 				updates.metadata = {
 					...(fresh?.metadata ?? {}),
-					...input.metadata,
+					...supervisorMetadata,
 				};
 			}
 			await tx.update(sessions).set(updates).where(eq(sessions.sessionId, input.sessionId));

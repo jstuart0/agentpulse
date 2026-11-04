@@ -323,8 +323,25 @@ describePostgresOnly("true concurrency on Postgres", () => {
 				operations,
 			);
 			const syncResult = results.find((r) => r.kind === "sync");
-			expect(syncResult?.kind).toBe("sync");
-			await expectConsistent(id, syncResult?.kind === "sync" ? syncResult.answers : []);
+			if (syncResult?.kind !== "sync") throw new Error("the sync did not run");
+			const accepts = syncResult.answers.filter((a) => a.decision === "accept");
+			// The order is fixed by the lock, so the outcome is too: not just "consistent", but this one.
+			if (order === "stop first") {
+				expect(accepts).toEqual([]);
+				expect(syncResult.answers).toEqual([]);
+			} else {
+				expect(accepts).toHaveLength(1);
+			}
+			await expectConsistent(id, syncResult.answers);
+			const row = await rowOf(id);
+			if (order === "sync first") {
+				expect(row.firstDeliveredAt).not.toBeNull();
+				expect(row.fencedAt).not.toBeNull();
+				expect(row.closedReason).toBeNull();
+			} else {
+				expect(row.firstDeliveredAt).toBeNull();
+				expect(row.closedReason).toBe("session_stopped");
+			}
 		});
 	}
 

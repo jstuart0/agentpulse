@@ -25,8 +25,8 @@ const OPEN = 40;
 const HOST = "plan-host";
 const PREFIX = "plan-s-";
 
-beforeAll(() => initializeDatabase());
-afterAll(async () => {
+/** Removes every row the seed makes. Safe to run on a clean database, and on one a crashed run left behind. */
+async function cleanSeed() {
 	const db = getDb();
 	await db.delete(codexApprovals).where(like(codexApprovals.sessionId, `${PREFIX}%`));
 	await db.delete(managedSessions).where(like(managedSessions.sessionId, `${PREFIX}%`));
@@ -34,16 +34,49 @@ afterAll(async () => {
 	if (config.dialect === "sqlite") {
 		// Deleting a session fires a trigger that scans the two FTS tables once per row (their session_id
 		// is unindexed), which at 50k rows takes minutes. Take the trigger off for this one delete, clear
-		// the FTS rows in one scan each, and put it back.
+		// the FTS rows in one scan each, and put it back, whatever happens in between.
 		const sqlite = getSqlite();
 		sqlite.exec("DROP TRIGGER IF EXISTS trg_sessions_ad_fts");
-		await db.delete(sessions).where(like(sessions.sessionId, `${PREFIX}%`));
-		sqlite.exec(`DELETE FROM search_sessions_fts WHERE session_id LIKE '${PREFIX}%'`);
-		sqlite.exec(FTS_BOOTSTRAP_SQL);
+		try {
+			await db.delete(sessions).where(like(sessions.sessionId, `${PREFIX}%`));
+			sqlite.exec(`DELETE FROM search_sessions_fts WHERE session_id LIKE '${PREFIX}%'`);
+		} finally {
+			sqlite.exec(FTS_BOOTSTRAP_SQL);
+		}
 		return;
 	}
 	await db.delete(sessions).where(like(sessions.sessionId, `${PREFIX}%`));
-}, 120_000);
+}
+
+beforeAll(async () => {
+	await initializeDatabase();
+	await cleanSeed();
+	await seed();
+	// SQLite is left as the server leaves it: nothing in the server runs ANALYZE, and with the
+	// statistics an operator's ANALYZE would add, SQLite sees a two-valued `status` column as
+	// unselective and scans codex_approvals (bounded by its size). Postgres needs its statistics.
+	if (config.dialect === "sqlite") {
+		// Other suites in the same process ANALYZE this shared database, before this seed existed. Give the
+		// two big tables statistics that describe the seed, and leave codex_approvals with none, which is
+		// how a server (that never runs ANALYZE) sees it: with its two-valued `status`, statistics would
+		// make SQLite scan it.
+		const sqlite = getSqlite();
+		const lookup = sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_stat1'");
+		const hasStats = lookup.get();
+		lookup.finalize();
+		if (hasStats) sqlite.exec("DELETE FROM sqlite_stat1 WHERE tbl = 'codex_approvals'");
+		sqlite.exec("ANALYZE managed_sessions");
+		sqlite.exec("ANALYZE launch_requests");
+		return;
+	}
+	const db = getDb() as unknown as { execute: (q: unknown) => Promise<unknown> };
+	for (const table of ["sessions", "launch_requests", "managed_sessions", "codex_approvals"]) {
+		await db.execute(sql.raw(`ANALYZE ${table}`));
+	}
+}, 240_000);
+afterAll(cleanSeed, 120_000);
+
+const STATUS_EXPIRES_INDEX = "idx_codex_approvals_status_expires";
 
 /**
  * 50k sessions, each with a claimed launch and a managed row, in three set-based statements
@@ -53,6 +86,7 @@ async function seed() {
 	const db = getDb();
 	const run = (text: string) => executeRows(db, sql.raw(text));
 	const last = SESSIONS - 1;
+	const now = new Date().toISOString();
 	if (config.dialect === "postgres") {
 		await run(
 			`INSERT INTO sessions (id, session_id, agent_type) SELECT 'plan-id-' || i, '${PREFIX}' || i, 'codex_cli' FROM generate_series(0, ${last}) AS i`,
@@ -75,7 +109,6 @@ async function seed() {
 			`${series} INSERT INTO managed_sessions (session_id, launch_request_id, supervisor_id, managed_state) SELECT '${PREFIX}' || i, 'plan-l-' || i, 'irrelevant', 'managed' FROM n`,
 		);
 	}
-	const now = new Date().toISOString();
 	const rows = Array.from({ length: OWN }, (_, i) => ({
 		sessionId: `${PREFIX}${i}`,
 		runtimeEpoch: "e",
@@ -94,6 +127,22 @@ async function seed() {
 		updatedAt: now,
 	}));
 	await db.insert(codexApprovals).values(rows);
+
+	// The pile retention leaves behind: a closed row for every other session. The sync must reach the
+	// few open rows through the status index, which only pays off against a table like this one.
+	const closedColumns =
+		"id, session_id, runtime_epoch, rpc_id, request_kind, thread_id, turn_id, item_id, presentation_hash, presentation_revision, approvable, can_cancel, status, closed_reason, created_at, expires_at, updated_at";
+	const closedValues = (i: string) =>
+		`'plan-a-' || ${i}, '${PREFIX}' || ${i}, 'e', '0', 'command', 't', 't', 'i', 'h', 1, ${config.dialect === "postgres" ? "true" : "1"}, ${config.dialect === "postgres" ? "false" : "0"}, 'closed', 'applied', '${now}', '${now}', '${now}'`;
+	if (config.dialect === "postgres") {
+		await run(
+			`INSERT INTO codex_approvals (${closedColumns}) SELECT ${closedValues("i")} FROM generate_series(${OWN}, ${last}) AS i`,
+		);
+	} else {
+		await run(
+			`WITH RECURSIVE n(i) AS (SELECT ${OWN} UNION ALL SELECT i + 1 FROM n WHERE i < ${last}) INSERT INTO codex_approvals (${closedColumns}) SELECT ${closedValues("i")} FROM n`,
+		);
+	}
 }
 
 const syncRead = (listed: string[] = []) =>
@@ -111,9 +160,7 @@ describeSqliteOnly("sync plan — SQLite", () => {
 			.map((r) => r.detail)
 			.join("\n");
 
-	test("the seed is at least 50k managed sessions and the host owns a small share (the fixture means something)", async () => {
-		await seed();
-		getSqlite().exec("ANALYZE");
+	test("the seed is at least 50k managed sessions and the host owns a small share (the fixture means something)", () => {
 		const [counts] = getSqlite()
 			.prepare(
 				"SELECT (SELECT COUNT(*) FROM managed_sessions WHERE session_id LIKE 'plan-s-%') AS managed, (SELECT COUNT(*) FROM codex_approvals WHERE status = 'pending') AS open",
@@ -121,17 +168,18 @@ describeSqliteOnly("sync plan — SQLite", () => {
 			.all() as Array<{ managed: number; open: number }>;
 		expect(counts?.managed).toBe(SESSIONS);
 		expect(counts?.open).toBe(OPEN);
-	}, 120_000);
+	});
 
-	test("it never scans managed_sessions or launch_requests, with or without ids named", async () => {
+	test("it reads codex_approvals through the (status, expires_at) index and never scans a table, with or without ids named", () => {
 		for (const listed of [[], ["a", "b", "c"]]) {
 			const text = plan(syncRead(listed));
-			expect(text, text).toContain("codex_approvals");
+			expect(text, text).toContain(`SEARCH codex_approvals USING INDEX ${STATUS_EXPIRES_INDEX}`);
+			expect(text, text).not.toMatch(/SCAN codex_approvals/);
 			expect(text, text).not.toMatch(/SCAN managed_sessions/);
 			expect(text, text).not.toMatch(/SCAN launch_requests/);
 			expect(text, text).not.toMatch(/SCAN m\b|SCAN l\b/);
 		}
-	}, 60_000);
+	});
 });
 
 describePostgresOnly("sync plan — Postgres", () => {
@@ -148,14 +196,12 @@ describePostgresOnly("sync plan — Postgres", () => {
 	};
 
 	test("it never sequentially scans managed_sessions or launch_requests", async () => {
-		await seed();
-		const db = getDb() as unknown as { execute: (q: unknown) => Promise<unknown> };
-		for (const table of ["sessions", "launch_requests", "managed_sessions", "codex_approvals"]) {
-			await db.execute(sql.raw(`ANALYZE ${table}`));
-		}
 		for (const listed of [[], ["a", "b", "c"]]) {
 			const text = await planOf(syncRead(listed));
-			expect(text, text).not.toMatch(/Seq Scan on (managed_sessions|launch_requests)/);
+			expect(text, text).toContain("codex_approvals");
+			expect(text, text).not.toMatch(
+				/Seq Scan on (managed_sessions|launch_requests|codex_approvals)/,
+			);
 		}
-	}, 180_000);
+	});
 });

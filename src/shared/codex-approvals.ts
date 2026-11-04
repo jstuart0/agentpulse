@@ -30,6 +30,13 @@ export const CODEX_APPROVAL_LIMITS = {
 	createdWindowMs: 10 * 60 * 1000,
 	openPerHost: 64,
 	command: 16 * 1024,
+	/** A command longer than this is shown but not approvable: a person can't be asked to read a page to approve it. */
+	approvableCommandChars: 4 * 1024,
+	/** Longer runs of spaces and tabs, or of blank lines, can push text out of sight. */
+	maxSpaceRun: 40,
+	maxBlankLineRun: 10,
+	/** The revision is an int32 column. */
+	revisionMax: 2147483647,
 	totalDiff: 256 * 1024,
 	files: 200,
 	pathChars: 1024,
@@ -70,6 +77,8 @@ export type ApprovalRequestKind = (typeof APPROVAL_REQUEST_KINDS)[number];
 export const NOT_APPROVABLE_REASONS = [
 	"redacted",
 	"invisible_chars",
+	"padded_text",
+	"lookalike_text",
 	"too_long",
 	"no_diff",
 	"no_command",
@@ -328,6 +337,8 @@ export const APPROVAL_REPORT_REFUSALS = [
 	"too_many_pending",
 	"session_stopping",
 	"invalid_body",
+	"identity_conflict",
+	"session_not_owned",
 ] as const;
 export type ApprovalReportRefusal = (typeof APPROVAL_REPORT_REFUSALS)[number];
 

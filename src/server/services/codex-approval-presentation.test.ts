@@ -91,11 +91,30 @@ describe("approvable only when nothing changed", () => {
 });
 
 describe("bounds", () => {
-	test("command: 16 KiB passes, one more is too_long", () => {
-		const at = "x".repeat(CODEX_APPROVAL_LIMITS.command);
+	test("command: 4 KiB is the most that can be approved; up to 16 KiB is kept whole, past that cut", () => {
+		const at = "x".repeat(CODEX_APPROVAL_LIMITS.approvableCommandChars);
+		expect(CODEX_APPROVAL_LIMITS.approvableCommandChars).toBe(4 * KIB);
+		expect(CODEX_APPROVAL_LIMITS.command).toBe(16 * KIB);
 		expect(reasonOf(commandReport({ command: at }))).toBeNull();
 		expect(reasonOf(commandReport({ command: `${at}x` }))).toBe("too_long");
-		expect(CODEX_APPROVAL_LIMITS.command).toBe(16 * KIB);
+
+		// Between 4 KiB and 16 KiB the whole command is stored and shown: not approvable, not cut.
+		const midway = buildPresentation(commandReport({ command: "y".repeat(10 * KIB) }));
+		expect(midway.notApprovableReason).toBe("too_long");
+		if (midway.presentation.requestKind !== "command") throw new Error("kind");
+		expect(midway.presentation.command?.length).toBe(10 * KIB);
+
+		// At the hard cap nothing is cut; one more is cut, and loses the secret margin.
+		const hard = "z".repeat(CODEX_APPROVAL_LIMITS.command);
+		const kept = buildPresentation(commandReport({ command: hard }));
+		if (kept.presentation.requestKind !== "command") throw new Error("kind");
+		expect(kept.presentation.command?.length).toBe(CODEX_APPROVAL_LIMITS.command);
+		const cut = buildPresentation(commandReport({ command: `${hard}z` }));
+		if (cut.presentation.requestKind !== "command") throw new Error("kind");
+		expect(cut.notApprovableReason).toBe("too_long");
+		expect(cut.presentation.command?.length).toBe(
+			CODEX_APPROVAL_LIMITS.command - CODEX_APPROVAL_LIMITS.secretCutMargin,
+		);
 	});
 
 	test("files: 200 pass, 201 are too_long and only 200 are kept", () => {
@@ -164,6 +183,8 @@ describe("one test per reason", () => {
 	const make: Record<NotApprovableReason, () => Parameters<typeof buildPresentation>[0]> = {
 		redacted: () => commandReport({ command: `echo ${SECRET}` }),
 		invisible_chars: () => commandReport({ command: `echo ${ZERO_WIDTH}` }),
+		padded_text: () => commandReport({ command: `echo a${" ".repeat(41)}b` }),
+		lookalike_text: () => commandReport({ command: "npm i l\u043edash" }),
 		too_long: () => commandReport({ command: "x".repeat(CODEX_APPROVAL_LIMITS.command + 1) }),
 		no_diff: () => fileChangeReport({ changes: [] }),
 		no_command: () => commandReport({ command: null }),
@@ -214,6 +235,215 @@ describe("one test per reason", () => {
 		expect(reasonOf(commandReport({ command: `echo ${SECRET}`, declineOnly: ["network"] }))).toBe(
 			"network",
 		);
+	});
+});
+
+// ── text that hides or imitates other text ──────────────────────────────────
+
+const CYRILLIC_O = "\u043e";
+const GREEK_OMICRON = "\u03bf";
+const NBSP = "\u00a0";
+const IDEOGRAPHIC_SPACE = "\u3000";
+const BRAILLE_BLANK = "\u2800";
+const FULLWIDTH_S = "\uff53";
+
+function pathChange(path: string, movePath: string | null = null) {
+	return fileChangeReport({
+		changes: [{ path, kind: movePath ? "update" : "add", movePath, diff: "+x\n" }],
+	});
+}
+
+describe("padding that pushes text out of sight", () => {
+	test("a run of 40 spaces or tabs is approvable, 41 is padded_text", () => {
+		for (const unit of [" ", "\t"]) {
+			expect(reasonOf(commandReport({ command: `echo a${unit.repeat(40)}b` })), unit).toBeNull();
+			expect(reasonOf(commandReport({ command: `echo a${unit.repeat(41)}b` })), unit).toBe(
+				"padded_text",
+			);
+		}
+		// Spaces and tabs together are one run.
+		expect(reasonOf(commandReport({ command: `echo a${" ".repeat(20)}${"\t".repeat(21)}b` }))).toBe(
+			"padded_text",
+		);
+		// Two runs of 40 with a character between them are two runs.
+		expect(
+			reasonOf(commandReport({ command: `echo a${" ".repeat(40)}x${" ".repeat(40)}b` })),
+		).toBeNull();
+	});
+
+	test("10 blank lines in a row are approvable, 11 are padded_text", () => {
+		expect(reasonOf(commandReport({ command: `echo a${"\n".repeat(11)}echo b` }))).toBeNull();
+		expect(reasonOf(commandReport({ command: `echo a${"\n".repeat(12)}echo b` }))).toBe(
+			"padded_text",
+		);
+		// A line of only spaces is blank too.
+		expect(reasonOf(commandReport({ command: `echo a${"\n  ".repeat(12)}\necho b` }))).toBe(
+			"padded_text",
+		);
+		// Blank lines split by a real line are separate runs.
+		const split = `a${"\n".repeat(11)}b${"\n".repeat(11)}c`;
+		expect(reasonOf(commandReport({ command: split }))).toBeNull();
+	});
+
+	test("the same rules hold for cwd and for every path", () => {
+		const wide = " ".repeat(41);
+		expect(reasonOf(commandReport({ cwd: `/work/a${wide}b` }))).toBe("padded_text");
+		expect(reasonOf(commandReport({ cwd: `/work/a${" ".repeat(40)}b` }))).toBeNull();
+		expect(reasonOf(pathChange(`/work/a${wide}b`))).toBe("padded_text");
+		expect(reasonOf(pathChange("/work/a", `/work/b${wide}c`))).toBe("padded_text");
+		expect(reasonOf(commandReport({ cwd: `/work${"\n".repeat(12)}x` }))).toBe("padded_text");
+		expect(reasonOf(pathChange(`/work/a${"\n".repeat(12)}x`))).toBe("padded_text");
+	});
+
+	test("a diff is not a path: its own blank lines and indentation are fine", () => {
+		const diff = `+a\n${"\n".repeat(20)}+${" ".repeat(60)}b\n`;
+		expect(
+			reasonOf(
+				fileChangeReport({ changes: [{ path: "/work/a", kind: "add", movePath: null, diff }] }),
+			),
+		).toBeNull();
+	});
+});
+
+describe("lookalike text", () => {
+	test("a Cyrillic letter inside a Latin word is refused", () => {
+		const command = `npm i l${CYRILLIC_O}dash`;
+		expect(command).not.toBe("npm i lodash");
+		expect(reasonOf(commandReport({ command }))).toBe("lookalike_text");
+		expect(reasonOf(commandReport({ command: "npm i lodash" }))).toBeNull();
+	});
+
+	test("so are a Greek letter and a fullwidth form inside a Latin token", () => {
+		expect(reasonOf(commandReport({ command: `npm i l${GREEK_OMICRON}dash` }))).toBe(
+			"lookalike_text",
+		);
+		expect(reasonOf(commandReport({ command: `${FULLWIDTH_S}udo ls` }))).toBe("lookalike_text");
+		expect(reasonOf(commandReport({ command: `ls${FULLWIDTH_S}` }))).toBe("lookalike_text");
+	});
+
+	test("a space that is not U+0020, a format character and the braille blank are refused", () => {
+		for (const [name, ch] of [
+			["no-break space", NBSP],
+			["ideographic space", IDEOGRAPHIC_SPACE],
+			["en quad", "\u2000"],
+			["braille blank", BRAILLE_BLANK],
+		] as const) {
+			const reason = reasonOf(commandReport({ command: `rm${ch}-rf x` }));
+			expect(reason, name).not.toBeNull();
+			expect(buildPresentation(commandReport({ command: `rm${ch}-rf x` })).approvable, name).toBe(
+				false,
+			);
+		}
+		expect(reasonOf(commandReport({ command: `rm${BRAILLE_BLANK}-rf x` }))).toBe("lookalike_text");
+		expect(reasonOf(commandReport({ command: `rm${IDEOGRAPHIC_SPACE}-rf x` }))).toBe(
+			"lookalike_text",
+		);
+		// Format characters were already refused as invisible; they stay refused.
+		expect(reasonOf(commandReport({ command: `echo ${ZERO_WIDTH}` }))).toBe("invisible_chars");
+	});
+
+	test("the same checks hold for cwd, a path and a move target", () => {
+		expect(reasonOf(commandReport({ cwd: `/work/l${CYRILLIC_O}dash` }))).toBe("lookalike_text");
+		expect(reasonOf(commandReport({ cwd: `/work${BRAILLE_BLANK}/x` }))).toBe("lookalike_text");
+		expect(reasonOf(pathChange(`/work/l${CYRILLIC_O}dash/index.js`))).toBe("lookalike_text");
+		expect(reasonOf(pathChange("/work/a", `/work/l${GREEK_OMICRON}dash`))).toBe("lookalike_text");
+		expect(reasonOf(pathChange(`/work/a${NBSP}b`))).toBe("lookalike_text");
+	});
+
+	test("a path is judged by segment, a command by whitespace-separated token", () => {
+		// Latin in one segment and Cyrillic in the next: two segments, each a single script.
+		expect(reasonOf(pathChange("/work/project/\u043f\u0430\u043f\u043a\u0430/x.txt"))).toBeNull();
+		// The same two scripts in one command token (a path as an argument) mix.
+		expect(
+			reasonOf(commandReport({ command: "cat /work/\u043f\u0430\u043f\u043a\u0430/x.txt" })),
+		).toBe("lookalike_text");
+		// In separate tokens they do not.
+		expect(
+			reasonOf(commandReport({ command: "echo \u043f\u0440\u0438\u0432\u0435\u0442" })),
+		).toBeNull();
+	});
+
+	test("a wholly CJK path or command stays approvable, flagged nonAscii", () => {
+		const cjkPath = pathChange("/work/\u9879\u76ee/\u6587\u4ef6.txt");
+		const built = buildPresentation(cjkPath);
+		expect(built).toMatchObject({ approvable: true, notApprovableReason: null });
+		expect(buildPreview(built.presentation).nonAscii).toBe(true);
+
+		const cjkCwd = buildPresentation(
+			commandReport({ cwd: "/\u5de5\u4f5c/\u9879\u76ee", command: "echo \u4f60\u597d" }),
+		);
+		expect(cjkCwd).toMatchObject({ approvable: true, notApprovableReason: null });
+		expect(buildPreview(cjkCwd.presentation).nonAscii).toBe(true);
+
+		const japanese = buildPresentation(
+			commandReport({ cwd: "/work/\u30c6\u30b9\u30c8", command: "cd \u30c6\u30b9\u30c8" }),
+		);
+		expect(japanese.approvable).toBe(true);
+		// Fullwidth punctuation next to CJK text is not a Latin lookalike.
+		expect(
+			buildPresentation(commandReport({ command: "echo \u4f60\u597d\uff0c\u4e16\u754c" }))
+				.approvable,
+		).toBe(true);
+	});
+});
+
+describe("every field of the presentation is in the hash", () => {
+	const base = () =>
+		fileChangeReport({
+			cwd: "/work/project",
+			reason: "why",
+			grantRoot: null,
+			changes: [
+				{
+					path: "/work/project/a.txt",
+					kind: "update",
+					movePath: "/work/project/b.txt",
+					diff: "+a\n",
+				},
+				{ path: "/work/project/c.txt", kind: "add", movePath: null, diff: "+c\n" },
+			],
+		});
+	const hashOf = (report: Parameters<typeof buildPresentation>[0]) =>
+		buildPresentation(report).hash;
+	const [first, second] = base().changes ?? [];
+	if (!first || !second) throw new Error("fixture");
+
+	test("each variation gives a different hash from the base, and from every other", () => {
+		const variants: Record<string, Parameters<typeof buildPresentation>[0]> = {
+			base: base(),
+			cwd: { ...base(), cwd: "/work/other" },
+			reason: { ...base(), reason: "different" },
+			grantRoot: { ...base(), grantRoot: "/work" },
+			path: { ...base(), changes: [{ ...first, path: "/work/project/z.txt" }, second] },
+			kind: { ...base(), changes: [{ ...first, kind: "delete" }, second] },
+			movePath: { ...base(), changes: [{ ...first, movePath: "/work/project/z.txt" }, second] },
+			noMovePath: { ...base(), changes: [{ ...first, movePath: null }, second] },
+			diff: { ...base(), changes: [{ ...first, diff: "+b\n" }, second] },
+			order: { ...base(), changes: [second, first] },
+			fewer: { ...base(), changes: [first] },
+			more: { ...base(), changes: [first, second, { ...second, path: "/work/project/d.txt" }] },
+			requestKind: commandReport({ cwd: "/work/project", reason: "why", command: "x" }),
+		};
+		const hashes = Object.entries(variants).map(
+			([name, report]) => [name, hashOf(report)] as const,
+		);
+		expect(hashes.length).toBeGreaterThanOrEqual(13);
+		const distinct = new Set(hashes.map(([, hash]) => hash));
+		expect(distinct.size).toBe(hashes.length);
+		// Positive control: the same report twice is the same hash, so a difference above is a real one.
+		expect(hashOf(base())).toBe(hashOf(base()));
+	});
+
+	test("a command's hash covers its command, cwd, reason and grantRoot", () => {
+		const hash = (o: Parameters<typeof commandReport>[0]) => hashOf(commandReport(o));
+		const hashes = [
+			hash({}),
+			hash({ command: "npm run x" }),
+			hash({ cwd: "/work/other" }),
+			hash({ reason: "r" }),
+			hash({ grantRoot: "/work" }),
+		];
+		expect(new Set(hashes).size).toBe(hashes.length);
 	});
 });
 
@@ -285,6 +515,32 @@ describe("the preview", () => {
 			).presentation,
 		);
 		expect(elsewhere.pathOutsideCwd).toBe(true);
+	});
+
+	test("a home shortcut and a backslash path are never inside the working directory", () => {
+		const outside = (path: string, cwd = "/work/project") =>
+			buildPreview(
+				buildPresentation(
+					fileChangeReport({ cwd, changes: [{ path, kind: "add", movePath: null, diff: "+x\n" }] }),
+				).presentation,
+			).pathOutsideCwd;
+		expect(outside("a/b.txt")).toBe(false);
+		expect(outside("/work/project/a.txt")).toBe(false);
+		expect(outside("~/a.txt")).toBe(true);
+		expect(outside("~")).toBe(true);
+		expect(outside("a\\b.txt")).toBe(true);
+		expect(outside("..\\x")).toBe(true);
+		expect(outside("C:\\work\\project\\a.txt")).toBe(true);
+		expect(outside("/work/project/a.txt", "~/project")).toBe(true);
+		// A move target is judged too.
+		const moved = buildPreview(
+			buildPresentation(
+				fileChangeReport({
+					changes: [{ path: "/work/project/a", kind: "update", movePath: "~/b", diff: "+x\n" }],
+				}),
+			).presentation,
+		);
+		expect(moved.pathOutsideCwd).toBe(true);
 	});
 
 	test("non-English letters are flagged", () => {

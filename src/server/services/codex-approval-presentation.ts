@@ -56,16 +56,63 @@ const REASON_PRECEDENCE: readonly NotApprovableReason[] = [
 	"too_long",
 	"redacted",
 	"invisible_chars",
+	"padded_text",
+	"lookalike_text",
 ];
 
 interface FieldFindings {
 	tooLong: boolean;
 	redacted: boolean;
 	invisible: boolean;
+	padded: boolean;
+	lookalike: boolean;
 }
 
 function newFindings(): FieldFindings {
-	return { tooLong: false, redacted: false, invisible: false };
+	return { tooLong: false, redacted: false, invisible: false, padded: false, lookalike: false };
+}
+
+// ── text that hides or imitates other text ──────────────────────────────────
+
+const SPACE_RUN_RE = new RegExp(`[ \\t]{${CODEX_APPROVAL_LIMITS.maxSpaceRun + 1},}`);
+/** Any space separator other than U+0020 (no-break, ideographic, en/em and the rest). */
+const ODD_SPACE_RE = /(?!\u0020)\p{Zs}/u;
+/** Format characters (zero-width, bidi, joiners) and the braille blank, which draws as nothing. */
+const INVISIBLE_RE = /[\p{Cf}\u2800]/u;
+const LATIN_RE = /\p{Script=Latin}/u;
+const SCRIPT_PARTNER_RE = /[\p{Script=Cyrillic}\p{Script=Greek}\uFF00-\uFFEF]/u;
+
+function hasLongBlankRun(text: string): boolean {
+	let run = 0;
+	for (const line of text.split("\n")) {
+		if (line.trim() === "") {
+			run++;
+			if (run > CODEX_APPROVAL_LIMITS.maxBlankLineRun) return true;
+		} else {
+			run = 0;
+		}
+	}
+	return false;
+}
+
+function mixesScripts(token: string): boolean {
+	return LATIN_RE.test(token) && SCRIPT_PARTNER_RE.test(token);
+}
+
+/** How a field is split into the units that may not mix scripts: a command by whitespace, a path by segment. */
+type TokenSplit = "whitespace" | "segments";
+
+function hasLookalike(text: string, split: TokenSplit): boolean {
+	if (ODD_SPACE_RE.test(text) || INVISIBLE_RE.test(text)) return true;
+	const tokens = split === "whitespace" ? text.split(/\s+/) : text.split(/[/\\]/);
+	return tokens.some(mixesScripts);
+}
+
+interface FieldChecks {
+	/** The field is a command or path a person relies on: look for padding and lookalikes. */
+	split?: TokenSplit;
+	/** Past this many characters the field is shown but not approvable. */
+	approvableMax?: number;
 }
 
 /**
@@ -77,7 +124,7 @@ function cleanField(
 	input: unknown,
 	max: number,
 	findings: FieldFindings,
-	options: { truncated?: boolean } = {},
+	options: { truncated?: boolean } & FieldChecks = {},
 ): string | null {
 	if (typeof input !== "string") return null;
 	let text = input;
@@ -87,6 +134,13 @@ function cleanField(
 		cut = true;
 	}
 	if (cut) findings.tooLong = true;
+	if (options.approvableMax !== undefined && text.length > options.approvableMax) {
+		findings.tooLong = true;
+	}
+	if (options.split) {
+		if (SPACE_RUN_RE.test(text) || hasLongBlankRun(text)) findings.padded = true;
+		if (hasLookalike(text, options.split)) findings.lookalike = true;
+	}
 	const { text: cleaned, hits } = stripAndRedact(text);
 	if (hits.length > 0) findings.redacted = true;
 	else if (cleaned !== text) findings.invisible = true;
@@ -120,15 +174,23 @@ export function buildPresentation(report: CodexApprovalReportRequest): BuiltPres
 	const reasons = new Set<NotApprovableReason>(validDeclineOnly(report.declineOnly));
 	const truncated = report.truncated === true;
 
-	const cwd = cleanField(report.cwd, CODEX_APPROVAL_LIMITS.pathChars, findings);
+	const pathChecks: FieldChecks = { split: "segments" };
+	const cwd = cleanField(report.cwd, CODEX_APPROVAL_LIMITS.pathChars, findings, pathChecks);
 	const reason = cleanField(report.reason, CODEX_APPROVAL_LIMITS.reasonChars, findings);
-	const grantRoot = cleanField(report.grantRoot, CODEX_APPROVAL_LIMITS.pathChars, findings);
+	const grantRoot = cleanField(
+		report.grantRoot,
+		CODEX_APPROVAL_LIMITS.pathChars,
+		findings,
+		pathChecks,
+	);
 	if (grantRoot !== null) reasons.add("grant_root");
 
 	let presentation: CodexApprovalPresentation;
 	if (report.requestKind === "command") {
 		const command = cleanField(report.command, CODEX_APPROVAL_LIMITS.command, findings, {
 			truncated,
+			split: "whitespace",
+			approvableMax: CODEX_APPROVAL_LIMITS.approvableCommandChars,
 		});
 		if (isBlank(command)) reasons.add("no_command");
 		if (isBlank(cwd)) reasons.add("no_cwd");
@@ -140,9 +202,15 @@ export function buildPresentation(report: CodexApprovalReportRequest): BuiltPres
 		if (incoming.length > CODEX_APPROVAL_LIMITS.files) findings.tooLong = true;
 		let anyMissingDiff = false;
 		for (const change of incoming.slice(0, CODEX_APPROVAL_LIMITS.files)) {
-			const path = cleanField(change?.path, CODEX_APPROVAL_LIMITS.pathChars, findings) ?? "";
+			const path =
+				cleanField(change?.path, CODEX_APPROVAL_LIMITS.pathChars, findings, pathChecks) ?? "";
 			const kind = cleanField(change?.kind, 32, findings) ?? "";
-			const movePath = cleanField(change?.movePath, CODEX_APPROVAL_LIMITS.pathChars, findings);
+			const movePath = cleanField(
+				change?.movePath,
+				CODEX_APPROVAL_LIMITS.pathChars,
+				findings,
+				pathChecks,
+			);
 			if (typeof change?.diff !== "string") anyMissingDiff = true;
 			const rawDiff = typeof change?.diff === "string" ? change.diff : "";
 			const diffCap = Math.max(0, diffBudget);
@@ -165,6 +233,8 @@ export function buildPresentation(report: CodexApprovalReportRequest): BuiltPres
 	if (findings.tooLong) reasons.add("too_long");
 	if (findings.redacted) reasons.add("redacted");
 	else if (findings.invisible) reasons.add("invisible_chars");
+	if (findings.padded) reasons.add("padded_text");
+	if (findings.lookalike) reasons.add("lookalike_text");
 
 	const notApprovableReason = REASON_PRECEDENCE.find((r) => reasons.has(r)) ?? null;
 	const presentationJson = canonicalJson(presentation);
@@ -187,6 +257,8 @@ function lastLinesOf(text: string, count: number, maxChars: number): string {
 }
 
 function isInside(path: string, cwd: string): boolean {
+	// A home shortcut and a backslash path don't resolve the way the slash arithmetic below assumes.
+	if (/^~|\\/.test(path) || /^~|\\/.test(cwd)) return false;
 	const normalize = (value: string) => {
 		const parts: string[] = [];
 		for (const segment of value.split("/")) {

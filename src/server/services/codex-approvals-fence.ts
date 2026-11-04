@@ -9,12 +9,18 @@
  *   No accept is issued after Stop commits. An accept issued before Stop
  *   committed may still run.
  *
- * This leaf imports only the schema and `closeApproval`, so control-actions.ts can
- * call it from inside its own transaction without an import cycle.
+ * This leaf imports only the schema and the close module (itself a leaf), so
+ * control-actions.ts can call it from inside its own transaction without an
+ * import cycle.
+ *
+ * A Stop that is never claimed (the host is gone or slow) times out when its
+ * control lock expires, and that lifts the block. Rows answered before the Stop
+ * were closed or fenced here, so only an answer given after the Stop failed can be
+ * issued, and that person saw the Stop fail. That is intended.
  */
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { codexApprovals } from "../db/schema/index.js";
-import { type ClosedApproval, closeApproval } from "./codex-approvals.js";
+import { type ClosedApproval, closeApproval } from "./codex-approvals-close.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 type Tx = any;

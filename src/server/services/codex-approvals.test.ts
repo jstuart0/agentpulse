@@ -714,7 +714,6 @@ describe("the host's sync", () => {
 		const statements = await countDbCalls(async () => {
 			await syncApprovals(ctx.supervisorId, syncBody([id]), ctx.deps);
 		});
-		expect(statements).toBeLessThanOrEqual(3);
 		expect(statements).toBe(1);
 	});
 
@@ -835,7 +834,7 @@ describe("the host's sync", () => {
 });
 
 describe("how a row dies (3.3)", () => {
-	test("the host reports the runtime closed: runtime_gone, and an unreported issued accept is outcome_unknown on absence", async () => {
+	test("the host reports the runtime closed: runtime_gone", async () => {
 		const ctx = await setup();
 		const id = await record(ctx);
 		await syncApprovals(
@@ -848,6 +847,18 @@ describe("how a row dies (3.3)", () => {
 			closedReason: "runtime_gone",
 			hostOutcome: "runtime_gone",
 		});
+	});
+
+	test("an issued accept the host later stops listing, with no outcome reported, is outcome_unknown", async () => {
+		const ctx = await setup();
+		const id = await record(ctx);
+		await acceptIt(ctx, id);
+		const issued = await syncApprovals(ctx.supervisorId, syncBody([id]), ctx.deps);
+		expect(issued.answers.map((a) => a.decision)).toEqual(["accept"]);
+		ctx.clock.advance(shared.CODEX_NEW_ROW_GRACE_MS + 1000);
+		const gone = await syncApprovals(ctx.supervisorId, syncBody([]), ctx.deps);
+		expect(gone.closed).toEqual([id]);
+		expect(await rowOf(id)).toMatchObject({ status: "closed", closedReason: "outcome_unknown" });
 	});
 
 	test("a turn interrupted before the host answered: interrupted", async () => {

@@ -40,12 +40,15 @@ import { parseDbTimestamp } from "./util/db-time.js";
 /** A database handle: the shared one, or the transaction a caller is running inside. */
 type DbHandle = ReturnType<typeof getDb>;
 
-function nowIso() {
-	return new Date().toISOString();
+/** Epoch milliseconds; tests inject one where a control path needs to move time. */
+type Clock = () => number;
+
+function nowIso(clock: Clock = Date.now) {
+	return new Date(clock()).toISOString();
 }
 
-function lockExpiryIso() {
-	return new Date(Date.now() + 90_000).toISOString();
+function lockExpiryIso(clock: Clock = Date.now) {
+	return new Date(clock() + 90_000).toISOString();
 }
 
 /**
@@ -128,6 +131,7 @@ export async function expireStaleControlLock(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	db: any,
 	sessionId: string,
+	clock: Clock = Date.now,
 ) {
 	const [managed] = await db
 		.select()
@@ -135,7 +139,7 @@ export async function expireStaleControlLock(
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
 	if (!managed?.activeControlActionId || !managed.controlLockExpiresAt) return;
-	if (new Date(managed.controlLockExpiresAt).getTime() > Date.now()) return;
+	if (new Date(managed.controlLockExpiresAt).getTime() > clock()) return;
 
 	const [action] = await db
 		.select()
@@ -143,7 +147,7 @@ export async function expireStaleControlLock(
 		.where(eq(controlActions.id, managed.activeControlActionId))
 		.limit(1);
 
-	const timestamp = nowIso();
+	const timestamp = nowIso(clock);
 	await db
 		.update(controlActions)
 		.set({
@@ -359,8 +363,9 @@ async function hostRefusal(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	tx: any,
 	sessionId: string,
+	clock: Clock = Date.now,
 ): Promise<Extract<EnqueueRefusal, "host_offline" | "host_gone"> | null> {
-	const host = (await getSessionOwnerHostStates([sessionId], Date.now(), tx)).get(sessionId);
+	const host = (await getSessionOwnerHostStates([sessionId], clock(), tx)).get(sessionId);
 	if (!host || host.state === "live") return null;
 	return host.state === "offline" ? "host_offline" : "host_gone";
 }
@@ -377,12 +382,13 @@ export async function takeControlLock(
 	sessionId: string,
 	controlActionId: string,
 	timestamp: string,
+	clock: Clock = Date.now,
 ): Promise<boolean> {
 	const taken = await tx
 		.update(managedSessions)
 		.set({
 			activeControlActionId: controlActionId,
-			controlLockExpiresAt: lockExpiryIso(),
+			controlLockExpiresAt: lockExpiryIso(clock),
 			updatedAt: timestamp,
 		})
 		.where(
@@ -400,13 +406,14 @@ export async function takeControlLock(
 export async function enqueueStopInTx(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	tx: any,
-	input: { sessionId: string; actor: Actor; controlActionId: string },
+	input: { sessionId: string; actor: Actor; controlActionId: string; now?: Clock },
 ): Promise<
 	| { ok: true; action: ControlAction; fencedApprovals: ClosedApproval[] }
 	| { ok: false; reason: EnqueueRefusal }
 > {
 	const { sessionId, actor, controlActionId } = input;
-	await expireStaleControlLock(tx, sessionId);
+	const clock = input.now ?? Date.now;
+	await expireStaleControlLock(tx, sessionId, clock);
 	const [managed] = await tx
 		.select()
 		.from(managedSessions)
@@ -419,17 +426,17 @@ export async function enqueueStopInTx(
 	if (stopLaunch && !(await launchOwnedBySessionOwner(tx, sessionId, stopLaunch))) {
 		return { ok: false, reason: "launch_mismatch" };
 	}
-	const stopHostRefusal = await hostRefusal(tx, sessionId);
+	const stopHostRefusal = await hostRefusal(tx, sessionId, clock);
 	if (stopHostRefusal) return { ok: false, reason: stopHostRefusal };
 
-	const timestamp = nowIso();
-	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp))) {
+	const timestamp = nowIso(clock);
+	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp, clock))) {
 		return { ok: false, reason: "control_busy" };
 	}
 	// The Stop fence for Codex approvals: no accept is issued after this commits. It runs
 	// only once the lock is ours (a Stop refused control_busy fences nothing) and on this
 	// transaction, so the fence and the lock commit or roll back together.
-	const fence = await fenceApprovalsForStop(tx, sessionId, controlActionId, Date.now());
+	const fence = await fenceApprovalsForStop(tx, sessionId, controlActionId, clock());
 	const [action] = await tx
 		.insert(controlActions)
 		.values({
@@ -453,13 +460,18 @@ export async function enqueueStopInTx(
  * The timeline and wait side effects of any approvals the Stop closed run after the commit this
  * function owns; a caller passing its own `tx` commits it itself, and the sweep covers its rows.
  */
-export async function queueStopAction(sessionId: string, actor: Actor, tx?: DbHandle) {
-	const input = { sessionId, actor, controlActionId: crypto.randomUUID() };
+export async function queueStopAction(
+	sessionId: string,
+	actor: Actor,
+	tx?: DbHandle,
+	deps: { now?: Clock } = {},
+) {
+	const input = { sessionId, actor, controlActionId: crypto.randomUUID(), now: deps.now };
 	const result = tx
 		? await enqueueStopInTx(tx, input)
 		: await withAdminLock((own) => enqueueStopInTx(own, input));
 	if (!result.ok) throw refusalToError(result.reason);
-	if (!tx) await runApprovalClosedEffects(result.fencedApprovals);
+	if (!tx) await runApprovalClosedEffects(result.fencedApprovals, deps);
 	return result.action;
 }
 

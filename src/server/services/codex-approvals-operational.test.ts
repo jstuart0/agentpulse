@@ -7,7 +7,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import "./ai/__test_db.js";
 import type { HookEventPayload } from "../../shared/types.js";
 
@@ -27,7 +27,9 @@ const {
 	_resetApprovalWaitRepairForTest,
 } = await import("./codex-approvals.js");
 const { processHookEvent, applyPermissionWaitTransition } = await import("./event-processor.js");
-const { configurePushRuntime, _resetDispatchForTest } = await import("./push/dispatch.js");
+const { configurePushRuntime, dispatchEvent, _resetDispatchForTest } = await import(
+	"./push/dispatch.js"
+);
 const { isTurnStale } = await import("./ai/turn-identity.js");
 const { needsHuman } = await import("./ai/human-gate.js");
 const { toSessionEventDtos } = await import("./event-dto.js");
@@ -90,14 +92,31 @@ const record = async (ctx: Ctx, overrides: Parameters<typeof harness.commandRepo
 	).response.approvalId;
 const hook = (sessionId: string, name: string, extra: Partial<HookEventPayload> = {}) =>
 	({ session_id: sessionId, hook_event_name: name, ...extra }) as HookEventPayload;
-const settle = () => new Promise((r) => setTimeout(r, 150));
+/**
+ * Pushes are dispatched without being awaited, and each dispatch yields to the event loop once before
+ * it reaches the target resolver. A sentinel dispatched after the action therefore reaches the resolver
+ * after every push the action started: awaiting it is the signal that all of them have been seen, for a
+ * negative as well as a positive. No sleep, no guess at how long a push takes.
+ */
+async function drainPushes(): Promise<void> {
+	await dispatchEvent({ type: "permission_wait", sessionId: `sentinel-${crypto.randomUUID()}` });
+}
 
-/** Records the type of every push the server tries to send; nothing leaves the process. */
-function recordPushes(seen: string[]): void {
+/** What the resolver saw for one session, in order. */
+const pushesFor = (seen: SeenPush[], sessionId: string) =>
+	seen.filter((push) => push.sessionId === sessionId).map((push) => push.type);
+
+interface SeenPush {
+	type: string;
+	sessionId: string;
+}
+
+/** Records the type and session of every push the server tries to send; nothing leaves the process. */
+function recordPushes(seen: SeenPush[]): void {
 	configurePushRuntime({
 		targets: {
-			resolve: async (event: { type: string }) => {
-				seen.push(event.type);
+			resolve: async (event: { type: string; sessionId: string }) => {
+				seen.push({ type: event.type, sessionId: event.sessionId });
 				return [];
 			},
 		},
@@ -134,15 +153,15 @@ describe("an open approval is a permission wait", () => {
 	});
 
 	test("one push on open, none for a second request, none on close", async () => {
-		const seen: string[] = [];
+		const seen: SeenPush[] = [];
 		recordPushes(seen);
 		const ctx = await setup();
 		const a = await record(ctx);
-		await settle();
-		expect(seen).toEqual(["permission_wait"]);
+		await drainPushes();
+		expect(pushesFor(seen, ctx.sessionId)).toEqual(["permission_wait"]);
 		const b = await record(ctx);
-		await settle();
-		expect(seen).toEqual(["permission_wait"]);
+		await drainPushes();
+		expect(pushesFor(seen, ctx.sessionId)).toEqual(["permission_wait"]);
 		await syncApprovals(
 			ctx.supervisorId,
 			{
@@ -156,8 +175,8 @@ describe("an open approval is a permission wait", () => {
 			},
 			ctx.deps,
 		);
-		await settle();
-		expect(seen).toEqual(["permission_wait"]);
+		await drainPushes();
+		expect(pushesFor(seen, ctx.sessionId)).toEqual(["permission_wait"]);
 	});
 
 	test("two requests keep the session waiting until both close", async () => {
@@ -483,17 +502,18 @@ describe("the sweep's wait reconcile", () => {
 			.where(eq(sessions.sessionId, ctx.sessionId));
 		await setWait(ctx.sessionId, { ids: [asId("ghost")], anon: 0, prevStatus: "testing" });
 		const result = await sweepApprovals({ full: true }, ctx.deps);
-		expect(result.waitsRemoved).toBe(1);
+		// Counts are for the whole sweep; what it did to this session is asserted below, by id.
+		expect(result.waitsRemoved).toBeGreaterThanOrEqual(1);
 		expect(await waitIds(ctx.sessionId)).toEqual([]);
 		expect((await sessionRow(ctx.sessionId)).semanticStatus).toBe("testing");
 	});
 
 	test("an open row whose id is absent is added with no push and prevStatus and semanticStatus untouched", async () => {
-		const seen: string[] = [];
+		const seen: SeenPush[] = [];
 		recordPushes(seen);
 		const ctx = await setup();
 		const id = await record(ctx);
-		await settle();
+		await drainPushes();
 		seen.length = 0;
 		await getDb()
 			.update(sessions)
@@ -501,18 +521,31 @@ describe("the sweep's wait reconcile", () => {
 			.where(eq(sessions.sessionId, ctx.sessionId));
 		await setWait(ctx.sessionId, null);
 		const result = await sweepApprovals({}, ctx.deps);
-		await settle();
-		expect(result.waitsAdded).toBe(1);
+		await drainPushes();
+		// Counts are for the whole sweep; what it did to this session is asserted below, by id.
+		expect(result.waitsAdded).toBeGreaterThanOrEqual(1);
 		expect(await waitIds(ctx.sessionId)).toEqual([asId(id)]);
 		const row = await sessionRow(ctx.sessionId);
 		expect(row.semanticStatus).toBe("reviewing");
 		expect((await waitOf(ctx.sessionId))?.prevStatus).toBeNull();
-		expect(seen).toEqual([]);
+		expect(pushesFor(seen, ctx.sessionId)).toEqual([]);
 	});
 
 	test("a wait that already agrees means zero writes", async () => {
 		const ctx = await setup();
 		await record(ctx);
+		// The sweep's counts and statements are for every open row there is; they describe this session
+		// alone only if it is the only one, so say so rather than assume it.
+		const strangers = await getDb()
+			.select({ id: codexApprovals.id })
+			.from(codexApprovals)
+			.where(
+				and(
+					inArray(codexApprovals.status, ["pending", "answered"]),
+					ne(codexApprovals.sessionId, ctx.sessionId),
+				),
+			);
+		expect(strangers).toEqual([]);
 		const before = await sessionRow(ctx.sessionId);
 		const { countDbCalls } = await import("../test-utils/db-call-counter.js");
 		let writes = 0;

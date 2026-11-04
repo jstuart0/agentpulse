@@ -17,7 +17,21 @@
  * Nothing the agent wrote reaches a log line or an event: events carry fixed
  * words, logs carry ids and enum values.
  */
-import { and, asc, eq, gt, gte, inArray, isNull, lt, ne, notExists, or, sql } from "drizzle-orm";
+import {
+	and,
+	asc,
+	desc,
+	eq,
+	gt,
+	gte,
+	inArray,
+	isNull,
+	lt,
+	ne,
+	notExists,
+	or,
+	sql,
+} from "drizzle-orm";
 import {
 	APPROVAL_DECISIONS,
 	APPROVAL_RESOLVED_EVENT_TYPE,
@@ -74,12 +88,21 @@ import {
 	mayAnswerApproval,
 } from "./authorization.js";
 import { buildPresentation, buildPreview } from "./codex-approval-presentation.js";
+import { type ClosedApproval, closeApproval } from "./codex-approvals-close.js";
 import type { InsertPlan } from "./event-dedup.js";
 import { applyApprovalWait, persistEvents, reconcileApprovalWait } from "./event-processor.js";
 import { modeFromStoredColumn, storedModeColumn } from "./instance-mode.js";
 import { notifySessionEvents, notifySessionUpdated } from "./notifier.js";
-import { getSessionOwnerHostStates, ownerLaunchJoin, sessionOwnedBy } from "./session-ownership.js";
+import {
+	getSessionOwnerHostStates,
+	ownerLaunchJoin,
+	resolveSessionOwner,
+	sessionOwnedBy,
+} from "./session-ownership.js";
 import { getSession } from "./session-tracker.js";
+
+export { closeApproval } from "./codex-approvals-close.js";
+export type { ClosedApproval, CloseOptions } from "./codex-approvals-close.js";
 
 // ── refusals ────────────────────────────────────────────────────────────────
 
@@ -100,6 +123,13 @@ export class ApprovalRefusal extends Error {
 export interface ApprovalDeps {
 	/** Epoch milliseconds. Tests inject a fake clock. */
 	now?: () => number;
+	/**
+	 * Test seam for the race between a check and the guarded write that follows it:
+	 * called after the pre-checks and before the write, so a test can change the row
+	 * in that gap. Only code passes `deps`; no request reaches it (a drift test pins
+	 * the files that mention it), and without it this is a no-op.
+	 */
+	afterRead?: (point: "answer" | "issue") => void | Promise<void>;
 }
 
 function clockOf(deps?: ApprovalDeps): number {
@@ -241,99 +271,14 @@ async function sessionHasActiveStop(tx: Tx, sessionId: string): Promise<boolean>
 	return rows.length > 0;
 }
 
-// ── closing a row: the one writer of closed_reason ──────────────────────────
+// ── a row opening ───────────────────────────────────────────────────────────
 
-/** What closed, for the side effects that run after the transaction commits. */
-export interface ClosedApproval {
-	approvalId: string;
-	sessionId: string;
-	requestKind: ApprovalRequestKind;
-	reason: ApprovalClosedReason;
-	decision: ApprovalDecision | null;
-}
-
-/** What opened, for the same. */
+/** What opened, for the side effects that run after the transaction commits. */
 export interface OpenedApproval {
 	approvalId: string;
 	sessionId: string;
 	requestKind: ApprovalRequestKind;
 	fileCount: number;
-}
-
-export interface CloseOptions {
-	/**
-	 * Close only a row still in this state. For a close decided from a read (the
-	 * clock says a pending row expired): the row may have been answered since, and a
-	 * decision made on the old state must not close the new one.
-	 */
-	fromStatus?: ApprovalStatus;
-	/** The outcome the host reported, stored with the close. */
-	hostOutcome?: TrackerOutcome;
-	/** Close an answered row only if no accept has been issued to the host. */
-	onlyUndelivered?: boolean;
-}
-
-/**
- * Closes a row: status closed, the reason, and `presentation` and `reason_text`
- * nulled (retention is off by default, so text must not linger; the hash
- * stays). One guarded statement (`status <> 'closed'`), so the first close wins
- * and `closed_reason` never changes; the row's audit record gets the same
- * reason in the same transaction. Returns what closed, or null when another
- * writer already had.
- *
- * This is the only function that writes `closed_reason`: codex-approvals-callers.guard.test.ts.
- */
-export async function closeApproval(
-	tx: Tx,
-	approvalId: string,
-	reason: ApprovalClosedReason,
-	nowMs: number,
-	options: CloseOptions = {},
-): Promise<ClosedApproval | null> {
-	const at = iso(nowMs);
-	const conditions = [eq(codexApprovals.id, approvalId), ne(codexApprovals.status, "closed")];
-	if (options.fromStatus) conditions.push(eq(codexApprovals.status, options.fromStatus));
-	if (options.onlyUndelivered) {
-		const undelivered = or(
-			eq(codexApprovals.status, "pending"),
-			isNull(codexApprovals.firstDeliveredAt),
-		);
-		if (undelivered) conditions.push(undelivered);
-	}
-	const guard = and(...conditions);
-	const changed = await tx
-		.update(codexApprovals)
-		.set({
-			status: "closed",
-			closedReason: reason,
-			closedAt: at,
-			updatedAt: at,
-			presentation: null,
-			reasonText: null,
-			...(options.hostOutcome ? { hostOutcome: options.hostOutcome } : {}),
-		})
-		.where(guard)
-		.returning({
-			id: codexApprovals.id,
-			sessionId: codexApprovals.sessionId,
-			requestKind: codexApprovals.requestKind,
-			decision: codexApprovals.decision,
-		});
-	if (changed.length === 0) return null;
-	await tx
-		.update(codexApprovalAudit)
-		.set({ outcome: reason, completedAt: at })
-		.where(
-			and(eq(codexApprovalAudit.approvalId, approvalId), eq(codexApprovalAudit.outcome, "pending")),
-		);
-	const [row] = changed;
-	return {
-		approvalId: row.id,
-		sessionId: row.sessionId,
-		requestKind: row.requestKind as ApprovalRequestKind,
-		reason,
-		decision: (row.decision as ApprovalDecision | null) ?? null,
-	};
 }
 
 // ── side effects, after commit ──────────────────────────────────────────────
@@ -511,7 +456,13 @@ export function parseApprovalReport(body: unknown): CodexApprovalReportRequest |
 	if (!isBoundedString(b.itemId, ID_MAX)) return null;
 	if (b.providerApprovalId !== null && !isBoundedString(b.providerApprovalId, ID_MAX)) return null;
 	if (typeof b.ageMs !== "number") return null;
-	if (typeof b.revision !== "number" || !Number.isSafeInteger(b.revision) || b.revision < 0) {
+	// An int32 column: a larger number would fail the insert, and the failure would carry the row's text.
+	if (
+		typeof b.revision !== "number" ||
+		!Number.isSafeInteger(b.revision) ||
+		b.revision < 0 ||
+		b.revision > CODEX_APPROVAL_LIMITS.revisionMax
+	) {
 		return null;
 	}
 	if (typeof b.truncated !== "boolean") return null;
@@ -634,14 +585,56 @@ function reportResponse(row: ApprovalRow, nowMs: number): CodexApprovalReportRes
 }
 
 /**
+ * The write path failed for a reason that is not a refusal. A fixed message and no
+ * cause: the driver's error (and drizzle's `Failed query ... params: ...` wrapper)
+ * carries the bound parameters, which here are the agent's command or diff, and
+ * the framework's default handler prints the whole error chain.
+ */
+export class ApprovalWriteError extends Error {
+	constructor() {
+		super("codex_approval_write_failed");
+		this.name = "ApprovalWriteError";
+	}
+}
+
+const DRIVER_CODE_RE = /^[A-Za-z0-9_]{1,40}$/;
+
+function logWriteFailure(sessionId: string, error: unknown): void {
+	const code = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+	console.error(
+		JSON.stringify({
+			kind: "codex_approval_write_failed",
+			level: "error",
+			sessionId,
+			...(typeof code === "string" && DRIVER_CODE_RE.test(code) ? { driverCode: code } : {}),
+		}),
+	);
+}
+
+/** The fields that say which request a row is. A report for an existing key must agree on all of them. */
+function sameIdentity(row: ApprovalRow, report: CodexApprovalReportRequest): boolean {
+	return (
+		row.requestKind === report.requestKind &&
+		row.threadId === report.threadId &&
+		row.turnId === report.turnId &&
+		row.itemId === report.itemId &&
+		(row.providerApprovalId ?? null) === (report.providerApprovalId ?? null)
+	);
+}
+
+/**
  * A supervisor reports an approval request. The caller has already established
  * that `supervisorId` owns `sessionId` (assertSupervisorCanWriteSession); this
- * function takes the id only to count the host's open rows.
+ * function checks it again on its own transaction (the owner of record can change
+ * between the two) and takes the id to count the host's open rows.
  *
  * A request already recorded (same session, runtime epoch and RPC id) is
  * updated only while it is pending and only for a higher revision; `expires_at`
- * never moves. Refused while a Stop is queued or running. Limits: 32 open per
- * session, 60 created per 10 minutes per session, 64 open per owner host.
+ * never moves. If it names a different request (kind, thread, turn, item or
+ * provider id), the report is refused `identity_conflict` and the old row is
+ * closed, so the new request can never inherit the old one's text or answer.
+ * Refused while a Stop is queued or running. Limits: 32 open per session, 60
+ * created per 10 minutes per session, 64 open per owner host.
  */
 export async function recordApprovalRequest(
 	supervisorId: string,
@@ -652,96 +645,125 @@ export async function recordApprovalRequest(
 	const nowMs = clockOf(deps);
 	const built = buildPresentation(report);
 	const expiresAtMs = nowMs + CODEX_APPROVAL_TTL_MS - clampAgeMs(report.ageMs);
-	const sink: { opened: OpenedApproval | null } = { opened: null };
+	const sink: { opened: OpenedApproval | null; closed: ClosedApproval[]; conflict: boolean } = {
+		opened: null,
+		closed: [],
+		conflict: false,
+	};
 
-	const result = await withTransaction(async (tx): Promise<RecordedApproval> => {
-		const [session] = await tx
-			.select({ sessionId: sessions.sessionId })
-			.from(sessions)
-			.where(eq(sessions.sessionId, sessionId))
-			.limit(1);
-		if (!session) throw new ApprovalRefusal("session_unknown");
-		if (await sessionHasActiveStop(tx, sessionId)) throw new ApprovalRefusal("session_stopping");
-
-		const sameRequest = and(
-			eq(codexApprovals.sessionId, sessionId),
-			eq(codexApprovals.runtimeEpoch, report.runtimeEpoch),
-			eq(codexApprovals.rpcId, report.rpcId),
-		);
-		const reReport = async (existing: ApprovalRow): Promise<RecordedApproval> => {
-			if (existing.status !== "pending" || report.revision <= existing.presentationRevision) {
-				return { created: false, response: reportResponse(existing, nowMs) };
+	let result: RecordedApproval;
+	try {
+		result = await withTransaction(async (tx): Promise<RecordedApproval> => {
+			const [session] = await tx
+				.select({ sessionId: sessions.sessionId })
+				.from(sessions)
+				.where(eq(sessions.sessionId, sessionId))
+				.limit(1);
+			if (!session) throw new ApprovalRefusal("session_unknown");
+			if ((await resolveSessionOwner(tx, sessionId)) !== supervisorId) {
+				throw new ApprovalRefusal("session_not_owned");
 			}
-			const updated = await tx
-				.update(codexApprovals)
-				.set({
+			if (await sessionHasActiveStop(tx, sessionId)) throw new ApprovalRefusal("session_stopping");
+
+			const sameRequest = and(
+				eq(codexApprovals.sessionId, sessionId),
+				eq(codexApprovals.runtimeEpoch, report.runtimeEpoch),
+				eq(codexApprovals.rpcId, report.rpcId),
+			);
+			const reReport = async (existing: ApprovalRow): Promise<RecordedApproval> => {
+				if (!sameIdentity(existing, report)) {
+					// The same key now names another request. Close the old row (committed with this
+					// transaction) and refuse after the commit; never update it from this report.
+					const closed = await closeApproval(
+						tx,
+						existing.id,
+						issuedAccept(existing) ? "outcome_unknown" : "runtime_gone",
+						nowMs,
+					);
+					if (closed) sink.closed.push(closed);
+					sink.conflict = true;
+					return { created: false, response: reportResponse(existing, nowMs) };
+				}
+				if (existing.status !== "pending" || report.revision <= existing.presentationRevision) {
+					return { created: false, response: reportResponse(existing, nowMs) };
+				}
+				const updated = await tx
+					.update(codexApprovals)
+					.set({
+						presentation: built.presentationJson,
+						reasonText: built.reasonText,
+						presentationHash: built.hash,
+						presentationRevision: report.revision,
+						approvable: built.approvable,
+						notApprovableReason: built.notApprovableReason,
+						updatedAt: iso(nowMs),
+					})
+					.where(
+						and(
+							eq(codexApprovals.id, existing.id),
+							eq(codexApprovals.status, "pending"),
+							lt(codexApprovals.presentationRevision, report.revision),
+						),
+					)
+					.returning();
+				return { created: false, response: reportResponse(updated[0] ?? existing, nowMs) };
+			};
+
+			const [existing] = await tx.select().from(codexApprovals).where(sameRequest).limit(1);
+			if (existing) return reReport(existing);
+
+			await assertWithinLimits(tx, supervisorId, sessionId, nowMs);
+
+			const inserted = await tx
+				.insert(codexApprovals)
+				.values({
+					sessionId,
+					runtimeEpoch: report.runtimeEpoch,
+					rpcId: report.rpcId,
+					requestKind: report.requestKind,
+					threadId: report.threadId,
+					turnId: report.turnId,
+					itemId: report.itemId,
+					providerApprovalId: report.providerApprovalId,
 					presentation: built.presentationJson,
 					reasonText: built.reasonText,
 					presentationHash: built.hash,
 					presentationRevision: report.revision,
 					approvable: built.approvable,
 					notApprovableReason: built.notApprovableReason,
+					// Measured (S8): cancel is honoured for a command and for a file change alike.
+					canCancel: true,
+					status: "pending",
+					createdAt: iso(nowMs),
+					expiresAt: iso(expiresAtMs),
 					updatedAt: iso(nowMs),
 				})
-				.where(
-					and(
-						eq(codexApprovals.id, existing.id),
-						eq(codexApprovals.status, "pending"),
-						lt(codexApprovals.presentationRevision, report.revision),
-					),
-				)
+				.onConflictDoNothing()
 				.returning();
-			return { created: false, response: reportResponse(updated[0] ?? existing, nowMs) };
-		};
-
-		const [existing] = await tx.select().from(codexApprovals).where(sameRequest).limit(1);
-		if (existing) return reReport(existing);
-
-		await assertWithinLimits(tx, supervisorId, sessionId, nowMs);
-
-		const inserted = await tx
-			.insert(codexApprovals)
-			.values({
+			if (inserted.length === 0) {
+				// Lost a creation race to the same key: the winner's row is the row.
+				const [winner] = await tx.select().from(codexApprovals).where(sameRequest).limit(1);
+				if (!winner) throw new ApprovalRefusal("session_unknown");
+				return reReport(winner);
+			}
+			const row = inserted[0] as ApprovalRow;
+			sink.opened = {
+				approvalId: row.id,
 				sessionId,
-				runtimeEpoch: report.runtimeEpoch,
-				rpcId: report.rpcId,
 				requestKind: report.requestKind,
-				threadId: report.threadId,
-				turnId: report.turnId,
-				itemId: report.itemId,
-				providerApprovalId: report.providerApprovalId,
-				presentation: built.presentationJson,
-				reasonText: built.reasonText,
-				presentationHash: built.hash,
-				presentationRevision: report.revision,
-				approvable: built.approvable,
-				notApprovableReason: built.notApprovableReason,
-				// Measured (S8): cancel is honoured for a command and for a file change alike.
-				canCancel: true,
-				status: "pending",
-				createdAt: iso(nowMs),
-				expiresAt: iso(expiresAtMs),
-				updatedAt: iso(nowMs),
-			})
-			.onConflictDoNothing()
-			.returning();
-		if (inserted.length === 0) {
-			// Lost a creation race to the same key: the winner's row is the row.
-			const [winner] = await tx.select().from(codexApprovals).where(sameRequest).limit(1);
-			if (!winner) throw new ApprovalRefusal("session_unknown");
-			return reReport(winner);
-		}
-		const row = inserted[0] as ApprovalRow;
-		sink.opened = {
-			approvalId: row.id,
-			sessionId,
-			requestKind: report.requestKind,
-			fileCount:
-				built.presentation.requestKind === "file_change" ? built.presentation.changes.length : 0,
-		};
-		return { created: true, response: reportResponse(row, nowMs) };
-	});
+				fileCount:
+					built.presentation.requestKind === "file_change" ? built.presentation.changes.length : 0,
+			};
+			return { created: true, response: reportResponse(row, nowMs) };
+		});
+	} catch (error) {
+		if (error instanceof ApprovalRefusal) throw error;
+		logWriteFailure(sessionId, error);
+		throw new ApprovalWriteError();
+	}
 
+	if (sink.closed.length > 0) await runApprovalClosedEffects(sink.closed, deps);
+	if (sink.conflict) throw new ApprovalRefusal("identity_conflict");
 	if (sink.opened) await runApprovalOpenedEffects(sink.opened, deps);
 	return result;
 }
@@ -912,6 +934,8 @@ export async function answerApproval(
 	const host = await hostOf(db, sessionId, nowMs);
 	if (host.state === "offline") throw new ApprovalRefusal("host_offline");
 	if (host.state === "gone") throw new ApprovalRefusal("host_gone");
+
+	await deps?.afterRead?.("answer");
 
 	let answeredAtMs = nowMs;
 	const answered = await withTransaction(async (tx): Promise<ApprovalRow | null> => {
@@ -1087,6 +1111,9 @@ export async function listApprovalsForSession(
 		)
 		.orderBy(
 			sql`case when ${codexApprovals.status} = 'closed' then 1 else 0 end`,
+			// Open rows keep creation order. Closed rows: the newest close first, so the 52 that
+			// fit are the ones a person has just seen change (this key is null on open rows).
+			desc(codexApprovals.closedAt),
 			asc(codexApprovals.createdAt),
 			asc(codexApprovals.id),
 		)
@@ -1349,6 +1376,8 @@ async function issueOrRefuse(
 	row: ApprovalRow,
 	nowMs: number,
 	out: { answers: CodexApprovalAnswer[]; closedIds: string[]; closed: ClosedApproval[] },
+	liveRevision: number | undefined,
+	deps?: ApprovalDeps,
 ): Promise<void> {
 	const decision = row.decision as ApprovalDecision;
 	const decline = (): void => {
@@ -1366,12 +1395,28 @@ async function issueOrRefuse(
 
 	if (row.fencedAt !== null) return decline();
 
+	if (decision === "accept") {
+		// The person approved the text at this revision; the host must be holding that same
+		// revision. A host that hasn't listed the request yet (inside the new-row grace) gets
+		// nothing this poll; one holding another revision is declined, and the row, which no
+		// accept reached, is closed.
+		if (liveRevision === undefined) return;
+		if (liveRevision !== row.presentationRevision) {
+			if (row.firstDeliveredAt === null) await closeNow("revision_changed");
+			return decline();
+		}
+	}
+
 	if (decision === "accept" && row.firstDeliveredAt === null) {
 		if (!(await rejudgeStoredAnswer(row, tx))) return closeNow("answer_withdrawn");
 	}
 
-	const at = iso(nowMs);
-	const cutoff = iso(nowMs - CODEX_ACCEPT_DELIVERY_WINDOW_MS);
+	await deps?.afterRead?.("issue");
+
+	// The time at the write, not at the start of the poll: the window is enforced as of now.
+	const writeMs = clockOf(deps);
+	const at = iso(writeMs);
+	const cutoff = iso(writeMs - CODEX_ACCEPT_DELIVERY_WINDOW_MS);
 	const issued = await tx
 		.update(codexApprovals)
 		.set({
@@ -1496,7 +1541,7 @@ export async function syncApprovals(
 			}
 			// A host that already reported sending its answer needs nothing issued again.
 			if (row.status === "answered" && row.hostOutcome === null) {
-				await issueOrRefuse(tx, row, nowMs, out);
+				await issueOrRefuse(tx, row, nowMs, out, liveRevisions.get(row.id), deps);
 			}
 		}
 	});
