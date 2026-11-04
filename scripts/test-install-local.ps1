@@ -145,7 +145,7 @@ Assert-True ($null -ne $mergedJson.hooks) "Configure-Hooks: hooks were still add
 $symlinkProbeHome = Join-Path $tempProfile "settings-symlink-probe"
 New-Item -ItemType Directory -Force -Path (Join-Path $symlinkProbeHome ".claude") | Out-Null
 $decoySettingsTarget = Join-Path $symlinkProbeHome "decoy-settings.json"
-Set-Content -Path $decoySettingsTarget -Value "should never change" -Encoding UTF8
+Set-Content -Path $decoySettingsTarget -Value "should never change" -Encoding UTF8 -NoNewline
 $symlinkedSettingsPath = Join-Path $symlinkProbeHome ".claude\settings.json"
 $canSymlinkSettings = $true
 try {
@@ -206,6 +206,25 @@ if ($asyncResult.AsyncWaitHandle.WaitOne(10000)) {
 $listener.Stop()
 
 Assert-True ($null -ne $captured) "the generated command delivered a request to the listener"
+
+# DIAGNOSTIC, one run only: does the hook deliver when its parent waits for the job?
+$diagListener = New-Object System.Net.HttpListener
+$diagPort = Get-Random -Minimum 49152 -Maximum 65000
+$diagListener.Prefixes.Add("http://127.0.0.1:$diagPort/")
+$diagListener.Start()
+$diagAsync = $diagListener.BeginGetContext($null, $null)
+$diagCmd = New-ApHookCommand -BaseUrl "http://127.0.0.1:$diagPort" -Direct $true -AgentType "codex_cli" -EventName "Stop"
+$diagWait = $diagCmd.Replace("`nexit 0", "`nGet-Job | Wait-Job -Timeout 15 | Receive-Job *>&1 | ForEach-Object { Write-Host `"job output: `$_`" }`nGet-Job | ForEach-Object { Write-Host `"job state: `$(`$_.State) reason: `$(`$_.JobStateInfo.Reason)`" }`nexit 0")
+Write-Host "diagnostic: replaced exit: $($diagWait -ne $diagCmd)"
+$diagFile = Join-Path $tempProfile "hook-cmd-diag.ps1"
+Set-Content -Path $diagFile -Value $diagWait -Encoding UTF8
+$fixture | powershell.exe -NoProfile -ExecutionPolicy Bypass -File $diagFile
+$diagDelivered = $diagAsync.AsyncWaitHandle.WaitOne(10000)
+if ($diagDelivered) { $diagCtx = $diagListener.EndGetContext($diagAsync); $diagCtx.Response.StatusCode = 200; $diagCtx.Response.Close() }
+$diagListener.Stop()
+Write-Host "diagnostic: delivered when the parent waits for the job: $diagDelivered"
+powershell.exe -NoProfile -Command 'Write-Host "diagnostic: child HOME=$HOME USERPROFILE=$env:USERPROFILE version=$($PSVersionTable.PSVersion)"'
+Write-Host "diagnostic: test HOME=$HOME auth file present: $(Test-Path (Join-Path $HOME '.agentpulse\hook-auth-header'))"
 if ($null -ne $captured) {
 	Assert-True ($captured.Path -eq "/api/v1/hooks") "request path is /api/v1/hooks"
 	Assert-True ($captured.Query -eq "?event=Stop") "request query is ?event=Stop"
@@ -401,7 +420,7 @@ if ($canSymlink) {
 
 	# Write-ApFileNoFollow refuses a symlink at the destination — decoy untouched.
 	$decoyPath = Join-Path $reparseProbeDir "decoy-hooks.json"
-	Set-Content -Path $decoyPath -Value "should never change" -Encoding UTF8
+	Set-Content -Path $decoyPath -Value "should never change" -Encoding UTF8 -NoNewline
 	$hooksLinkPath = Join-Path $reparseProbeDir "hooks.json"
 	New-Item -ItemType SymbolicLink -Path $hooksLinkPath -Target $decoyPath | Out-Null
 	$threw = $false
@@ -417,7 +436,7 @@ if ($canSymlink) {
 	# primitive, a different path, matching the plan's "hooks path AND
 	# backup path" requirement.
 	$decoyBackupPath = Join-Path $reparseProbeDir "decoy-backup.json"
-	Set-Content -Path $decoyBackupPath -Value "backup should never change" -Encoding UTF8
+	Set-Content -Path $decoyBackupPath -Value "backup should never change" -Encoding UTF8 -NoNewline
 	$backupLinkPath = Join-Path $reparseProbeDir "hooks.json.agentpulse-bak.20260929T000000Z"
 	New-Item -ItemType SymbolicLink -Path $backupLinkPath -Target $decoyBackupPath | Out-Null
 	$backupThrew = $false
@@ -442,7 +461,7 @@ if ($canSymlink) {
 	$agentpulseDir = Join-Path $authProbeHome ".agentpulse"
 	New-Item -ItemType Directory -Force -Path $agentpulseDir | Out-Null
 	$authDecoyPath = Join-Path $authProbeHome "decoy-auth-header"
-	Set-Content -Path $authDecoyPath -Value "should never change" -Encoding UTF8
+	Set-Content -Path $authDecoyPath -Value "should never change" -Encoding UTF8 -NoNewline
 	$authHeaderLinkPath = Join-Path $agentpulseDir "hook-auth-header"
 	New-Item -ItemType SymbolicLink -Path $authHeaderLinkPath -Target $authDecoyPath | Out-Null
 	$authThrew = $false
@@ -463,7 +482,7 @@ if ($canSymlink) {
 $hardlinkProbeDir = Join-Path $tempProfile "hardlink-probe"
 New-Item -ItemType Directory -Force -Path $hardlinkProbeDir | Out-Null
 $hardlinkOriginal = Join-Path $hardlinkProbeDir "hooks.json"
-Set-Content -Path $hardlinkOriginal -Value "should never change" -Encoding UTF8
+Set-Content -Path $hardlinkOriginal -Value "should never change" -Encoding UTF8 -NoNewline
 $canHardlink = $true
 try {
 	$hardlinkAlias = Join-Path $hardlinkProbeDir "hooks-alias.json"
@@ -500,7 +519,7 @@ if ($canHardlink) {
 	$agentpulseDirHardlink = Join-Path $hardlinkAuthHome ".agentpulse"
 	New-Item -ItemType Directory -Force -Path $agentpulseDirHardlink | Out-Null
 	$authHeaderTarget = Join-Path $hardlinkAuthHome "decoy-auth-header"
-	Set-Content -Path $authHeaderTarget -Value "should never change" -Encoding UTF8
+	Set-Content -Path $authHeaderTarget -Value "should never change" -Encoding UTF8 -NoNewline
 	$authHeaderHardlinkPath = Join-Path $agentpulseDirHardlink "hook-auth-header"
 	New-Item -ItemType HardLink -Path $authHeaderHardlinkPath -Target $authHeaderTarget | Out-Null
 	$authHardlinkThrew = $false
@@ -547,7 +566,7 @@ Assert-True ($privateJsonAclAfterRotate.Access.Count -eq 1) "Write-ApPrivateJson
 if ($canSymlink) {
 	# Write-ApPrivateFile refuses a symlink at the destination — decoy untouched.
 	$privateDecoyPath = Join-Path $privateWriteProbeDir "decoy-env.local"
-	Set-Content -Path $privateDecoyPath -Value "should never change" -Encoding UTF8
+	Set-Content -Path $privateDecoyPath -Value "should never change" -Encoding UTF8 -NoNewline
 	$privateLinkPath = Join-Path $privateWriteProbeDir "env.local"
 	New-Item -ItemType SymbolicLink -Path $privateLinkPath -Target $privateDecoyPath | Out-Null
 	$privateThrew = $false
