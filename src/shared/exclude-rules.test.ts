@@ -1864,6 +1864,9 @@ describe.skipIf(process.platform !== "darwin")(
 	},
 );
 
+/** A resolved path spells its separators with "/" once it has been walked; comparing is what matters. */
+const slashes = (p: string) => p.replace(/\\/g, "/");
+
 describe("reresolveRules", () => {
 	test("follows a symlink that was created or retargeted after the rules were read, keeping line and raw text", () => {
 		const home = realpathSync.native(tempHome());
@@ -1876,13 +1879,15 @@ describe("reresolveRules", () => {
 			symlinkSync(a, link);
 			writeRulesFile(home, `# note\n${link}\n${join(home, "later")}\n`);
 			const loaded = loadExcludeRules(home);
-			expect(loaded.rules.map((r) => r.resolved)).toEqual([a, join(home, "later")]);
+			expect(loaded.rules.map((r) => slashes(r.resolved))).toEqual(
+				[a, join(home, "later")].map(slashes),
+			);
 
 			rmSync(link);
 			symlinkSync(b, link);
 			symlinkSync(a, join(home, "later"));
 			const next = reresolveRules(loaded.rules, home);
-			expect(next.map((r) => r.resolved)).toEqual([b, a]);
+			expect(next.map((r) => slashes(r.resolved))).toEqual([b, a].map(slashes));
 			expect(next.map((r) => [r.line, r.raw])).toEqual(loaded.rules.map((r) => [r.line, r.raw]));
 		} finally {
 			rmSync(home, { recursive: true, force: true });
@@ -1903,7 +1908,7 @@ describe("reresolveRules", () => {
 				},
 			});
 			expect(next[0]).toBe(loaded.rules[0]);
-			expect(calls).toEqual([join(home, "d")]);
+			expect(calls.map(slashes)).toEqual([join(home, "d")].map(slashes));
 		} finally {
 			rmSync(home, { recursive: true, force: true });
 		}
