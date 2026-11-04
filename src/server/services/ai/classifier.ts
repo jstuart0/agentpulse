@@ -1,3 +1,4 @@
+import { APPROVAL_WAIT_ID_PREFIX } from "../../../shared/codex-approvals.js";
 import type { Session, SessionEvent } from "../../../shared/types.js";
 import type { HitlRequestRecord } from "./hitl-service.js";
 import { readResponse } from "./session-summary/response-text.js";
@@ -40,7 +41,8 @@ export interface ClassifierInput {
 	session: Pick<
 		Session,
 		"sessionId" | "status" | "isWorking" | "currentTask" | "planSummary" | "lastActivityAt"
-	>;
+	> &
+		Partial<Pick<Session, "metadata">>;
 	recentEvents: SessionEvent[];
 	openHitl?: HitlRequestRecord | null;
 	supervisorConnected?: boolean;
@@ -63,6 +65,14 @@ const COMPLETE_HINTS = [
 	"task complete",
 ];
 
+function hasOpenApprovalWait(metadata: Record<string, unknown> | null | undefined): boolean {
+	const wait = metadata?.permissionWait as { ids?: unknown } | undefined;
+	return (
+		Array.isArray(wait?.ids) &&
+		wait.ids.some((id) => typeof id === "string" && id.startsWith(APPROVAL_WAIT_ID_PREFIX))
+	);
+}
+
 export function classifySession(input: ClassifierInput): SessionIntelligence {
 	const now = input.now ?? new Date();
 	const nowMs = now.getTime();
@@ -70,6 +80,21 @@ export function classifySession(input: ClassifierInput): SessionIntelligence {
 	const idleMs = input.idleAfterMs ?? DEFAULT_IDLE_MS;
 
 	const evidence: string[] = [];
+
+	// 0. A Codex approval is open (the server holds a wait named `approval:<id>` in the
+	// session's metadata). A person is being asked; the session is waiting on them by
+	// design, never stuck or risky, and the inbox (which lists only those) needs no row.
+	if (hasOpenApprovalWait(input.session.metadata)) {
+		evidence.push("approval_wait_open");
+		return make(
+			"blocked",
+			"hitl_pending_long",
+			"Codex is waiting for someone to answer an approval request",
+			0.9,
+			evidence,
+			now,
+		);
+	}
 
 	// 1. Blocked on human — HITL has been open long enough that this is
 	// probably an operator oversight rather than expected review latency.

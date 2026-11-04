@@ -13,6 +13,10 @@
 export { sessionsSqlite as sessions } from "../src/server/db/schema/core/sessions";
 export { eventsSqlite as events } from "../src/server/db/schema/core/events";
 export { managedDeliveryReceiptsSqlite as managedDeliveryReceipts } from "../src/server/db/schema/core/managed-delivery-receipts";
+export {
+	codexApprovalsSqlite as codexApprovals,
+	codexApprovalAuditSqlite as codexApprovalAudit,
+} from "../src/server/db/schema/core/codex-approvals";
 export { usersSqlite as users } from "../src/server/db/schema/core/users";
 export { authSessionsSqlite as authSessions } from "../src/server/db/schema/core/auth-sessions";
 export { apiKeysSqlite as apiKeys } from "../src/server/db/schema/core/api-keys";

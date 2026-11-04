@@ -10,6 +10,7 @@ import { drizzle as drizzlePostgresJs } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { config } from "../config.js";
 import { refreshSearchIndexStatus } from "../services/search/search-index-status.js";
+import { CODEX_APPROVAL_TRIGGERS_SQLITE } from "./codex-approvals-ddl.js";
 import {
 	EVENTS_FTS_DDL,
 	EVENT_TEXT_COALESCE_SELECT,
@@ -1103,6 +1104,65 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		)`,
 		"CREATE UNIQUE INDEX IF NOT EXISTS uq_managed_delivery_receipts_session_key ON managed_delivery_receipts(session_id, receipt_key)",
 		"CREATE INDEX IF NOT EXISTS idx_managed_delivery_receipts_created_at ON managed_delivery_receipts(created_at)",
+		// Migration 0020 (AGEN-87): Codex approvals and their append-only audit. The
+		// approvals table is born with its cascade FK, so it is not in
+		// rebuildSessionChildFks. Same columns, index names and column order as the
+		// Drizzle schema and the migration; the triggers come from codex-approvals-ddl.ts.
+		`CREATE TABLE IF NOT EXISTS codex_approval_audit (
+			id TEXT PRIMARY KEY NOT NULL,
+			approval_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			host_name TEXT,
+			actor_user_id TEXT,
+			actor_key_id TEXT,
+			actor_label TEXT NOT NULL,
+			request_kind TEXT NOT NULL,
+			revision INTEGER NOT NULL,
+			presentation_hash TEXT NOT NULL,
+			decision TEXT NOT NULL,
+			outcome TEXT NOT NULL DEFAULT 'pending',
+			created_at TEXT NOT NULL,
+			completed_at TEXT
+		)`,
+		"CREATE INDEX IF NOT EXISTS idx_codex_approval_audit_approval ON codex_approval_audit(approval_id)",
+		"CREATE INDEX IF NOT EXISTS idx_codex_approval_audit_session_created ON codex_approval_audit(session_id, created_at)",
+		`CREATE TABLE IF NOT EXISTS codex_approvals (
+			id TEXT PRIMARY KEY NOT NULL,
+			session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+			runtime_epoch TEXT NOT NULL,
+			rpc_id TEXT NOT NULL,
+			request_kind TEXT NOT NULL,
+			thread_id TEXT NOT NULL,
+			turn_id TEXT NOT NULL,
+			item_id TEXT NOT NULL,
+			provider_approval_id TEXT,
+			presentation TEXT,
+			reason_text TEXT,
+			presentation_hash TEXT NOT NULL,
+			presentation_revision INTEGER NOT NULL,
+			approvable INTEGER NOT NULL,
+			not_approvable_reason TEXT,
+			can_cancel INTEGER NOT NULL DEFAULT false,
+			status TEXT NOT NULL,
+			closed_reason TEXT,
+			host_outcome TEXT,
+			decision TEXT,
+			answered_by_user_id TEXT,
+			answered_by_key_id TEXT,
+			answered_at TEXT,
+			first_delivered_at TEXT,
+			last_issued_at TEXT,
+			fenced_at TEXT,
+			created_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			closed_at TEXT,
+			updated_at TEXT NOT NULL
+		)`,
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_codex_approvals_session_epoch_rpc ON codex_approvals(session_id, runtime_epoch, rpc_id)",
+		"CREATE INDEX IF NOT EXISTS idx_codex_approvals_session_status ON codex_approvals(session_id, status)",
+		"CREATE INDEX IF NOT EXISTS idx_codex_approvals_session_created ON codex_approvals(session_id, created_at)",
+		"CREATE INDEX IF NOT EXISTS idx_codex_approvals_status_expires ON codex_approvals(status, expires_at)",
+		...CODEX_APPROVAL_TRIGGERS_SQLITE,
 		// Mobile pairing: single-use codes (only the hash is stored). Same columns
 		// as the Drizzle schema and migration 0013.
 		`CREATE TABLE IF NOT EXISTS pairing_codes (

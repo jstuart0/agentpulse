@@ -109,6 +109,15 @@ const MANAGED_DELIVERY_SQL = [
 	"ALTER TABLE events DROP COLUMN occurred_at",
 ];
 
+/** What migration 0020 added (AGEN-87): both Codex approval tables (their indexes and triggers with them). */
+const CODEX_APPROVALS_SQL = [
+	"DROP TRIGGER IF EXISTS trg_codex_approvals_finalize_audit",
+	"DROP TRIGGER IF EXISTS trg_codex_approval_audit_update",
+	"DROP TRIGGER IF EXISTS trg_codex_approval_audit_delete",
+	"DROP TABLE IF EXISTS codex_approvals",
+	"DROP TABLE IF EXISTS codex_approval_audit",
+];
+
 describe("legacy SQLite init parity with Drizzle migrations", () => {
 	const open: Database[] = [];
 	afterAll(() => {
@@ -156,6 +165,28 @@ describe("legacy SQLite init parity with Drizzle migrations", () => {
 			expect(gap).toContain("tables: managed_delivery_receipts");
 			expect(gap).toContain("columns: events.occurred_at TEXT");
 			expect(gap.some((item) => item.startsWith("indexes: managed_delivery_receipts("))).toBe(true);
+
+			await initializeDatabase(legacy);
+
+			expect(missingFrom(shapeOf(legacy), shapeOf(born))).toEqual([]);
+		},
+	);
+
+	itSqliteOnly(
+		"an install that predates Codex approvals (0020) gets both tables, their indexes and the audit triggers",
+		async () => {
+			const legacy = preexistingInstall();
+			const born = await drizzleBorn();
+			open.push(legacy, born);
+			await initializeDatabase(legacy);
+			for (const statement of CODEX_APPROVALS_SQL) legacy.exec(statement);
+			// The drop list is real: the shape really lacks what it names.
+			const gap = missingFrom(shapeOf(legacy), shapeOf(born));
+			expect(gap).toContain("tables: codex_approvals");
+			expect(gap).toContain("tables: codex_approval_audit");
+			expect(gap).toContain("triggers: trg_codex_approvals_finalize_audit");
+			expect(gap).toContain("triggers: trg_codex_approval_audit_update");
+			expect(gap).toContain("triggers: trg_codex_approval_audit_delete");
 
 			await initializeDatabase(legacy);
 

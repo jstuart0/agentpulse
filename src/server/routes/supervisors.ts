@@ -473,7 +473,7 @@ supervisorsAgentRouter.post(
 		const release = admitReplay(late, supervisorId);
 		if (!release) return replayBusy(c);
 		try {
-			const result = await upsertManagedSessionState(supervisorId, body);
+			const result = await upsertManagedSessionState(supervisorId, body, { replay: late });
 			await associateObservedSession({ sessionId: body.sessionId, supervisorId });
 			// upsertManagedSessionState's own return is the pre-association
 			// snapshot — if the association just set this session's owner,

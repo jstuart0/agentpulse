@@ -12,6 +12,8 @@ const { executeRows } = await import("../db/sql-helpers.js");
 const {
 	aiHitlRequests,
 	aiWatcherRuns,
+	codexApprovalAudit,
+	codexApprovals,
 	controlActions,
 	events,
 	managedDeliveryReceipts,
@@ -34,6 +36,7 @@ beforeEach(async () => {
 	// Order matters when FKs are not all cascading yet — start from the
 	// child rows. With cascade in place, deleting sessions alone is enough,
 	// but explicit cleanup is fine and keeps the suite hermetic.
+	await getDb().delete(codexApprovals).execute();
 	await getDb().delete(managedDeliveryReceipts).execute();
 	await getDb().delete(events).execute();
 	await getDb().delete(managedSessions).execute();
@@ -120,6 +123,83 @@ async function seedSessionWithChildren(sessionId: string): Promise<void> {
 			dedupeKey: `${sessionId}:idle:0`,
 		});
 }
+
+/** One approval row (and, when asked, its audit row) for a session, in the state a deleted session can leave it. */
+async function seedApproval(
+	sessionId: string,
+	rpcId: string,
+	options: { audit: boolean; issued: boolean },
+): Promise<string> {
+	const now = new Date().toISOString();
+	const [row] = await getDb()
+		.insert(codexApprovals)
+		.values({
+			sessionId,
+			runtimeEpoch: "e",
+			rpcId,
+			requestKind: "command",
+			threadId: "t",
+			turnId: "t",
+			itemId: "i",
+			presentationHash: "h",
+			presentationRevision: 1,
+			approvable: true,
+			status: "answered",
+			decision: "accept",
+			answeredAt: now,
+			firstDeliveredAt: options.issued ? now : null,
+			createdAt: now,
+			expiresAt: new Date(Date.now() + 600_000).toISOString(),
+			updatedAt: now,
+		})
+		.returning({ id: codexApprovals.id });
+	if (options.audit) {
+		await getDb().insert(codexApprovalAudit).values({
+			approvalId: row.id,
+			sessionId,
+			actorLabel: "user",
+			requestKind: "command",
+			revision: 1,
+			presentationHash: "h",
+			decision: "accept",
+			createdAt: now,
+		});
+	}
+	return row.id;
+}
+
+describe("DELETE /sessions/:id and Codex approvals (AGEN-87)", () => {
+	test("through the real route: the rows cascade away and the audit outlives them, finalized, never left pending", async () => {
+		const sessionId = `del-ca-${crypto.randomUUID()}`;
+		await getDb().insert(sessions).values({ sessionId, agentType: "codex_cli" });
+		const notIssued = await seedApproval(sessionId, "a", { audit: true, issued: false });
+		const issued = await seedApproval(sessionId, "b", { audit: true, issued: true });
+		await seedApproval(sessionId, "c", { audit: false, issued: false });
+		expect(
+			await getDb().select().from(codexApprovals).where(eq(codexApprovals.sessionId, sessionId)),
+			"positive control: the approval rows exist",
+		).toHaveLength(3);
+
+		const res = await app.request(`/api/v1/sessions/${sessionId}`, { method: "DELETE" });
+		expect(res.status).toBe(200);
+
+		expect(
+			await getDb().select().from(codexApprovals).where(eq(codexApprovals.sessionId, sessionId)),
+		).toEqual([]);
+		const audit = await getDb()
+			.select()
+			.from(codexApprovalAudit)
+			.where(eq(codexApprovalAudit.sessionId, sessionId));
+		expect(audit).toHaveLength(2);
+		const byApproval = new Map(audit.map((row) => [row.approvalId, row]));
+		expect(byApproval.get(notIssued)?.outcome).toBe("session_deleted");
+		expect(byApproval.get(issued)?.outcome).toBe("session_deleted_after_issue");
+		for (const row of audit) {
+			expect(row.outcome).not.toBe("pending");
+			expect(row.completedAt).not.toBeNull();
+		}
+	});
+});
 
 describe("DELETE /sessions/:id", () => {
 	test("cascade removes every child row in one transaction", async () => {

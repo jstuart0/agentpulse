@@ -22,6 +22,8 @@ import {
 import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
+import { fenceApprovalsForStop } from "./codex-approvals-fence.js";
+import { type ClosedApproval, runApprovalClosedEffects } from "./codex-approvals.js";
 import { buildStoredCliArgs, validateAgainstSupervisor } from "./launch-compatibility.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { bumpVersionAndReload } from "./projects/cache.js";
@@ -399,7 +401,10 @@ export async function enqueueStopInTx(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	tx: any,
 	input: { sessionId: string; actor: Actor; controlActionId: string },
-): Promise<{ ok: true; action: ControlAction } | { ok: false; reason: EnqueueRefusal }> {
+): Promise<
+	| { ok: true; action: ControlAction; fencedApprovals: ClosedApproval[] }
+	| { ok: false; reason: EnqueueRefusal }
+> {
 	const { sessionId, actor, controlActionId } = input;
 	await expireStaleControlLock(tx, sessionId);
 	const [managed] = await tx
@@ -421,6 +426,10 @@ export async function enqueueStopInTx(
 	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp))) {
 		return { ok: false, reason: "control_busy" };
 	}
+	// The Stop fence for Codex approvals: no accept is issued after this commits. It runs
+	// only once the lock is ours (a Stop refused control_busy fences nothing) and on this
+	// transaction, so the fence and the lock commit or roll back together.
+	const fence = await fenceApprovalsForStop(tx, sessionId, controlActionId, Date.now());
 	const [action] = await tx
 		.insert(controlActions)
 		.values({
@@ -436,16 +445,21 @@ export async function enqueueStopInTx(
 			updatedAt: timestamp,
 		})
 		.returning();
-	return { ok: true, action: mapControlAction(action) };
+	return { ok: true, action: mapControlAction(action), fencedApprovals: fence.closed };
 }
 
-/** Queues a stop. With `tx` it runs inside the caller's transaction; without one it opens its own. */
+/**
+ * Queues a stop. With `tx` it runs inside the caller's transaction; without one it opens its own.
+ * The timeline and wait side effects of any approvals the Stop closed run after the commit this
+ * function owns; a caller passing its own `tx` commits it itself, and the sweep covers its rows.
+ */
 export async function queueStopAction(sessionId: string, actor: Actor, tx?: DbHandle) {
 	const input = { sessionId, actor, controlActionId: crypto.randomUUID() };
 	const result = tx
 		? await enqueueStopInTx(tx, input)
 		: await withAdminLock((own) => enqueueStopInTx(own, input));
 	if (!result.ok) throw refusalToError(result.reason);
+	if (!tx) await runApprovalClosedEffects(result.fencedApprovals);
 	return result.action;
 }
 

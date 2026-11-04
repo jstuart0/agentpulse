@@ -89,6 +89,7 @@ import {
 } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { summaryLeaseSeconds } from "./ai/session-summary/service-limits.js";
+import { deleteClosedApprovals } from "./codex-approvals.js";
 import { deleteRevokedDevices } from "./mobile-devices-service.js";
 import { toDbTimestamp } from "./util/db-time.js";
 
@@ -137,6 +138,8 @@ export interface RetentionRunResult {
 	summariesDeleted: number;
 	/** Managed-delivery receipts (AGEN-83) deleted by this pass. Pruned whether or not event retention is on. */
 	receiptsDeleted: number;
+	/** Closed Codex approval rows (AGEN-87) deleted by this pass; 0 when skipped or disabled. Their audit is never touched. */
+	approvalsDeleted: number;
 	batches: number;
 	retentionDays: number;
 	/** true when the setting was unset/0/invalid — the pass did nothing. */
@@ -478,6 +481,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 			rowsDeleted: 0,
 			summariesDeleted: 0,
 			receiptsDeleted: 0,
+			approvalsDeleted: 0,
 			batches: 0,
 			retentionDays: 0,
 			disabled: false,
@@ -509,6 +513,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 				rowsDeleted: 0,
 				summariesDeleted: 0,
 				receiptsDeleted,
+				approvalsDeleted: 0,
 				batches: 0,
 				retentionDays: 0,
 				disabled: true,
@@ -544,6 +549,18 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 			if (summaries.lockLost) skippedReason = "lock_held_elsewhere";
 		}
 
+		// Closed Codex approval rows go with the events they annotate. Open rows never do, and the
+		// audit is never touched. Idempotent across replicas (a second one finds the rows gone), so
+		// it takes no lock; a failure here must not hide the pass that already deleted events.
+		const approvalsDeleted = await deleteClosedApprovals(
+			new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString(),
+			batchSize,
+			MAX_BATCHES_PER_PASS,
+		).catch((err) => {
+			console.error("[retention] closed approval prune failed:", err);
+			return 0;
+		});
+
 		if (skippedReason) recordSkip(skippedReason);
 
 		const finishedAtMs = Date.now();
@@ -554,6 +571,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 			rowsDeleted,
 			summariesDeleted,
 			receiptsDeleted,
+			approvalsDeleted,
 			batches,
 			retentionDays: days,
 			disabled: false,

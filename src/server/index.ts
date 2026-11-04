@@ -19,6 +19,7 @@ import {
 	initTelegramCredentials,
 } from "./services/channels/telegram-credentials.js";
 import { startTelegramPolling } from "./services/channels/telegram-poller.js";
+import { sweepApprovals } from "./services/codex-approvals.js";
 import { normalizeStoredMachineNamesSafely, stampMachine } from "./services/effective-machine.js";
 import { assertBootable, warnAboutRiskySubjectSourceAdmins } from "./services/instance-mode.js";
 import { ensureBootstrapAdmin } from "./services/local-auth-bootstrap.js";
@@ -281,6 +282,20 @@ setInterval(async () => {
 		console.error("[tracker] Error updating stale sessions:", err);
 	}
 }, 60_000);
+
+// AGEN-87: Codex approvals. Not the AI-gated runner: expiry, delivery-window lapse, the
+// unknown-outcome close, rows made after a Stop's fence, and the permission-wait reconcile
+// must run whether or not AI is on. Once at boot with `full`, which also finds a wait left
+// behind by a crash between a row closing and its wait clearing; then every 30 s.
+const APPROVAL_SWEEP_INTERVAL_MS = 30_000;
+void sweepApprovals({ full: true }).catch((err) => {
+	console.error("[codex-approvals] boot sweep failed:", err instanceof Error ? err.message : err);
+});
+setInterval(() => {
+	void sweepApprovals().catch((err) => {
+		console.error("[codex-approvals] sweep failed:", err instanceof Error ? err.message : err);
+	});
+}, APPROVAL_SWEEP_INTERVAL_MS);
 
 // AGEN-24: periodic event-retention pass. No-ops every tick unless the
 // operator has explicitly set eventsRetentionDays > 0 (see

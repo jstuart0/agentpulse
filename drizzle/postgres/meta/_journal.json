@@ -141,6 +141,13 @@
 			"when": 1793601825383,
 			"tag": "0019_supervisor_outbox_state",
 			"breakpoints": true
+		},
+		{
+			"idx": 20,
+			"version": "7",
+			"when": 1793748816235,
+			"tag": "0020_codex_approvals",
+			"breakpoints": true
 		}
 	]
 }

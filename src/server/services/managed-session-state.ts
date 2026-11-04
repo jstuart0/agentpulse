@@ -17,7 +17,12 @@ import {
 	users,
 } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
-import type { NormalizedEvent } from "./event-normalizer.js";
+import { closeApprovalsForSession } from "./codex-approvals.js";
+import {
+	type NormalizedEvent,
+	isApprovalResolvedEventName,
+	isServerOnlyEventName,
+} from "./event-normalizer.js";
 import {
 	type ManagedInsertDeps,
 	type ManagedInsertResult,
@@ -77,9 +82,32 @@ export async function getManagedSession(sessionId: string) {
 	return row ? mapManagedSession(row) : null;
 }
 
+/**
+ * A state report that says the managed session has ended: `status` completed or
+ * failed, or a managed state of stopped, completed or failed. Mirrors the
+ * supervisor gate's isTerminalReport. `degraded` is not terminal (a rename that
+ * failed to sync leaves it on a live runtime), so it never closes an approval.
+ */
+export function isTerminalStateReport(input: ManagedSessionStateInput): boolean {
+	return (
+		input.status === "completed" ||
+		input.status === "failed" ||
+		input.managedState === "stopped" ||
+		input.managedState === "completed" ||
+		input.managedState === "failed"
+	);
+}
+
 export async function upsertManagedSessionState(
 	supervisorId: string,
 	input: ManagedSessionStateInput,
+	options: {
+		/**
+		 * The report is a replay from the supervisor's outbox, or a late one. It can be
+		 * older than the approval rows, so it closes none.
+		 */
+		replay?: boolean;
+	} = {},
 ): Promise<{ session: Session; managedSession: ManagedSession }> {
 	await assertSupervisorCanWriteSession(supervisorId, input.sessionId, {
 		launchRequestId: input.launchRequestId,
@@ -258,6 +286,12 @@ export async function upsertManagedSessionState(
 		.where(eq(managedSessions.sessionId, input.sessionId))
 		.limit(1);
 
+	// A live report that the session ended closes its open Codex approvals: nothing can
+	// still be waiting for an answer. Not a replayed report, which may predate them.
+	if (options.replay !== true && isTerminalStateReport(input)) {
+		await closeApprovalsForSession(input.sessionId);
+	}
+
 	// F85 (ian mid-build): map here, once, so the REST response (this
 	// function's `session`, returned as-is by supervisors.ts's
 	// `c.json(result)`) and the WS broadcast (notifySessionUpdated, called
@@ -291,7 +325,8 @@ export class ReservedEventTypeError extends Error {
 function isReservedEvent(event: ManagedSessionEventInput): boolean {
 	return (
 		(typeof event.category === "string" && event.category.startsWith("ai_")) ||
-		(typeof event.eventType === "string" && /^ai/i.test(event.eventType.trim()))
+		isServerOnlyEventName(event.eventType) ||
+		isApprovalResolvedEventName(event.providerEventType)
 	);
 }
 

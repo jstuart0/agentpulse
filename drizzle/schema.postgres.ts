@@ -15,6 +15,10 @@
 export { sessionsPg as sessions } from "../src/server/db/schema/core/sessions";
 export { eventsPg as events } from "../src/server/db/schema/core/events";
 export { managedDeliveryReceiptsPg as managedDeliveryReceipts } from "../src/server/db/schema/core/managed-delivery-receipts";
+export {
+	codexApprovalsPg as codexApprovals,
+	codexApprovalAuditPg as codexApprovalAudit,
+} from "../src/server/db/schema/core/codex-approvals";
 export { usersPg as users } from "../src/server/db/schema/core/users";
 export { authSessionsPg as authSessions } from "../src/server/db/schema/core/auth-sessions";
 export { apiKeysPg as apiKeys } from "../src/server/db/schema/core/api-keys";

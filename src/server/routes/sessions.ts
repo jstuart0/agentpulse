@@ -1219,7 +1219,10 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 // is an eighth child with the same cascade (born with its FK on both dialects,
 // not in the rebuild list), so a session's summary goes with it. So is
 // managed_delivery_receipts (AGEN-83), the ninth: a deleted session's delivery
-// receipts go with it.
+// receipts go with it. codex_approvals (AGEN-87) is the tenth. Its append-only
+// audit (codex_approval_audit) has no foreign key and survives the delete; a
+// BEFORE DELETE trigger on codex_approvals finalizes any audit row still pending,
+// as session_deleted, or session_deleted_after_issue when an accept had been issued.
 //
 // We wrap the deletes in withTransaction() so any failure leaves the row
 // in place rather than partially deleted.
