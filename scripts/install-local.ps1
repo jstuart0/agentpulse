@@ -1149,6 +1149,7 @@ function New-ApHookAuthHeaderFile {
     if ($LASTEXITCODE -ne 0) {
       throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
     }
+    Remove-ApOtherAces -Path $d
   } catch {
     Write-ApAclWarning -Path $d -Detail $_.Exception.Message
   }
@@ -1165,6 +1166,7 @@ function New-ApHookAuthHeaderFile {
     if ($LASTEXITCODE -ne 0) {
       throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
     }
+    Remove-ApOtherAces -Path $f
   } catch {
     Write-ApAclWarning -Path $f -Detail $_.Exception.Message
   }
@@ -1223,6 +1225,37 @@ function Write-ApAclWarning {
   Write-Warning "Could not restrict access to $Path ($Detail). Other local users may be able to read the API key or credentials stored there."
 }
 
+# `icacls /inheritance:r /grant:r <user>` drops inherited entries and replaces
+# that user's own entry, but any other entry set directly on the path survives:
+# a directory that already allows Users stays readable by Users. This removes
+# those too, so the path ends up with the current user's entry alone. Each step
+# only takes access away. If the current user has no entry (the grant above went
+# to a different name), it does nothing rather than risk a lockout, and warns.
+function Remove-ApOtherAces {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  try {
+    $apMe = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $apAllowSids = @(
+      (Get-Acl -LiteralPath $Path).Access |
+        Where-Object { $_.AccessControlType.ToString() -eq 'Allow' } |
+        ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } |
+        Select-Object -Unique
+    )
+    if ($apAllowSids -notcontains $apMe) {
+      throw "the current user has no entry on it"
+    }
+    foreach ($apSid in $apAllowSids) {
+      if ($apSid -eq $apMe) { continue }
+      $icaclsOutput = icacls $Path /remove:g "*$apSid" 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
+      }
+    }
+  } catch {
+    Write-ApAclWarning -Path $Path -Detail $_.Exception.Message
+  }
+}
+
 # AGEN-21 (security, Medium): .env.local and supervisor.json both hold
 # secrets in plaintext (AGENTPULSE_INITIAL_API_KEY, and the supervisor
 # credential/enrollment token respectively) and were previously written via
@@ -1259,6 +1292,7 @@ function Write-ApPrivateFile {
     if ($LASTEXITCODE -ne 0) {
       throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
     }
+    Remove-ApOtherAces -Path $dir
   } catch {
     Write-ApAclWarning -Path $dir -Detail $_.Exception.Message
   }
@@ -1268,6 +1302,7 @@ function Write-ApPrivateFile {
     if ($LASTEXITCODE -ne 0) {
       throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
     }
+    Remove-ApOtherAces -Path $Path
   } catch {
     Write-ApAclWarning -Path $Path -Detail $_.Exception.Message
   }
@@ -1350,6 +1385,7 @@ function Configure-Hooks {
       if ($LASTEXITCODE -ne 0) {
         throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
       }
+      Remove-ApOtherAces -Path $claudeSettings
     } catch {
       Write-ApAclWarning -Path $claudeSettings -Detail $_.Exception.Message
     }

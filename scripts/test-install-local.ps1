@@ -13,7 +13,9 @@ $failures = 0
 
 function Assert-True($condition, $message) {
 	if (-not $condition) {
-		Write-Error "FAIL: $message"
+		# Reported, not thrown: one run shows every failure, and the summary at the
+		# end fails the step.
+		Write-Host "FAIL: $message"
 		$script:failures++
 	} else {
 		Write-Host "ok: $message"
@@ -22,8 +24,15 @@ function Assert-True($condition, $message) {
 
 $tempProfile = Join-Path ([System.IO.Path]::GetTempPath()) ("ap-test-install-local-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tempProfile | Out-Null
-$env:USERPROFILE = $tempProfile
-$env:HOME = $tempProfile
+# The installer reads PowerShell's own $HOME, which the environment variables
+# don't change. Without this the test writes a fake key into the real profile.
+function Set-TestHome([string]$Path) {
+	$env:USERPROFILE = $Path
+	$env:HOME = $Path
+	Set-Variable -Name HOME -Value $Path -Scope Global -Force
+	if ($global:HOME -ne $Path) { throw "could not point `$HOME at $Path (it is $global:HOME)" }
+}
+Set-TestHome $tempProfile
 
 $installer = Resolve-Path (Join-Path $PSScriptRoot "install-local.ps1")
 . $installer -FunctionsOnly
@@ -50,6 +59,18 @@ if ($dirAcl.Access.Count -ne 1) {
 	$dirAcl.Access | Format-List IdentityReference, FileSystemRights, AccessControlType, IsInherited, InheritanceFlags, PropagationFlags | Out-Host
 }
 Assert-True ($dirAcl.Access.Count -eq 1) ".agentpulse dir has exactly one ACE (found $($dirAcl.Access.Count))"
+
+# An entry set directly on the directory is not inherited, so /inheritance:r
+# leaves it. Remove-ApOtherAces has to take it away, and a re-run must do so for
+# a directory an earlier install or another tool left broad.
+$broadDirCheck = icacls (Join-Path $HOME ".agentpulse") /grant "*S-1-5-32-545:(OI)(CI)R" 2>&1
+Assert-True ($LASTEXITCODE -eq 0) "test setup: granted Users on .agentpulse ($($broadDirCheck -join ' '))"
+Assert-True ((Get-Acl (Join-Path $HOME ".agentpulse")).Access.Count -eq 2) "test setup: .agentpulse now has a second, direct ACE"
+New-ApHookAuthHeaderFile -ApiKey "ap_test_key_123"
+$dirAclAfterBroad = Get-Acl (Join-Path $HOME ".agentpulse")
+Assert-True ($dirAclAfterBroad.Access.Count -eq 1) "a re-run removes a direct Users ACE from .agentpulse (found $($dirAclAfterBroad.Access.Count))"
+$dirAceSid = $dirAclAfterBroad.Access[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+Assert-True ($dirAceSid -eq [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value) "the ACE left on .agentpulse is the current user's"
 
 # ── AGEN-49/H2 (xander): $ApiKey set embeds the literal key in
 # settings.json, narrowed to a single-ACE user-only ACL — Claude Code's
@@ -111,12 +132,10 @@ New-Item -ItemType Directory -Force -Path (Join-Path $mergeProbeHome ".claude") 
 $mergeProbeSettings = Join-Path $mergeProbeHome ".claude\settings.json"
 '{"theme":"dark","customSetting":42}' | Set-Content -Path $mergeProbeSettings -Encoding UTF8
 $savedHomeForMerge = $env:USERPROFILE
-$env:USERPROFILE = $mergeProbeHome
-$env:HOME = $mergeProbeHome
+Set-TestHome $mergeProbeHome
 $ApiKey = "ap_test_key_123"
 Configure-Hooks
-$env:USERPROFILE = $savedHomeForMerge
-$env:HOME = $savedHomeForMerge
+Set-TestHome $savedHomeForMerge
 $mergedJson = Get-Content $mergeProbeSettings -Raw | ConvertFrom-Json
 Assert-True ($mergedJson.theme -eq "dark") "Configure-Hooks: an existing settings.json keeps its other keys (theme)"
 Assert-True ($mergedJson.customSetting -eq 42) "Configure-Hooks: an existing settings.json keeps its other keys (customSetting)"
@@ -137,8 +156,7 @@ try {
 }
 if ($canSymlinkSettings) {
   $savedHomeForSymlink = $env:USERPROFILE
-  $env:USERPROFILE = $symlinkProbeHome
-  $env:HOME = $symlinkProbeHome
+  Set-TestHome $symlinkProbeHome
   $ApiKey = "ap_test_key_123"
   $symlinkThrew = $false
   try {
@@ -146,8 +164,7 @@ if ($canSymlinkSettings) {
   } catch {
     $symlinkThrew = $true
   }
-  $env:USERPROFILE = $savedHomeForSymlink
-  $env:HOME = $savedHomeForSymlink
+  Set-TestHome $savedHomeForSymlink
   Assert-True $symlinkThrew "Configure-Hooks: a symlinked settings.json throws instead of writing through it"
   Assert-True ((Get-Content $decoySettingsTarget -Raw) -eq "should never change") "Configure-Hooks: the symlink's target is untouched after the refused write"
 }
@@ -421,8 +438,7 @@ if ($canSymlink) {
 	$authProbeHome = Join-Path $tempProfile "auth-reparse-probe"
 	New-Item -ItemType Directory -Force -Path $authProbeHome | Out-Null
 	$savedHome = $env:USERPROFILE
-	$env:USERPROFILE = $authProbeHome
-	$env:HOME = $authProbeHome
+	Set-TestHome $authProbeHome
 	$agentpulseDir = Join-Path $authProbeHome ".agentpulse"
 	New-Item -ItemType Directory -Force -Path $agentpulseDir | Out-Null
 	$authDecoyPath = Join-Path $authProbeHome "decoy-auth-header"
@@ -437,8 +453,7 @@ if ($canSymlink) {
 	}
 	Assert-True $authThrew "New-ApHookAuthHeaderFile (F233): a symlinked hook-auth-header throws instead of writing through it"
 	Assert-True ((Get-Content $authDecoyPath -Raw) -eq "should never change") "New-ApHookAuthHeaderFile (F233): the symlink's target is untouched after the refused write"
-	$env:USERPROFILE = $savedHome
-	$env:HOME = $savedHome
+	Set-TestHome $savedHome
 }
 
 # ── F242 (xander, re-verify): Test-ApMultipleHardLinks — real execution ──
@@ -481,8 +496,7 @@ if ($canHardlink) {
 	$hardlinkAuthHome = Join-Path $tempProfile "auth-hardlink-probe"
 	New-Item -ItemType Directory -Force -Path $hardlinkAuthHome | Out-Null
 	$savedHomeHardlink = $env:USERPROFILE
-	$env:USERPROFILE = $hardlinkAuthHome
-	$env:HOME = $hardlinkAuthHome
+	Set-TestHome $hardlinkAuthHome
 	$agentpulseDirHardlink = Join-Path $hardlinkAuthHome ".agentpulse"
 	New-Item -ItemType Directory -Force -Path $agentpulseDirHardlink | Out-Null
 	$authHeaderTarget = Join-Path $hardlinkAuthHome "decoy-auth-header"
@@ -497,8 +511,7 @@ if ($canHardlink) {
 	}
 	Assert-True $authHardlinkThrew "New-ApHookAuthHeaderFile (F242): a multiply-linked hook-auth-header throws instead of writing through it"
 	Assert-True ((Get-Content $authHeaderTarget -Raw) -eq "should never change") "New-ApHookAuthHeaderFile (F242): the hard-linked target is untouched after the refused write"
-	$env:USERPROFILE = $savedHomeHardlink
-	$env:HOME = $savedHomeHardlink
+	Set-TestHome $savedHomeHardlink
 }
 
 # ── AGEN-21 (security, Medium): Write-ApPrivateFile / Write-ApPrivateJsonFile — real execution ──

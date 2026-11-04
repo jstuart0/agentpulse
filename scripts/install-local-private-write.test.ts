@@ -312,7 +312,7 @@ describe("install-local.ps1 secret writers are wired through Write-ApPrivateFile
 		// output used to be discarded, so a failed ACL step was invisible. The
 		// step stays best-effort (restricted and non-NTFS volumes) but is loud.
 		const calls = [...source.matchAll(/^\s*\$icaclsOutput = icacls /gm)];
-		expect(calls.length).toBe(5);
+		expect(calls.length).toBe(6);
 		for (const call of calls) {
 			const site = source.slice(call.index, (call.index ?? 0) + 700);
 			expect(site).toContain("$LASTEXITCODE -ne 0");
@@ -332,6 +332,16 @@ describe("install-local.ps1 secret writers are wired through Write-ApPrivateFile
 		expect(body).toContain("Write-Warning");
 		expect(body).toContain("$Path");
 		expect(body).toContain("Other local users may be able to read");
+	});
+
+	test("every narrowing also removes other entries set directly on the path", () => {
+		// `icacls /inheritance:r /grant:r` leaves a direct entry for anyone else in place.
+		const narrowings = [...source.matchAll(/icacls (\$\w+) \/inheritance:r \/grant:r/g)];
+		expect(narrowings.length).toBe(5);
+		for (const match of narrowings) {
+			const after = source.slice(match.index, match.index + 400);
+			expect(after).toContain(`Remove-ApOtherAces -Path ${match[1]}`);
+		}
 	});
 
 	test("AGEN-21 (xander, Medium): every icacls call is wrapped in try/catch (best-effort, matching the TS side's tightenWindowsAclBestEffort contract)", () => {
@@ -365,11 +375,11 @@ describe("install-local.ps1 secret writers are wired through Write-ApPrivateFile
 				}
 			}
 		}
-		// Population floor: this codebase currently has 5 icacls call sites
+		// Population floor: this codebase currently has 6 icacls call sites
 		// (New-ApHookAuthHeaderFile's directory + file, Write-ApPrivateFile's
-		// directory + file, AGEN-49's Configure-Hooks settings.json ACL). A
-		// count of 0 would make the loop above vacuous.
-		expect(totalIcaclsCalls).toBe(5);
+		// directory + file, AGEN-49's Configure-Hooks settings.json ACL, and
+		// Remove-ApOtherAces). A count of 0 would make the loop above vacuous.
+		expect(totalIcaclsCalls).toBe(6);
 		expect(unwrapped.length, unwrapped.map((i) => `line ${i + 1}: ${lines[i]}`).join("\n")).toBe(0);
 	});
 });
