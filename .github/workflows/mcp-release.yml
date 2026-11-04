@@ -24,7 +24,7 @@ jobs:
   publish:
     name: Build, Verify, Publish
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       # id-token: write is required for npm OIDC trusted publishing — npm
       # exchanges this workflow's OIDC token for a short-lived publish
