@@ -24,6 +24,25 @@ export const CODEX_NEW_ROW_GRACE_MS = 30 * 1000;
 /** Closed rows (and a `may_have_run` one) stay on the list this long. */
 export const CODEX_CLOSED_VISIBLE_MS = 5 * 60 * 1000;
 
+/**
+ * What a server tells a supervisor it can do, on `register` and `heartbeat` (D14). Absent means off:
+ * an old server says nothing, and a supervisor that doesn't hear this declines every approval itself.
+ */
+export const CODEX_APPROVALS_SERVER_FEATURE = "codex_approvals";
+
+/**
+ * The supervisor tracker's own clocks (D4, D16). Its deadline is the TTL plus a minute from receipt, so
+ * it declines even if it never hears from the server again; a request with under a minute left isn't
+ * reported at all; an accept in a sync response that took longer than the slow limit is refused.
+ */
+export const CODEX_TRACKER_DEADLINE_MS = CODEX_APPROVAL_TTL_MS + 60 * 1000;
+export const CODEX_REPORT_MIN_REMAINING_MS = 60 * 1000;
+export const CODEX_SLOW_SYNC_RESPONSE_MS = 3 * 1000;
+export const CODEX_SYNC_TIMEOUT_MS = 10 * 1000;
+export const CODEX_RESOLVED_WAIT_MS = 10 * 1000;
+export const CODEX_FILE_DIFF_WAIT_MS = 2 * 1000;
+export const CODEX_SESSION_UNKNOWN_RETRY_MS = 5 * 1000;
+
 export const CODEX_APPROVAL_LIMITS = {
 	openPerSession: 32,
 	createdPer10MinPerSession: 60,
@@ -50,6 +69,8 @@ export const CODEX_APPROVAL_LIMITS = {
 	syncBodyBytes: 256 * 1024,
 	reportBodyBytes: 1024 * 1024,
 	syncPerMinute: 120,
+	/** Reports (a new request, or a higher revision of one) a host may send in a minute. */
+	reportPerMinute: 240,
 } as const;
 
 export const APPROVAL_STATUSES = ["pending", "answered", "closed"] as const;
@@ -427,3 +448,75 @@ export const FILE_CHANGE_APPROVAL_PARAMS: Readonly<Record<string, ApprovalParamT
 	threadId: "metadata",
 	turnId: "metadata",
 };
+
+// ── Supervisor wire: strict readers for what a server sends back ───────────
+
+const RESPONSE_ID_MAX = 128;
+
+/**
+ * An answer as it is read off the wire. The decision is still a word: what it means to Codex is the
+ * receiver's closed table (anything outside it is a decline), so a word the contract doesn't know is
+ * kept here and refused there, not dropped as if it had not been said.
+ */
+export interface ParsedSyncAnswer {
+	approvalId: string;
+	decision: string;
+	revision: number;
+}
+
+export interface ParsedApprovalSyncResponse {
+	v: 1;
+	answers: ParsedSyncAnswer[];
+	closed: string[];
+	ack: CodexApprovalAck[];
+}
+
+/**
+ * Strict read of a sync response. Null for anything the contract doesn't allow (a wrong `v`, a missing
+ * list, one malformed entry): the caller then treats the whole answer as not received, so a half-read
+ * response can never produce an answer. Copies only the named fields.
+ */
+export function parseApprovalSyncResponse(body: unknown): ParsedApprovalSyncResponse | null {
+	if (body === null || typeof body !== "object" || Array.isArray(body)) return null;
+	const b = body as Record<string, unknown>;
+	if (b.v !== 1 || !Array.isArray(b.answers) || !Array.isArray(b.closed) || !Array.isArray(b.ack)) {
+		return null;
+	}
+	const cap = CODEX_APPROVAL_LIMITS.resolvedMax * 2;
+	if (b.answers.length > cap || b.closed.length > cap || b.ack.length > cap) return null;
+	const answers: ParsedSyncAnswer[] = [];
+	for (const entry of b.answers) {
+		if (entry === null || typeof entry !== "object") return null;
+		const e = entry as Record<string, unknown>;
+		if (typeof e.approvalId !== "string" || e.approvalId.length === 0) return null;
+		if (e.approvalId.length > RESPONSE_ID_MAX || typeof e.decision !== "string") return null;
+		if (e.decision.length === 0 || e.decision.length > 64) return null;
+		if (typeof e.revision !== "number" || !Number.isSafeInteger(e.revision)) return null;
+		answers.push({ approvalId: e.approvalId, decision: e.decision, revision: e.revision });
+	}
+	const closed: string[] = [];
+	for (const id of b.closed) {
+		if (typeof id !== "string" || id.length === 0 || id.length > RESPONSE_ID_MAX) return null;
+		closed.push(id);
+	}
+	const ack: CodexApprovalAck[] = [];
+	for (const entry of b.ack) {
+		if (entry === null || typeof entry !== "object") return null;
+		const e = entry as Record<string, unknown>;
+		if (typeof e.approvalId !== "string" || e.approvalId.length > RESPONSE_ID_MAX) return null;
+		if (!(TRACKER_OUTCOMES as readonly unknown[]).includes(e.outcome)) return null;
+		ack.push({ approvalId: e.approvalId, outcome: e.outcome as TrackerOutcome });
+	}
+	return { v: 1, answers, closed, ack };
+}
+
+/** Strict read of a report response; null for anything else. */
+export function parseApprovalReportResponse(body: unknown): CodexApprovalReportResponse | null {
+	if (body === null || typeof body !== "object" || Array.isArray(body)) return null;
+	const b = body as Record<string, unknown>;
+	if (b.v !== 1 || typeof b.approvalId !== "string") return null;
+	if (b.approvalId.length === 0 || b.approvalId.length > RESPONSE_ID_MAX) return null;
+	if (typeof b.revision !== "number" || !Number.isSafeInteger(b.revision)) return null;
+	if (typeof b.expiresInMs !== "number" || !Number.isFinite(b.expiresInMs)) return null;
+	return { v: 1, approvalId: b.approvalId, revision: b.revision, expiresInMs: b.expiresInMs };
+}

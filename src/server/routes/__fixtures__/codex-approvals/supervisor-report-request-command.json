@@ -1,0 +1,18 @@
+{
+	"v": 1,
+	"runtimeEpoch": "<epoch>",
+	"rpcId": "7",
+	"requestKind": "command",
+	"threadId": "thr-1",
+	"turnId": "turn-1",
+	"itemId": "item-7",
+	"providerApprovalId": null,
+	"ageMs": 0,
+	"revision": 1,
+	"command": "npm test",
+	"cwd": "/work/project",
+	"reason": "run the unit tests",
+	"grantRoot": null,
+	"truncated": false,
+	"declineOnly": []
+}

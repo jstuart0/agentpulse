@@ -1,0 +1,26 @@
+{
+	"v": 1,
+	"runtimeEpoch": "<epoch>",
+	"rpcId": "8",
+	"requestKind": "file_change",
+	"threadId": "thr-1",
+	"turnId": "turn-1",
+	"itemId": "fc-8",
+	"providerApprovalId": null,
+	"ageMs": 0,
+	"revision": 2,
+	"cwd": "/work/project",
+	"reason": null,
+	"grantRoot": null,
+	"changes": [
+		{ "path": "/work/project/a.txt", "kind": "add", "movePath": null, "diff": "hello\n" },
+		{
+			"path": "/work/project/b.txt",
+			"kind": "update",
+			"movePath": "/work/project/c.txt",
+			"diff": "@@ -1 +1 @@\n-a\n+b\n"
+		}
+	],
+	"truncated": false,
+	"declineOnly": []
+}

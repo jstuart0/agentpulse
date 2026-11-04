@@ -241,6 +241,7 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 	// Before `initialize`, so every way the launch can fail from here on is covered by the client's close.
 	const approvals = tracker.attachClient(client, {
 		sessionId: launch.launchCorrelationId,
+		cwd: launch.cwd,
 		warn: reportApprovalWarning,
 	});
 	let runtimeRef: ManagedCodexRuntime | undefined;

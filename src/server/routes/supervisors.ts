@@ -1,6 +1,10 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import {
+	CODEX_APPROVALS_SERVER_FEATURE,
+	CODEX_APPROVAL_LIMITS,
+} from "../../shared/codex-approvals.js";
 import { DELIVERY_ID_HEADER, REPLAY_HEADER } from "../../shared/hook-headers.js";
 import { privilegeCliArgs } from "../../shared/launch-privileges.js";
 import {
@@ -35,6 +39,14 @@ import {
 	assertCanManageHost,
 	isHostTokenCreatorStillAllowed,
 } from "../services/authorization.js";
+import {
+	ApprovalRefusal,
+	closeApprovalsForRestartedHost,
+	parseApprovalReport,
+	parseApprovalSync,
+	recordApprovalRequest,
+	syncApprovals,
+} from "../services/codex-approvals.js";
 import { claimNextControlAction, updateControlAction } from "../services/control-actions.js";
 import { parseDeliveryId } from "../services/event-dedup.js";
 import { claimNextLaunchRequest, updateLaunchDispatchStatus } from "../services/launch-dispatch.js";
@@ -49,7 +61,10 @@ import {
 } from "../services/managed-session-state.js";
 import { notifySessionEvents, notifySessionUpdated } from "../services/notifier.js";
 import { REPLAY_RETRY_AFTER_SECONDS, tryAcquireReplay } from "../services/replay-limiter.js";
-import { SessionOwnershipError } from "../services/session-ownership.js";
+import {
+	SessionOwnershipError,
+	assertSupervisorCanWriteSession,
+} from "../services/session-ownership.js";
 import { getSession } from "../services/session-tracker.js";
 import { parseRegistrationShape } from "../services/supervisor-capabilities.js";
 import {
@@ -66,6 +81,7 @@ import {
 	revokeHost,
 	setSupervisorOwner,
 } from "../services/supervisor-registry.js";
+import { FixedWindowCounter } from "../services/util/fixed-window-counter.js";
 import { sha256Hex } from "../services/util/hash.js";
 
 // ── Dashboard-management router (requireAuth) ─────────────────────────────────
@@ -214,6 +230,23 @@ supervisorsAdminRouter.post("/supervisors/:id/revoke", async (c) => {
 
 const supervisorsAgentRouter = new Hono();
 
+/** What this server can do for a supervisor (D14). Sent on register and heartbeat; absent means off. */
+const SERVER_FEATURES = [CODEX_APPROVALS_SERVER_FEATURE] as const;
+
+/**
+ * A supervisor registered again, so its previous process (and the app-servers it ran) is gone: its open
+ * approvals close. A failure here must not fail the registration (the credential may already be issued and
+ * the enrollment token spent); the rows are then closed by the host's absence from the next sync and by
+ * their expiry.
+ */
+async function closeRestartedHostApprovals(supervisorId: string): Promise<void> {
+	try {
+		await closeApprovalsForRestartedHost(supervisorId);
+	} catch {
+		console.error("[supervisors] could not close a restarted host's approvals");
+	}
+}
+
 // Registration is reachable before any credential check, so its body is capped.
 const REGISTER_BODY_LIMIT_BYTES = 64 * 1024;
 
@@ -328,10 +361,11 @@ supervisorsAgentRouter.post("/supervisors/register", registerBodyLimit, async (c
 		if (shapeError) return c.json(shapeError, 400);
 	}
 	try {
-		if (!credential) {
-			return c.json(await enrollSupervisor(registrationInput, enrollmentCreatedByUserId));
-		}
-		return c.json(await registerSupervisor(registrationInput));
+		const registered = credential
+			? await registerSupervisor(registrationInput)
+			: await enrollSupervisor(registrationInput, enrollmentCreatedByUserId);
+		await closeRestartedHostApprovals(registered.supervisor.id);
+		return c.json({ ...registered, serverFeatures: SERVER_FEATURES });
 	} catch (err) {
 		if (err instanceof OwnerDisabledError) {
 			return c.json({ error: "Enrollment token is no longer valid" }, 409);
@@ -346,7 +380,7 @@ supervisorsAgentRouter.post("/supervisors/:id/heartbeat", requireSupervisorAuth(
 	await recordHeartbeatExcludeState(supervisorId, body);
 	const supervisor = await heartbeatSupervisor(supervisorId, parseOutboxState(body));
 	if (!supervisor) return c.json({ error: "Supervisor not found" }, 404);
-	return c.json({ supervisor });
+	return c.json({ supervisor, serverFeatures: SERVER_FEATURES });
 });
 
 supervisorsAgentRouter.post(
@@ -555,6 +589,80 @@ supervisorsAgentRouter.post(
 		} finally {
 			release();
 		}
+	},
+);
+
+/** In memory, per replica, like the other limiters. */
+const approvalSyncLimiter = new FixedWindowCounter(60_000);
+const approvalReportLimiter = new FixedWindowCounter(60_000);
+const APPROVAL_RETRY_AFTER_SECONDS = 5;
+
+const approvalReportBodyLimit = bodyLimit({
+	maxSize: CODEX_APPROVAL_LIMITS.reportBodyBytes,
+	onError: (c) => c.json({ error: "payload_too_large" }, 413),
+});
+const approvalSyncBodyLimit = bodyLimit({
+	maxSize: CODEX_APPROVAL_LIMITS.syncBodyBytes,
+	onError: (c) => c.json({ error: "payload_too_large" }, 413),
+});
+
+function approvalRateLimited(c: Context) {
+	c.header("Retry-After", String(APPROVAL_RETRY_AFTER_SECONDS));
+	return c.json({ error: "rate_limited" }, 429);
+}
+
+/** A refusal is a fixed code; nothing the agent wrote is ever in an answer. */
+const APPROVAL_REFUSAL_STATUS: Record<string, 400 | 403 | 409> = {
+	session_unknown: 409,
+	too_many_pending: 409,
+	session_stopping: 409,
+	identity_conflict: 409,
+	session_not_owned: 403,
+	invalid_body: 400,
+};
+
+// A supervisor reports a Codex approval request (or a higher revision of one). Never queued by the
+// supervisor, so it is never a replay.
+supervisorsAgentRouter.post(
+	"/supervisors/:id/managed-sessions/:sessionId/approvals",
+	requireSupervisorAuth(),
+	approvalReportBodyLimit,
+	async (c) => {
+		const supervisorId = c.req.param("id") ?? "";
+		const sessionId = c.req.param("sessionId") ?? "";
+		if (!approvalReportLimiter.tryConsume(supervisorId, CODEX_APPROVAL_LIMITS.reportPerMinute)) {
+			return approvalRateLimited(c);
+		}
+		const report = parseApprovalReport(parseJsonObject(await c.req.text()));
+		if (!report) return c.json({ error: "invalid_body" }, 400);
+		try {
+			await assertSupervisorCanWriteSession(supervisorId, sessionId);
+			const { created, response } = await recordApprovalRequest(supervisorId, sessionId, report);
+			return c.json(response, created ? 201 : 200);
+		} catch (err) {
+			if (err instanceof SessionOwnershipError) return c.json({ error: "session_not_owned" }, 403);
+			if (err instanceof ApprovalRefusal) {
+				return c.json({ error: err.code }, APPROVAL_REFUSAL_STATUS[err.code] ?? 409);
+			}
+			throw err;
+		}
+	},
+);
+
+// The host's poll: what it holds, what happened to what it answered; back come the answers to issue.
+// Holds no control lock. Ownership is judged for every id from the authenticated host.
+supervisorsAgentRouter.post(
+	"/supervisors/:id/approvals/sync",
+	requireSupervisorAuth(),
+	approvalSyncBodyLimit,
+	async (c) => {
+		const supervisorId = c.req.param("id") ?? "";
+		if (!approvalSyncLimiter.tryConsume(supervisorId, CODEX_APPROVAL_LIMITS.syncPerMinute)) {
+			return approvalRateLimited(c);
+		}
+		const body = parseApprovalSync(parseJsonObject(await c.req.text()));
+		if (!body) return c.json({ error: "invalid_body" }, 400);
+		return c.json(await syncApprovals(supervisorId, body));
 	},
 );
 

@@ -7,12 +7,28 @@
  *
  *   bun scripts/codex-approvals-live.ts --spike --work <dir> --raw <dir> [--only S2,S4]
  *   bun scripts/codex-approvals-live.ts --scrub --raw <dir> --out <fixtures dir> --work <dir>
+ *   bun scripts/codex-approvals-live.ts --full-path --work <dir> [--minutes 8]
+ *
+ * `--full-path` (phase 5) drives a real Codex through the whole of AgentPulse and nothing else: a
+ * throwaway server on 127.0.0.1 with a temp SQLite database, the real report gate and tracker, a real
+ * managed launch, and a person's answer through the real route. One accept (a marker file must appear)
+ * and one decline (it must not). It uses a throwaway CODEX_HOME holding only a copy of `auth.json`,
+ * which is deleted at the end; `~/.codex` is never written. It spends real model usage.
  *
  * `--work` must sit under a scratch location (path containing /scratchpad/ or
  * the OS temp dir), never in a repo checkout or a home directory.
  */
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir, hostname, tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -1082,7 +1098,318 @@ function shapeHashes(dir: string): Record<string, string> {
 	return out;
 }
 
-if (flag("--parent-helper")) {
+/**
+ * The whole path with a real Codex. Everything it touches is under `work` (a scratch directory): the
+ * throwaway CODEX_HOME, a HOME for the supervisor's config, the SQLite database, and the project
+ * directories Codex runs in. A kill timer ends it whatever happens, and every Codex child is in its own
+ * process group, so the shutdown reaches the native binary too.
+ */
+async function fullPath(workArg: string, minutes: number): Promise<number> {
+	const root = assertScratch(workArg);
+	const codexHome = join(root, "codex-home");
+	const home = join(root, "home");
+	for (const dir of [codexHome, home, join(home, ".agentpulse")]) {
+		mkdirSync(dir, { recursive: true, mode: 0o700 });
+	}
+	const realAuth = join(homedir(), ".codex", "auth.json");
+	if (!existsSync(realAuth))
+		throw new Error("no ~/.codex/auth.json to copy; sign in to Codex first");
+	copyFileSync(realAuth, join(codexHome, "auth.json"));
+	chmodSync(join(codexHome, "auth.json"), 0o600);
+
+	process.env.HOME = home;
+	process.env.CODEX_HOME = codexHome;
+	process.env.AGENTPULSE_SKIP = "1";
+	process.env.AGENTPULSE_SUPERVISOR_DRY_RUN = "false";
+	process.env.SQLITE_PATH = join(root, "server.db");
+	process.env.DATA_DIR = root;
+	process.env.AGENTPULSE_CODEX_COMMAND = "";
+	// Real model usage and real processes: a hard stop whatever else happens.
+	const killTimer = setTimeout(
+		() => {
+			console.error(`[full-path] kill timer (${minutes} min) fired; shutting everything down`);
+			void cleanup(2);
+		},
+		minutes * 60 * 1000,
+	);
+
+	const results: Record<string, unknown> = {};
+	const sessions: string[] = [];
+	let server: ReturnType<typeof Bun.serve> | undefined;
+	let intervals: Array<ReturnType<typeof setInterval>> = [];
+	let dispose: (() => Promise<void>) | undefined;
+	let cleaned = false;
+	async function cleanup(code: number): Promise<number> {
+		if (cleaned) return code;
+		cleaned = true;
+		clearTimeout(killTimer);
+		for (const timer of intervals) clearInterval(timer);
+		try {
+			await dispose?.();
+		} catch {}
+		server?.stop(true);
+		rmSync(join(codexHome, "auth.json"), { force: true });
+		const left = spawnSync("pgrep", ["-f", `${codexHome}|${root}`], { encoding: "utf8" })
+			.stdout.split("\n")
+			.filter(Boolean)
+			.filter((pid) => Number(pid) !== process.pid);
+		const codexLeft = spawnSync("pgrep", ["-fl", "codex"], { encoding: "utf8" }).stdout.trim();
+		console.log(
+			JSON.stringify({
+				authCopyRemoved: !existsSync(join(codexHome, "auth.json")),
+				leftover: left,
+				pgrepCodex: codexLeft,
+			}),
+		);
+		console.log(JSON.stringify({ results }, null, 2));
+		if (code === 2) process.exit(2);
+		return code;
+	}
+
+	try {
+		const { config } = await import("../src/server/config.js");
+		const { initializeDatabase, getDb } = await import("../src/server/db/client.js");
+		await initializeDatabase();
+		(config as Record<string, unknown>).disableAuth = false;
+		const { app } = await import("../src/server/app.js");
+		const { createApiKey } = await import("../src/server/auth/api-key.js");
+		const { launchRequests, codexApprovals, managedSessions } = await import(
+			"../src/server/db/schema/index.js"
+		);
+		const team = await import("../src/server/test-utils/team-fixtures.js");
+		const { eq } = await import("drizzle-orm");
+		const { createReportGate } = await import("../src/supervisor/services/report-gate.js");
+		const { createReportOutbox } = await import("../src/supervisor/services/report-outbox.js");
+		const { createRulesWatch } = await import("../src/supervisor/services/exclude-rules-watch.js");
+		const resilience = await import("../src/supervisor/services/report-resilience.js");
+		const approvals = await import("../src/supervisor/providers/codex-approvals.js");
+		const managed = await import("../src/supervisor/providers/codex-managed.js");
+
+		server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: app.fetch });
+		const base = `http://127.0.0.1:${server.port}`;
+		process.env.AGENTPULSE_SERVER_URL = base;
+		console.log("[full-path] throwaway server on", base);
+
+		// A person, a manage key to enroll with, and an enrolled host: the real flow over real HTTP.
+		const person = await team.seedLocalUser("full-path-person", "admin");
+		const manage = await createApiKey("full-path-manage", ["manage"]);
+		const json = { "Content-Type": "application/json" };
+		const enrolled = await fetch(`${base}/api/v1/admin/supervisors/enroll`, {
+			method: "POST",
+			headers: { ...json, Authorization: `Bearer ${manage.key}` },
+			body: JSON.stringify({ name: "full-path-host" }),
+		});
+		const { token: enrollmentToken } = (await enrolled.json()) as { token: string };
+		const registered = await fetch(`${base}/api/v1/supervisors/register`, {
+			method: "POST",
+			headers: json,
+			body: JSON.stringify({
+				hostName: "full-path-host",
+				platform: "macos",
+				arch: "arm64",
+				version: "1.0.0",
+				enrollmentToken,
+				capabilities: {
+					version: 1,
+					agentTypes: ["codex_cli"],
+					launchModes: ["managed_codex"],
+					os: "macos",
+					terminalSupport: [],
+					features: [],
+				},
+				trustedRoots: [root],
+			}),
+		});
+		const reg = (await registered.json()) as {
+			supervisor: { id: string };
+			supervisorCredential: string;
+			serverFeatures?: string[];
+		};
+		const supervisorId = reg.supervisor.id;
+		results.serverFeatures = reg.serverFeatures;
+
+		const request = async (path: string, options?: RequestInit) => {
+			let res: Response;
+			try {
+				res = await fetch(`${base}/api/v1${path}`, {
+					...options,
+					headers: { ...json, "X-AgentPulse-Supervisor-Token": reg.supervisorCredential },
+					signal: AbortSignal.timeout(15_000),
+				});
+			} catch (cause) {
+				throw new resilience.SupervisorNetworkError(cause);
+			}
+			if (!res.ok) {
+				const body = (await res.json().catch(() => ({}))) as { error?: string };
+				throw new resilience.SupervisorRequestError(res.status, res.statusText, body.error);
+			}
+			return res.json();
+		};
+		const rules = createRulesWatch({ home });
+		const gate = createReportGate({
+			request,
+			supervisorId,
+			home,
+			version: "full-path",
+			rules,
+			outbox: createReportOutbox({ home, supervisorId }),
+			credentialTripwire: resilience.createCredentialTripwire({ now: Date.now }),
+			onCredentialRejected: async () => {},
+		});
+		const tracker = approvals.createCodexApprovalTracker({ gate });
+		tracker.setServerFeatures(reg.serverFeatures);
+		approvals.configureCodexApprovals(tracker);
+		intervals = [
+			setInterval(() => void tracker.tick().catch(() => {}), 1000),
+			setInterval(
+				() =>
+					void request(`/supervisors/${supervisorId}/heartbeat`, { method: "POST" }).catch(
+						() => {},
+					),
+				20_000,
+			),
+		];
+		dispose = managed.disposeAllManagedCodexRuntimes;
+
+		const personHeaders = async () => {
+			const headers = await team.cookieHeadersFor(person.id);
+			headers.set("Origin", base);
+			headers.set("Content-Type", "application/json");
+			return headers;
+		};
+		const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
+		async function until<T>(
+			what: string,
+			ms: number,
+			fn: () => Promise<T | undefined | false> | T,
+		) {
+			const deadline = Date.now() + ms;
+			for (;;) {
+				const value = await fn();
+				if (value) return value as T;
+				if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+				await sleepMs(500);
+			}
+		}
+
+		async function scenario(name: string, marker: string, decision: "accept" | "decline") {
+			const dir = join(root, `project-${name}`);
+			mkdirSync(dir, { recursive: true });
+			spawnSync("git", ["init", "-q"], { cwd: dir });
+			const sessionId = `full-path-${name}-${crypto.randomUUID().slice(0, 6)}`;
+			sessions.push(sessionId);
+			await getDb()
+				.insert(launchRequests)
+				.values({
+					launchCorrelationId: sessionId,
+					agentType: "codex_cli",
+					cwd: dir,
+					requestedSupervisorId: supervisorId,
+					requestedLaunchMode: "managed_codex",
+					status: "validated",
+					baseInstructions: "",
+					taskPrompt: `Run exactly this one shell command and then stop. Do not do anything else: touch ${marker}`,
+				});
+			const claim = await request(`/supervisors/${supervisorId}/launches/claim`, {
+				method: "POST",
+			});
+			const launch = (claim as { launchRequest: any }).launchRequest;
+			gate.noteLaunch(launch.id, launch.launchCorrelationId, launch.cwd);
+			const started = await managed.launchManagedCodexRequest(launch, {
+				reportState: (body: any) => gate.reportState(body),
+				reportEvents: (events: any) => gate.reportEvents(sessionId, events),
+			});
+			const out: Record<string, unknown> = { sessionId };
+			const verdict = await until("the protocol verdict", 30_000, async () => {
+				const [row] = await getDb()
+					.select()
+					.from(managedSessions)
+					.where(eq(managedSessions.sessionId, sessionId));
+				return (row?.providerCapabilitySnapshot as any)?.agentpulseApprovals as string | undefined;
+			});
+			out.verdict = verdict;
+			const row = await until(
+				"an approval request from real Codex",
+				180_000,
+				async () =>
+					(
+						await getDb()
+							.select()
+							.from(codexApprovals)
+							.where(eq(codexApprovals.sessionId, sessionId))
+					)[0],
+			);
+			const list = await (
+				await fetch(`${base}/api/v1/sessions/${sessionId}/approvals`, {
+					headers: await personHeaders(),
+				})
+			).json();
+			const summary = (list as any).approvals[0];
+			out.shown = {
+				approvable: summary.approvable,
+				kind: summary.requestKind,
+				preview: summary.preview,
+			};
+			const answered = await fetch(
+				`${base}/api/v1/sessions/${sessionId}/approvals/${summary.id}/decision`,
+				{
+					method: "POST",
+					headers: await personHeaders(),
+					body: JSON.stringify({
+						decision,
+						...(decision === "accept" ? { presentationHash: summary.presentationHash } : {}),
+					}),
+				},
+			);
+			out.answerStatus = answered.status;
+			const closed = await until("the row to close", 90_000, async () => {
+				const [current] = await getDb()
+					.select()
+					.from(codexApprovals)
+					.where(eq(codexApprovals.id, row.id));
+				return current?.status === "closed" ? current : undefined;
+			});
+			out.closedReason = closed.closedReason;
+			// Let a turn that goes on (or a retry) settle before judging the filesystem.
+			await sleepMs(decision === "accept" ? 8_000 : 20_000);
+			out.markerExists = existsSync(join(dir, marker));
+			out.markerContentBytes = out.markerExists ? readFileSync(join(dir, marker)).length : null;
+			const all = await getDb()
+				.select()
+				.from(codexApprovals)
+				.where(eq(codexApprovals.sessionId, sessionId));
+			out.approvalRows = all.map((r) => ({
+				status: r.status,
+				closedReason: r.closedReason,
+				decision: r.decision,
+			}));
+			await managed.stopManagedCodexSession(sessionId);
+			void started;
+			return out;
+		}
+
+		results.accept = await scenario("accept", "accepted.txt", "accept");
+		results.decline = await scenario("decline", "declined.txt", "decline");
+		const accept = results.accept as any;
+		const decline = results.decline as any;
+		const ok =
+			accept.verdict === "supported" &&
+			accept.answerStatus === 200 &&
+			accept.markerExists === true &&
+			accept.closedReason === "applied" &&
+			decline.answerStatus === 200 &&
+			decline.markerExists === false;
+		results.ok = ok;
+		return await cleanup(ok ? 0 : 1);
+	} catch (error) {
+		results.error = String(error instanceof Error ? error.stack : error);
+		return await cleanup(1);
+	}
+}
+
+if (flag("--full-path")) {
+	process.exit(await fullPath(opt("--work") ?? "", Number(opt("--minutes") ?? 8)));
+} else if (flag("--parent-helper")) {
 	const i = args.indexOf("--parent-helper");
 	await parentHelper(args[i + 1]!, args[i + 2]!);
 } else if (flag("--spike")) {

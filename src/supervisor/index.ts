@@ -65,6 +65,8 @@ const BRIDGE_DRAIN_MS = 1_000;
 const OUTBOX_FLUSH_MS = 3_000;
 /** How often the heartbeat is tried while the server is unreachable. */
 const OFFLINE_PROBE_MS = 10_000;
+/** How often the approvals tracker beats: deadlines, report retries and the poll. It does nothing when nothing is held. */
+const APPROVALS_TICK_MS = 1_000;
 /** The watchdog does not wait longer than this to learn how many terminal bridges are alive. */
 const BRIDGE_COUNT_TIMEOUT_MS = 2_000;
 
@@ -163,6 +165,7 @@ async function main() {
 		supervisor: { id: string; hostName: string };
 		heartbeatIntervalMs: number;
 		supervisorCredential?: string;
+		serverFeatures?: string[];
 	};
 
 	if (config.id !== registration.supervisor.id || registration.supervisorCredential) {
@@ -216,9 +219,7 @@ async function main() {
 	});
 	setSharedCredentialTripwire(credentialTripwire);
 
-	// Every approval a managed Codex session asks for is answered here; until a person's answer can reach it,
-	// each is declined and said so. The protocol check is started now so it is normally ready by a first launch.
-	configureCodexApprovals(createCodexApprovalTracker());
+	// The protocol check is started now so it is normally ready by a first launch.
 	warmCodexProtocolVerdict();
 
 	// Every report about a session leaves through this gate (see report-gate.ts): it holds the
@@ -244,6 +245,16 @@ async function main() {
 	setInterval(() => {
 		gate.flush().catch((error) => console.error("[supervisor] outbox flush failed", error));
 	}, OUTBOX_FLUSH_MS).unref();
+
+	// Every approval a managed Codex session asks for is answered here: declined unless the server issues
+	// an accept for exactly that request. The tracker reaches the server only through the gate, and the
+	// server tells it what it can do on registration and on every heartbeat (absent means off).
+	const approvals = createCodexApprovalTracker({ gate });
+	approvals.setServerFeatures(registration.serverFeatures);
+	configureCodexApprovals(approvals);
+	setInterval(() => {
+		approvals.tick().catch((error) => console.error("[supervisor] approvals tick failed", error));
+	}, APPROVALS_TICK_MS).unref();
 
 	// The interactive terminal bridge holds no credential and opens no connection: it writes its reports to
 	// disk and this drain sends them through the gate.
@@ -345,10 +356,12 @@ async function main() {
 		try {
 			// Whether the exclude file on this host is in use, absent or broken, for the Hosts page.
 			// Optional on the wire: a server that predates the field ignores the body.
-			await request(`/supervisors/${registration.supervisor.id}/heartbeat`, {
+			const beat = (await request(`/supervisors/${registration.supervisor.id}/heartbeat`, {
 				method: "POST",
 				body: heartbeatBody(gate.rulesState(), heartbeatOutbox(outbox.summary(), Date.now())),
-			});
+			})) as { serverFeatures?: string[] } | null;
+			// The last successful answer wins; a failed heartbeat leaves the last known value alone.
+			approvals.setServerFeatures(beat?.serverFeatures);
 			lastHeartbeatOkAt = Date.now();
 			staleLogged = false;
 			gate.noteServerReachable();

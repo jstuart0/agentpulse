@@ -340,7 +340,10 @@ describe("fence, close and dispose", () => {
 		const tracker = createCodexApprovalTracker();
 		const a = tracker.attachClient(memoryClient().client, { sessionId: "s", warn: async () => {} });
 		const b = tracker.attachClient(memoryClient().client, { sessionId: "s", warn: async () => {} });
-		expect(b.epoch).toBeGreaterThan(a.epoch);
+		expect(b.epoch).not.toBe(a.epoch);
+		expect(a.epoch).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+		);
 	});
 });
 
@@ -501,5 +504,1100 @@ describe("through a real launch", () => {
 		expect(readFakeLog(logPath).filter((e) => e.answer)).toHaveLength(1);
 		expect(readFakeLog(logPath).some((e) => e.method === "turn/interrupt")).toBe(true);
 		expect(() => process.kill(result.pid, 0)).toThrow();
+	});
+});
+
+// ---- answering from the server (AGEN-87, plan 5.3) ----
+
+import { readdirSync } from "node:fs";
+import {
+	CODEX_APPROVAL_TTL_MS,
+	CODEX_RESOLVED_WAIT_MS,
+	CODEX_SLOW_SYNC_RESPONSE_MS,
+	CODEX_TRACKER_DEADLINE_MS,
+	type CodexApprovalReportRequest,
+	type ParsedApprovalSyncResponse,
+	type TrackerOutcome,
+} from "../../shared/codex-approvals.js";
+import { SupervisorNetworkError, SupervisorRequestError } from "../services/report-resilience.js";
+import type { ApprovalGatePort } from "./codex-approvals.js";
+
+type SyncEntries = Parameters<ApprovalGatePort["syncApprovals"]>[0];
+
+function clockPair() {
+	const state = { wall: 1_800_000_000_000, mono: 5_000 };
+	return {
+		state,
+		now: () => state.wall,
+		monotonic: () => state.mono,
+		advance: (ms: number) => {
+			state.wall += ms;
+			state.mono += ms;
+		},
+	};
+}
+
+/** A gate port that records what it is asked and answers from the test's script. */
+function stubGate() {
+	const script = {
+		verdict: "send" as "send" | "excluded" | "blocked",
+		excluded: new Set<string>(),
+		offline: false,
+		// The same request gets the same id again, as on the server.
+		report: async (
+			sessionId: string,
+			body: CodexApprovalReportRequest,
+		): Promise<{ approvalId: string }> => {
+			const key = `${sessionId}|${body.runtimeEpoch}|${body.rpcId}`;
+			const known = script.ids.get(key);
+			if (known) return { approvalId: known };
+			const approvalId = `ap-${++script.counter}`;
+			script.ids.set(key, approvalId);
+			return { approvalId };
+		},
+		sync: async (_entries: SyncEntries): Promise<Partial<ParsedApprovalSyncResponse>> => ({}),
+		counter: 0,
+		ids: new Map<string, string>(),
+	};
+	const reports: Array<{ sessionId: string; body: CodexApprovalReportRequest }> = [];
+	const syncs: SyncEntries[] = [];
+	const gate: ApprovalGatePort = {
+		verdict: () => script.verdict,
+		excludesPath: (path) => script.excluded.has(path),
+		isOffline: () => script.offline,
+		reportApproval: async (sessionId, body) => {
+			// The real gate sends nothing for a session a rule covers.
+			if (script.verdict !== "send") {
+				return { outcome: script.verdict === "excluded" ? "excluded" : "blocked" };
+			}
+			reports.push({ sessionId, body });
+			const { approvalId } = await script.report(sessionId, body);
+			return {
+				outcome: "sent",
+				response: { v: 1, approvalId, revision: body.revision, expiresInMs: 1 },
+			};
+		},
+		syncApprovals: async (entries) => {
+			// The real gate leaves out a session a rule covers, and sends nothing when nothing is left.
+			if (script.verdict !== "send") return { outcome: "empty" };
+			syncs.push(JSON.parse(JSON.stringify(entries)));
+			const partial = await script.sync(entries);
+			return {
+				outcome: "sent",
+				response: {
+					v: 1,
+					answers: [],
+					closed: [],
+					ack: [],
+					...partial,
+				} as ParsedApprovalSyncResponse,
+			};
+		},
+	};
+	return { gate, script, reports, syncs };
+}
+
+const cmdParams = (id: number, over: Record<string, unknown> = {}) => ({
+	kind: "command",
+	threadId: "thr-1",
+	turnId: "turn-1",
+	itemId: `item-${id}`,
+	startedAtMs: 1,
+	environmentId: "local",
+	reason: null,
+	command: "npm test",
+	cwd: "/work/project",
+	availableDecisions: ["accept", "cancel"],
+	...over,
+});
+
+type Armed = ReturnType<typeof armed>;
+/** A tracker with a stub gate, the server's feature on and a supported verdict, ready for requests. */
+function armed(
+	options: { verdict?: "supported" | "unsupported"; features?: string[] | null } = {},
+) {
+	const clock = clockPair();
+	const stub = stubGate();
+	const timers = fakeTimers();
+	const tracker = createCodexApprovalTracker({
+		gate: stub.gate,
+		now: clock.now,
+		monotonic: clock.monotonic,
+		timers: timers.timers,
+	});
+	tracker.setServerFeatures(
+		options.features === null ? undefined : (options.features ?? ["codex_approvals"]),
+	);
+	const mem = memoryClient();
+	const warnings: Array<{ content: string; detail: { method: string; reason: string } }> = [];
+	const handle = tracker.attachClient(mem.client, {
+		sessionId: "sess-1",
+		cwd: "/work/project",
+		warn: async (content, detail) => {
+			warnings.push({ content, detail });
+		},
+	});
+	tracker.setVerdict(
+		handle,
+		options.verdict === "unsupported"
+			? { verdict: "unsupported", reason: "below_floor" }
+			: SUPPORTED,
+	);
+	return { tracker, handle, clock, timers, warnings, ...stub, ...mem };
+}
+
+async function settle() {
+	await Bun.sleep(5);
+}
+
+/** Feeds a command request and waits for its report; returns the approval id the stub gave it. */
+async function openRequest(a: Armed, id = 0, over: Record<string, unknown> = {}) {
+	a.feed({ id, method: COMMAND, params: cmdParams(id, over) });
+	await settle();
+	return a.reports.length;
+}
+
+const answerOf = (approvalId: string, decision: string, revision = 1) => ({
+	approvalId,
+	decision,
+	revision,
+});
+
+describe("the slow sync response rule (3 s)", () => {
+	async function acceptAfter(delay: (a: Armed) => void) {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => {
+			delay(a);
+			return { answers: [answerOf("ap-1", "accept")] };
+		};
+		await a.tracker.tick();
+		return a;
+	}
+
+	test("slow sync response: a round trip of exactly 3,000 ms delivers the accept", async () => {
+		expect(CODEX_SLOW_SYNC_RESPONSE_MS).toBe(3_000);
+		const a = await acceptAfter((x) => x.clock.advance(3_000));
+		expect(a.written).toEqual([{ id: 0, result: { decision: "accept" } }]);
+	});
+
+	test("slow sync response: 3,001 ms declines it, and the decline is reported as declined_slow_response", async () => {
+		const a = await acceptAfter((x) => x.clock.advance(3_001));
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+		a.script.sync = async () => ({});
+		await a.tracker.tick();
+		expect(a.syncs.at(-1)?.resolved).toEqual([
+			{
+				sessionId: "sess-1",
+				approvalId: "ap-1",
+				outcome: "declined_slow_response",
+				sentDecision: "decline",
+			},
+		]);
+	});
+
+	test("slow sync response: a wall clock that jumps while the monotonic one stands still still declines", async () => {
+		const a = await acceptAfter((x) => {
+			x.clock.state.wall += 5_000;
+		});
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+	});
+
+	test("slow sync response: a monotonic clock that jumps while the wall clock stands still still declines", async () => {
+		const a = await acceptAfter((x) => {
+			x.clock.state.mono += 5_000;
+		});
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+	});
+
+	test("slow sync response: a decline in a slow response is still delivered", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => {
+			a.clock.advance(9_000);
+			return { answers: [answerOf("ap-1", "decline")] };
+		};
+		await a.tracker.tick();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+	});
+});
+
+describe("revision compare", () => {
+	test("an accept at the revision that was held is delivered", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept", 1)] });
+		await a.tracker.tick();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "accept" } }]);
+	});
+
+	test("a patch that lands after the sync answer and before the write gives decline and declined_revision_changed", async () => {
+		const a = armed();
+		a.feed({
+			method: "item/started",
+			params: {
+				item: {
+					type: "fileChange",
+					id: "fc-1",
+					changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff: "one\n" }],
+				},
+			},
+		});
+		a.feed({
+			id: 0,
+			method: FILE_CHANGE,
+			params: {
+				threadId: "thr-1",
+				turnId: "turn-1",
+				itemId: "fc-1",
+				startedAtMs: 1,
+				reason: null,
+				grantRoot: null,
+			},
+		});
+		await settle();
+		expect(a.reports[0].body.revision).toBe(1);
+		a.script.sync = async () => {
+			// The patch arrives while the answer is in flight.
+			a.feed({
+				method: "item/fileChange/patchUpdated",
+				params: {
+					itemId: "fc-1",
+					changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff: "two\n" }],
+				},
+			});
+			await settle();
+			return { answers: [answerOf("ap-1", "accept", 1)] };
+		};
+		await a.tracker.tick();
+
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+		a.script.sync = async () => ({});
+		await a.tracker.tick();
+		expect(a.syncs.at(-1)?.resolved.map((r) => r.outcome)).toContain("declined_revision_changed");
+	});
+
+	test("a changed patch bumps the revision synchronously, and the new revision is re-reported", async () => {
+		const a = armed();
+		const frames = (diff: string) => ({
+			method: "item/fileChange/patchUpdated",
+			params: {
+				itemId: "fc-2",
+				changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff }],
+			},
+		});
+		a.feed({
+			method: "item/started",
+			params: {
+				item: {
+					type: "fileChange",
+					id: "fc-2",
+					changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff: "a\n" }],
+				},
+			},
+		});
+		a.feed({
+			id: 0,
+			method: FILE_CHANGE,
+			params: {
+				threadId: "t",
+				turnId: "u",
+				itemId: "fc-2",
+				startedAtMs: 1,
+				reason: null,
+				grantRoot: null,
+			},
+		});
+		await settle();
+		a.feed(frames("b\n"));
+		await settle();
+		a.feed(frames("b\n"));
+		await settle();
+		expect(a.reports.map((r) => r.body.revision)).toEqual([1, 2]);
+		expect(a.reports[1].body.changes?.[0].diff).toBe("b\n");
+	});
+});
+
+describe("closed decision table", () => {
+	test("closed decision table: a word outside the table, and every decision that outlives one approval, becomes a decline", async () => {
+		for (const word of [
+			"acceptForSession",
+			"acceptWithExecpolicyAmendment",
+			"applyNetworkPolicyAmendment",
+			"nonsense",
+			"",
+		]) {
+			const a = armed();
+			await openRequest(a);
+			a.script.sync = async () => ({
+				answers: [{ approvalId: "ap-1", decision: word, revision: 1 }],
+			});
+			await a.tracker.tick();
+			expect(a.written, word).toEqual([{ id: 0, result: { decision: "decline" } }]);
+		}
+	});
+
+	test("closed decision table: the session-wide decision names appear in one refusal table in the source and nowhere else", () => {
+		const providers = readdirSync(import.meta.dir).filter(
+			(f) => f.endsWith(".ts") && !f.endsWith(".test.ts"),
+		);
+		const holders = providers.filter((file) =>
+			/acceptForSession|acceptWithExecpolicyAmendment/.test(
+				readFileSync(join(import.meta.dir, file), "utf8"),
+			),
+		);
+		expect(holders).toEqual(["codex-approvals.ts"]);
+	});
+});
+
+describe("the one accept", () => {
+	test("exactly one expression in the supervisor can write accept to Codex, and it is inside deliverAccept", () => {
+		const supervisorDir = join(import.meta.dir, "..");
+		const files: string[] = [];
+		const walk = (dir: string) => {
+			for (const entry of readdirSync(dir, { withFileTypes: true })) {
+				const full = join(dir, entry.name);
+				if (entry.isDirectory()) {
+					if (entry.name !== "__fixtures__") walk(full);
+				} else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) files.push(full);
+			}
+		};
+		walk(supervisorDir);
+		expect(files.length).toBeGreaterThan(20);
+		expect(files.map((f) => f.slice(supervisorDir.length))).toContain(
+			"/providers/codex-approvals.ts",
+		);
+		const writers: string[] = [];
+		for (const file of files) {
+			const text = readFileSync(file, "utf8")
+				.replace(/\/\*[\s\S]*?\*\//g, "")
+				.replace(/^\s*\/\/.*$/gm, "");
+			for (const _ of text.matchAll(/decision:\s*["'`]accept["'`]/g))
+				writers.push(file.slice(supervisorDir.length));
+			for (const _ of text.matchAll(/decision["']?\s*:\s*[a-z][A-Za-z]*\s*as\b/g))
+				writers.push(`${file}: cast`);
+		}
+		expect(writers).toEqual(["/providers/codex-approvals.ts"]);
+		const text = readFileSync(join(import.meta.dir, "codex-approvals.ts"), "utf8");
+		const at = text.indexOf('{ decision: "accept" }');
+		expect(at).toBeGreaterThan(0);
+		const start = text.lastIndexOf("function deliverAccept", at);
+		const end = text.indexOf("\n\t// ----", at);
+		expect(start).toBeGreaterThan(0);
+		expect(end).toBeGreaterThan(at);
+		// ... and nothing between the function's opening and that write awaits.
+		expect(text.slice(start, at)).not.toMatch(/\bawait\b/);
+	});
+
+	test("an accept that isn't for the exact held request is never written: unknown, repeated, mismatched, fenced, disposed", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => ({
+			answers: [answerOf("not-an-id", "accept"), answerOf("ap-1", "accept", 9)],
+		});
+		await a.tracker.tick();
+		// The second is a revision mismatch: a decline, and that is all Codex hears.
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+
+		const fenced = armed();
+		await openRequest(fenced);
+		fenced.tracker.fence("sess-1");
+		fenced.script.sync = async () => ({ answers: [answerOf("ap-1", "accept")] });
+		await fenced.tracker.tick();
+		expect(fenced.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+
+		const gone = armed();
+		await openRequest(gone);
+		gone.tracker.dispose(gone.handle);
+		gone.script.sync = async () => ({ answers: [answerOf("ap-1", "accept")] });
+		await gone.tracker.tick();
+		expect(gone.written.filter((w) => JSON.stringify(w).includes("accept"))).toEqual([]);
+	});
+
+	test("an accept naming an id other than the one this request was last reported under is never written", async () => {
+		const a = armed();
+		let calls = 0;
+		a.script.report = async () => ({ approvalId: `ap-changed-${++calls}` });
+		a.feed({
+			method: "item/started",
+			params: {
+				item: {
+					type: "fileChange",
+					id: "fc-1",
+					changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff: "one\n" }],
+				},
+			},
+		});
+		a.feed({
+			id: 0,
+			method: FILE_CHANGE,
+			params: {
+				threadId: "t",
+				turnId: "u",
+				itemId: "fc-1",
+				startedAtMs: 1,
+				reason: null,
+				grantRoot: null,
+			},
+		});
+		await settle();
+		// A patch re-reports the request, and the server (which never should) answers with another id.
+		a.feed({
+			method: "item/fileChange/patchUpdated",
+			params: {
+				itemId: "fc-1",
+				changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff: "two\n" }],
+			},
+		});
+		await settle();
+		expect(a.reports.map((r) => r.body.revision)).toEqual([1, 2]);
+
+		// Both ids the host has been given are answered with an accept at the held revision.
+		a.script.sync = async () => ({
+			answers: [answerOf("ap-changed-1", "accept", 2), answerOf("ap-changed-2", "accept", 2)],
+		});
+		await a.tracker.tick();
+
+		// The stale id no longer names this request: it is declined, and nothing accepts it.
+		expect(a.written.map((w) => w.result.decision)).toEqual(["decline"]);
+
+		const b = armed();
+		let again = 0;
+		b.script.report = async () => ({ approvalId: `ap-changed-${++again}` });
+		b.feed({
+			method: "item/started",
+			params: {
+				item: {
+					type: "fileChange",
+					id: "fc-2",
+					changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff: "one\n" }],
+				},
+			},
+		});
+		b.feed({
+			id: 0,
+			method: FILE_CHANGE,
+			params: {
+				threadId: "t",
+				turnId: "u",
+				itemId: "fc-2",
+				startedAtMs: 1,
+				reason: null,
+				grantRoot: null,
+			},
+		});
+		await settle();
+		b.feed({
+			method: "item/fileChange/patchUpdated",
+			params: {
+				itemId: "fc-2",
+				changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff: "two\n" }],
+			},
+		});
+		await settle();
+		b.script.sync = async () => ({ answers: [answerOf("ap-changed-1", "accept", 2)] });
+		await b.tracker.tick();
+		expect(JSON.stringify(b.written)).not.toContain("accept");
+	});
+
+	test("every path that ends a request also ends the chance of an accept for it: features off, fence, dispose, unsupported verdict, closed client", async () => {
+		const ends: Array<[string, (a: Armed) => void]> = [
+			["features off", (a) => a.tracker.setServerFeatures(undefined)],
+			["fence", (a) => a.tracker.fence("sess-1")],
+			["dispose", (a) => a.tracker.dispose(a.handle)],
+			[
+				"verdict unsupported",
+				(a) => a.tracker.setVerdict(a.handle, { verdict: "unsupported", reason: "x" }),
+			],
+			["client closed", (a) => a.client.transportClosed(new Error("gone"))],
+		];
+		for (const [name, end] of ends) {
+			const a = armed();
+			await openRequest(a);
+			end(a);
+			a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept")] });
+			a.script.offline = false;
+			await a.tracker.tick();
+			expect(JSON.stringify(a.written), name).not.toContain("accept");
+		}
+	});
+
+	test("repeat answers are idempotent: the same accept three times is one write, and a later decline for it is ignored", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept")] });
+		await a.tracker.tick();
+		await a.tracker.tick();
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "decline")] });
+		await a.tracker.tick();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "accept" } }]);
+	});
+
+	test("two runtimes with the same rpc id are two requests: an answer for one never reaches the other", async () => {
+		const tracker = armed();
+		const other = memoryClient();
+		const second = tracker.tracker.attachClient(other.client, {
+			sessionId: "sess-2",
+			cwd: "/work/project",
+			warn: async () => {},
+		});
+		tracker.tracker.setVerdict(second, SUPPORTED);
+		other.feed({ id: 0, method: COMMAND, params: cmdParams(0) });
+		await openRequest(tracker);
+		await settle();
+		expect(tracker.reports.map((r) => r.sessionId).sort()).toEqual(["sess-1", "sess-2"]);
+		expect(new Set(tracker.reports.map((r) => r.body.runtimeEpoch)).size).toBe(2);
+
+		tracker.script.sync = async () => ({ answers: [answerOf("ap-2", "accept")] });
+		await tracker.tracker.tick();
+		const writes = [tracker.written, other.written].map((w) => w.length);
+		expect(writes.reduce((a, b) => a + b, 0)).toBe(1);
+	});
+});
+
+describe("outcome protocol", () => {
+	const outcomesSent = (a: Armed) => a.syncs.flatMap((s) => s.resolved.map((r) => r.outcome));
+
+	test("outcome protocol: a response is reported respond_sent, and resolved after it is reported resolved_after_response", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept")] });
+		await a.tracker.tick();
+		a.feed({ method: "serverRequest/resolved", params: { threadId: "thr-1", requestId: 0 } });
+		await settle();
+		a.script.sync = async () => ({});
+		await a.tracker.tick();
+		expect(a.syncs.at(-1)?.resolved).toEqual([
+			{ sessionId: "sess-1", approvalId: "ap-1", outcome: "respond_sent", sentDecision: "accept" },
+			{
+				sessionId: "sess-1",
+				approvalId: "ap-1",
+				outcome: "resolved_after_response",
+				sentDecision: "accept",
+			},
+		]);
+	});
+
+	test("outcome protocol: each outcome is re-sent until acknowledged, then forgotten; a terminal ack forgets the request", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "decline")] });
+		await a.tracker.tick();
+		a.feed({ method: "serverRequest/resolved", params: { threadId: "thr-1", requestId: 0 } });
+		await settle();
+		a.script.sync = async () => ({});
+		await a.tracker.tick();
+		await a.tracker.tick();
+		expect(outcomesSent(a).filter((o) => o === "resolved_after_response")).toHaveLength(2);
+
+		a.script.sync = async () => ({
+			ack: [
+				{ approvalId: "ap-1", outcome: "respond_sent" as TrackerOutcome },
+				{ approvalId: "ap-1", outcome: "resolved_after_response" as TrackerOutcome },
+			],
+		});
+		await a.tracker.tick();
+		const calls = a.syncs.length;
+		await a.tracker.tick();
+		await a.tracker.tick();
+		expect(a.syncs).toHaveLength(calls);
+		expect(a.tracker.pendingCount()).toBe(0);
+	});
+
+	test("outcome protocol: no resolved within 10 s of a sent response is resolved_timeout", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept")] });
+		await a.tracker.tick();
+		const timer = a.timers.entries.find((e) => e.ms === CODEX_RESOLVED_WAIT_MS && !e.cleared);
+		expect(timer).toBeDefined();
+		timer?.callback();
+		a.script.sync = async () => ({});
+		await a.tracker.tick();
+		expect(outcomesSent(a)).toContain("resolved_timeout");
+	});
+
+	test("outcome protocol: resolved with no response of ours is resolved_before_response, and nothing is written", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.feed({ method: "serverRequest/resolved", params: { threadId: "thr-1", requestId: 0 } });
+		await settle();
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept")] });
+		await a.tracker.tick();
+		expect(a.written).toEqual([]);
+		expect(outcomesSent(a)).toContain("resolved_before_response");
+	});
+
+	test("outcome protocol: a runtime that closes reports runtime_gone, or runtime_gone_after_response once something was sent", async () => {
+		const unanswered = armed();
+		await openRequest(unanswered);
+		unanswered.client.transportClosed(new Error("gone"));
+		unanswered.script.sync = async () => ({});
+		await unanswered.tracker.tick();
+		expect(unanswered.syncs.at(-1)?.resolved.map((r) => r.outcome)).toEqual(["runtime_gone"]);
+
+		const answered = armed();
+		await openRequest(answered);
+		answered.script.sync = async () => ({ answers: [answerOf("ap-1", "accept")] });
+		await answered.tracker.tick();
+		answered.client.transportClosed(new Error("gone"));
+		answered.script.sync = async () => ({});
+		await answered.tracker.tick();
+		expect(answered.syncs.at(-1)?.resolved.map((r) => r.outcome)).toEqual([
+			"respond_sent",
+			"runtime_gone_after_response",
+		]);
+	});
+
+	test("outcome protocol: the live list names what is held and leaves out what is finished", async () => {
+		const a = armed();
+		await openRequest(a, 0);
+		await openRequest(a, 1);
+		a.script.sync = async () => ({});
+		await a.tracker.tick();
+		expect(a.syncs[0].live.map((l) => l.approvalId).sort()).toEqual(["ap-1", "ap-2"]);
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "decline")] });
+		await a.tracker.tick();
+		a.feed({ method: "serverRequest/resolved", params: { threadId: "thr-1", requestId: 0 } });
+		await settle();
+		a.script.sync = async () => ({});
+		await a.tracker.tick();
+		expect(a.syncs.at(-1)?.live.map((l) => l.approvalId)).toEqual(["ap-2"]);
+	});
+
+	test("the server saying a row is closed declines the request and reports nothing more about it", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => ({ closed: ["ap-1"] });
+		await a.tracker.tick();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+		const calls = a.syncs.length;
+		await a.tracker.tick();
+		expect(a.syncs).toHaveLength(calls);
+	});
+});
+
+describe("failure rules", () => {
+	const fail = (status: number, code?: string, retryAfterMs?: number) =>
+		new SupervisorRequestError(status, "x", code, retryAfterMs);
+
+	async function failing(error: Error) {
+		const a = armed();
+		a.script.report = async () => {
+			throw error;
+		};
+		a.feed({ id: 0, method: COMMAND, params: cmdParams(0) });
+		await settle();
+		return a;
+	}
+
+	test("failure rules: network, server and back-pressure are retried with a doubling wait", async () => {
+		for (const error of [
+			new SupervisorNetworkError(),
+			fail(500),
+			fail(429),
+			fail(503, "busy", 2_000),
+			fail(401, "Invalid supervisor credential"),
+		]) {
+			const a = await failing(error);
+			expect(a.written, String(error)).toEqual([]);
+			expect(a.reports).toHaveLength(1);
+			await a.tracker.tick();
+			expect(a.reports).toHaveLength(1);
+			a.clock.advance(
+				1_001 + (error instanceof SupervisorRequestError && error.retryAfterMs ? 1_000 : 0),
+			);
+			await a.tracker.tick();
+			expect(a.reports.length, String(error)).toBe(2);
+			a.clock.advance(1_500);
+			await a.tracker.tick();
+			expect(a.reports.length).toBe(2);
+			a.clock.advance(1_000);
+			await a.tracker.tick();
+			expect(a.reports.length).toBe(3);
+		}
+	});
+
+	test("failure rules: 409 session_unknown is retried every 5 s until the deadline", async () => {
+		const a = await failing(fail(409, "session_unknown"));
+		for (let i = 0; i < 3; i++) {
+			a.clock.advance(4_999);
+			await a.tracker.tick();
+			expect(a.reports).toHaveLength(i + 1);
+			a.clock.advance(1);
+			await a.tracker.tick();
+			expect(a.reports).toHaveLength(i + 2);
+		}
+		a.clock.advance(CODEX_TRACKER_DEADLINE_MS);
+		await a.tracker.tick();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+	});
+
+	test("failure rules: too_many_pending, session_stopping, identity_conflict, session_not_owned decline with a warning", async () => {
+		for (const [status, code] of [
+			[409, "too_many_pending"],
+			[409, "session_stopping"],
+			[409, "identity_conflict"],
+			[403, "session_not_owned"],
+		] as const) {
+			const a = await failing(fail(status, code));
+			expect(a.written, code).toEqual([{ id: 0, result: { decision: "decline" } }]);
+			expect(
+				a.warnings.map((w) => w.detail.reason),
+				code,
+			).toEqual([code]);
+		}
+	});
+
+	test("failure rules: an entry error (400 invalid_body, 413) declines with a warning", async () => {
+		for (const error of [fail(400, "invalid_body"), fail(413)]) {
+			const a = await failing(error);
+			expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+			expect(a.warnings).toHaveLength(1);
+		}
+	});
+
+	test("failure rules: a 404 (a server rolled back) declines, warns, and turns approvals off until a heartbeat says otherwise", async () => {
+		const a = await failing(fail(404));
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+		expect(a.warnings).toHaveLength(1);
+
+		a.feed({ id: 1, method: COMMAND, params: cmdParams(1) });
+		await settle();
+		expect(a.written.at(-1)).toEqual({ id: 1, result: { decision: "decline" } });
+		const reports = a.reports.length;
+		a.tracker.setServerFeatures(["codex_approvals"]);
+		a.script.report = async () => ({ approvalId: "ap-ok" });
+		a.feed({ id: 2, method: COMMAND, params: cmdParams(2) });
+		await settle();
+		expect(a.reports.length).toBe(reports + 1);
+	});
+
+	test("failure rules: a sync that fails with a refusal declines what is held; one that fails on the network keeps it and backs off", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => {
+			throw new SupervisorNetworkError();
+		};
+		await a.tracker.tick();
+		expect(a.written).toEqual([]);
+		const calls = a.syncs.length;
+		await a.tracker.tick();
+		expect(a.syncs).toHaveLength(calls);
+		a.clock.advance(1_001);
+		a.script.sync = async () => {
+			throw fail(404);
+		};
+		await a.tracker.tick();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+	});
+
+	test("failure rules: a request past its deadline is declined even if the server is never heard from again", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => {
+			throw new SupervisorNetworkError();
+		};
+		a.clock.advance(CODEX_TRACKER_DEADLINE_MS - 1);
+		await a.tracker.tick();
+		expect(a.written).toEqual([]);
+		a.clock.advance(1);
+		await a.tracker.tick();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+	});
+
+	test("failure rules: with under a minute left a request that was never reported is declined, not reported", async () => {
+		const a = armed();
+		a.script.report = async () => {
+			throw new SupervisorNetworkError();
+		};
+		a.feed({ id: 0, method: COMMAND, params: cmdParams(0) });
+		await settle();
+		expect(a.reports).toHaveLength(1);
+		a.clock.advance(CODEX_APPROVAL_TTL_MS - 60_000 + 1);
+		await a.tracker.tick();
+		expect(a.reports).toHaveLength(1);
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+	});
+
+	test("failure rules: a gate that is offline is not asked, but deadlines still run", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.offline = true;
+		const calls = a.syncs.length;
+		await a.tracker.tick();
+		expect(a.syncs).toHaveLength(calls);
+		a.clock.advance(CODEX_TRACKER_DEADLINE_MS);
+		await a.tracker.tick();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+	});
+});
+
+describe("exclude", () => {
+	test("exclude: a session that is excluded or blocked is declined with nothing reported and no request", async () => {
+		for (const verdict of ["excluded", "blocked"] as const) {
+			const a = armed();
+			a.script.verdict = verdict;
+			a.feed({ id: 0, method: COMMAND, params: cmdParams(0) });
+			await settle();
+			expect(a.written, verdict).toEqual([{ id: 0, result: { decision: "decline" } }]);
+			expect(a.reports).toEqual([]);
+			expect(a.syncs).toEqual([]);
+			expect(a.warnings).toEqual([]);
+		}
+	});
+
+	test("exclude: the cwd, a file path, a move path and a grant root each exclude, and a relative path is resolved against cwd", async () => {
+		const cases: Array<[string, () => Record<string, unknown>, string]> = [
+			["cwd", () => cmdParams(0, { cwd: "/secret/place" }), "/secret/place"],
+		];
+		for (const [name, params, path] of cases) {
+			const a = armed();
+			a.script.excluded.add(path);
+			a.feed({ id: 0, method: COMMAND, params: params() });
+			await settle();
+			expect(a.written, name).toEqual([{ id: 0, result: { decision: "decline" } }]);
+			expect(a.reports, name).toEqual([]);
+		}
+		for (const [name, change, path] of [
+			["path", { path: "/secret/a.txt", kind: { type: "add" } }, "/secret/a.txt"],
+			[
+				"move path",
+				{ path: "/work/project/a.txt", kind: { type: "update", move_path: "/secret/b.txt" } },
+				"/secret/b.txt",
+			],
+			["relative path", { path: "../secret/c.txt", kind: { type: "add" } }, "/work/secret/c.txt"],
+		] as const) {
+			const a = armed();
+			a.script.excluded.add(path);
+			a.feed({
+				method: "item/started",
+				params: { item: { type: "fileChange", id: "fc-x", changes: [{ ...change, diff: "x\n" }] } },
+			});
+			a.feed({
+				id: 0,
+				method: FILE_CHANGE,
+				params: {
+					threadId: "t",
+					turnId: "u",
+					itemId: "fc-x",
+					startedAtMs: 1,
+					reason: null,
+					grantRoot: null,
+				},
+			});
+			await settle();
+			expect(a.written, name).toEqual([{ id: 0, result: { decision: "decline" } }]);
+			expect(a.reports, name).toEqual([]);
+		}
+		const root = armed();
+		root.script.excluded.add("/secret/root");
+		root.feed({
+			method: "item/started",
+			params: {
+				item: {
+					type: "fileChange",
+					id: "fc-r",
+					changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff: "x\n" }],
+				},
+			},
+		});
+		root.feed({
+			id: 0,
+			method: FILE_CHANGE,
+			params: {
+				threadId: "t",
+				turnId: "u",
+				itemId: "fc-r",
+				startedAtMs: 1,
+				reason: null,
+				grantRoot: "/secret/root",
+			},
+		});
+		await settle();
+		expect(root.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+		expect(root.reports).toEqual([]);
+	});
+
+	test("exclude: a retry of a report that failed is not sent once a rule covers its path", async () => {
+		const a = armed();
+		let attempts = 0;
+		a.script.report = async () => {
+			attempts++;
+			throw new SupervisorNetworkError();
+		};
+		a.feed({ id: 0, method: COMMAND, params: cmdParams(0, { cwd: "/secret/place" }) });
+		await settle();
+		expect(attempts).toBe(1);
+		a.script.excluded.add("/secret/place");
+		a.clock.advance(1_001);
+		await a.tracker.tick();
+		expect(attempts).toBe(1);
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+		expect(a.warnings).toEqual([]);
+	});
+
+	test("exclude: a revision that names an excluded path declines the request and stops listing it", async () => {
+		const a = armed();
+		a.feed({
+			method: "item/started",
+			params: {
+				item: {
+					type: "fileChange",
+					id: "fc-9",
+					changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff: "x\n" }],
+				},
+			},
+		});
+		a.feed({
+			id: 0,
+			method: FILE_CHANGE,
+			params: {
+				threadId: "t",
+				turnId: "u",
+				itemId: "fc-9",
+				startedAtMs: 1,
+				reason: null,
+				grantRoot: null,
+			},
+		});
+		await settle();
+		a.script.excluded.add("/secret/new.txt");
+		a.feed({
+			method: "item/fileChange/patchUpdated",
+			params: {
+				itemId: "fc-9",
+				changes: [{ path: "/secret/new.txt", kind: { type: "add" }, diff: "x\n" }],
+			},
+		});
+		await settle();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+		await a.tracker.tick();
+		expect(a.syncs.at(-1)?.live ?? []).toEqual([]);
+	});
+
+	test("exclude: an answer that arrives after exclusion is ignored and a decline goes", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => {
+			a.script.verdict = "excluded";
+			return { answers: [answerOf("ap-1", "accept")] };
+		};
+		await a.tracker.tick();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+		expect(a.warnings).toEqual([]);
+	});
+
+	test("exclude: a pending request is declined at the next beat when a rule appears, with no request about it", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.verdict = "excluded";
+		const calls = a.syncs.length;
+		await a.tracker.tick();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+		expect(a.syncs).toHaveLength(calls);
+	});
+});
+
+describe("what a healthy host pays", () => {
+	test("with nothing held a tick reads no clock and asks the gate nothing", async () => {
+		let reads = 0;
+		const stub = stubGate();
+		const tracker = createCodexApprovalTracker({
+			gate: stub.gate,
+			now: () => {
+				reads++;
+				return 1;
+			},
+			monotonic: () => {
+				reads++;
+				return 1;
+			},
+		});
+		tracker.setServerFeatures(["codex_approvals"]);
+		for (let i = 0; i < 50; i++) await tracker.tick();
+		expect(reads).toBe(0);
+		expect(stub.syncs).toEqual([]);
+		expect(stub.reports).toEqual([]);
+	});
+});
+
+describe("the server's word and the protocol verdict gate everything", () => {
+	test("without the feature, and with an unsupported verdict, a request is declined and nothing is reported", async () => {
+		for (const options of [
+			{ features: null },
+			{ features: [] as string[] },
+			{ verdict: "unsupported" as const },
+		]) {
+			const a = armed(options);
+			a.feed({ id: 0, method: COMMAND, params: cmdParams(0) });
+			await settle();
+			expect(a.written, JSON.stringify(options)).toEqual([
+				{ id: 0, result: { decision: "decline" } },
+			]);
+			expect(a.reports).toEqual([]);
+			expect(a.syncs).toEqual([]);
+		}
+	});
+
+	test("a request that isn't understood (an unknown parameter, no command, no plain accept, stdin, network) is reported decline-only", async () => {
+		const cases: Array<[Record<string, unknown>, string]> = [
+			[{ surprise: "x" }, "unknown_param"],
+			[{ command: null }, "no_command"],
+			[{ cwd: null }, "no_cwd"],
+			[{ availableDecisions: ["cancel"] }, "accept_not_offered"],
+			[{ availableDecisions: undefined }, "accept_not_offered"],
+			[{ kind: "writeStdin" }, "write_stdin"],
+			[{ networkApprovalContext: { host: "x" } }, "network"],
+			[{ environmentId: "remote" }, "unknown_param"],
+		];
+		for (const [over, reason] of cases) {
+			const a = armed();
+			a.feed({ id: 0, method: COMMAND, params: cmdParams(0, over) });
+			await settle();
+			expect(a.reports[0]?.body.declineOnly, reason).toContain(reason as never);
+			// ... and an accept for it is refused here too, whatever the server says.
+			a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept")] });
+			await a.tracker.tick();
+			expect(JSON.stringify(a.written), reason).not.toContain("accept");
+		}
+	});
+
+	test("a request with no usable ids is declined as malformed and never reported", async () => {
+		const a = armed();
+		a.feed({ id: 0, method: COMMAND, params: { command: "x", cwd: "/x" } });
+		await settle();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+		expect(a.warnings[0].detail.reason).toBe("malformed_request");
+		expect(a.reports).toEqual([]);
+	});
+
+	test("the report carries a fresh runtime epoch, the JSON of the rpc id, and no field outside the contract", async () => {
+		const a = armed();
+		a.feed({ id: "7", method: COMMAND, params: cmdParams(7) });
+		a.feed({ id: 7, method: COMMAND, params: cmdParams(8) });
+		await settle();
+		expect(a.reports.map((r) => r.body.rpcId)).toEqual(['"7"', "7"]);
+		expect(a.reports[0].body.runtimeEpoch).toBe(a.handle.epoch);
+		expect(Object.keys(a.reports[0].body).sort()).toEqual(
+			[
+				"v",
+				"runtimeEpoch",
+				"rpcId",
+				"requestKind",
+				"threadId",
+				"turnId",
+				"itemId",
+				"providerApprovalId",
+				"ageMs",
+				"revision",
+				"command",
+				"cwd",
+				"reason",
+				"grantRoot",
+				"truncated",
+				"declineOnly",
+			].sort(),
+		);
 	});
 });

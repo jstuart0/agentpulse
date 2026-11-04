@@ -1,13 +1,16 @@
-import { chmodSync, copyFileSync, existsSync, readFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const SOURCE = join(import.meta.dir, "fake-codex-app-server.ts");
+const SCHEMA_SUBSET = join(import.meta.dir, "codex-0.163", "schema");
 
 /** Copies the fake `codex app-server` into `dir` as an executable and returns its path. */
 export function installFakeCodex(dir: string, name = "fake-codex"): string {
 	const path = join(dir, name);
 	copyFileSync(SOURCE, path);
 	chmodSync(path, 0o755);
+	// What `app-server generate-json-schema` writes, for a fake that reports a supported version.
+	cpSync(SCHEMA_SUBSET, join(dir, "fake-codex-schema"), { recursive: true });
 	return path;
 }
 

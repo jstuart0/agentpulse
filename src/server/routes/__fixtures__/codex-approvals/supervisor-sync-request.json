@@ -1,0 +1,8 @@
+{
+	"v": 1,
+	"live": [
+		{ "approvalId": "<approvalId>", "revision": 1 },
+		{ "approvalId": "<unknown>", "revision": 1 }
+	],
+	"resolved": [{ "approvalId": "<other>", "outcome": "respond_sent", "sentDecision": "decline" }]
+}

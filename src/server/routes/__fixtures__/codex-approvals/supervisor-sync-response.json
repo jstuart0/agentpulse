@@ -1,0 +1,6 @@
+{
+	"v": 1,
+	"answers": [{ "approvalId": "<approvalId>", "decision": "accept", "revision": 1 }],
+	"closed": ["<unknown>"],
+	"ack": [{ "approvalId": "<other>", "outcome": "respond_sent" }]
+}
