@@ -2395,7 +2395,8 @@ describe("approvals through the gate", () => {
 		expect(await gate.reportApproval("sess-1", reportBody())).toEqual({ outcome: "excluded" });
 		writeRules(["not a rule line ~~~ [invalid"]);
 		const blocked = await gate.reportApproval("sess-1", reportBody());
-		expect(["blocked", "excluded"]).toContain(blocked.outcome);
+		// Rules that can't be read are not "no match": the session is held, not judged covered.
+		expect(blocked).toEqual({ outcome: "blocked" });
 		expect(calls).toEqual([]);
 	});
 

@@ -222,20 +222,19 @@ describe("a new supervisor and an old server", () => {
 		expect(calls).toEqual(["report"]);
 	});
 
-	test("a failed heartbeat leaves the last known value alone: the supervisor sets features only on a success", () => {
+	test("a failed heartbeat leaves the last known value alone: the supervisor sets features only on a success (behaviour: codex-approvals-wiring.test.ts)", () => {
 		const source = readFileSync(join(import.meta.dir, "../../supervisor/index.ts"), "utf8");
-		const call = source.indexOf("approvals.setServerFeatures(beat?.serverFeatures)");
-		const request = source.lastIndexOf(
-			"`/supervisors/${registration.supervisor.id}/heartbeat`",
-			call,
-		);
+		const call = source.indexOf("approvalsWiring.applyHeartbeat(");
+		// The heartbeat request is made inside the call that applies its features on success.
+		const request = source.indexOf("`/supervisors/${registration.supervisor.id}/heartbeat`", call);
 		const catchAt = source.indexOf("} catch (error) {", call);
-		expect(request).toBeGreaterThan(0);
-		expect(call).toBeGreaterThan(request);
-		expect(catchAt).toBeGreaterThan(call);
+		expect(call).toBeGreaterThan(0);
+		expect(request).toBeGreaterThan(call);
+		expect(catchAt).toBeGreaterThan(request);
 		// ... and nothing in the failure branch touches it.
 		const failure = source.slice(catchAt, source.indexOf("} finally {", catchAt));
 		expect(failure).not.toContain("setServerFeatures");
+		expect(failure).not.toContain("applyHeartbeat");
 	});
 
 	test("a rolled-back server leaves the tables and rows as they were, and a supervisor that declines changes none of them", async () => {

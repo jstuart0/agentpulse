@@ -306,6 +306,11 @@ const REAL_TIMERS: RpcTimers = {
 };
 
 const keyOf = (id: JsonRpcId) => JSON.stringify(id);
+/** A diff belongs to one item on one thread: a notification for another thread's item of the same id is not it. */
+const diffKey = (threadId: string, itemId: string) => JSON.stringify([threadId, itemId]);
+/** One refusal warning per (session, method, reason) in this window; a flood of requests is not a flood of warnings. */
+const WARN_COALESCE_MS = 30_000;
+const WARN_COALESCE_MAX_KEYS = 256;
 const IDLE: Promise<void> = Promise.resolve();
 
 function warningText(spec: MethodSpec | undefined, reason: RefusalReason): string {
@@ -388,6 +393,11 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 	): void {
 		const state = held.state;
 		if (held.sent !== null || held.terminal || held.closedByCodex) return;
+		// The answer must be for the request Codex is holding now, not an earlier one that shared its key.
+		if (state.requests.get(held.key) !== held) {
+			declineLocally(held, null, "declined_local");
+			return;
+		}
 		if (excludedNow(held)) {
 			declineLocally(held, null, "declined_local");
 			return;
@@ -410,6 +420,18 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		}
 		if (!(roundTripMs <= CODEX_SLOW_SYNC_RESPONSE_MS)) {
 			declineLocally(held, null, "declined_slow_response");
+			return;
+		}
+		// The line that runs a command. This guard repeats what the paths that end these conditions already
+		// do (each declines every unanswered request and makes it terminal, returned from above), so no
+		// test can make it fail on its own; it stays as the last word at the one place that writes `accept`.
+		if (
+			state.disposed ||
+			state.fenced ||
+			!serverEnabled ||
+			(state.verdict?.verdict ?? null) !== "supported"
+		) {
+			declineLocally(held, null, "declined_local");
 			return;
 		}
 		let wrote = false;
@@ -468,7 +490,20 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		}, CODEX_RESOLVED_WAIT_MS);
 	}
 
+	const lastWarnedAt = new Map<string, number>();
+
 	function warn(state: State, method: string, spec: MethodSpec | undefined, reason: RefusalReason) {
+		const warnKey = JSON.stringify([state.launch.sessionId, spec ? method : "unknown", reason]);
+		const at = now();
+		const previous = lastWarnedAt.get(warnKey);
+		if (previous !== undefined && at - previous >= 0 && at - previous < WARN_COALESCE_MS) return;
+		if (lastWarnedAt.size >= WARN_COALESCE_MAX_KEYS) {
+			for (const [key, when] of lastWarnedAt) {
+				if (at - when >= WARN_COALESCE_MS || at < when) lastWarnedAt.delete(key);
+			}
+			if (lastWarnedAt.size >= WARN_COALESCE_MAX_KEYS) lastWarnedAt.clear();
+		}
+		lastWarnedAt.set(warnKey, at);
 		void state.launch
 			.warn(warningText(spec, reason), { method: spec ? method : "unknown", reason })
 			.catch((error) => {
@@ -503,7 +538,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		if (parsed.cwd) paths.push(parsed.cwd);
 		if (parsed.grantRoot) paths.push(resolveFrom(parsed.grantRoot));
 		if (parsed.kind === "file_change") {
-			for (const change of held.state.changes.get(parsed.itemId) ?? []) {
+			for (const change of held.state.changes.get(diffKey(parsed.threadId, parsed.itemId)) ?? []) {
 				paths.push(resolveFrom(change.path));
 				if (change.movePath) paths.push(resolveFrom(change.movePath));
 			}
@@ -518,7 +553,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		const reasons: string[] = [...parsed.declineOnly];
 		if (
 			parsed.kind === "file_change" &&
-			(held.state.changes.get(parsed.itemId)?.length ?? 0) === 0
+			(held.state.changes.get(diffKey(parsed.threadId, parsed.itemId))?.length ?? 0) === 0
 		) {
 			reasons.push("no_diff");
 		}
@@ -628,7 +663,9 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 			parsed,
 			fallbackCwd: held.state.launch.cwd ?? null,
 			changes:
-				parsed.kind === "file_change" ? (held.state.changes.get(parsed.itemId) ?? null) : null,
+				parsed.kind === "file_change"
+					? (held.state.changes.get(diffKey(parsed.threadId, parsed.itemId)) ?? null)
+					: null,
 			ageMs: age,
 			revision,
 		});
@@ -802,7 +839,10 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 			return;
 		}
 		held.parsed = parsed;
-		if (parsed.kind === "file_change" && !state.changes.has(parsed.itemId)) {
+		if (
+			parsed.kind === "file_change" &&
+			!state.changes.has(diffKey(parsed.threadId, parsed.itemId))
+		) {
 			held.waiting = "diff";
 			held.diffTimer = timers.set(() => {
 				held.diffTimer = undefined;
@@ -817,6 +857,42 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 
 	function kick(held: Held) {
 		void sendReport(held);
+	}
+
+	/**
+	 * An rpc id is open until we have answered it or Codex has resolved it. A held request that is not
+	 * finished, or finished with neither, still has its id open.
+	 */
+	function idStillOpen(earlier: Held): boolean {
+		if (!earlier.terminal) return true;
+		return earlier.sent === null && !earlier.closedByCodex;
+	}
+
+	/**
+	 * Codex sent a second request on an id that is still open. Which request that id now means is
+	 * unknowable, so neither is kept: one decline (safe for whichever Codex holds under the id) is written,
+	 * the earlier request is finished, and the new one is neither held nor reported.
+	 */
+	function refuseRepeatedId(
+		state: State,
+		earlier: Held,
+		call: JsonRpcServerRequest,
+		spec: MethodSpec,
+	) {
+		let wrote = false;
+		try {
+			wrote = state.client.respond(call.id, { decision: "decline" });
+		} catch {
+			// A closed stdin is the child going away.
+		}
+		if (!earlier.terminal) {
+			const sentBefore = earlier.sent;
+			if (sentBefore === null && wrote) earlier.sent = "decline";
+			if (sentBefore === null) record(earlier, "declined_local", "decline");
+			// Something already sent for it (an accept awaiting Codex's confirmation) is now unknowable.
+			else record(earlier, "resolved_timeout", sentBefore);
+		}
+		warn(state, call.method, spec, "identity_conflict");
 	}
 
 	function onRequest(state: State, call: JsonRpcServerRequest) {
@@ -847,9 +923,15 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 			warn(state, call.method, spec, reasonForVerdict(state.verdict));
 			return;
 		}
+		const key = keyOf(call.id);
+		const earlier = state.requests.get(key);
+		if (earlier && idStillOpen(earlier)) {
+			refuseRepeatedId(state, earlier, call, spec);
+			return;
+		}
 		const held: Held = {
 			state,
-			key: keyOf(call.id),
+			key,
 			id: call.id,
 			method: call.method,
 			params: call.params,
@@ -889,17 +971,29 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 
 	// ---- notifications from Codex ----
 
-	function changedItem(state: State, itemId: string, changes: BufferedChange[]) {
-		const before = state.changes.get(itemId);
+	/** Forgets a diff for an item whichever thread named it: used when a notification can't say which. */
+	function dropItemChanges(state: State, itemId: string) {
+		for (const key of [...state.changes.keys()]) {
+			if ((JSON.parse(key) as [string, string])[1] === itemId) state.changes.delete(key);
+		}
+	}
+
+	function changedItem(state: State, threadId: string, itemId: string, changes: BufferedChange[]) {
+		const key = diffKey(threadId, itemId);
+		const before = state.changes.get(key);
 		if (state.changes.size >= MAX_BUFFERED_ITEMS && !before) {
 			const oldest = state.changes.keys().next().value;
 			if (oldest !== undefined) state.changes.delete(oldest);
 		}
-		state.changes.set(itemId, changes);
+		state.changes.set(key, changes);
 		if (before && sameChanges(before, changes)) return;
 		for (const held of state.requests.values()) {
 			if (held.terminal || held.sent !== null || held.closedByCodex) continue;
-			if (held.parsed?.kind !== "file_change" || held.parsed.itemId !== itemId) {
+			if (
+				held.parsed?.kind !== "file_change" ||
+				held.parsed.itemId !== itemId ||
+				held.parsed.threadId !== threadId
+			) {
 				// A request still waiting for its verdict has nothing parsed yet; it reads the buffer later.
 				continue;
 			}
@@ -923,20 +1017,33 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 			case "item/completed": {
 				const item = params.item as Record<string, unknown> | undefined;
 				if (!item || item.type !== "fileChange" || typeof item.id !== "string") return;
+				// Codex 0.163 puts `threadId` on every item notification in the recorded runs; one without it
+				// can't be tied to a request, so it is no diff at all.
+				const threadId = params.threadId;
+				if (typeof threadId !== "string" || threadId === "") {
+					dropItemChanges(state, item.id);
+					return;
+				}
 				if (notification.method === "item/completed") {
-					state.changes.delete(item.id);
+					state.changes.delete(diffKey(threadId, item.id));
 					return;
 				}
 				const changes = readFileChanges(item.changes);
-				if (changes) changedItem(state, item.id, changes);
+				if (changes) changedItem(state, threadId, item.id, changes);
+				else state.changes.delete(diffKey(threadId, item.id));
 				return;
 			}
 			case "item/fileChange/patchUpdated": {
 				if (typeof params.itemId !== "string") return;
+				const threadId = params.threadId;
+				if (typeof threadId !== "string" || threadId === "") {
+					dropItemChanges(state, params.itemId);
+					return;
+				}
 				const changes = readFileChanges(params.changes);
 				// A patch we can't read in full is no patch: whatever was held can't be shown, so it is dropped.
-				if (changes) changedItem(state, params.itemId, changes);
-				else state.changes.delete(params.itemId);
+				if (changes) changedItem(state, threadId, params.itemId, changes);
+				else state.changes.delete(diffKey(threadId, params.itemId));
 				return;
 			}
 			case "serverRequest/resolved": {

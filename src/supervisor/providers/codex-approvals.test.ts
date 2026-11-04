@@ -512,6 +512,7 @@ describe("through a real launch", () => {
 import { readdirSync } from "node:fs";
 import {
 	CODEX_APPROVAL_TTL_MS,
+	CODEX_FILE_DIFF_WAIT_MS,
 	CODEX_RESOLVED_WAIT_MS,
 	CODEX_SLOW_SYNC_RESPONSE_MS,
 	CODEX_TRACKER_DEADLINE_MS,
@@ -736,6 +737,7 @@ describe("revision compare", () => {
 		a.feed({
 			method: "item/started",
 			params: {
+				threadId: "thr-1",
 				item: {
 					type: "fileChange",
 					id: "fc-1",
@@ -762,6 +764,7 @@ describe("revision compare", () => {
 			a.feed({
 				method: "item/fileChange/patchUpdated",
 				params: {
+					threadId: "thr-1",
 					itemId: "fc-1",
 					changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff: "two\n" }],
 				},
@@ -782,6 +785,7 @@ describe("revision compare", () => {
 		const frames = (diff: string) => ({
 			method: "item/fileChange/patchUpdated",
 			params: {
+				threadId: "t",
 				itemId: "fc-2",
 				changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff }],
 			},
@@ -789,6 +793,7 @@ describe("revision compare", () => {
 		a.feed({
 			method: "item/started",
 			params: {
+				threadId: "t",
 				item: {
 					type: "fileChange",
 					id: "fc-2",
@@ -921,6 +926,7 @@ describe("the one accept", () => {
 		a.feed({
 			method: "item/started",
 			params: {
+				threadId: "t",
 				item: {
 					type: "fileChange",
 					id: "fc-1",
@@ -945,6 +951,7 @@ describe("the one accept", () => {
 		a.feed({
 			method: "item/fileChange/patchUpdated",
 			params: {
+				threadId: "t",
 				itemId: "fc-1",
 				changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff: "two\n" }],
 			},
@@ -967,6 +974,7 @@ describe("the one accept", () => {
 		b.feed({
 			method: "item/started",
 			params: {
+				threadId: "t",
 				item: {
 					type: "fileChange",
 					id: "fc-2",
@@ -990,6 +998,7 @@ describe("the one accept", () => {
 		b.feed({
 			method: "item/fileChange/patchUpdated",
 			params: {
+				threadId: "t",
 				itemId: "fc-2",
 				changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff: "two\n" }],
 			},
@@ -1015,6 +1024,9 @@ describe("the one accept", () => {
 			const a = armed();
 			await openRequest(a);
 			end(a);
+			// The server's feature comes back (a heartbeat says so) and then it issues the accept: a request
+			// that was ended stays ended.
+			a.tracker.setServerFeatures(["codex_approvals"]);
 			a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept")] });
 			a.script.offline = false;
 			await a.tracker.tick();
@@ -1372,7 +1384,10 @@ describe("exclude", () => {
 			a.script.excluded.add(path);
 			a.feed({
 				method: "item/started",
-				params: { item: { type: "fileChange", id: "fc-x", changes: [{ ...change, diff: "x\n" }] } },
+				params: {
+					threadId: "t",
+					item: { type: "fileChange", id: "fc-x", changes: [{ ...change, diff: "x\n" }] },
+				},
 			});
 			a.feed({
 				id: 0,
@@ -1395,6 +1410,7 @@ describe("exclude", () => {
 		root.feed({
 			method: "item/started",
 			params: {
+				threadId: "t",
 				item: {
 					type: "fileChange",
 					id: "fc-r",
@@ -1442,6 +1458,7 @@ describe("exclude", () => {
 		a.feed({
 			method: "item/started",
 			params: {
+				threadId: "t",
 				item: {
 					type: "fileChange",
 					id: "fc-9",
@@ -1466,6 +1483,7 @@ describe("exclude", () => {
 		a.feed({
 			method: "item/fileChange/patchUpdated",
 			params: {
+				threadId: "t",
 				itemId: "fc-9",
 				changes: [{ path: "/secret/new.txt", kind: { type: "add" }, diff: "x\n" }],
 			},
@@ -1600,4 +1618,409 @@ describe("the server's word and the protocol verdict gate everything", () => {
 			].sort(),
 		);
 	});
+});
+
+// ---- mid-build review of phase 5 ----
+
+const fileChangeRequest = (id: number, threadId: string, itemId: string) => ({
+	id,
+	method: FILE_CHANGE,
+	params: { threadId, turnId: "u", itemId, startedAtMs: 1, reason: null, grantRoot: null },
+});
+const startedFrame = (threadId: string | undefined, itemId: string, diff: string) => ({
+	method: "item/started",
+	params: {
+		...(threadId === undefined ? {} : { threadId }),
+		item: {
+			type: "fileChange",
+			id: itemId,
+			changes: [{ path: "/work/project/a.txt", kind: { type: "add" }, diff }],
+		},
+	},
+});
+const patchFrame = (threadId: string | undefined, itemId: string, changes: unknown) => ({
+	method: "item/fileChange/patchUpdated",
+	params: { ...(threadId === undefined ? {} : { threadId }), itemId, changes },
+});
+const acceptsWritten = (a: Armed) => a.written.filter((w) => w.result?.decision === "accept");
+const fireDiffWaits = (a: Armed) => {
+	const due = a.timers.entries.filter((e) => e.ms === CODEX_FILE_DIFF_WAIT_MS && !e.cleared);
+	expect(due.length).toBeGreaterThan(0);
+	for (const entry of due) entry.callback();
+};
+
+describe("a repeated rpc id (M1)", () => {
+	test("a second request on an id still open is one decline, ends the first, and is neither held nor reported", async () => {
+		const a = armed();
+		await openRequest(a);
+		expect(a.reports).toHaveLength(1);
+
+		a.feed({ id: 0, method: COMMAND, params: cmdParams(0, { command: "rm -rf /work/project" }) });
+		await settle();
+
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+		expect(a.reports).toHaveLength(1);
+		expect(a.tracker.pendingCount()).toBe(0);
+		expect(a.warnings.map((w) => w.detail.reason)).toEqual(["identity_conflict"]);
+
+		// The server's accept for the first request lands afterwards: nothing is written.
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept")] });
+		await a.tracker.tick();
+		expect(acceptsWritten(a)).toEqual([]);
+		expect(a.written).toHaveLength(1);
+		a.script.sync = async () => ({});
+		await a.tracker.tick();
+		expect(a.syncs.at(-1)?.resolved.map((r) => r.outcome)).toEqual(["declined_local"]);
+	});
+
+	test("a repeat while the first is still waiting for its verdict leaves one decline too", async () => {
+		const a = armed();
+		const bare = memoryClient();
+		const handle = a.tracker.attachClient(bare.client, {
+			sessionId: "sess-2",
+			warn: async () => {},
+		});
+		bare.feed({ id: 4, method: COMMAND, params: cmdParams(4) });
+		bare.feed({ id: 4, method: COMMAND, params: cmdParams(4, { command: "other" }) });
+		await settle();
+		expect(bare.written).toEqual([{ id: 4, result: { decision: "decline" } }]);
+		a.tracker.setVerdict(handle, SUPPORTED);
+		await settle();
+		expect(bare.written).toHaveLength(1);
+		expect(a.reports.filter((r) => r.sessionId === "sess-2")).toEqual([]);
+	});
+
+	test("a repeat after an accept was written still gets its decline, and the first ends as unknown", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept")] });
+		await a.tracker.tick();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "accept" } }]);
+
+		a.feed({ id: 0, method: COMMAND, params: cmdParams(0, { command: "different" }) });
+		await settle();
+
+		expect(a.written.map((w) => w.result.decision)).toEqual(["accept", "decline"]);
+		expect(a.reports).toHaveLength(1);
+		a.script.sync = async () => ({});
+		await a.tracker.tick();
+		expect(a.syncs.at(-1)?.resolved.map((r) => r.outcome)).toContain("resolved_timeout");
+	});
+
+	test("an id whose earlier request ended without a decline reaching Codex is still open: the repeat gets its decline", async () => {
+		const a = armed();
+		let failing = false;
+		const failingClient = new RpcClient({
+			write: (frame) => {
+				if (failing) throw new Error("pipe closed");
+				a.written.push(JSON.parse(frame));
+			},
+			close: () => {},
+		});
+		const handle = a.tracker.attachClient(failingClient, {
+			sessionId: "sess-w",
+			warn: async () => {},
+		});
+		a.tracker.setVerdict(handle, SUPPORTED);
+		const feed = (frame: unknown) => failingClient.receive(`${JSON.stringify(frame)}\n`);
+		feed({ id: 7, method: COMMAND, params: cmdParams(7) });
+		await settle();
+		failing = true;
+		a.tracker.setServerFeatures(undefined);
+		failing = false;
+		a.tracker.setServerFeatures(["codex_approvals"]);
+		expect(a.written.filter((w) => w.id === 7)).toEqual([]);
+
+		feed({ id: 7, method: COMMAND, params: cmdParams(7, { command: "other" }) });
+		await settle();
+
+		expect(a.written.filter((w) => w.id === 7)).toEqual([
+			{ id: 7, result: { decision: "decline" } },
+		]);
+		expect(a.reports.filter((r) => r.sessionId === "sess-w")).toHaveLength(1);
+	});
+
+	test("a new request on an id whose earlier request is finished and resolved is held as before; the server's identity_conflict then stands", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "decline")] });
+		await a.tracker.tick();
+		a.feed({ method: "serverRequest/resolved", params: { threadId: "thr-1", requestId: 0 } });
+		await settle();
+
+		a.script.report = async () => {
+			throw new SupervisorRequestError(409, "Conflict", "identity_conflict");
+		};
+		a.feed({ id: 0, method: COMMAND, params: cmdParams(0, { command: "another" }) });
+		await settle();
+
+		// Reported (so it was held), refused by the server, and declined for Codex's new request.
+		expect(a.warnings.map((w) => w.detail.reason)).toEqual(["identity_conflict"]);
+		expect(a.written.map((w) => w.result.decision)).toEqual(["decline", "decline"]);
+		expect(a.tracker.pendingCount()).toBe(0);
+	});
+
+	test("a new request on a finished id whose server row has the same identity is held, and the server's `closed` still ends it", async () => {
+		const a = armed();
+		await openRequest(a);
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "decline")] });
+		await a.tracker.tick();
+		a.feed({ method: "serverRequest/resolved", params: { threadId: "thr-1", requestId: 0 } });
+		await settle();
+
+		a.feed({ id: 0, method: COMMAND, params: cmdParams(0) });
+		await settle();
+		expect(a.reports).toHaveLength(2);
+		expect(a.tracker.pendingCount()).toBe(1);
+		// The server's row for this key is the old, closed one: it answers `closed`, and the new request is declined.
+		a.script.sync = async () => ({ closed: ["ap-1"] });
+		await a.tracker.tick();
+		expect(a.written.map((w) => w.result.decision)).toEqual(["decline", "decline"]);
+		expect(acceptsWritten(a)).toEqual([]);
+	});
+});
+
+describe("diffs are kept by thread and item (M2)", () => {
+	test("another thread's diff for the same item id is not this request's diff: it is reported decline-only with no diff", async () => {
+		const a = armed();
+		a.feed(startedFrame("thr-other", "fc-1", "belongs to another thread\n"));
+		a.feed(fileChangeRequest(0, "thr-1", "fc-1"));
+		await settle();
+		fireDiffWaits(a);
+		await settle();
+
+		expect(a.reports).toHaveLength(1);
+		expect(a.reports[0].body.changes).toEqual([]);
+		expect(a.reports[0].body.declineOnly).toContain("no_diff");
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept")] });
+		await a.tracker.tick();
+		expect(acceptsWritten(a)).toEqual([]);
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+	});
+
+	test("two threads with the same item id each get their own diff", async () => {
+		const a = armed();
+		a.feed(startedFrame("thr-1", "fc-1", "mine\n"));
+		a.feed(startedFrame("thr-other", "fc-1", "theirs\n"));
+		a.feed(fileChangeRequest(0, "thr-1", "fc-1"));
+		await settle();
+		expect(a.reports[0].body.changes?.[0].diff).toBe("mine\n");
+	});
+
+	test("a patch from another thread does not move this request's revision", async () => {
+		const a = armed();
+		a.feed(startedFrame("thr-1", "fc-1", "mine\n"));
+		a.feed(fileChangeRequest(0, "thr-1", "fc-1"));
+		await settle();
+		a.feed(patchFrame("thr-other", "fc-1", [{ path: "/x", kind: { type: "add" }, diff: "z\n" }]));
+		await settle();
+		expect(a.reports).toHaveLength(1);
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept", 1)] });
+		await a.tracker.tick();
+		expect(a.written).toEqual([{ id: 0, result: { decision: "accept" } }]);
+	});
+
+	test("a started item with no threadId is no diff", async () => {
+		const a = armed();
+		a.feed(startedFrame(undefined, "fc-1", "no thread named\n"));
+		a.feed(fileChangeRequest(0, "thr-1", "fc-1"));
+		await settle();
+		fireDiffWaits(a);
+		await settle();
+		expect(a.reports[0].body.declineOnly).toContain("no_diff");
+	});
+
+	test("an item with no threadId, for an item already held, drops what was held: it can't be told apart from a rewrite", async () => {
+		const a = armed();
+		a.feed(startedFrame("thr-1", "fc-1", "named\n"));
+		a.feed(fileChangeRequest(0, "thr-1", "fc-1"));
+		await settle();
+		a.feed(startedFrame(undefined, "fc-1", "rewritten, thread not named\n"));
+		await settle();
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept", 1)] });
+		await a.tracker.tick();
+		expect(acceptsWritten(a)).toEqual([]);
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+	});
+
+	test("a patch with no threadId can't be tied to a thread: whatever was held for the item is dropped and an accept is declined", async () => {
+		const b = armed();
+		b.feed(startedFrame("thr-1", "fc-1", "named\n"));
+		b.feed(fileChangeRequest(0, "thr-1", "fc-1"));
+		await settle();
+		b.feed(
+			patchFrame(undefined, "fc-1", [
+				{ path: "/work/project/a.txt", kind: { type: "add" }, diff: "x\n" },
+			]),
+		);
+		await settle();
+		b.script.sync = async () => ({ answers: [answerOf("ap-1", "accept", 1)] });
+		await b.tracker.tick();
+		expect(acceptsWritten(b)).toEqual([]);
+		expect(b.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+	});
+});
+
+describe("a patch that can't be read in full", () => {
+	test("is no patch: an accept at the same revision is declined, and no accept is written", async () => {
+		const a = armed();
+		a.feed(startedFrame("thr-1", "fc-1", "one\n"));
+		a.feed(fileChangeRequest(0, "thr-1", "fc-1"));
+		await settle();
+		expect(a.reports[0].body.revision).toBe(1);
+
+		a.feed(patchFrame("thr-1", "fc-1", [{ path: "/work/project/a.txt", kind: "add", diff: 5 }]));
+		await settle();
+		a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept", 1)] });
+		await a.tracker.tick();
+
+		expect(acceptsWritten(a)).toEqual([]);
+		expect(a.written).toEqual([{ id: 0, result: { decision: "decline" } }]);
+	});
+});
+
+describe("refusal warnings are coalesced (L3)", () => {
+	test("one per (session, method, reason) in 30 s, then another; a different method or reason still warns", async () => {
+		const a = armed();
+		for (let i = 0; i < 6; i++) a.feed({ id: 100 + i, method: "item/tool/call", params: {} });
+		await settle();
+		expect(a.warnings).toHaveLength(1);
+		expect(a.written).toHaveLength(6);
+
+		a.feed({ id: 200, method: "item/tool/requestUserInput", params: {} });
+		a.feed({ id: 201, method: "no/such/method", params: {} });
+		await settle();
+		expect(a.warnings.map((w) => w.detail.method).sort()).toEqual([
+			"item/tool/call",
+			"item/tool/requestUserInput",
+			"unknown",
+		]);
+
+		a.clock.advance(29_999);
+		a.feed({ id: 300, method: "item/tool/call", params: {} });
+		await settle();
+		expect(a.warnings).toHaveLength(3);
+		a.clock.advance(2);
+		a.feed({ id: 301, method: "item/tool/call", params: {} });
+		await settle();
+		expect(a.warnings).toHaveLength(4);
+	});
+
+	test("the same refusal for another session is its own warning", async () => {
+		const a = armed();
+		const other = memoryClient();
+		const seen: string[] = [];
+		a.tracker.attachClient(other.client, {
+			sessionId: "sess-2",
+			warn: async (_content, detail) => void seen.push(detail.reason),
+		});
+		a.feed({ id: 1, method: "item/tool/call", params: {} });
+		other.feed({ id: 1, method: "item/tool/call", params: {} });
+		await settle();
+		expect(a.warnings).toHaveLength(1);
+		expect(seen).toEqual(["out_of_scope"]);
+	});
+});
+
+describe("stopping a session the supervisor has no runtime for (L1)", () => {
+	test("the fence is raised before the runtime lookup fails", async () => {
+		const real = createCodexApprovalTracker();
+		const fenced: string[] = [];
+		configureCodexApprovals({ ...real, fence: (id) => void fenced.push(id) });
+		try {
+			const { stopManagedCodexSession } = await import("./codex-managed.js");
+			await expect(stopManagedCodexSession("never-launched-session")).rejects.toThrow(
+				"Managed Codex runtime is not available",
+			);
+			expect(fenced).toEqual(["never-launched-session"]);
+		} finally {
+			configureCodexApprovals(null);
+		}
+	});
+});
+
+type RecordedFrame = {
+	method: string;
+	id: number;
+	params: Record<string, unknown> & {
+		threadId: string;
+		turnId: string;
+		itemId: string;
+		command?: string;
+		cwd?: string;
+		item?: { type: string; id: string; changes: RecordedChange[] };
+	};
+};
+type RecordedChange = { path: string; kind: { type: string }; diff: string };
+
+describe("every recorded approval request, through the tracker", () => {
+	type Recorded = { dir: string; frame: RecordedFrame };
+	const recordedRuns = readdirSync(FIXTURES)
+		.filter((name) => name.endsWith(".jsonl"))
+		.map((name) => ({
+			name,
+			frames: readFileSync(join(FIXTURES, name), "utf8")
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => JSON.parse(line) as Recorded),
+		}));
+	const cases = recordedRuns.flatMap(({ name, frames }) =>
+		frames.flatMap((entry, index) =>
+			entry.dir === "in" &&
+			/^item\/(commandExecution|fileChange)\/requestApproval$/.test(entry.frame.method)
+				? [{ name, index, request: entry.frame, frames }]
+				: [],
+		),
+	);
+
+	test("the recording holds the requests this test is about", () => {
+		expect(cases.filter((c) => c.request.method === COMMAND).length).toBeGreaterThanOrEqual(6);
+		expect(cases.filter((c) => c.request.method === FILE_CHANGE).length).toBeGreaterThanOrEqual(4);
+	});
+
+	for (const { name, index, request, frames } of cases) {
+		test(`${name} frame ${index} (${request.method} id ${request.id}): nothing decline-only, the report says what Codex said, and the server's accept is written`, async () => {
+			const a = armed();
+			const params = request.params;
+			const items = frames
+				.slice(0, index)
+				.filter(
+					(entry) =>
+						entry.dir === "in" &&
+						entry.frame.method === "item/started" &&
+						entry.frame.params.item?.type === "fileChange" &&
+						entry.frame.params.item.id === params.itemId,
+				);
+			for (const entry of items) a.feed(entry.frame);
+			a.feed(request);
+			await settle();
+
+			expect(a.reports).toHaveLength(1);
+			const body = a.reports[0].body;
+			expect(body.declineOnly).toEqual([]);
+			expect(body.threadId).toBe(params.threadId);
+			expect(body.turnId).toBe(params.turnId);
+			expect(body.itemId).toBe(params.itemId);
+			expect(body.rpcId).toBe(JSON.stringify(request.id));
+			expect(body.revision).toBe(1);
+			if (request.method === COMMAND) {
+				expect(body.requestKind).toBe("command");
+				expect((body as { command: string }).command).toBe(params.command as string);
+				expect((body as { cwd: string }).cwd).toBe(params.cwd as string);
+			} else {
+				expect(body.requestKind).toBe("file_change");
+				expect(items).toHaveLength(1);
+				const recorded = items[0].frame.params.item?.changes ?? [];
+				const reported = (body as { changes: Array<{ path: string; kind: string; diff: string }> })
+					.changes;
+				expect(reported.map((c) => [c.path, c.kind, c.diff])).toEqual(
+					recorded.map((c) => [c.path, c.kind.type, c.diff]),
+				);
+			}
+
+			a.script.sync = async () => ({ answers: [answerOf("ap-1", "accept", 1)] });
+			await a.tracker.tick();
+			expect(a.written).toEqual([{ id: request.id, result: { decision: "accept" } }]);
+		});
+	}
 });

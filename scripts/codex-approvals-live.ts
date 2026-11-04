@@ -7,12 +7,15 @@
  *
  *   bun scripts/codex-approvals-live.ts --spike --work <dir> --raw <dir> [--only S2,S4]
  *   bun scripts/codex-approvals-live.ts --scrub --raw <dir> --out <fixtures dir> --work <dir>
- *   bun scripts/codex-approvals-live.ts --full-path --work <dir> [--minutes 8]
+ *   bun scripts/codex-approvals-live.ts --full-path --work <dir> [--minutes 8] [--only accept,decline,fc-accept,fc-decline,fc-patch]
  *
  * `--full-path` (phase 5) drives a real Codex through the whole of AgentPulse and nothing else: a
  * throwaway server on 127.0.0.1 with a temp SQLite database, the real report gate and tracker, a real
- * managed launch, and a person's answer through the real route. One accept (a marker file must appear)
- * and one decline (it must not). It uses a throwaway CODEX_HOME holding only a copy of `auth.json`,
+ * managed launch, and a person's answer through the real route. For a command, and again for a file
+ * change made with `apply_patch`: one accept (the file must appear) and one decline (it must not). A last
+ * run accepts one patch that updates a file, moves another and deletes a third, and reports what changed on
+ * disk. If Codex doesn't ask for approval for a file change under this configuration, that is reported as
+ * it was seen, not forced. It uses a throwaway CODEX_HOME holding only a copy of `auth.json`,
  * which is deleted at the end; `~/.codex` is never written. It spends real model usage.
  *
  * `--work` must sit under a scratch location (path containing /scratchpad/ or
@@ -1173,11 +1176,11 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 		(config as Record<string, unknown>).disableAuth = false;
 		const { app } = await import("../src/server/app.js");
 		const { createApiKey } = await import("../src/server/auth/api-key.js");
-		const { launchRequests, codexApprovals, managedSessions } = await import(
+		const { launchRequests, codexApprovals, managedSessions, events } = await import(
 			"../src/server/db/schema/index.js"
 		);
 		const team = await import("../src/server/test-utils/team-fixtures.js");
-		const { eq } = await import("drizzle-orm");
+		const { eq, desc } = await import("drizzle-orm");
 		const { createReportGate } = await import("../src/supervisor/services/report-gate.js");
 		const { createReportOutbox } = await import("../src/supervisor/services/report-outbox.js");
 		const { createRulesWatch } = await import("../src/supervisor/services/exclude-rules-watch.js");
@@ -1292,10 +1295,32 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 			}
 		}
 
-		async function scenario(name: string, marker: string, decision: "accept" | "decline") {
+		type Plan = {
+			name: string;
+			decision: "accept" | "decline";
+			prompt: (dir: string) => string;
+			/** Files to put in the directory before Codex starts. */
+			seed?: Record<string, string>;
+			/** Read the directory after the answer, for the report. */
+			observe?: (dir: string) => unknown;
+			/** How long to wait for a request before reporting that none came. */
+			askWaitMs?: number;
+		};
+		const listing = (dir: string) =>
+			Object.fromEntries(
+				readdirSync(dir)
+					.filter((name) => name !== ".git")
+					.map((name) => [name, readFileSync(join(dir, name), "utf8")]),
+			);
+
+		async function scenario(plan: Plan) {
+			const { name, decision } = plan;
 			const dir = join(root, `project-${name}`);
 			mkdirSync(dir, { recursive: true });
 			spawnSync("git", ["init", "-q"], { cwd: dir });
+			for (const [file, content] of Object.entries(plan.seed ?? {})) {
+				writeFileSync(join(dir, file), content);
+			}
 			const sessionId = `full-path-${name}-${crypto.randomUUID().slice(0, 6)}`;
 			sessions.push(sessionId);
 			await getDb()
@@ -1308,7 +1333,7 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 					requestedLaunchMode: "managed_codex",
 					status: "validated",
 					baseInstructions: "",
-					taskPrompt: `Run exactly this one shell command and then stop. Do not do anything else: touch ${marker}`,
+					taskPrompt: plan.prompt(dir),
 				});
 			const claim = await request(`/supervisors/${supervisorId}/launches/claim`, {
 				method: "POST",
@@ -1330,7 +1355,7 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 			out.verdict = verdict;
 			const row = await until(
 				"an approval request from real Codex",
-				180_000,
+				plan.askWaitMs ?? 180_000,
 				async () =>
 					(
 						await getDb()
@@ -1338,17 +1363,50 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 							.from(codexApprovals)
 							.where(eq(codexApprovals.sessionId, sessionId))
 					)[0],
-			);
+			).catch((error) => {
+				out.asked = false;
+				out.sawNoRequest = String(error);
+				return undefined;
+			});
+			if (!row) {
+				// What the session's timeline says Codex did instead, cut short.
+				const recent = await getDb()
+					.select({ type: events.eventType, content: events.content })
+					.from(events)
+					.where(eq(events.sessionId, sessionId))
+					.orderBy(desc(events.id))
+					.limit(6);
+				out.timeline = recent.map((e) => `${e.type}: ${(e.content ?? "").slice(0, 240)}`);
+			}
+			if (!row) {
+				out.directoryAfter = plan.observe ? plan.observe(dir) : listing(dir);
+				await managed.stopManagedCodexSession(sessionId).catch(() => {});
+				void started;
+				return out;
+			}
+			out.asked = true;
 			const list = await (
 				await fetch(`${base}/api/v1/sessions/${sessionId}/approvals`, {
 					headers: await personHeaders(),
 				})
 			).json();
 			const summary = (list as any).approvals[0];
+			const detail = (await (
+				await fetch(`${base}/api/v1/sessions/${sessionId}/approvals/${summary.id}`, {
+					headers: await personHeaders(),
+				})
+			).json()) as {
+				presentation?: { changes?: Array<{ path: string; kind: string; movePath: string | null }> };
+			};
 			out.shown = {
 				approvable: summary.approvable,
 				kind: summary.requestKind,
 				preview: summary.preview,
+				changes: detail.presentation?.changes?.map((c) => ({
+					path: c.path.replace(dir, "<dir>"),
+					kind: c.kind,
+					movePath: c.movePath?.replace(dir, "<dir>") ?? null,
+				})),
 			};
 			const answered = await fetch(
 				`${base}/api/v1/sessions/${sessionId}/approvals/${summary.id}/decision`,
@@ -1372,8 +1430,7 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 			out.closedReason = closed.closedReason;
 			// Let a turn that goes on (or a retry) settle before judging the filesystem.
 			await sleepMs(decision === "accept" ? 8_000 : 20_000);
-			out.markerExists = existsSync(join(dir, marker));
-			out.markerContentBytes = out.markerExists ? readFileSync(join(dir, marker)).length : null;
+			out.directoryAfter = plan.observe ? plan.observe(dir) : listing(dir);
 			const all = await getDb()
 				.select()
 				.from(codexApprovals)
@@ -1388,19 +1445,91 @@ async function fullPath(workArg: string, minutes: number): Promise<number> {
 			return out;
 		}
 
-		results.accept = await scenario("accept", "accepted.txt", "accept");
-		results.decline = await scenario("decline", "declined.txt", "decline");
+		const command = (name: string, marker: string, decision: "accept" | "decline"): Plan => ({
+			name,
+			decision,
+			prompt: () =>
+				`Run exactly this one shell command with escalated permissions (ask for approval, do not try it inside the sandbox first) and then stop. Do not do anything else: touch ${marker}`,
+		});
+		const writeFile = (name: string, file: string, decision: "accept" | "decline"): Plan => ({
+			name,
+			decision,
+			prompt: () =>
+				`Use the apply_patch tool, and nothing else, to add a new file named ${file} whose whole content is the single line: hello from the full path. Do not run shell commands. Then stop.`,
+		});
+		const only = (opt("--only") ?? "accept,decline,fc-accept,fc-decline,fc-patch").split(",");
+		const skipped = { skipped: true };
+		results.accept = only.includes("accept")
+			? await scenario(command("accept", "accepted.txt", "accept"))
+			: skipped;
+		results.decline = only.includes("decline")
+			? await scenario(command("decline", "declined.txt", "decline"))
+			: skipped;
+		results.fileChangeAccept = only.includes("fc-accept")
+			? await scenario(writeFile("fc-accept", "fc-accepted.txt", "accept"))
+			: skipped;
+		results.fileChangeDecline = only.includes("fc-decline")
+			? await scenario(writeFile("fc-decline", "fc-declined.txt", "decline"))
+			: skipped;
+		results.fileChangePatch = !only.includes("fc-patch")
+			? skipped
+			: await scenario({
+					name: "fc-patch",
+					decision: "accept",
+					seed: {
+						"update-me.txt": "line one\nline two\nline three\n",
+						"move-me.txt": "move me\n",
+						"delete-me.txt": "delete me\n",
+					},
+					prompt: () =>
+						[
+							"Make all three changes in ONE apply_patch call, and use no other tool, with exactly this patch text:",
+							"*** Begin Patch",
+							"*** Update File: update-me.txt",
+							"@@",
+							" line one",
+							"-line two",
+							"+LINE TWO CHANGED",
+							" line three",
+							"*** Update File: move-me.txt",
+							"*** Move to: moved.txt",
+							"@@",
+							"-move me",
+							"+moved me",
+							"*** Delete File: delete-me.txt",
+							"*** End Patch",
+							"Then stop.",
+						].join("\n"),
+				});
 		const accept = results.accept as any;
 		const decline = results.decline as any;
-		const ok =
-			accept.verdict === "supported" &&
-			accept.answerStatus === 200 &&
-			accept.markerExists === true &&
-			accept.closedReason === "applied" &&
-			decline.answerStatus === 200 &&
-			decline.markerExists === false;
-		results.ok = ok;
-		return await cleanup(ok ? 0 : 1);
+		const fcAccept = results.fileChangeAccept as any;
+		const fcDecline = results.fileChangeDecline as any;
+		const commandOk =
+			(accept.skipped === true ||
+				(accept.verdict === "supported" &&
+					accept.answerStatus === 200 &&
+					Object.hasOwn(accept.directoryAfter ?? {}, "accepted.txt") &&
+					accept.closedReason === "applied")) &&
+			(decline.skipped === true ||
+				(decline.answerStatus === 200 &&
+					!Object.hasOwn(decline.directoryAfter ?? {}, "declined.txt")));
+		// A file change is judged only if Codex asked; if it never did, that is the finding and is reported.
+		const fileChangeOk =
+			(fcAccept.skipped === true ||
+				fcAccept.asked === false ||
+				(fcAccept.shown?.kind === "file_change" &&
+					fcAccept.answerStatus === 200 &&
+					Object.hasOwn(fcAccept.directoryAfter ?? {}, "fc-accepted.txt"))) &&
+			(fcDecline.skipped === true ||
+				fcDecline.asked === false ||
+				(fcDecline.shown?.kind === "file_change" &&
+					fcDecline.answerStatus === 200 &&
+					!Object.hasOwn(fcDecline.directoryAfter ?? {}, "fc-declined.txt")));
+		results.commandOk = commandOk;
+		results.fileChangeOk = fileChangeOk;
+		results.ok = commandOk && fileChangeOk;
+		return await cleanup(results.ok ? 0 : 1);
 	} catch (error) {
 		results.error = String(error instanceof Error ? error.stack : error);
 		return await cleanup(1);

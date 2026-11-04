@@ -19,14 +19,17 @@
  * FAKE_CODEX_REALISTIC=1: the first answer to a server request is final (a second is logged as
  * `ignoredAnswer` and does nothing), an `accept` runs the thing (a `ran` log entry), any answer is followed
  * by `serverRequest/resolved`, an unknown decision fails the item and runs nothing, and `turn/interrupt`
- * resolves every open request after its own answer.
+ * resolves every open request after its own answer. Any `accept*` decision runs the thing (`ran`), and a
+ * `cancel` also interrupts the turn: every other open request is resolved after it (S8).
  *
  *   FAKE_CODEX_VERSION=<x.y.z>         `--version` and the `initialize` userAgent report this version
  *                                      (`app-server generate-json-schema` writes the 0.163 subset installed
  *                                      beside the fake as `fake-codex-schema`)
  *   FAKE_CODEX_NO_RESOLVE=1            never send `serverRequest/resolved`
  *   FAKE_CODEX_CONTROL=<file>          a file the test appends JSON lines to: {send: <frame>} writes a frame
- *                                      to stdout, {exit: <code>} exits
+ *                                      to stdout, {exit: <code>} exits, {replay: {file, index}} sends frame
+ *                                      `index` of a recorded run (`dir: "in"`), preceded by the recorded
+ *                                      `fileChange` item that the request names
  */
 import { spawn } from "node:child_process";
 import { appendFileSync, cpSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -120,8 +123,16 @@ function handle(m: any) {
 		answeredRequests.add(key);
 		log({ answer: m });
 		if (REALISTIC) {
-			if (m.result?.decision === "accept") log({ ran: m.id });
+			const decision = m.result?.decision;
+			if (typeof decision === "string" && decision.startsWith("accept")) log({ ran: m.id });
 			resolve(m.id);
+			if (decision === "cancel") {
+				// A cancel ends the turn: whatever else is open is resolved, unanswered.
+				log({ interrupted: true });
+				for (const key of sentRequests.keys()) {
+					if (key !== JSON.stringify(m.id) && !answeredRequests.has(key)) resolve(JSON.parse(key));
+				}
+			}
 		}
 		return;
 	}
@@ -223,6 +234,25 @@ if (env.FAKE_CODEX_CONTROL) {
 					sentRequests.set(JSON.stringify(frame.id), { threadId: "thr-1" });
 				}
 				send(frame);
+			}
+			if (command.replay) {
+				const recorded = readFileSync(command.replay.file, "utf8")
+					.split("\n")
+					.filter(Boolean)
+					.map((line) => JSON.parse(line));
+				const recordedAsk = recorded[command.replay.index].frame;
+				for (const entry of recorded.slice(0, command.replay.index)) {
+					const item = entry.dir === "in" ? entry.frame.params?.item : undefined;
+					if (
+						entry.frame.method === "item/started" &&
+						item?.type === "fileChange" &&
+						item.id === recordedAsk.params.itemId
+					) {
+						send(entry.frame);
+					}
+				}
+				sentRequests.set(JSON.stringify(recordedAsk.id), { threadId: recordedAsk.params.threadId });
+				send(recordedAsk);
 			}
 			if (command.exit !== undefined) process.exit(command.exit);
 		}

@@ -25,6 +25,8 @@ import {
 	chmodSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
+	readdirSync,
 	realpathSync,
 	rmSync,
 	writeFileSync,
@@ -113,6 +115,10 @@ type World = {
 	reportedStates: any[];
 	sessionIds: string[];
 	runtimes: Array<{ dispose: () => Promise<void> }>;
+	lastLaunch?: {
+		request: LaunchRequest;
+		callbacks: Parameters<typeof launchManagedCodexRequest>[1];
+	};
 };
 
 let base: {
@@ -372,15 +378,31 @@ async function launch(): Promise<{ sessionId: string; pid: number }> {
 	expect(launchRequest?.launchCorrelationId).toBe(sessionId);
 	const request = launchRequest as LaunchRequest;
 	expect(world.gate.noteLaunch(request.id, request.launchCorrelationId, request.cwd)).toBe(true);
-	const result = await launchManagedCodexRequest(request, {
-		reportState: (body) => {
+	const callbacks = {
+		reportState: (body: Parameters<ReportGate["reportState"]>[0]) => {
 			world.reportedStates.push(body);
 			return world.gate.reportState(body);
 		},
-		reportEvents: (events) => world.gate.reportEvents(sessionId, events),
-	});
+		reportEvents: (events: Parameters<ReportGate["reportEvents"]>[1]) =>
+			world.gate.reportEvents(sessionId, events),
+	};
+	const result = await launchManagedCodexRequest(request, callbacks);
 	world.runtimes.push(result.runtime);
+	world.lastLaunch = { request, callbacks };
 	return { sessionId, pid: result.pid };
+}
+
+/** A second runtime for the session just launched (its first child is gone), with a fresh log and control file. */
+async function relaunch(): Promise<{ sessionId: string; pid: number }> {
+	const previous = world.lastLaunch as NonNullable<World["lastLaunch"]>;
+	world.logPath = join(world.home, `fake-${crypto.randomUUID().slice(0, 4)}.log`);
+	world.controlPath = join(world.home, `control-${crypto.randomUUID().slice(0, 4)}.jsonl`);
+	writeFileSync(world.controlPath, "");
+	process.env.FAKE_CODEX_LOG = world.logPath;
+	process.env.FAKE_CODEX_CONTROL = world.controlPath;
+	const result = await launchManagedCodexRequest(previous.request, previous.callbacks);
+	world.runtimes.push(result.runtime);
+	return { sessionId: previous.request.launchCorrelationId, pid: result.pid };
 }
 
 const control = (frame: unknown) =>
@@ -462,11 +484,41 @@ async function theRow(sessionId: string) {
 	return until(async () => (await rowsFor(sessionId))[0], { what: "an approval row", tick: false });
 }
 
+const SENTINEL_BASE = 9_000;
+/** The answers the fake received to requests under test (not to `writes()`'s sentinels). */
 const answers = () =>
 	readFakeLog(world.logPath)
-		.filter((e) => e.answer)
+		.filter((e) => e.answer && e.answer.id <= SENTINEL_BASE)
 		.map((e) => e.answer);
 const ran = () => readFakeLog(world.logPath).filter((e) => e.ran !== undefined);
+
+let sentinelSeq = SENTINEL_BASE;
+/**
+ * Everything the fake received from the tracker so far, as short strings (`answer 0 accept`, `ran 0`,
+ * `ignored 0 accept`), proven complete: a request the tracker answers at once is sent as a sentinel, and
+ * the pipe is ordered, so once its answer is in the log nothing written earlier can still be on its way.
+ * Only for a runtime that is still alive. A sentinel makes the tracker warn, so use it after the asserts
+ * about traffic and the outbox.
+ */
+async function writes(): Promise<string[]> {
+	const id = ++sentinelSeq;
+	control({ id, method: "currentTime/read", params: {} });
+	await until(() => readFakeLog(world.logPath).some((e) => e.answer?.id === id), {
+		what: "the sentinel's answer",
+		tick: false,
+	});
+	const log = readFakeLog(world.logPath);
+	const end = log.findIndex((e) => e.answer?.id === id);
+	return log.slice(0, end).flatMap((e) => {
+		if (e.answer && e.answer.id > SENTINEL_BASE) return [];
+		if (e.answer) return [`answer ${e.answer.id} ${e.answer.result?.decision ?? "error"}`];
+		if (e.ignoredAnswer) {
+			return [`ignored ${e.ignoredAnswer.id} ${e.ignoredAnswer.result?.decision ?? "error"}`];
+		}
+		if (e.ran !== undefined) return [`ran ${e.ran}`];
+		return [];
+	});
+}
 const approvalCalls = () => world.calls.filter((c) => /approvals/.test(c.path));
 
 async function personHeaders() {
@@ -504,6 +556,24 @@ async function decide(sessionId: string, decision: "accept" | "decline" | "cance
 		}),
 	});
 	return { res, approval };
+}
+
+async function decideRow(
+	sessionId: string,
+	approvalId: string,
+	decision: "accept" | "decline" | "cancel",
+) {
+	const { approvals } = await listApprovals(sessionId);
+	const approval = approvals.find((a) => a.id === approvalId);
+	if (!approval) throw new Error("no such approval in the list");
+	return app.request(`/api/v1/sessions/${sessionId}/approvals/${approvalId}/decision`, {
+		method: "POST",
+		headers: await personHeaders(),
+		body: JSON.stringify({
+			decision,
+			...(decision === "accept" ? { presentationHash: approval.presentationHash } : {}),
+		}),
+	});
 }
 
 /** A launched session whose protocol verdict has reached the server, ready for a request. */
@@ -548,8 +618,7 @@ describe("a person's answer reaches Codex", () => {
 
 		await until(() => answers().length > 0, { what: "the fake to be answered" });
 
-		expect(answers()).toEqual([{ id: 0, result: { decision: "accept" } }]);
-		expect(ran()).toEqual([{ ran: 0 }]);
+		expect(await writes()).toEqual(["answer 0 accept", "ran 0"]);
 		const closed = await until(
 			async () => (await rowsFor(sessionId)).find((r) => r.status === "closed"),
 			{ what: "the row to close" },
@@ -578,8 +647,7 @@ describe("a person's answer reaches Codex", () => {
 
 		await until(() => answers().length > 0);
 
-		expect(answers()).toEqual([{ id: 0, result: { decision: "decline" } }]);
-		expect(ran()).toEqual([]);
+		expect(await writes()).toEqual(["answer 0 decline"]);
 		const closed = await until(async () =>
 			(await rowsFor(sessionId)).find((r) => r.status === "closed"),
 		);
@@ -594,8 +662,7 @@ describe("a person's answer reaches Codex", () => {
 
 		await until(() => answers().length > 0);
 
-		expect(answers()).toEqual([{ id: 0, result: { decision: "cancel" } }]);
-		expect(ran()).toEqual([]);
+		expect(await writes()).toEqual(["answer 0 cancel"]);
 	});
 
 	test("a file change is reported with its diff, approved with the hash of what was shown, and runs once", async () => {
@@ -612,8 +679,7 @@ describe("a person's answer reaches Codex", () => {
 		expect(res.status).toBe(200);
 		await until(() => answers().length > 0);
 
-		expect(answers()).toEqual([{ id: 7, result: { decision: "accept" } }]);
-		expect(ran()).toEqual([{ ran: 7 }]);
+		expect(await writes()).toEqual(["answer 7 accept", "ran 7"]);
 	});
 
 	test("a file change with no diff in hand is reported decline-only after the 2 s wait, and an accept cannot be given", async () => {
@@ -645,8 +711,7 @@ describe("what the host does when nobody answers, or Codex moves first", () => {
 		await world.tracker.tick();
 		await until(() => answers().length > 0);
 
-		expect(answers()).toEqual([{ id: 0, result: { decision: "decline" } }]);
-		expect(ran()).toEqual([]);
+		expect(await writes()).toEqual(["answer 0 decline"]);
 		const closed = await until(async () =>
 			(await rowsFor(sessionId)).find((r) => r.status === "closed"),
 		);
@@ -662,7 +727,7 @@ describe("what the host does when nobody answers, or Codex moves first", () => {
 		);
 
 		expect(closed.closedReason).toBe("interrupted");
-		expect(answers()).toEqual([]);
+		expect(await writes()).toEqual([]);
 		expect(world.tracker.pendingCount()).toBe(0);
 	});
 
@@ -708,8 +773,7 @@ describe("what the host does when nobody answers, or Codex moves first", () => {
 
 		// The old process (still holding the request) is told it is closed, and declines.
 		await until(() => answers().length > 0);
-		expect(answers()).toEqual([{ id: 0, result: { decision: "decline" } }]);
-		expect(ran()).toEqual([]);
+		expect(await writes()).toEqual(["answer 0 decline"]);
 	});
 });
 
@@ -731,6 +795,7 @@ describe("exclude rules", () => {
 		expect(answers()).toEqual([{ id: 0, result: { decision: "decline" } }]);
 		expect(world.calls.slice(before)).toEqual([]);
 		expect(await rowsFor(session.sessionId)).toHaveLength(0);
+		expect(await writes()).toEqual(["answer 0 decline"]);
 	});
 
 	test("a request pending when a rule appears is declined at the next beat, and the gate's closing report closes its row", async () => {
@@ -762,8 +827,7 @@ describe("exclude rules", () => {
 		await world.tracker.tick();
 		await until(() => answers().length > 0, { tick: false });
 
-		expect(answers()).toEqual([{ id: 0, result: { decision: "decline" } }]);
-		expect(ran()).toEqual([]);
+		expect(await writes()).toEqual(["answer 0 decline"]);
 	});
 });
 
@@ -772,8 +836,7 @@ describe("an outage: a request is never queued", () => {
 		const session = await readySession();
 		world.outage = true;
 		control(commandRequest(0));
-		await sleep(80);
-		await world.tracker.tick();
+		await until(() => world.gate.isOffline(), { what: "the gate to notice the outage" });
 
 		expect(world.gate.isOffline()).toBe(true);
 		expect(world.outbox.hasPending(session.sessionId)).toBe(false);
@@ -794,7 +857,7 @@ describe("an outage: a request is never queued", () => {
 		expect(await rowsFor(session.sessionId)).toHaveLength(0);
 		expect(approvalCalls().filter((c) => c.ok)).toEqual([]);
 		expect(world.outbox.hasPending(session.sessionId)).toBe(false);
-		expect(ran()).toEqual([]);
+		expect(await writes()).toEqual(["answer 0 decline"]);
 	});
 
 	test("with no pending approvals a tick does no sync traffic and reads no clock", async () => {
@@ -833,8 +896,7 @@ describe("Stop and a person's answer", () => {
 		await world.tracker.tick();
 		await until(() => answers().length > 0);
 
-		expect(answers().map((a) => a.result.decision)).toEqual(["decline"]);
-		expect(ran()).toEqual([]);
+		expect(await writes()).toEqual(["answer 0 decline"]);
 		const [row] = await rowsFor(sessionId);
 		expect(row.closedReason).toBe("session_stopped");
 		expect(row.firstDeliveredAt).toBeNull();
@@ -856,8 +918,7 @@ describe("Stop and a person's answer", () => {
 
 		await world.tracker.tick();
 		await until(() => answers().length > 0, { tick: false });
-		expect(answers()).toEqual([{ id: 0, result: { decision: "accept" } }]);
-		expect(ran()).toEqual([{ ran: 0 }]);
+		expect(await writes()).toEqual(["answer 0 accept", "ran 0"]);
 		expect((await listApprovals(sessionId)).approvals[0].outcome).toBe("may_have_run");
 
 		await world.tracker.tick();
@@ -884,8 +945,7 @@ describe("Stop and a person's answer", () => {
 
 		await world.tracker.tick();
 		await until(() => answers().length > 0, { tick: false });
-		expect(answers()).toEqual([{ id: 0, result: { decision: "decline" } }]);
-		expect(ran()).toEqual([]);
+		expect(await writes()).toEqual(["answer 0 decline"]);
 		const closed = await until(async () =>
 			(await rowsFor(sessionId)).find((r) => r.status === "closed"),
 		);
@@ -907,10 +967,10 @@ describe("a sync response is not trusted to say accept", () => {
 		});
 
 		await world.tracker.tick();
-		expect(answers()).toEqual([]);
+		expect(await writes()).toEqual([]);
 		world.clock.advance(1_500);
 		await until(() => answers().length > 0);
-		expect(answers()).toEqual([{ id: 0, result: { decision: "accept" } }]);
+		expect(await writes()).toEqual(["answer 0 accept", "ran 0"]);
 	});
 
 	test("an accept for an id this host doesn't hold (a foreign session's, a made-up one) reaches nobody", async () => {
@@ -932,7 +992,7 @@ describe("a sync response is not trusted to say accept", () => {
 			world.clock.advance(1_100);
 		}
 
-		expect(answers()).toEqual([]);
+		expect(await writes()).toEqual([]);
 		expect((await rowsFor(sessionId))[0].status).toBe("pending");
 	});
 
@@ -961,7 +1021,7 @@ describe("a sync response is not trusted to say accept", () => {
 			world.clock.advance(1_100);
 		}
 
-		expect(answers()).toEqual([]);
+		expect(await writes()).toEqual([]);
 		expect((await rowsFor(second.sessionId))[0].status).toBe("pending");
 	});
 
@@ -984,8 +1044,7 @@ describe("a sync response is not trusted to say accept", () => {
 		await world.tracker.tick();
 		await until(() => answers().length > 0, { tick: false });
 
-		expect(answers()).toEqual([{ id: 3, result: { decision: "decline" } }]);
-		expect(ran()).toEqual([]);
+		expect(await writes()).toEqual(["answer 3 decline"]);
 		const closed = await until(async () =>
 			(await rowsFor(session.sessionId)).find((r) => r.status === "closed"),
 		);
@@ -1012,7 +1071,14 @@ describe("a sync response is not trusted to say accept", () => {
 						changes: [{ path: `${world.work}/a.txt`, kind: { type: "add" }, diff: "two\n" }],
 					},
 				});
-				await sleep(120);
+				// Wait until the host has seen the patch and re-reported it, so the write really follows it.
+				await until(
+					() =>
+						approvalCalls().some(
+							(c) => c.ok && (c.body as { revision?: number } | undefined)?.revision === 2,
+						),
+					{ what: "the re-report at revision 2", tick: false },
+				);
 				return json;
 			},
 		});
@@ -1020,8 +1086,7 @@ describe("a sync response is not trusted to say accept", () => {
 		await world.tracker.tick();
 		await until(() => answers().length > 0, { tick: false });
 
-		expect(answers()).toEqual([{ id: 4, result: { decision: "decline" } }]);
-		expect(ran()).toEqual([]);
+		expect(await writes()).toEqual(["answer 4 decline"]);
 	});
 });
 
@@ -1123,4 +1188,212 @@ describe("stopping through the real stop path", () => {
 		expect(ran()).toEqual([]);
 		expect(() => process.kill(pid, 0)).toThrow();
 	});
+});
+
+describe("same-session restart, and several requests at once", () => {
+	test("a second runtime for the same session: the first runtime's approval id can't be accepted on the new request that shares its rpc id", async () => {
+		const first = await openCommand(0);
+		killChild();
+		await until(async () => (await rowsFor(first.sessionId))[0]?.status === "closed");
+
+		await relaunch();
+		await until(() => world.reportedStates.length >= 2, {
+			tick: false,
+			what: "the second launch to report",
+		});
+		control(commandRequest(0));
+		const second = await until(
+			async () => (await rowsFor(first.sessionId)).find((r) => r.status === "pending"),
+			{ what: "the new runtime's row", tick: false },
+		);
+		expect(second.id).not.toBe(first.row.id);
+		expect(second.runtimeEpoch).not.toBe(first.row.runtimeEpoch);
+
+		world.tampers.push({
+			match: /approvals\/sync$/,
+			after: (json) => ({
+				...json,
+				answers: [...json.answers, { approvalId: first.row.id, decision: "accept", revision: 1 }],
+			}),
+		});
+		for (let i = 0; i < 3; i++) {
+			await world.tracker.tick();
+			world.clock.advance(1_100);
+		}
+
+		expect(await writes()).toEqual([]);
+		expect((await rowsFor(first.sessionId)).find((r) => r.id === second.id)?.status).toBe(
+			"pending",
+		);
+	});
+
+	test("a cancel interrupts the turn: the fake resolves the other open request, and nothing is written for it", async () => {
+		const session = await readySession();
+		control(commandRequest(0));
+		control(commandRequest(1));
+		const rows = await until(
+			async () => {
+				const found = await rowsFor(session.sessionId);
+				return found.length === 2 ? found : null;
+			},
+			{ what: "both rows", tick: false },
+		);
+		const first = rows.find((r) => r.rpcId === "0") as (typeof rows)[number];
+		const second = rows.find((r) => r.rpcId === "1") as (typeof rows)[number];
+
+		expect((await decideRow(session.sessionId, first.id, "cancel")).status).toBe(200);
+		await until(() => answers().length > 0);
+		const closed = await until(
+			async () =>
+				(await rowsFor(session.sessionId)).find((r) => r.id === second.id && r.status === "closed"),
+			{ what: "the other request to close" },
+		);
+
+		expect(closed.closedReason).toBe("interrupted");
+		expect(await writes()).toEqual(["answer 0 cancel"]);
+	});
+
+	test("a decision word that outlives one approval is never written: the host sends a decline and nothing runs", async () => {
+		const { sessionId } = await openCommand();
+		await decide(sessionId, "accept");
+		world.tampers.push({
+			match: /approvals\/sync$/,
+			once: true,
+			after: (json) => ({
+				...json,
+				answers: json.answers.map((a: { decision: string }) => ({
+					...a,
+					decision: "acceptForSession",
+				})),
+			}),
+		});
+
+		await world.tracker.tick();
+		await until(() => answers().length > 0, { tick: false });
+
+		expect(await writes()).toEqual(["answer 0 decline"]);
+	});
+});
+
+describe("file changes of every kind, and exclusion outside the working directory", () => {
+	function changeFrames(id: number, changes: unknown[]) {
+		const frames = fileChangeFrames(id);
+		frames.started.params.item.changes = changes as never;
+		return frames;
+	}
+
+	test("an update, a move and a delete are each reported with their kind and diff, and one accept applies the patch", async () => {
+		const session = await readySession();
+		const frames = changeFrames(21, [
+			{
+				path: `${world.work}/existing.txt`,
+				kind: { type: "update", move_path: null },
+				diff: "@@ -1 +1 @@\n-line two\n+line TWO\n",
+			},
+			{
+				path: `${world.work}/old-name.txt`,
+				kind: { type: "update", move_path: `${world.work}/new-name.txt` },
+				diff: "@@ -1 +1 @@\n-a\n+b\n",
+			},
+			{ path: `${world.work}/gone.txt`, kind: { type: "delete" }, diff: "removed\n" },
+		]);
+		control(frames.started);
+		control(frames.request);
+		const row = await theRow(session.sessionId);
+		expect(row.approvable).toBe(true);
+		const shown = JSON.stringify(row.presentation);
+		for (const expected of [
+			"existing.txt",
+			"old-name.txt",
+			"new-name.txt",
+			"gone.txt",
+			"line TWO",
+		]) {
+			expect(shown).toContain(expected);
+		}
+		const presentation = (
+			typeof row.presentation === "string" ? JSON.parse(row.presentation) : row.presentation
+		) as { changes: Array<{ kind: string; movePath: string | null }> };
+		expect(presentation.changes.map((c) => c.kind)).toEqual(["update", "update", "delete"]);
+		expect(presentation.changes[1].movePath).toBe(`${world.work}/new-name.txt`);
+
+		expect((await decide(session.sessionId, "accept")).res.status).toBe(200);
+		await until(() => answers().length > 0);
+		expect(await writes()).toEqual(["answer 21 accept", "ran 21"]);
+	});
+
+	test("a path outside the working directory that a rule covers is declined locally, with nothing reported", async () => {
+		const session = await readySession();
+		const secret = join(world.home, "secret");
+		writeFileSync(join(world.home, ".agentpulse", "exclude"), `${secret}\n`, { mode: 0o600 });
+		chmodSync(join(world.home, ".agentpulse", "exclude"), 0o600);
+		const before = world.calls.length;
+
+		const frames = fileChangeFrames(22, "x\n", `${secret}/token.txt`);
+		control(frames.started);
+		control(frames.request);
+		await until(() => answers().length > 0, { tick: false });
+
+		expect(world.calls.slice(before)).toEqual([]);
+		expect(await rowsFor(session.sessionId)).toHaveLength(0);
+		expect(await writes()).toEqual(["answer 22 decline"]);
+	});
+
+	test("a grantRoot outside the working directory that a rule covers is declined locally too", async () => {
+		const session = await readySession();
+		const secret = join(world.home, "secret");
+		writeFileSync(join(world.home, ".agentpulse", "exclude"), `${secret}\n`, { mode: 0o600 });
+		chmodSync(join(world.home, ".agentpulse", "exclude"), 0o600);
+		const before = world.calls.length;
+
+		const frames = fileChangeFrames(23);
+		control(frames.started);
+		control({ ...frames.request, params: { ...frames.request.params, grantRoot: secret } });
+		await until(() => answers().length > 0, { tick: false });
+
+		expect(world.calls.slice(before)).toEqual([]);
+		expect(await rowsFor(session.sessionId)).toHaveLength(0);
+		expect(await writes()).toEqual(["answer 23 decline"]);
+	});
+});
+
+describe("the recorded Codex 0.163.0 approval requests, replayed by the fake", () => {
+	const FIXTURES = join(import.meta.dir, "__fixtures__", "codex-0.163");
+	const runs = readdirSync(FIXTURES)
+		.filter((name) => name.endsWith(".jsonl"))
+		.map((name) => ({
+			file: join(FIXTURES, name),
+			name,
+			frames: readFileSync(join(FIXTURES, name), "utf8")
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => JSON.parse(line) as { dir: string; frame: { method: string; id: number } }),
+		}));
+	const cases = runs.flatMap(({ file, name, frames }) =>
+		frames.flatMap((entry, index) =>
+			entry.dir === "in" &&
+			/^item\/(commandExecution|fileChange)\/requestApproval$/.test(entry.frame.method)
+				? [{ file, name, index, frame: entry.frame }]
+				: [],
+		),
+	);
+
+	test("the recording holds the requests this table is about", () => {
+		expect(cases.length).toBeGreaterThanOrEqual(10);
+	});
+
+	for (const { file, name, index, frame } of cases) {
+		test(`${name} frame ${index} (${frame.method}): reported approvable, accepted by a person, written once, and it ran`, async () => {
+			const session = await readySession();
+			appendFileSync(world.controlPath, `${JSON.stringify({ replay: { file, index } })}\n`);
+			const row = await theRow(session.sessionId);
+			expect(row.approvable).toBe(true);
+			expect(row.rpcId).toBe(JSON.stringify(frame.id));
+
+			expect((await decide(session.sessionId, "accept")).res.status).toBe(200);
+			await until(() => answers().length > 0);
+
+			expect(await writes()).toEqual([`answer ${frame.id} accept`, `ran ${frame.id}`]);
+		});
+	}
 });

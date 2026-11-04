@@ -555,13 +555,14 @@ export async function stopManagedCodexSession(
 	sessionId: string,
 	options: { interruptTimeoutMs?: number } = {},
 ) {
+	// Anything still held is declined now, so nothing is let through while the turn is being stopped. This
+	// comes before the runtime lookup: a stop for a session whose runtime isn't in the map still fences.
+	sharedCodexApprovals().fence(sessionId);
+
 	const runtime = runtimes.get(sessionId);
 	if (!runtime) {
 		throw new Error("Managed Codex runtime is not available on this supervisor.");
 	}
-
-	// Anything still held is declined now, so nothing is let through while the turn is being stopped.
-	sharedCodexApprovals().fence(sessionId);
 
 	if (runtime.client && runtime.activeTurnId) {
 		try {

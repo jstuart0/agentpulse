@@ -15,10 +15,7 @@ import {
 	promptClaudeHeadlessSession,
 	promptClaudeInteractiveSession,
 } from "./providers/claude.js";
-import {
-	configureCodexApprovals,
-	createCodexApprovalTracker,
-} from "./providers/codex-approvals.js";
+import { wireCodexApprovals } from "./providers/codex-approvals-wiring.js";
 import {
 	launchManagedCodexRequest,
 	managedCodexRuntimeCount,
@@ -65,8 +62,6 @@ const BRIDGE_DRAIN_MS = 1_000;
 const OUTBOX_FLUSH_MS = 3_000;
 /** How often the heartbeat is tried while the server is unreachable. */
 const OFFLINE_PROBE_MS = 10_000;
-/** How often the approvals tracker beats: deadlines, report retries and the poll. It does nothing when nothing is held. */
-const APPROVALS_TICK_MS = 1_000;
 /** The watchdog does not wait longer than this to learn how many terminal bridges are alive. */
 const BRIDGE_COUNT_TIMEOUT_MS = 2_000;
 
@@ -249,12 +244,7 @@ async function main() {
 	// Every approval a managed Codex session asks for is answered here: declined unless the server issues
 	// an accept for exactly that request. The tracker reaches the server only through the gate, and the
 	// server tells it what it can do on registration and on every heartbeat (absent means off).
-	const approvals = createCodexApprovalTracker({ gate });
-	approvals.setServerFeatures(registration.serverFeatures);
-	configureCodexApprovals(approvals);
-	setInterval(() => {
-		approvals.tick().catch((error) => console.error("[supervisor] approvals tick failed", error));
-	}, APPROVALS_TICK_MS).unref();
+	const approvalsWiring = wireCodexApprovals({ gate, serverFeatures: registration.serverFeatures });
 
 	// The interactive terminal bridge holds no credential and opens no connection: it writes its reports to
 	// disk and this drain sends them through the gate.
@@ -356,12 +346,14 @@ async function main() {
 		try {
 			// Whether the exclude file on this host is in use, absent or broken, for the Hosts page.
 			// Optional on the wire: a server that predates the field ignores the body.
-			const beat = (await request(`/supervisors/${registration.supervisor.id}/heartbeat`, {
-				method: "POST",
-				body: heartbeatBody(gate.rulesState(), heartbeatOutbox(outbox.summary(), Date.now())),
-			})) as { serverFeatures?: string[] } | null;
-			// The last successful answer wins; a failed heartbeat leaves the last known value alone.
-			approvals.setServerFeatures(beat?.serverFeatures);
+			// The last successful answer's features win; a failed heartbeat leaves the last known value alone.
+			await approvalsWiring.applyHeartbeat(
+				() =>
+					request(`/supervisors/${registration.supervisor.id}/heartbeat`, {
+						method: "POST",
+						body: heartbeatBody(gate.rulesState(), heartbeatOutbox(outbox.summary(), Date.now())),
+					}) as Promise<{ serverFeatures?: string[] } | null>,
+			);
 			lastHeartbeatOkAt = Date.now();
 			staleLogged = false;
 			gate.noteServerReachable();
