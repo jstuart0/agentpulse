@@ -22,7 +22,7 @@ describe("disposeRuntimesAndExit", () => {
 		const headless = await import("../providers/claude-headless.js");
 		const codex = await import("../providers/codex-managed.js");
 		spies.push(
-			spyOn(codex, "disposeAllManagedCodexRuntimes").mockImplementation(() => {
+			spyOn(codex, "disposeAllManagedCodexRuntimes").mockImplementation(async () => {
 				order.push("codex");
 			}),
 			spyOn(headless, "disposeAllHeadlessRuntimes").mockImplementation(async () => {
@@ -36,5 +36,45 @@ describe("disposeRuntimesAndExit", () => {
 		);
 		await expect(disposeRuntimesAndExit()).rejects.toThrow("exit called");
 		expect(order).toEqual(["codex", "headless", "exit"]);
+	});
+
+	test("awaits codex shutdown: exit isn't called until it settles", async () => {
+		const order: string[] = [];
+		const codex = await import("../providers/codex-managed.js");
+		const headless = await import("../providers/claude-headless.js");
+		spies.push(
+			spyOn(codex, "disposeAllManagedCodexRuntimes").mockImplementation(async () => {
+				await new Promise((r) => setTimeout(r, 60));
+				order.push("codex settled");
+			}),
+			spyOn(headless, "disposeAllHeadlessRuntimes").mockImplementation(async () => {}),
+			spyOn(process, "exit").mockImplementation((() => {
+				order.push("exit");
+				throw new Error("exit called");
+			}) as never),
+		);
+		await expect(disposeRuntimesAndExit({ codexBoundMs: 5_000 })).rejects.toThrow("exit called");
+		expect(order).toEqual(["codex settled", "exit"]);
+	});
+
+	test("awaits codex shutdown: exit is called within the bound when it never settles", async () => {
+		const codex = await import("../providers/codex-managed.js");
+		const headless = await import("../providers/claude-headless.js");
+		const exit = spyOn(process, "exit").mockImplementation((() => {
+			throw new Error("exit called");
+		}) as never);
+		spies.push(
+			spyOn(codex, "disposeAllManagedCodexRuntimes").mockImplementation(
+				() => new Promise<void>(() => {}),
+			),
+			spyOn(headless, "disposeAllHeadlessRuntimes").mockImplementation(async () => {}),
+			exit,
+		);
+		const began = Date.now();
+		await expect(disposeRuntimesAndExit({ codexBoundMs: 80 })).rejects.toThrow("exit called");
+		const took = Date.now() - began;
+		expect(exit).toHaveBeenCalledWith(1);
+		expect(took).toBeGreaterThanOrEqual(70);
+		expect(took).toBeLessThan(2_000);
 	});
 });

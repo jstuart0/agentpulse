@@ -1,3 +1,4 @@
+import { APPROVAL_RESOLVED_EVENT_TYPE } from "../../shared/codex-approvals.js";
 import { AGENT_METADATA } from "../../shared/constants.js";
 import type {
 	AgentType,
@@ -75,7 +76,11 @@ function categorizeOversizeEventType(eventType: string): EventCategory {
 	) {
 		return "tool_event";
 	}
-	if (eventType === "PermissionRequest" || eventType === "PermissionDenied")
+	if (
+		eventType === "PermissionRequest" ||
+		eventType === "PermissionDenied" ||
+		eventType === APPROVAL_RESOLVED_EVENT_TYPE
+	)
 		return "permission_event";
 	if (eventType === "UserAcknowledge" || eventType === "UserUnacknowledge") return "user_ack";
 	if (
@@ -299,6 +304,24 @@ function normalizeSystemEvent(payload: HookEventPayload, agentType: AgentType): 
 /** Event names that start with "ai" are the watcher's own (AiContinueSent, AiReport, ...). */
 const RESERVED_EVENT_NAME_RE = /^ai/i;
 
+/**
+ * True for a name only the server may write: the watcher's own ("Ai...") and the
+ * event that records a Codex approval closing. Shared by the hook path here and
+ * the supervisor path in managed-session-state.ts, so the two can't disagree.
+ */
+export function isServerOnlyEventName(name: unknown): boolean {
+	if (typeof name !== "string") return false;
+	return RESERVED_EVENT_NAME_RE.test(name.trim()) || isApprovalResolvedEventName(name);
+}
+
+/** The name of the event recording a Codex approval closing, however a sender spells its case. */
+export function isApprovalResolvedEventName(name: unknown): boolean {
+	return (
+		typeof name === "string" &&
+		name.trim().toLowerCase() === APPROVAL_RESOLVED_EVENT_TYPE.toLowerCase()
+	);
+}
+
 export function normalizeHookEvent(
 	payload: HookEventPayload,
 	agentType: AgentType,
@@ -309,7 +332,7 @@ export function normalizeHookEvent(
 	// forged AiContinueSent would read as proof that a prompt was sent.
 	for (const claimed of [payload.hook_event_name, payload.provider_event_name]) {
 		const name = typeof claimed === "string" ? claimed.trim() : "";
-		if (RESERVED_EVENT_NAME_RE.test(name)) {
+		if (isServerOnlyEventName(name)) {
 			console.warn(
 				JSON.stringify({
 					kind: "ingest_reserved_event_type",

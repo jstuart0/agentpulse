@@ -215,6 +215,8 @@ const EXPECTED_OWNER_CHECKED_ROUTES = new Set([
 	"PUT /ai/sessions/:sessionId/watcher",
 	"DELETE /ai/sessions/:sessionId/watcher",
 	"POST /ai/ask/threads/:id/cancel",
+	// Codex approvals (AGEN-87): judged by the approval service; accept also needs a signed-in person.
+	"POST /sessions/:sessionId/approvals/:approvalId/decision",
 	// Ask threads belong to whoever asked.
 	"GET /ai/ask/threads",
 	"GET /ai/ask/threads/:id",

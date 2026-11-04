@@ -14,9 +14,8 @@ const { eq, sql } = await import("drizzle-orm");
 const { config } = await import("../config.js");
 const { getDb, getSqlite, initializeDatabase } = await import("../db/client.js");
 const { withTransaction } = await import("../db/with-transaction.js");
-const { events, managedDeliveryReceipts, sessions, settings } = await import(
-	"../db/schema/index.js"
-);
+const { codexApprovalAudit, codexApprovals, events, managedDeliveryReceipts, sessions, settings } =
+	await import("../db/schema/index.js");
 const { seedReceipts } = await import("../test-utils/receipt-fixtures.js");
 const { upsertSetting } = await import("./settings-service.js");
 const { getSearchBackend, __resetSearchBackendForTests } = await import("./search/index.js");
@@ -725,5 +724,114 @@ describe("the statements about what retention deletes are true (P5-23)", () => {
 		expect(claude).not.toContain("Only `events` rows are deleted");
 		expect(k8s).toMatch(/session summaries/i);
 		expect(claude).toContain("ai_session_summaries");
+	});
+});
+
+describe("codex approvals (AGEN-87)", () => {
+	const isoDaysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
+
+	async function seedApproval(
+		sessionId: string,
+		rpcId: string,
+		over: Partial<typeof codexApprovals.$inferInsert>,
+	): Promise<string> {
+		const [row] = await getDb()
+			.insert(codexApprovals)
+			.values({
+				sessionId,
+				runtimeEpoch: "e",
+				rpcId,
+				requestKind: "command",
+				threadId: "t",
+				turnId: "t",
+				itemId: "i",
+				presentationHash: "h",
+				presentationRevision: 1,
+				approvable: true,
+				status: "closed",
+				closedReason: "applied",
+				createdAt: isoDaysAgo(30),
+				expiresAt: isoDaysAgo(30),
+				closedAt: isoDaysAgo(30),
+				updatedAt: isoDaysAgo(30),
+				...over,
+			})
+			.returning({ id: codexApprovals.id });
+		return row.id;
+	}
+
+	const rowsOf = async (sessionId: string) =>
+		(
+			await getDb().select().from(codexApprovals).where(eq(codexApprovals.sessionId, sessionId))
+		).map((r) => r.rpcId);
+
+	test("a closed row past the events cutoff goes, a recent one and every open one stay, and the audit is never touched", async () => {
+		await seedSession("ca1");
+		const oldClosed = await seedApproval("ca1", "old-closed", {});
+		await seedApproval("ca1", "recent-closed", {
+			expiresAt: isoDaysAgo(1),
+			closedAt: isoDaysAgo(1),
+		});
+		await seedApproval("ca1", "ancient-pending", {
+			status: "pending",
+			closedReason: null,
+			closedAt: null,
+		});
+		await seedApproval("ca1", "ancient-answered", {
+			status: "answered",
+			decision: "accept",
+			closedReason: null,
+			closedAt: null,
+		});
+		await getDb()
+			.insert(codexApprovalAudit)
+			.values({
+				approvalId: oldClosed,
+				sessionId: "ca1",
+				actorLabel: "user",
+				requestKind: "command",
+				revision: 1,
+				presentationHash: "h",
+				decision: "accept",
+				outcome: "applied",
+				createdAt: isoDaysAgo(30),
+				completedAt: isoDaysAgo(30),
+			});
+		await upsertSetting("eventsRetentionDays", 7);
+
+		const result = await runRetentionPass();
+		expect(result.approvalsDeleted).toBe(1);
+		expect((await rowsOf("ca1")).sort()).toEqual([
+			"ancient-answered",
+			"ancient-pending",
+			"recent-closed",
+		]);
+		const audit = await getDb()
+			.select()
+			.from(codexApprovalAudit)
+			.where(eq(codexApprovalAudit.approvalId, oldClosed));
+		expect(audit).toHaveLength(1);
+		expect(audit[0].outcome).toBe("applied");
+		expect(getRetentionStatus().lastRun?.approvalsDeleted).toBe(1);
+	});
+
+	test("nothing is deleted while event retention is off", async () => {
+		await seedSession("ca2");
+		await seedApproval("ca2", "old-closed", {});
+		const result = await runRetentionPass();
+		expect(result.disabled).toBe(true);
+		expect(result.approvalsDeleted).toBe(0);
+		expect(await rowsOf("ca2")).toEqual(["old-closed"]);
+	});
+
+	test("batches: more closed rows than the batch size all go", async () => {
+		await seedSession("ca3");
+		for (let i = 0; i < 7; i++)
+			await seedApproval("ca3", `old-${i}`, { expiresAt: isoDaysAgo(30 + i) });
+		await upsertSetting("eventsRetentionDays", 7);
+		_setRetentionBatchSizeForTest(3);
+		const result = await runRetentionPass();
+		expect(result.approvalsDeleted).toBe(7);
+		expect(await rowsOf("ca3")).toEqual([]);
 	});
 });

@@ -22,10 +22,17 @@ import {
 import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
+import { fenceApprovalsForStop } from "./codex-approvals-fence.js";
+import { type ClosedApproval, runApprovalClosedEffects } from "./codex-approvals.js";
 import { buildStoredCliArgs, validateAgainstSupervisor } from "./launch-compatibility.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { bumpVersionAndReload } from "./projects/cache.js";
-import { ownerLaunchJoin, resolveSessionOwner, sessionOwnedBy } from "./session-ownership.js";
+import {
+	getSessionOwnerHostStates,
+	ownerLaunchJoin,
+	resolveSessionOwner,
+	sessionOwnedBy,
+} from "./session-ownership.js";
 import { getSupervisor } from "./supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "./template-preview.js";
 import { parseDbTimestamp } from "./util/db-time.js";
@@ -33,12 +40,15 @@ import { parseDbTimestamp } from "./util/db-time.js";
 /** A database handle: the shared one, or the transaction a caller is running inside. */
 type DbHandle = ReturnType<typeof getDb>;
 
-function nowIso() {
-	return new Date().toISOString();
+/** Epoch milliseconds; tests inject one where a control path needs to move time. */
+type Clock = () => number;
+
+function nowIso(clock: Clock = Date.now) {
+	return new Date(clock()).toISOString();
 }
 
-function lockExpiryIso() {
-	return new Date(Date.now() + 90_000).toISOString();
+function lockExpiryIso(clock: Clock = Date.now) {
+	return new Date(clock() + 90_000).toISOString();
 }
 
 /**
@@ -121,6 +131,7 @@ export async function expireStaleControlLock(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	db: any,
 	sessionId: string,
+	clock: Clock = Date.now,
 ) {
 	const [managed] = await db
 		.select()
@@ -128,7 +139,7 @@ export async function expireStaleControlLock(
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
 	if (!managed?.activeControlActionId || !managed.controlLockExpiresAt) return;
-	if (new Date(managed.controlLockExpiresAt).getTime() > Date.now()) return;
+	if (new Date(managed.controlLockExpiresAt).getTime() > clock()) return;
 
 	const [action] = await db
 		.select()
@@ -136,7 +147,7 @@ export async function expireStaleControlLock(
 		.where(eq(controlActions.id, managed.activeControlActionId))
 		.limit(1);
 
-	const timestamp = nowIso();
+	const timestamp = nowIso(clock);
 	await db
 		.update(controlActions)
 		.set({
@@ -294,12 +305,34 @@ export class EmptyPromptError extends Error {
 	}
 }
 
+/**
+ * The host that owns the session is not connected, so nothing queued now would
+ * be taken within the 90 s the control lock lasts. The host may come back.
+ */
+export class HostOfflineError extends Error {
+	readonly code = "host_offline";
+	constructor() {
+		super("The host running this session is offline, so it can't be controlled right now.");
+		this.name = "HostOfflineError";
+	}
+}
+/** The host that owns the session was removed (or never existed), so it will not come back. */
+export class HostGoneError extends Error {
+	readonly code = "host_gone";
+	constructor() {
+		super("The host that ran this session was removed from AgentPulse.");
+		this.name = "HostGoneError";
+	}
+}
+
 export type EnqueueRefusal =
 	| "not_managed"
 	| "session_missing"
 	| "launch_missing"
 	| "launch_mismatch"
-	| "control_busy";
+	| "control_busy"
+	| "host_offline"
+	| "host_gone";
 
 function refusalToError(reason: EnqueueRefusal): Error {
 	switch (reason) {
@@ -313,7 +346,28 @@ function refusalToError(reason: EnqueueRefusal): Error {
 			return new LaunchNotFoundError();
 		case "launch_mismatch":
 			return new LaunchMismatchError();
+		case "host_offline":
+			return new HostOfflineError();
+		case "host_gone":
+			return new HostGoneError();
 	}
+}
+
+/**
+ * Stop and prompt are taken by the owning host within seconds or not at all, so
+ * a host that isn't live is refused here instead of failing 90 s later. Read on
+ * the caller's transaction. A lease that runs out between this read and the
+ * insert is accepted: the action then fails by the existing lock expiry.
+ */
+async function hostRefusal(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	sessionId: string,
+	clock: Clock = Date.now,
+): Promise<Extract<EnqueueRefusal, "host_offline" | "host_gone"> | null> {
+	const host = (await getSessionOwnerHostStates([sessionId], clock(), tx)).get(sessionId);
+	if (!host || host.state === "live") return null;
+	return host.state === "offline" ? "host_offline" : "host_gone";
 }
 
 /**
@@ -328,12 +382,13 @@ export async function takeControlLock(
 	sessionId: string,
 	controlActionId: string,
 	timestamp: string,
+	clock: Clock = Date.now,
 ): Promise<boolean> {
 	const taken = await tx
 		.update(managedSessions)
 		.set({
 			activeControlActionId: controlActionId,
-			controlLockExpiresAt: lockExpiryIso(),
+			controlLockExpiresAt: lockExpiryIso(clock),
 			updatedAt: timestamp,
 		})
 		.where(
@@ -351,10 +406,14 @@ export async function takeControlLock(
 export async function enqueueStopInTx(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	tx: any,
-	input: { sessionId: string; actor: Actor; controlActionId: string },
-): Promise<{ ok: true; action: ControlAction } | { ok: false; reason: EnqueueRefusal }> {
+	input: { sessionId: string; actor: Actor; controlActionId: string; now?: Clock },
+): Promise<
+	| { ok: true; action: ControlAction; fencedApprovals: ClosedApproval[] }
+	| { ok: false; reason: EnqueueRefusal }
+> {
 	const { sessionId, actor, controlActionId } = input;
-	await expireStaleControlLock(tx, sessionId);
+	const clock = input.now ?? Date.now;
+	await expireStaleControlLock(tx, sessionId, clock);
 	const [managed] = await tx
 		.select()
 		.from(managedSessions)
@@ -367,11 +426,17 @@ export async function enqueueStopInTx(
 	if (stopLaunch && !(await launchOwnedBySessionOwner(tx, sessionId, stopLaunch))) {
 		return { ok: false, reason: "launch_mismatch" };
 	}
+	const stopHostRefusal = await hostRefusal(tx, sessionId, clock);
+	if (stopHostRefusal) return { ok: false, reason: stopHostRefusal };
 
-	const timestamp = nowIso();
-	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp))) {
+	const timestamp = nowIso(clock);
+	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp, clock))) {
 		return { ok: false, reason: "control_busy" };
 	}
+	// The Stop fence for Codex approvals: no accept is issued after this commits. It runs
+	// only once the lock is ours (a Stop refused control_busy fences nothing) and on this
+	// transaction, so the fence and the lock commit or roll back together.
+	const fence = await fenceApprovalsForStop(tx, sessionId, controlActionId, clock());
 	const [action] = await tx
 		.insert(controlActions)
 		.values({
@@ -387,16 +452,26 @@ export async function enqueueStopInTx(
 			updatedAt: timestamp,
 		})
 		.returning();
-	return { ok: true, action: mapControlAction(action) };
+	return { ok: true, action: mapControlAction(action), fencedApprovals: fence.closed };
 }
 
-/** Queues a stop. With `tx` it runs inside the caller's transaction; without one it opens its own. */
-export async function queueStopAction(sessionId: string, actor: Actor, tx?: DbHandle) {
-	const input = { sessionId, actor, controlActionId: crypto.randomUUID() };
+/**
+ * Queues a stop. With `tx` it runs inside the caller's transaction; without one it opens its own.
+ * The timeline and wait side effects of any approvals the Stop closed run after the commit this
+ * function owns; a caller passing its own `tx` commits it itself, and the sweep covers its rows.
+ */
+export async function queueStopAction(
+	sessionId: string,
+	actor: Actor,
+	tx?: DbHandle,
+	deps: { now?: Clock } = {},
+) {
+	const input = { sessionId, actor, controlActionId: crypto.randomUUID(), now: deps.now };
 	const result = tx
 		? await enqueueStopInTx(tx, input)
 		: await withAdminLock((own) => enqueueStopInTx(own, input));
 	if (!result.ok) throw refusalToError(result.reason);
+	if (!tx) await runApprovalClosedEffects(result.fencedApprovals, deps);
 	return result.action;
 }
 
@@ -440,6 +515,8 @@ export async function enqueuePromptInTx(
 	if (!(await launchOwnedBySessionOwner(tx, sessionId, launch))) {
 		return { ok: false, reason: "launch_mismatch" };
 	}
+	const promptHostRefusal = await hostRefusal(tx, sessionId);
+	if (promptHostRefusal) return { ok: false, reason: promptHostRefusal };
 
 	const timestamp = nowIso();
 	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp))) {
@@ -539,8 +616,13 @@ export async function retryLaunchForSession(sessionId: string, actor: Actor) {
 	if (templateErrors.length > 0) {
 		throw new Error(`Launch can't be retried: ${templateErrors.join(" ")}`);
 	}
+	// A retry to an offline host still works: the clone stays validated until that host
+	// claims it. One aimed at a host that was removed never will, so nothing is cloned.
 	const retryHostId = original.requestedSupervisorId ?? original.resolvedSupervisorId;
 	const retryHost = retryHostId ? await getSupervisor(retryHostId) : null;
+	if (original.requestedSupervisorId && (!retryHost || retryHost.enrollmentState === "revoked")) {
+		throw new HostGoneError();
+	}
 	if (retryHost) {
 		const { errors } = validateAgainstSupervisor(
 			retryTemplate,

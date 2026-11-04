@@ -115,6 +115,9 @@ const ERROR_TABLE: ReadonlyArray<{
 			if (reason === "control_busy") {
 				return "AgentPulse is busy: another action is already running on that session, so the prompt was NOT sent and the request is still open. Retryable: wait a few seconds and call decide_hitl again.";
 			}
+			if (reason === "host_gone") {
+				return "AgentPulse can't type into that session: the host that ran it was removed, so the prompt was NOT sent and the request is still open. Decline it, or answer in the session.";
+			}
 			return `AgentPulse can't type into that session${reason ? ` (${reason})` : ""}, so the prompt was NOT sent and the request is still open. Decline it, or answer in the session.`;
 		},
 	},
@@ -183,6 +186,41 @@ const ERROR_TABLE: ReadonlyArray<{
 		error: "prompt_unsafe",
 		message:
 			"That prompt has characters AgentPulse won't type into a session. Nothing was sent and the request is still open.",
+	},
+	// Declining a managed Codex approval (decline_approval, list_pending_approvals).
+	{
+		status: 404,
+		error: "approval_not_found",
+		message: "AgentPulse has no such approval on that session. Call list_pending_approvals again.",
+	},
+	{
+		status: 409,
+		error: "session_stopped",
+		message: "That session was stopped, so the approval is closed and nothing will run.",
+	},
+	{
+		status: 409,
+		error: "session_stopping",
+		message: "That session is being stopped, so the approval can't be answered. Nothing will run.",
+	},
+	{
+		status: 409,
+		error: "session_unknown",
+		message: "AgentPulse can't find that session's live process. Nothing was changed.",
+	},
+	{
+		status: 409,
+		error: "host_offline",
+		// Stop and prompt carry their own sentence; the approval routes send the bare code.
+		message: (body) =>
+			bodyMessage(body) ??
+			"The host running that session isn't connected, so nothing was sent. The request expires on its own and is declined then.",
+	},
+	{
+		status: 409,
+		error: "host_gone",
+		message: (body) =>
+			bodyMessage(body) ?? "The host that ran that session was removed, so nothing was sent.",
 	},
 	// Ownership and role refusals (team mode). The bare codes are opaque to a
 	// model or a script; each says what is needed instead.

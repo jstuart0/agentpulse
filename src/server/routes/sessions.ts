@@ -49,6 +49,8 @@ import {
 	judgeForeignKeyWrite,
 } from "../services/authorization.js";
 import {
+	HostGoneError,
+	HostOfflineError,
 	listControlActionsForSession,
 	queuePromptAction,
 	queueStopAction,
@@ -898,6 +900,14 @@ sessionsRouter.get("/sessions/:sessionId/control-actions", async (c) => {
 	return c.json({ controlActions: actions });
 });
 
+/** A control request refused because the session's host isn't there: 409 with a code a client can branch on. */
+function hostRefusalResponse(c: Context, error: unknown) {
+	if (error instanceof HostOfflineError || error instanceof HostGoneError) {
+		return c.json({ error: error.code, message: error.message }, 409);
+	}
+	return null;
+}
+
 sessionsRouter.post("/sessions/:sessionId/stop", async (c: Context) => {
 	const refusal = await refuseUnlessMayChange(c, c.req.param("sessionId") ?? "");
 	if (refusal) return refusal;
@@ -906,6 +916,8 @@ sessionsRouter.post("/sessions/:sessionId/stop", async (c: Context) => {
 		const action = await queueStopAction(c.req.param("sessionId"), actorFromAuthUser(authUser));
 		return c.json({ action: redactControlAction(action, { includePrompt: true }) }, 202);
 	} catch (error) {
+		const hostRefusal = hostRefusalResponse(c, error);
+		if (hostRefusal) return hostRefusal;
 		return c.json({ error: error instanceof Error ? error.message : "Unable to queue stop" }, 400);
 	}
 });
@@ -923,6 +935,8 @@ sessionsRouter.post("/sessions/:sessionId/prompt", async (c: Context) => {
 		);
 		return c.json({ action: redactControlAction(action, { includePrompt: true }) }, 202);
 	} catch (error) {
+		const hostRefusal = hostRefusalResponse(c, error);
+		if (hostRefusal) return hostRefusal;
 		return c.json(
 			{ error: error instanceof Error ? error.message : "Unable to queue prompt" },
 			400,
@@ -948,6 +962,8 @@ sessionsRouter.post("/sessions/:sessionId/retry", async (c: Context) => {
 		>;
 		return c.json({ ...result, launchRequest: { ...launch, launchSpec: spec } }, 201);
 	} catch (error) {
+		const hostRefusal = hostRefusalResponse(c, error);
+		if (hostRefusal) return hostRefusal;
 		return c.json({ error: error instanceof Error ? error.message : "Unable to retry" }, 400);
 	}
 });
@@ -1203,7 +1219,10 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 // is an eighth child with the same cascade (born with its FK on both dialects,
 // not in the rebuild list), so a session's summary goes with it. So is
 // managed_delivery_receipts (AGEN-83), the ninth: a deleted session's delivery
-// receipts go with it.
+// receipts go with it. codex_approvals (AGEN-87) is the tenth. Its append-only
+// audit (codex_approval_audit) has no foreign key and survives the delete; a
+// BEFORE DELETE trigger on codex_approvals finalizes any audit row still pending,
+// as session_deleted, or session_deleted_after_issue when an accept had been issued.
 //
 // We wrap the deletes in withTransaction() so any failure leaves the row
 // in place rather than partially deleted.

@@ -27,6 +27,7 @@ import { capToolResult } from "./output.js";
 import { registerResources } from "./resources.js";
 import { SCOPE_MANAGE, SCOPE_OBSERVE } from "./scope-constants.js";
 import { registerAiTools } from "./tools/ai.js";
+import { registerApprovalTools } from "./tools/approvals.js";
 import { registerCatalogTools } from "./tools/catalog.js";
 import { registerDecideTools } from "./tools/decide.js";
 import { registerOrchestrateTools } from "./tools/orchestrate.js";
@@ -211,6 +212,7 @@ export function buildMcpServer({ client, scopes }: BuildMcpServerOptions): Build
 	registerSessionActionTools(ctx, flags);
 	registerTemplateMutationTools(ctx, flags);
 	registerDecideTools(ctx, flags);
+	registerApprovalTools(ctx, flags);
 	if (flags.hasObserve) registerResources(server, client);
 
 	return { server, registry };

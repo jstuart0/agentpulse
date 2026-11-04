@@ -50,6 +50,16 @@ import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+	CODEX_SYNC_TIMEOUT_MS,
+	type CodexApprovalLive,
+	type CodexApprovalReportRequest,
+	type CodexApprovalReportResponse,
+	type CodexApprovalResolved,
+	type ParsedApprovalSyncResponse,
+	parseApprovalReportResponse,
+	parseApprovalSyncResponse,
+} from "../../shared/codex-approvals.js";
+import {
 	type LoadExcludeRulesResult,
 	MAX_CWD_LENGTH,
 	evaluateExclusion,
@@ -77,6 +87,7 @@ import type { OutboxEntry, OutboxSummary, ReportOutbox } from "./report-outbox.j
 import {
 	BACKOFF_BUDGET_MS,
 	type CredentialTripwire,
+	SupervisorNetworkError,
 	SupervisorRequestError,
 	classifyReportFailure,
 	markCredentialHandled,
@@ -137,6 +148,24 @@ export type ReportOutcome = "sent" | "queued" | "excluded" | "blocked";
 /** Options for events: a stable delivery id (generated when omitted) the server dedupes on, and whether this is a late replay. */
 export type ReportEventsOptions = { deliveryId?: string; replay?: boolean };
 export type ReportStateOptions = { replay?: boolean };
+
+/**
+ * What became of an approval report. Approvals are never queued (a request that reaches the server after
+ * its runtime is gone would present a dead approval as answerable), so there is no `queued`: a report
+ * either went, or was held back by the rules, or threw.
+ */
+export type ApprovalReportResult =
+	| { outcome: "sent"; response: CodexApprovalReportResponse }
+	| { outcome: "excluded" | "blocked" };
+
+/** One poll's contents, each entry tagged with the session it is about so the gate can leave out excluded ones. */
+export type ApprovalSyncEntries = {
+	live: Array<CodexApprovalLive & { sessionId: string }>;
+	resolved: Array<CodexApprovalResolved & { sessionId: string }>;
+};
+export type ApprovalSyncResult =
+	| { outcome: "sent"; response: ParsedApprovalSyncResponse }
+	| { outcome: "empty" };
 
 interface ReportGateBaseDeps {
 	/** The supervisor's request function: the gate's only way out. */
@@ -233,6 +262,21 @@ export interface ReportGate {
 		events: ManagedSessionEventInput[],
 		opts?: ReportEventsOptions,
 	): Promise<ReportOutcome>;
+	/**
+	 * Reports a Codex approval request. Never queued and never a replay. Throws what the server's refusal or
+	 * the network threw, for the caller's failure table; a network failure also latches the gate offline.
+	 */
+	reportApproval(
+		sessionId: string,
+		body: CodexApprovalReportRequest,
+	): Promise<ApprovalReportResult>;
+	/**
+	 * The host's approvals poll. Entries about a session a rule covers (or whose rules can't be trusted) are
+	 * left out; with nothing left, nothing is sent. Never queued; a 10 s limit.
+	 */
+	syncApprovals(entries: ApprovalSyncEntries): Promise<ApprovalSyncResult>;
+	/** Whether the local rules exclude this absolute path. Invalid rules exclude everything. */
+	excludesPath(path: string): boolean;
 	reportLaunchStatus(launchId: string, body: LaunchStatusBody): Promise<void>;
 	/** The one fixed status for a launch this host will not start, sent whatever the reason and whatever the rules say. */
 	refuseLaunch(launchId: string): Promise<void>;
@@ -468,6 +512,36 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 	}
 
 	const post = (path: string, body: unknown) => sendText(path, JSON.stringify(body));
+
+	/**
+	 * A live send that is never kept for later: the outbox is not consulted and the report is not stamped as
+	 * a replay. An unreachable server latches the gate offline, as for any live send, and the error goes
+	 * to the caller's failure table.
+	 */
+	async function sendApproval(path: string, text: string, timeoutMs?: number): Promise<unknown> {
+		try {
+			const sending = sendText(path, text);
+			return timeoutMs === undefined ? await sending : await withDeadline(sending, timeoutMs);
+		} catch (error) {
+			if (classifyReportFailure(error) === "network") markOffline();
+			throw error;
+		}
+	}
+	/**
+	 * Gives up on an answer after `ms`, as for a server that never answers: the caller gets a network
+	 * failure. The underlying send may still finish later; what it brings back is discarded, and the
+	 * server's next poll answer is built from its own state, so nothing is lost by that.
+	 */
+	function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => reject(new SupervisorNetworkError(new Error("timed out"))), ms);
+		});
+		return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+	}
+	/** A 2xx whose body isn't the contract: not the server's answer, so it reads as a server fault and nothing is acted on. */
+	const unreadableApprovalAnswer = () =>
+		new SupervisorRequestError(502, "Unreadable answer", "invalid_response");
 	const replayHeader = (replay: boolean | undefined): Record<string, string> =>
 		replay ? { [REPLAY_HEADER]: "1" } : {};
 
@@ -1191,6 +1265,43 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 				}
 				return "blocked";
 			});
+		},
+
+		async reportApproval(sessionId, body) {
+			const verdict = decide(sessionId);
+			if (verdict !== "send") return { outcome: verdict === "excluded" ? "excluded" : "blocked" };
+			const response = parseApprovalReportResponse(
+				await sendApproval(`/managed-sessions/${sessionId}/approvals`, JSON.stringify(body)),
+			);
+			if (!response) throw unreadableApprovalAnswer();
+			return { outcome: "sent", response };
+		},
+
+		async syncApprovals(entries) {
+			const sendable = (item: { sessionId: string }) => decide(item.sessionId) === "send";
+			const live = entries.live.filter(sendable).map(({ approvalId, revision }) => ({
+				approvalId,
+				revision,
+			}));
+			const resolved = entries.resolved
+				.filter(sendable)
+				.map(({ approvalId, outcome, sentDecision }) => ({ approvalId, outcome, sentDecision }));
+			if (live.length === 0 && resolved.length === 0) return { outcome: "empty" };
+			const response = parseApprovalSyncResponse(
+				await sendApproval(
+					"/approvals/sync",
+					JSON.stringify({ v: 1, live, resolved }),
+					CODEX_SYNC_TIMEOUT_MS,
+				),
+			);
+			if (!response) throw unreadableApprovalAnswer();
+			return { outcome: "sent", response };
+		},
+
+		excludesPath(path) {
+			const state = currentRules();
+			if (state.state === "invalid") return true;
+			return state.state === "none" ? false : covered(expandHome(path), state);
 		},
 
 		async reportLaunchStatus(launchId, body) {

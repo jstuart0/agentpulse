@@ -1,0 +1,158 @@
+{
+	"codexVersion": "0.163.0",
+	"transport": "stdio",
+	"isolation": "throwaway CODEX_HOME holding only auth.json, no hooks config; AGENTPULSE_SKIP=1 also set; zero hook frames recorded",
+	"rows": [
+		{
+			"id": "S1",
+			"name": "long_wait",
+			"verdict": "measured",
+			"outcome": "keeps_waiting_ttl_20_min",
+			"observed": "Command approval pending over stdio and never answered for 26.0 minutes (request at 5 s, turn/interrupt sent at 1566 s). No serverRequest/resolved, no turn/completed, no item update and no file in that time, and the child stayed alive. Codex neither gave up nor proceeded. Run valid: 13 marks every 2 minutes, largest gap between 5 s ticks 12 ms (no machine sleep, held awake with caffeinate -i), output unbroken."
+		},
+		{
+			"id": "S2",
+			"name": "stdin_close_pending",
+			"verdict": "measured",
+			"outcome": "nothing_ran_copy_stands",
+			"observed": "Closing the child's stdin with a command approval pending: wrapper and native binary both gone within 0.5 s (exit code 0), no file created. Nothing ran.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S3",
+			"name": "supervisor_sigkill",
+			"verdict": "measured",
+			"outcome": "host_gone_sentence_added",
+			"observed": "SIGKILL of the parent with one approval pending, child spawned detached over stdio: wrapper and native binary (the whole process group) were gone within 0.5 s, nothing ran, nothing left to kill. Not covered: codex-code-mode-host runs in its own process group (seen in the S1 run); see the S1 teardown check.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S4",
+			"name": "file_change_order",
+			"verdict": "measured",
+			"outcome": "as_planned",
+			"observed": "item/started fileChange (with the full diff in changes[]) arrived 1 ms before item/fileChange/requestApproval over stdio (17 ms over ws), same itemId. Params hold only threadId, turnId, itemId, startedAtMs, reason, grantRoot; availableDecisions is absent.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S5",
+			"name": "patch_after_request",
+			"verdict": "measured",
+			"outcome": "as_planned_revision_backstop",
+			"observed": "No fileChange/patchUpdated frame in any run: add-file, and update-plus-add in one patch, with default settings and with apply_patch_streaming_events=true (a non-default, under-development feature), each held 6 s unanswered and then accepted. Revision path stays a backstop. Not covered: a patch that streams for longer, or move/delete.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S6",
+			"name": "file_change_accept",
+			"verdict": "measured",
+			"outcome": "as_planned",
+			"observed": "After accept the file content equals the shown diff: add gives 'hello from fc4', and update gives 'line TWO changed' with line one and three kept, plus a second added file 'extra'. Not covered: move or delete.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S7",
+			"name": "file_change_decline",
+			"verdict": "measured",
+			"outcome": "as_planned",
+			"observed": "Decline: item declined, turn completed, no file, agent says the patch was rejected. Cancel: turn interrupted, no file.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S8",
+			"name": "cancel",
+			"verdict": "measured",
+			"outcome": "as_planned",
+			"observed": "Command approval: availableDecisions is [accept, acceptWithExecpolicyAmendment, cancel], so cancel is listed. Cancel: turn interrupted, item declined, no file, and the next turn on the same thread completed (session survives). Cancel on a file change, where availableDecisions is absent, is also honoured, so canCancel need not require it listed.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S9",
+			"name": "permissions_empty_grant",
+			"verdict": "measured",
+			"outcome": "as_planned",
+			"observed": "Triggered only with exec_permission_approvals and request_permissions_tool enabled (not default). {permissions:{}} gives serverRequest/resolved, the turn completes, and the agent reports neither permission was granted. It denies.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S10",
+			"name": "user_input_refusal",
+			"verdict": "measured",
+			"outcome": "as_planned",
+			"observed": "Triggered only with default_mode_request_user_input enabled. {answers:{}} gives a completed turn, no hang. The JSON-RPC error variant was not tried because the first answer did not hang. Params carry isBlocking false and autoResolutionMs null.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S11",
+			"name": "other_methods",
+			"verdict": "measured",
+			"outcome": "as_planned",
+			"observed": "item/tool/call is triggerable through thread/start dynamicTools: {contentItems:[],success:false} completes the turn. mcpServer/elicitation/request is triggerable through a local stdio MCP server: {action:'decline'} completes the turn. applyPatchApproval and execCommandApproval are not triggerable: 0.163.0 has no v1 conversation methods in ClientRequest (thread/start only). Recorded as not_triggerable for that pair only; the schema shape stands.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S12",
+			"name": "unknown_method_error",
+			"verdict": "measured",
+			"outcome": "as_planned",
+			"observed": "A JSON-RPC -32601 reply to a command approval: item failed, turn completed, no file, no hang.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S13",
+			"name": "on_request_default",
+			"verdict": "measured",
+			"outcome": "docs_only",
+			"observed": "thread/start with no approvalPolicy or sandbox, under a throwaway CODEX_HOME with no config.toml, returns approvalPolicy on-request, sandbox readOnly (no network), approvalsReviewer user, and a write command reached approval. With a user's own config.toml this can differ; not measured.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S14",
+			"name": "rename_while_pending",
+			"verdict": "measured",
+			"outcome": "as_planned",
+			"observed": "thread/name/set returns {} and emits thread/name/updated. The pending request stays open (no serverRequest/resolved), and a later accept still ran the command.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S15",
+			"name": "initialize_user_agent",
+			"verdict": "measured",
+			"outcome": "binding_per_d18",
+			"observed": "initialize returns userAgent '<clientInfo.name>/0.163.0 (Mac OS 26.3.0; arm64) <terminal> (<name>; <version>)'. The token before the first space, after the slash, is the codex version and equals 'codex --version'. The same format was seen over ws and stdio.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S16",
+			"name": "executed_equals_shown",
+			"verdict": "measured",
+			"outcome": "as_planned",
+			"observed": "Shown command: /bin/zsh -lc \"./argv.sh alpha 'beta gamma' delta\". A script run by it wrote its own argv: alpha, 'beta gamma', delta as three arguments, and its own process line was /bin/sh ./argv.sh alpha beta gamma delta. Executed equals shown for this command. Not covered: commands whose parse differs from the shell's, or the earlier ps-parent probe, which was invalid.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S17",
+			"name": "environment_id",
+			"verdict": "measured",
+			"outcome": "as_planned",
+			"observed": "environmentId is the string 'local' on command approvals. Not present in file-change params.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S18",
+			"name": "schema_generator",
+			"verdict": "measured",
+			"outcome": "d18_recipe_works",
+			"observed": "generate-json-schema --experimental takes 0.12 to 0.15 s, no auth and no network: with HOME pointing at an empty directory, and again under a macOS sandbox that denies network, the output was byte-identical to a normal run and nothing was written to that HOME. Two runs were byte-identical (452 files). The closure-hash recipe (6 root files plus the fileChange thread item cut from the v2 bundle, sorted keys, descriptions dropped except inside *ApprovalDecision definitions) is stable across runs, ignores a description change on a non-decision field, and changes on a description change inside a decision enum and on an added enum value. Linux was not measured: no Linux available.",
+			"transport": "stdio"
+		},
+		{
+			"id": "S19",
+			"name": "no_listener",
+			"verdict": "measured",
+			"outcome": "no_listener",
+			"observed": "Over stdio, with a command approval pending: spawn argv is ['codex','app-server'], no process in the group has --listen, lsof -iTCP -sTCP:LISTEN on every pid in the group shows none. Only outbound TLS connections and connected unix socket pairs (no bound path) exist. (Over the earlier ws listener a second client could receive and answer; that is why D20 exists.)",
+			"transport": "stdio"
+		}
+	]
+}

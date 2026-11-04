@@ -8,12 +8,14 @@ import {
 	lateSuffix,
 } from "../../lib/event-time.js";
 import {
+	APPROVAL_RESOLVED_EVENT,
 	AssistantBubble,
 	PromptBubble,
 	TimelineCard,
 	type TimelineMode,
 	eventKey,
 	eventLabel,
+	eventRowLabel,
 } from "./TimelineView.js";
 import { ToolCallBlock } from "./ToolCallBlock.js";
 
@@ -104,9 +106,7 @@ function renderTerminalEvent(event: SessionEvent) {
 	if (!event.content) return null;
 	return (
 		<div className="font-mono text-[12px] leading-5 text-muted-foreground whitespace-pre-wrap break-words">
-			<span className="uppercase tracking-wider mr-2 text-[10px]">
-				{eventLabel(event.category)}
-			</span>
+			<span className="uppercase tracking-wider mr-2 text-[10px]">{eventRowLabel(event)}</span>
 			{event.content}
 		</div>
 	);
@@ -175,7 +175,7 @@ function renderBubbleEvent(
 	if (!event.content) return null;
 	return (
 		<TimelineCard
-			label={eventLabel(event.category)}
+			label={eventRowLabel(event)}
 			text={event.content}
 			time={eventDisplayTime(event)}
 			lateNote={lateNote}
@@ -191,7 +191,9 @@ function renderBubbleEvent(
 							: "default"
 			}
 			source={mode === "debug" ? event.source : undefined}
-			plainText={event.eventType === "ManagedEventsLost"}
+			plainText={
+				event.eventType === "ManagedEventsLost" || event.eventType === APPROVAL_RESOLVED_EVENT
+			}
 		/>
 	);
 }

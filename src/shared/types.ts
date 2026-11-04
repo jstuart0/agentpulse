@@ -486,6 +486,13 @@ export interface Session {
 	machine?: string | null;
 	managedSession?: ManagedSession | null;
 	/**
+	 * Whether the host that owns this managed session can take a stop or a prompt:
+	 * `live`, `offline` (its lease ran out; it may return) or `gone` (removed).
+	 * Detail response only, and only for a managed session; absent from list rows,
+	 * pushes and an older server, where it means "can't tell".
+	 */
+	hostControl?: HostControl;
+	/**
 	 * Cheap presence flag: true when a managed_sessions row exists for this
 	 * session. Populated by `getSessions()` (list) via one batched
 	 * membership query — unlike `managedSession`, which only `getSession()`
@@ -517,6 +524,14 @@ export interface Session {
 	 * fields above.
 	 */
 	operationalStatus?: OperationalStatus;
+}
+
+export type HostControlState = "live" | "offline" | "gone";
+
+export interface HostControl {
+	state: HostControlState;
+	/** The host's last heartbeat; null when it is gone or never beat. */
+	lastSeenAt: string | null;
 }
 
 export interface ManagedSession {

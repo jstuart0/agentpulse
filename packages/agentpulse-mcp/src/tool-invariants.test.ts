@@ -88,7 +88,13 @@ const PHASE3_MANAGE_ONLY_READ_NAMES = [
 	"get_inbox",
 ];
 
-const PHASE4_RO_NAMES = ["recommend_launch", "preview_template", "list_hosts"];
+const PHASE4_RO_NAMES = [
+	"recommend_launch",
+	"preview_template",
+	"list_hosts",
+	// AGEN-87: managed Codex approvals, read and decline only.
+	"list_pending_approvals",
+];
 
 const PHASE4_MUTATING_NAMES = [
 	"launch_agent",
@@ -101,6 +107,7 @@ const PHASE4_MUTATING_NAMES = [
 	"delete_template",
 	"decide_hitl",
 	"decide_action_request",
+	"decline_approval",
 ];
 
 const MANAGE_TOTAL = [
@@ -122,6 +129,10 @@ const EXCLUSION_DENYLIST = [
 	"ask",
 	"fork_session",
 	"resume_session",
+	// AGEN-87 D15: an API key never accepts a Codex approval.
+	"accept_approval",
+	"approve_approval",
+	"decide_approval",
 ];
 
 describe("drift guard: every non-RO tool carries rUI (assertion 16)", () => {
@@ -204,11 +215,11 @@ describe("drift guard: no root anyOf/oneOf/allOf on any tool's input schema (ass
 });
 
 describe("drift guard: tool count sanity (assertion 20, corrected counts — see file docstring)", () => {
-	test("manage-scoped server registers exactly 30 tools (11 observe + 6 Phase-3 manage-only reads + 13 Phase-4 additions, post-AIMR-214-A)", async () => {
+	test("manage-scoped server registers exactly 32 tools (11 observe + 6 Phase-3 manage-only reads + 13 Phase-4 additions + 2 approvals, post-AIMR-214-A)", async () => {
 		const { mcpClient, registry } = await connectServer(["manage"]);
 		const { tools } = await mcpClient.listTools();
-		expect(tools.length).toBe(30);
-		expect(registry.length).toBe(30);
+		expect(tools.length).toBe(32);
+		expect(registry.length).toBe(32);
 		expect(new Set(tools.map((t) => t.name))).toEqual(new Set(MANAGE_TOTAL));
 	});
 
@@ -221,7 +232,7 @@ describe("drift guard: tool count sanity (assertion 20, corrected counts — see
 });
 
 describe("tools/list diff observe vs manage (assertion 21, corrected — see file docstring)", () => {
-	test("manage set is a strict superset of observe; the delta is exactly the 19 manage-only names (6 Phase-3 + 13 Phase-4, post-F23/AIMR-214-A)", async () => {
+	test("manage set is a strict superset of observe; the delta is exactly the 21 manage-only names (6 Phase-3 + 13 Phase-4 + 2 approvals, post-F23/AIMR-214-A)", async () => {
 		const { mcpClient: observeClient } = await connectServer(["observe"]);
 		const { mcpClient: manageClient } = await connectServer(["manage"]);
 		const observeNames = new Set((await observeClient.listTools()).tools.map((t) => t.name));
@@ -238,7 +249,7 @@ describe("tools/list diff observe vs manage (assertion 21, corrected — see fil
 			...PHASE4_MUTATING_NAMES,
 		]);
 		expect(new Set(delta)).toEqual(expectedDelta);
-		expect(delta.length).toBe(19);
+		expect(delta.length).toBe(21);
 		// No Phase-4 mutating tool leaked into observe scope — the specific
 		// regression this test guards against.
 		for (const mutating of PHASE4_MUTATING_NAMES) {
@@ -262,6 +273,7 @@ describe("drift guard: converse read-only check with real HTTP-verb instrumentat
 	// Minimal valid arguments per RO tool — required fields only.
 	const ARGS_FOR: Record<string, Record<string, unknown>> = {
 		get_stats: {},
+		list_pending_approvals: { session_id: "s1" },
 		list_sessions: {},
 		get_session: { session_id: "s1" },
 		get_session_timeline: { session_id: "s1" },

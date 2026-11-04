@@ -15,12 +15,14 @@ import {
 	promptClaudeHeadlessSession,
 	promptClaudeInteractiveSession,
 } from "./providers/claude.js";
+import { wireCodexApprovals } from "./providers/codex-approvals-wiring.js";
 import {
 	launchManagedCodexRequest,
 	managedCodexRuntimeCount,
 	reconcileManagedCodexTitles,
 	stopManagedCodexSession,
 } from "./providers/codex-managed.js";
+import { warmCodexProtocolVerdict } from "./providers/codex-protocol.js";
 import { createBridgeSpoolDrain } from "./services/bridge-spool.js";
 import { executeCleanupWorkArea } from "./services/cleanup-workarea.js";
 import { isCodexObserverEnabled, startCodexObserver } from "./services/codex-observer.js";
@@ -158,6 +160,7 @@ async function main() {
 		supervisor: { id: string; hostName: string };
 		heartbeatIntervalMs: number;
 		supervisorCredential?: string;
+		serverFeatures?: string[];
 	};
 
 	if (config.id !== registration.supervisor.id || registration.supervisorCredential) {
@@ -211,6 +214,9 @@ async function main() {
 	});
 	setSharedCredentialTripwire(credentialTripwire);
 
+	// The protocol check is started now so it is normally ready by a first launch.
+	warmCodexProtocolVerdict();
+
 	// Every report about a session leaves through this gate (see report-gate.ts): it holds the
 	// directories sessions and launches were started in, and the one closing report a newly
 	// excluded session gets. The rules it reads are the observer's too. Reports it can't deliver while
@@ -234,6 +240,11 @@ async function main() {
 	setInterval(() => {
 		gate.flush().catch((error) => console.error("[supervisor] outbox flush failed", error));
 	}, OUTBOX_FLUSH_MS).unref();
+
+	// Every approval a managed Codex session asks for is answered here: declined unless the server issues
+	// an accept for exactly that request. The tracker reaches the server only through the gate, and the
+	// server tells it what it can do on registration and on every heartbeat (absent means off).
+	const approvalsWiring = wireCodexApprovals({ gate, serverFeatures: registration.serverFeatures });
 
 	// The interactive terminal bridge holds no credential and opens no connection: it writes its reports to
 	// disk and this drain sends them through the gate.
@@ -335,10 +346,14 @@ async function main() {
 		try {
 			// Whether the exclude file on this host is in use, absent or broken, for the Hosts page.
 			// Optional on the wire: a server that predates the field ignores the body.
-			await request(`/supervisors/${registration.supervisor.id}/heartbeat`, {
-				method: "POST",
-				body: heartbeatBody(gate.rulesState(), heartbeatOutbox(outbox.summary(), Date.now())),
-			});
+			// The last successful answer's features win; a failed heartbeat leaves the last known value alone.
+			await approvalsWiring.applyHeartbeat(
+				() =>
+					request(`/supervisors/${registration.supervisor.id}/heartbeat`, {
+						method: "POST",
+						body: heartbeatBody(gate.rulesState(), heartbeatOutbox(outbox.summary(), Date.now())),
+					}) as Promise<{ serverFeatures?: string[] } | null>,
+			);
 			lastHeartbeatOkAt = Date.now();
 			staleLogged = false;
 			gate.noteServerReachable();

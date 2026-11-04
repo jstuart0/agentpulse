@@ -10,6 +10,10 @@ import {
 	getOperationalStatus,
 	hasOutstandingPermissionWait,
 } from "../../shared/session-state.js";
+import {
+	CODEX_APPROVAL_NOTE_CAN_ANSWER,
+	hasPendingCodexApproval,
+} from "../lib/codex-approval-wait.js";
 
 // ── List view: server-paged rows for the selected status card ──────────────
 
@@ -384,7 +388,10 @@ export function deriveAckAction(
 
 	if (status === "waiting") {
 		if (hasOutstandingPermissionWait(session)) {
-			return { kind: null, permissionWaitNote: PERMISSION_WAIT_NOTE, notOwnerNote: null };
+			const note = hasPendingCodexApproval(session)
+				? CODEX_APPROVAL_NOTE_CAN_ANSWER
+				: PERMISSION_WAIT_NOTE;
+			return { kind: null, permissionWaitNote: note, notOwnerNote: null };
 		}
 		if (!canAcknowledge)
 			return { kind: null, permissionWaitNote: null, notOwnerNote: NOT_OWNER_NOTE_SEEN };

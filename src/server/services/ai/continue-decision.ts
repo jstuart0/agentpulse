@@ -70,7 +70,7 @@ interface Escalation {
 }
 
 /** The sentence for an automatic send that was refused, as the HITL's reason. Null: nothing for a person to decide. */
-function autoRefusalWhy(
+export function autoRefusalWhy(
 	refused: { code: string; reason?: string },
 	config: WatcherConfigRecord,
 ): string | null {
@@ -85,6 +85,8 @@ function autoRefusalWhy(
 		case "config_changed":
 		case "confirmer_lapsed":
 			return "Auto-send needs a new confirmation.";
+		case "host_gone":
+			return "This session's host was removed from AgentPulse, so it can't receive prompts.";
 		case "supervisor_offline":
 		case "observed":
 		case "managed_state":

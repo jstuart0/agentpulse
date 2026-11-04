@@ -22,7 +22,7 @@ If you run multiple Claude Code, Codex CLI, or Copilot CLI sessions across diffe
 AgentPulse has two major modes:
 
 - **Observability** -- watch Claude Code, Codex, and Copilot CLI sessions in real time, with prompts, responses, progress, notes, and session history in one dashboard (Copilot CLI is observed only -- AgentPulse can't launch or steer it)
-- **Orchestration** -- launch and manage sessions from AgentPulse itself with templates, supervisors, headless tasks, interactive sessions, retries, and host routing
+- **Orchestration** -- launch and manage sessions from AgentPulse itself with templates, supervisors, headless tasks, interactive sessions, retries, host routing, and answering a managed Codex session's command and file-change approvals from the dashboard (see [Answering Codex approvals](#answering-codex-approvals))
 
 Plus an **AI Labs** layer that's very new and explicitly experimental -- see [the Labs section below](#ai-labs-experimental).
 
@@ -782,6 +782,19 @@ When the supervisor can't reach the server, the agents it launched keep running 
 - A host's "events waiting" figure can fall without a matching number sent if you exclude a session's directory while the host is connected but backing off.
 - Rolling a supervisor back to a version without this feature leaves the spool of a terminal launched under the new version unsent: the older supervisor doesn't read it. If you then upgrade again, such a terminal that is still open stays unfollowed, because the older version drops the record that it was an interactive launch when it next saves its state. Close it and launch a new one.
 - A terminal opened before the supervisor was updated keeps reporting directly until you close it. If the bridge script was updated without restarting the supervisor, the terminal prints a warning on stderr (`bridge.json has no launchNonce`) and its reports are not accepted: restart the supervisor and launch a new session.
+
+## Answering Codex approvals
+
+When a Codex session that AgentPulse launched asks to run a command or change files, the session page shows what it wants and you can accept or decline there. Only managed Codex sessions can be answered (not Claude Code, not a Codex you started yourself), and only by a signed-in person: an API key can read and decline but never accept.
+
+- **What you're shown.** The whole command (wrapped, never cut) or each file's diff, the working directory, and Codex's reason. Files outside the working directory are listed first and marked. Anything the server had to change before showing it (a secret it redacted, hidden or lookalike characters, runs of blank space, an over-long command, a missing diff) makes the request decline-only, with the reason. Accept and decline both ask you to confirm, and the confirm button arms after a short pause so a double click can't answer.
+- **Time and default.** A request waits 20 minutes, then is declined. Nothing is queued: if the host is offline, or AgentPulse can't reach it, the card says so and offers no answer, and the request is declined at its deadline. An accept must reach the host within a minute of your click, or the host declines instead.
+- **What Stop means here.** Stop is not instant. After Stop is accepted by the server no accept is issued, and pending requests close. An accept that was issued before you pressed Stop may still run, for a few seconds at most, and the card says "may have run" until the host reports. Stop doesn't undo a command that has already started.
+- **https is required.** The supervisor answers approvals only when the server's address is https, or this machine. Over plain `http://` to another machine every request is declined on the host, and the session page says so.
+- **When the page says Codex's approvals are declined automatically.** `unsupported` means the Codex on that host isn't one AgentPulse has been checked against (its approval protocol has a shape this version doesn't know, or it's older than 0.163, or it's on the blocked list), so its requests are declined without being shown. Update AgentPulse, or if you've just updated Codex, wait for a release that lists it. A host that shows "update the supervisor" is running a supervisor from before this feature.
+- **Release note: managed Codex now runs over stdio.** Earlier versions started `codex app-server` with a local WebSocket listener that any process on the machine could connect to; it could have answered an approval. Upgrade your supervisors, and kill any `codex app-server --listen` process left behind from an older one.
+- **What hasn't been measured.** All of this was exercised against Codex 0.163.0 on macOS. Linux and Windows hosts, a Codex with its own `config.toml` approval settings, Codex's streamed patch updates (never seen in the recorded runs), answering from a phone (no phone client can answer yet; a phone gets the notification and sees the session waiting), and a screen reader (the card was driven in an emulated browser only) have not been tested, so don't rely on them.
+- **Using MCP.** `list_pending_approvals` and `decline_approval` are available to `manage` keys, deliberately without an accept. See [`docs/MCP.md`](docs/MCP.md).
 
 ## What the setup script does
 

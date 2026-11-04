@@ -1,0 +1,10 @@
+{
+	"CommandExecutionRequestApprovalParams.json": "95380eecb2511bfec083da8d34c5dca24c1a42cf36068e6e9b705b790ae7ad1a",
+	"CommandExecutionRequestApprovalResponse.json": "d1546d530d210f005b87c0d57e4840da712257fd11747c356c830833b19c0010",
+	"FileChangeRequestApprovalParams.json": "4a818d4af4b0c9f8a478f2ab84c2f4a7e1ced41997396538d804560f4f7af588",
+	"FileChangeRequestApprovalResponse.json": "f522e127a6160afd094932f6b0a58b736a171ebfb767d58b3d70c0bd7ff7ab97",
+	"v2/ServerRequestResolvedNotification.json": "9bab6c9eda658824742162c9eaa3edbfa3b70fcc5348f20f5a190d7a794b3d53",
+	"v2/FileChangePatchUpdatedNotification.json": "1f855fc8876fa1771c711431db1e75df75ba9dec6aa5c448f6e98599ba2f6fdc",
+	"FileChangeThreadItem": "9f5c712ca7571cb9ea5ea7e126ef6bbffb599b3b0de58b58525f5add976113f5",
+	"combined": "8db87f9d829f7aeac4c70d830d17566804d36963b74c2ce01a38da0441b2aafa"
+}

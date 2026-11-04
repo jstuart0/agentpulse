@@ -227,3 +227,24 @@ describe("mapError — answering a HITL request", () => {
 		expect(text).toContain("Retryable");
 	});
 });
+
+describe("mapError — a session whose host isn't there (AGEN-66)", () => {
+	test("a stop or prompt refused host_offline surfaces the server's sentence, not a bare code", () => {
+		const message =
+			"The host running this session is offline, so it can't be controlled right now.";
+		const text = mapError(new ApiError(409, { error: "host_offline", message }), BASE_URL)
+			.content[0].text;
+		expect(text).toBe(message);
+	});
+
+	test("host_gone on a HITL approval says the prompt was NOT sent and the request is still open, without the raw code", () => {
+		const text = mapError(
+			new ApiError(409, { error: "prompt_not_deliverable", reason: "host_gone" }),
+			BASE_URL,
+		).content[0].text;
+		expect(text).toContain("NOT sent");
+		expect(text).toContain("still open");
+		expect(text).toContain("removed");
+		expect(text).not.toContain("host_gone");
+	});
+});

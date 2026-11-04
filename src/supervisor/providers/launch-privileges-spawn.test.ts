@@ -19,6 +19,7 @@ import {
 } from "bun:test";
 import {
 	chmodSync,
+	copyFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -40,6 +41,9 @@ import {
 } from "./claude-shared.js";
 import { assertCodexThreadPrivileges, launchManagedCodexRequest } from "./codex-managed.js";
 
+/** The fake `codex app-server`: JSONL over stdio, copied in as the "codex" executable. */
+const FAKE_CODEX_SOURCE = join(import.meta.dir, "__fixtures__", "fake-codex-app-server.ts");
+
 let home: string;
 let fakeClaude: string;
 let fakeCodex: string;
@@ -56,36 +60,6 @@ const ENV_KEYS = [
 	"FAKE_CODEX_SANDBOX_EXTRAS",
 ];
 
-const FAKE_CODEX_SOURCE = `#!/usr/bin/env bun
-import { appendFileSync } from "node:fs";
-if (process.argv.includes("--version")) { console.log("codex-cli 0.0.0-fake"); process.exit(0); }
-const log = (entry) => appendFileSync(process.env.FAKE_CODEX_LOG, JSON.stringify(entry) + "\\n");
-log({ argv: process.argv.slice(2) });
-const listen = new URL(process.argv[process.argv.indexOf("--listen") + 1]);
-const SANDBOX_TYPE = { "read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess" };
-Bun.serve({
-  hostname: "127.0.0.1",
-  port: Number(listen.port),
-  fetch(req, server) { return server.upgrade(req) ? undefined : new Response("no", { status: 400 }); },
-  websocket: {
-    message(ws, raw) {
-      const m = JSON.parse(String(raw));
-      log({ method: m.method, params: m.params });
-      const reply = (result) => ws.send(JSON.stringify({ id: m.id, result }));
-      if (m.method === "thread/start") {
-        const approval = process.env.FAKE_CODEX_FORCE_APPROVAL || m.params.approvalPolicy || "on-request";
-        const sandbox = process.env.FAKE_CODEX_FORCE_SANDBOX || m.params.sandbox || "read-only";
-        reply({ thread: { id: "thr-1", cwd: m.params.cwd, status: "idle", source: "fake" }, approvalPolicy: approval, sandbox: { type: SANDBOX_TYPE[sandbox], ...(sandbox === "read-only" ? { networkAccess: false } : {}), ...(sandbox === "workspace-write" ? { writableRoots: [], networkAccess: false } : {}), ...JSON.parse(process.env.FAKE_CODEX_SANDBOX_EXTRAS || "{}") } });
-      } else if (m.method === "thread/name/set") {
-        reply({});
-        ws.send(JSON.stringify({ method: "thread/name/updated", params: { threadId: m.params.threadId, threadName: m.params.name } }));
-      } else if (m.method === "turn/start") reply({ turn: { id: "turn-1" } });
-      else reply({ protocolVersion: "fake" });
-    },
-  },
-});
-`;
-
 beforeAll(() => {
 	for (const key of ENV_KEYS) savedEnv[key] = process.env[key];
 	home = mkdtempSync(join(tmpdir(), "ap-privileges-spawn-"));
@@ -93,7 +67,8 @@ beforeAll(() => {
 	fakeClaude = join(home, "fake-claude");
 	writeFileSync(fakeClaude, '#!/bin/sh\necho "2.1.0 (Claude Code)"\n', { mode: 0o755 });
 	fakeCodex = join(home, "fake-codex");
-	writeFileSync(fakeCodex, FAKE_CODEX_SOURCE, { mode: 0o755 });
+	copyFileSync(FAKE_CODEX_SOURCE, fakeCodex);
+	chmodSync(fakeCodex, 0o755);
 	codexLog = join(home, "codex.log");
 	process.env.HOME = home;
 	process.env.AGENTPULSE_CLAUDE_COMMAND = fakeClaude;
@@ -516,7 +491,7 @@ describe("managed Codex launch against a fake app-server", () => {
 
 	async function run(overrides: Partial<LaunchRequest>) {
 		const result = await launchManagedCodexRequest(codexLaunch(overrides), callbacks);
-		result.runtime.dispose();
+		await result.runtime.dispose();
 		return result;
 	}
 
@@ -541,6 +516,24 @@ describe("managed Codex launch against a fake app-server", () => {
 			},
 			permissive: false,
 		});
+	});
+
+	test("no --listen: the app-server is started with exactly app-server, and the launch still completes", async () => {
+		const result = await run({});
+		expect(logged()[0].argv).toEqual(["app-server"]);
+		expect(result.pid).toBeGreaterThan(0);
+		expect(threadStartParams()).toBeDefined();
+	});
+
+	test("a launch that fails after the child started still ends the child", async () => {
+		process.env.FAKE_CODEX_FORCE_SANDBOX = "read-only";
+		await expect(
+			launchManagedCodexRequest(codexLaunch({ sandboxMode: "workspace-write" }), callbacks),
+		).rejects.toBeInstanceOf(LaunchPrivilegeError);
+		const entries = logged();
+		const pid = entries[0].pid as number;
+		expect(entries.some((e) => e.stdinEnd === true)).toBe(true);
+		expect(() => process.kill(pid, 0)).toThrow();
 	});
 
 	test("each sandbox value is passed through unchanged", async () => {
@@ -812,7 +805,7 @@ describe("managed Codex: what Codex actually applied", () => {
 		]) {
 			Object.assign(process.env, force);
 			const result = await launchManagedCodexRequest(codexLaunch({}), callbacks);
-			result.runtime.dispose();
+			await result.runtime.dispose();
 			const privileges = result.metadata.privileges as {
 				permissive: boolean;
 				enforcedArgs: string[];
@@ -828,7 +821,7 @@ describe("managed Codex: what Codex actually applied", () => {
 			codexLaunch({ sandboxMode: "danger-full-access" }),
 			callbacks,
 		);
-		result.runtime.dispose();
+		await result.runtime.dispose();
 		expect((result.metadata.privileges as { permissive: boolean }).permissive).toBe(true);
 	});
 });

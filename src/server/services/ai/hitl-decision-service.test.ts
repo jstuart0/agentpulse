@@ -247,17 +247,21 @@ describe("approve", () => {
 		expect(await deliveries()).toHaveLength(0);
 	});
 
-	test("on a managed session whose supervisor is offline a person's approval is still queued: it waits for the host", async () => {
+	test("an approval for an offline host is refused prompt_not_deliverable (supervisor_offline): the claim is released and the request stays open", async () => {
 		await seedSession("s-3");
 		await seedManaged("s-3", { connected: false });
 		const { proposalId, hitlId } = await seedHitl("s-3");
 
 		const out = await approveAs({ kind: "proposal", proposalId });
 
-		expect(out.ok).toBe(true);
-		expect(await hitlStatus(hitlId)).toBe("applied");
-		expect(await actionsFor("s-3")).toHaveLength(1);
-		expect(await deliveries()).toHaveLength(1);
+		expect(!out.ok && out.refusal).toMatchObject({
+			code: "prompt_not_deliverable",
+			status: 409,
+			body: { error: "prompt_not_deliverable", reason: "supervisor_offline" },
+		});
+		expect(await hitlStatus(hitlId)).toBe("awaiting_reply");
+		expect(await actionsFor("s-3")).toHaveLength(0);
+		expect(await deliveries()).toHaveLength(0);
 	});
 
 	test("while another control action holds the session: 409 prompt_not_deliverable (control_busy), the request is still open, nothing is written", async () => {
@@ -1920,14 +1924,16 @@ describe("batch decline by session", () => {
 });
 
 describe("delivery states and reasons", () => {
-	test("an approval for an offline host is queued, and reads back as queued until the host returns", async () => {
+	test("an approval for an offline host is refused, so there is no delivery to read back", async () => {
 		await seedSession("dr-1");
 		await seedManaged("dr-1", { connected: false });
 		const { proposalId } = await seedHitl("dr-1");
 		const out = await approveAs({ kind: "proposal", proposalId });
-		expect(out.ok && out.delivery?.state).toBe("queued");
-		const read = await getDeliveryState(proposalId, manageCtx());
-		expect(read.ok && read.delivery.state).toBe("queued");
+		expect(!out.ok && out.refusal).toMatchObject({
+			code: "prompt_not_deliverable",
+			body: { reason: "supervisor_offline" },
+		});
+		expect(await deliveries()).toHaveLength(0);
 	});
 
 	test("reading a delivery works while the watcher is paused (200), but retry still needs AI active", async () => {

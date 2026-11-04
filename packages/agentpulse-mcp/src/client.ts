@@ -16,6 +16,8 @@ import type {
 	ActionRequestDecision,
 	AgentType,
 	AuthMeResponse,
+	CodexApprovalDecisionResponse,
+	CodexApprovalList,
 	ControlAction,
 	DashboardStats,
 	Digest,
@@ -305,6 +307,10 @@ export interface AgentPulseClient {
 	promptSession(sessionId: string, prompt: string): Promise<ControlActionResult>;
 	stopSession(sessionId: string): Promise<ControlActionResult>;
 	retryLaunch(sessionId: string): Promise<RetryLaunchResult>;
+	/** GET /sessions/:id/approvals (manage-only). A server without the route answers 404 with no error code. */
+	listApprovals(sessionId: string): Promise<CodexApprovalList>;
+	/** POST /sessions/:id/approvals/:approvalId/decision with decline. MCP never sends accept (D15). */
+	declineApproval(sessionId: string, approvalId: string): Promise<CodexApprovalDecisionResponse>;
 	updateSessionNotes(sessionId: string, notes: string): Promise<{ ok: true }>;
 	/** `source` mirrors the dashboard/Ask convention (repo CLAUDE.md's rename-precedence contract) — orchestrate.ts's update_session always sends "user". */
 	renameSession(sessionId: string, name: string, source?: string): Promise<{ ok: true }>;
@@ -545,6 +551,13 @@ export function createHttpClient(options: CreateHttpClientOptions): AgentPulseCl
 			request<RetryLaunchResult>(`/sessions/${encodeURIComponent(sessionId)}/retry`, {
 				method: "POST",
 			}),
+		listApprovals: (sessionId) =>
+			request<CodexApprovalList>(`/sessions/${encodeURIComponent(sessionId)}/approvals`),
+		declineApproval: (sessionId, approvalId) =>
+			request<CodexApprovalDecisionResponse>(
+				`/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}/decision`,
+				{ method: "POST", body: JSON.stringify({ decision: "decline" }) },
+			),
 		updateSessionNotes: (sessionId, notes) =>
 			request<{ ok: true }>(`/sessions/${encodeURIComponent(sessionId)}/notes`, {
 				method: "PUT",

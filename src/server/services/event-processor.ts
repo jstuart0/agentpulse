@@ -1,4 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { APPROVAL_WAIT_ID_PREFIX, approvalWaitId } from "../../shared/codex-approvals.js";
 import { AGENT_TYPES, SEMANTIC_STATUSES } from "../../shared/constants.js";
 import type {
 	AgentType,
@@ -13,6 +14,7 @@ import { withTransaction } from "../db/with-transaction.js";
 import {
 	incrementIngestForeignKeyDropped,
 	incrementIngestOwnerMismatch,
+	incrementIngestReservedToolUseIdDropped,
 	incrementIngestUnacknowledgeDropped,
 	incrementSessionCreationLimited,
 } from "../routes/ingest-counters.js";
@@ -575,8 +577,32 @@ const MAX_PERMISSION_WAIT_IDS = 256;
 function foldOldestIdsIntoAnon(wait: PermissionWaitState): void {
 	const overflow = wait.ids.length - MAX_PERMISSION_WAIT_IDS;
 	if (overflow <= 0) return;
-	wait.ids = wait.ids.slice(overflow);
-	wait.anon += overflow;
+	// An approval id is never folded: an anonymous count is drained by any
+	// unmatched clear, and a request the server holds must not be hidden that way.
+	let toFold = overflow;
+	const kept: string[] = [];
+	for (const id of wait.ids) {
+		if (toFold > 0 && !isApprovalWaitId(id)) {
+			toFold--;
+			wait.anon++;
+		} else {
+			kept.push(id);
+		}
+	}
+	wait.ids = kept;
+}
+
+function isApprovalWaitId(id: unknown): id is string {
+	return typeof id === "string" && id.startsWith(APPROVAL_WAIT_ID_PREFIX);
+}
+
+/**
+ * The one push for a session's wait opening (the 0-to-1 transition): fire and forget, after the
+ * transaction that opened it committed. Shared by a hook's PermissionRequest and by a Codex
+ * approval, so the push is announced from one place.
+ */
+function announcePermissionWait(sessionId: string, pushOrigin?: string): void {
+	void dispatchEvent({ type: "permission_wait", sessionId, pending: 1 }, pushOrigin);
 }
 
 /**
@@ -626,6 +652,8 @@ export async function applyPermissionWaitTransition(
 			const currentStatus = row.semanticStatus as SemanticStatus | null;
 
 			if (eventType === "PermissionRequest") {
+				// An approval wait is opened only by the server (applyApprovalWait).
+				if (isApprovalWaitId(event.tool_use_id)) return;
 				// D21: a request that arrives inside the terminal latch, or whose
 				// turn was already closed by a prior Stop/Interrupt, opens no
 				// wait — the event is still stored/broadcast by the caller.
@@ -674,11 +702,14 @@ export async function applyPermissionWaitTransition(
 			let changed = false;
 
 			if (BOUNDARY_EVENT_TYPES.has(eventType)) {
-				// Boundary events clear ALL outstanding waits in one shot — a new
-				// prompt, a completed turn, or a process (re)start means nothing
-				// can still be outstanding for this session.
-				if (next.ids.length > 0 || next.anon > 0) {
-					next.ids = [];
+				// Boundary events clear every outstanding wait a hook can have opened --
+				// a new prompt, a completed turn, or a process (re)start means nothing
+				// of theirs can still be outstanding. A Codex approval the server holds
+				// is not theirs: only its own row closing removes it, so a forged Stop
+				// or UserPromptSubmit can't hide a live request.
+				const heldApprovalIds = next.ids.filter(isApprovalWaitId);
+				if (next.ids.length > heldApprovalIds.length || next.anon > 0) {
+					next.ids = heldApprovalIds;
 					next.anon = 0;
 					changed = true;
 				}
@@ -686,7 +717,9 @@ export async function applyPermissionWaitTransition(
 				// PermissionDenied / PostToolUse / PostToolUseFailure: only a
 				// matching entry clears.
 				const toolUseId = event.tool_use_id;
-				if (toolUseId && next.ids.includes(toolUseId)) {
+				if (isApprovalWaitId(toolUseId)) {
+					// Never from a hook (processHookEvent drops these first; this is the second line).
+				} else if (toolUseId && next.ids.includes(toolUseId)) {
 					next.ids = next.ids.filter((id) => id !== toolUseId);
 					changed = true;
 				} else if (next.anon > 0) {
@@ -700,43 +733,176 @@ export async function applyPermissionWaitTransition(
 			}
 
 			if (!changed) return;
-
-			const pendingAfter = next.ids.length + next.anon;
-			if (pendingAfter === 0) {
-				const { permissionWait: _clearedWait, ...restMetadata } = metadata;
-
-				// Metadata clear is unconditional — the resolved wait is always
-				// removed, regardless of whether the status restore below fires.
-				await tx
-					.update(sessions)
-					.set({ metadata: restMetadata })
-					.where(eq(sessions.sessionId, sessionId));
-
-				// Owned-status guard, made atomic (codex r2 finding): gating on
-				// `currentStatus` (read once, early in this transaction) is not
-				// safe — processStatusUpdate writes semanticStatus in its own
-				// background task, outside this helper's transaction/queue, and
-				// can land between our read and this write. Predicating the WHERE
-				// clause on semanticStatus itself re-checks the live value at the
-				// moment this UPDATE actually executes (SQLite: fully serialized
-				// by withTransaction anyway; Postgres: the row lock this UPDATE
-				// takes forces it to see any write that already committed, and
-				// blocks-then-re-evaluates against one that's mid-flight), so a
-				// fresher agent-reported status can never be clobbered by the
-				// stale prevStatus.
-				await tx
-					.update(sessions)
-					.set({ semanticStatus: next.prevStatus })
-					.where(and(eq(sessions.sessionId, sessionId), eq(sessions.semanticStatus, "waiting")));
-			} else {
-				metadata.permissionWait = next;
-				await tx.update(sessions).set({ metadata }).where(eq(sessions.sessionId, sessionId));
-			}
+			await writeWaitAfterClear(tx, sessionId, metadata, next);
 		}),
 	);
 	// Once, on the 0->1 transition, and only after the transaction committed.
-	if (waitOpened)
-		void dispatchEvent({ type: "permission_wait", sessionId, pending: 1 }, pushOrigin);
+	if (waitOpened) announcePermissionWait(sessionId, pushOrigin);
+}
+
+/**
+ * Writes the wait after an id or count was removed from it: with nothing left,
+ * the wait is cleared and the status the wait displaced is restored; otherwise
+ * the shorter wait is stored.
+ */
+async function writeWaitAfterClear(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	sessionId: string,
+	metadata: Record<string, unknown>,
+	next: PermissionWaitState,
+): Promise<void> {
+	const pendingAfter = next.ids.length + next.anon;
+	if (pendingAfter === 0) {
+		const { permissionWait: _clearedWait, ...restMetadata } = metadata;
+
+		// Metadata clear is unconditional — the resolved wait is always
+		// removed, regardless of whether the status restore below fires.
+		await tx
+			.update(sessions)
+			.set({ metadata: restMetadata })
+			.where(eq(sessions.sessionId, sessionId));
+
+		// Owned-status guard, made atomic (codex r2 finding): gating on
+		// `currentStatus` (read once, early in this transaction) is not
+		// safe — processStatusUpdate writes semanticStatus in its own
+		// background task, outside this helper's transaction/queue, and
+		// can land between our read and this write. Predicating the WHERE
+		// clause on semanticStatus itself re-checks the live value at the
+		// moment this UPDATE actually executes (SQLite: fully serialized
+		// by withTransaction anyway; Postgres: the row lock this UPDATE
+		// takes forces it to see any write that already committed, and
+		// blocks-then-re-evaluates against one that's mid-flight), so a
+		// fresher agent-reported status can never be clobbered by the
+		// stale prevStatus.
+		await tx
+			.update(sessions)
+			.set({ semanticStatus: next.prevStatus })
+			.where(and(eq(sessions.sessionId, sessionId), eq(sessions.semanticStatus, "waiting")));
+	} else {
+		metadata.permissionWait = next;
+		await tx.update(sessions).set({ metadata }).where(eq(sessions.sessionId, sessionId));
+	}
+}
+
+/**
+ * The server's own permission waits, one per Codex approval row (the id is
+ * `approval:<row id>`). This is the only way to touch those ids: a hook can't
+ * open one (processHookEvent drops the id), can't clear one (a boundary event
+ * keeps them, an unmatched clear never reaches them) and can't fold one into
+ * the anonymous count.
+ *
+ * `open` is the 0-to-1 transition of a PermissionRequest: it captures the
+ * status the wait displaces, sets semanticStatus to waiting and pushes once.
+ * `close` removes the id if it is there (and nothing else: it never decrements
+ * the anonymous count) and restores the displaced status when nothing is left.
+ */
+export async function applyApprovalWait(
+	sessionId: string,
+	approvalId: string,
+	op: "open" | "close",
+): Promise<void> {
+	const waitId = approvalWaitId(approvalId);
+	let waitOpened = false;
+	await enqueuePermissionWaitTask(sessionId, () =>
+		withTransaction(async (tx) => {
+			const [row] = await tx
+				.select({ metadata: sessions.metadata, semanticStatus: sessions.semanticStatus })
+				.from(sessions)
+				.where(eq(sessions.sessionId, sessionId))
+				.limit(1);
+			if (!row) return;
+			const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
+			const currentWait = metadata.permissionWait as PermissionWaitState | undefined;
+
+			if (op === "open") {
+				const next: PermissionWaitState = currentWait
+					? {
+							ids: [...currentWait.ids],
+							anon: currentWait.anon,
+							prevStatus: currentWait.prevStatus,
+						}
+					: { ids: [], anon: 0, prevStatus: null };
+				if (next.ids.includes(waitId)) return;
+				if (next.ids.length + next.anon === 0) {
+					next.prevStatus = row.semanticStatus as SemanticStatus | null;
+					waitOpened = true;
+				}
+				next.ids.push(waitId);
+				foldOldestIdsIntoAnon(next);
+				metadata.permissionWait = next;
+				await tx
+					.update(sessions)
+					.set({ metadata, semanticStatus: "waiting" })
+					.where(eq(sessions.sessionId, sessionId));
+				return;
+			}
+
+			if (!currentWait || !currentWait.ids.includes(waitId)) return;
+			await writeWaitAfterClear(tx, sessionId, metadata, {
+				ids: currentWait.ids.filter((id) => id !== waitId),
+				anon: currentWait.anon,
+				prevStatus: currentWait.prevStatus,
+			});
+		}),
+	);
+	// Once, on the 0->1 transition, and only after the transaction committed.
+	if (waitOpened) announcePermissionWait(sessionId);
+}
+
+/** What a reconcile pass changed for one session. */
+export interface ApprovalWaitReconcile {
+	removedStale: number;
+	added: number;
+}
+
+/**
+ * Brings one session's stored approval ids in line with the approval rows that
+ * are open (`openApprovalIds`), for the sweep. An `approval:` id with no open
+ * row is removed (a crash between a row closing and its transition). An open
+ * row whose id is absent is added WITHOUT a push and WITHOUT touching
+ * prevStatus or semanticStatus: the operational state already reads the wait
+ * from metadata, and a reconcile must not announce or re-capture anything.
+ * Reads first and writes nothing when the two already agree.
+ */
+export async function reconcileApprovalWait(
+	sessionId: string,
+	openApprovalIds: readonly string[],
+): Promise<ApprovalWaitReconcile> {
+	const result: ApprovalWaitReconcile = { removedStale: 0, added: 0 };
+	const wanted = new Set(openApprovalIds.map(approvalWaitId));
+	await enqueuePermissionWaitTask(sessionId, () =>
+		withTransaction(async (tx) => {
+			const [row] = await tx
+				.select({ metadata: sessions.metadata })
+				.from(sessions)
+				.where(eq(sessions.sessionId, sessionId))
+				.limit(1);
+			if (!row) return;
+			const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
+			const currentWait = metadata.permissionWait as PermissionWaitState | undefined;
+			const ids = currentWait?.ids ?? [];
+			const stale = ids.filter((id) => isApprovalWaitId(id) && !wanted.has(id));
+			const missing = [...wanted].filter((id) => !ids.includes(id));
+			if (stale.length === 0 && missing.length === 0) return;
+
+			const next: PermissionWaitState = {
+				ids: ids.filter((id) => !stale.includes(id)),
+				anon: currentWait?.anon ?? 0,
+				prevStatus: currentWait?.prevStatus ?? null,
+			};
+			next.ids.push(...missing);
+			result.removedStale = stale.length;
+			result.added = missing.length;
+			if (stale.length > 0 && missing.length === 0) {
+				await writeWaitAfterClear(tx, sessionId, metadata, next);
+				return;
+			}
+			metadata.permissionWait = next;
+			await tx.update(sessions).set({ metadata }).where(eq(sessions.sessionId, sessionId));
+		}),
+	);
+	return result;
 }
 
 /**
@@ -860,6 +1026,17 @@ export async function processHookEvent(
 	// acknowledgement; it does not go through this hook path.
 	if (eventType === "UserUnacknowledge") {
 		incrementIngestUnacknowledgeDropped();
+		return { sessionId, isNew: false, session: null, events: [] };
+	}
+
+	// A `tool_use_id` in the namespace the server keeps for Codex approvals
+	// (`approval:`) is dropped before anything is read or stored. Such a wait is
+	// opened and closed only by the approval service; a hook that could name one
+	// could clear a live request or imitate one. Still 200 for the sender (the hook
+	// route's contract) and no statement, so the hook path's budget is unchanged.
+	if (isApprovalWaitId(payload.tool_use_id)) {
+		incrementIngestReservedToolUseIdDropped();
+		console.warn(JSON.stringify({ kind: "ingest_reserved_tool_use_id", level: "warn" }));
 		return { sessionId, isNew: false, session: null, events: [] };
 	}
 

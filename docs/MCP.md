@@ -99,7 +99,7 @@ default_tools_approval_mode = "writes"
 | `get_ai_status` | `GET /ai/status`, optionally `GET /ai/diagnostics` | Diagnostics are opt-in (`include_diagnostics: true`) — fetching them emits a `watcher_run_queued` metric on the server, so routine polling should leave it off. |
 | `list_projects_summary` | `GET /projects/summary` | Observe-safe project list: `id`/`name`/defaults, with `githubRepoUrl` reduced to `origin`+`pathname`. Narrower sibling of the manage-only `list_projects` below. |
 
-5 more read tools require `manage` — their REST DTOs carry secrets or operator-authored content, so they're excluded from the `observe` tier (see Security):
+More read tools require `manage` — their REST DTOs carry secrets or operator-authored content, so they're excluded from the `observe` tier (see Security):
 
 | Tool | Wraps | Why manage-only |
 |---|---|---|
@@ -107,9 +107,10 @@ default_tools_approval_mode = "writes"
 | `list_launches` / `get_launch` | `GET /launches`(`/:id`) | DTO carries `env`, `launchSpec`, and `claimToken`. |
 | `get_inbox` | `GET /ai/inbox` | `action_*` items can embed launch `env`/`claimToken` payloads. HITL items carry `promptHash` and `approvable`. **Team mode:** you see the items of sessions you own, unowned ones, and (admins) everything; action requests are admins' only. A key with no owner sees nothing and the answer carries a `notice` saying so (use a key owned by a person, or keep it as an admin service key). |
 | `list_projects` | `GET /projects` | DTO carries arbitrary operator-set `notes`/`metadata` and a `githubRepoUrl` that may embed userinfo credentials. Need only the id/name/defaults? Use the observe-scoped `list_projects_summary` above instead. |
+| `list_pending_approvals` | `GET /sessions/:id/approvals` | A managed Codex session's open command and file-change approvals (closed ones are dropped), each with a preview cut to 4 KiB, its `presentationHash`, whether it is approvable and why not, the time left, and the host's state. Returns the fixed message "This AgentPulse server doesn't support Codex approvals" on a server that predates the routes. The text a person sees in full is in the dashboard. Team mode: the session's owner or an admin. |
 | `list_hosts` | `GET /api/v1/admin/supervisors` | Admin router; used to pick `requested_supervisor_id` for `launch_agent`. Each host may carry `excludeRulesState`: `"invalid"` when the exclude file on that host has an error and its supervisor is sending no session data until it is fixed, otherwise `null` or absent (the server keeps no other state). Each host may also carry `outbox` (a host's offline outbox as it last reported it): `{ pending, oldestPendingAt, lastFlushAt, lastFlushDelivered, lastFlushLost }`, with `pending` the reports the host is holding for when the server is reachable and the last four describing its most recent catch-up. It is absent when the host has nothing to show or runs an older supervisor. **It is the last value the host reported and is never aged by the server**: read it only while the host's `heartbeatLeaseExpiresAt` is in the future, or you will report a catch-up that ended long ago (or never finished, if the host is gone). Session events (`get_session`, `get_session_timeline`, `get_event_context`) may carry `occurredAt`, when the sending supervisor says the event happened; it is omitted when unknown and is display only, so order by `id`, not by it. An event replayed after an outage has `createdAt` later than `occurredAt`; `occurredAt` can run backwards across such events. |
 
-12 tools require `manage` and mutate state. All except the two advisory ones carry `_meta["anthropic/requiresUserInteraction"]` (rUI):
+13 tools require `manage` and mutate state. All except the two advisory ones carry `_meta["anthropic/requiresUserInteraction"]` (rUI):
 
 | Tool | Wraps | Notes |
 |---|---|---|
@@ -123,6 +124,7 @@ default_tools_approval_mode = "writes"
 | `create_template` / `update_template` | `POST /templates`, `PUT /templates/:id` | rUI. |
 | `delete_template` | `DELETE /templates/:id` | rUI + `destructiveHint`. |
 | `decide_hitl` | `POST /ai/inbox/hitl/:id/decide` | Approve/decline/reply-with-custom-prompt a single HITL request. **Approve and custom send the prompt to the agent**: on a managed session it is queued as a prompt (the answer's `delivery` is `queued`). A session that can't take it (`prompt_not_deliverable`, `stale_proposal`, `launch_missing`) changes nothing and leaves the request open; A busy session (`prompt_not_deliverable` with reason `control_busy`) is safe to retry. An approve needs `prompt_hash` (the inbox item's `promptHash`): only the exact prompt you reviewed is sent. rUI. |
+| `decline_approval` | `POST /sessions/:id/approvals/:approvalId/decision` (`decline`) | Declines one pending Codex approval: the command isn't run or the files aren't written, and the agent is told. Needs the host connected (`host_offline`/`host_gone` otherwise; the request is declined at its deadline). Single-item. rUI. **There is no accept tool, on purpose** (below). |
 | `decide_action_request` | `POST /ai/action-requests/:id/decide` | Approve/decline a single pending action request. **Team mode: admins only** (403 `admin_required` otherwise); a session's owner acts directly through the owner-checked stop, archive and delete routes. rUI. |
 
 "Managed sessions only" means AgentPulse rejects the call with `"Session is not managed."` for any session the server isn't holding a live process for (hook-observed-only sessions).
@@ -148,6 +150,7 @@ These are never registered as tools, enforced by a drift-guard test that walks t
 
 - **`delete_session`** (`DELETE /sessions/:id`) — irreversible cascade delete. Too destructive for a single confirmation.
 - **`update_settings`**, **`create_api_key`** / **`revoke_api_key`**, **`enroll_supervisor`** / **`rotate_supervisor`** / **`revoke_supervisor`** — admin-plane mutations (settings, credentials, host enrollment). A manage-scoped MCP key is an orchestration credential, not an admin credential.
+- **`accept_approval`** (or any way to accept a Codex approval) — the server accepts only from a signed-in person who has seen the exact text, and refuses every API key (`human_required`), an admin's included. `agentpulse mcp install` puts a `manage` key in an agent's own configuration, so an accepting tool would let an agent approve its own command. `decline_approval` and `list_pending_approvals` are the whole surface; the tool-invariants test walks the registry for an accept-shaped name.
 - **`batch_decline`** — bulk destructive inbox action; no batch-approve exists either, so no batch tool was added for either direction.
 - **`ask`** (`POST /ai/ask`) — the natural-language Ask surface can itself launch/mutate. Exposing it as one tool would collapse AgentPulse's per-tool confirmation model into a single opaque "do anything" tool.
 - **`fork_session`** / **`resume_session`** — the underlying REST routes (`POST /sessions/:id/fork`, `/resume`) are 501 stubs today; there's nothing to wrap yet.

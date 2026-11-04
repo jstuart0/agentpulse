@@ -28,6 +28,8 @@ export function promptDeliveryNotice(
 			return "AgentPulse didn't launch this session, so it can't type into it. Continue will suggest prompts for you to copy.";
 		case "supervisor_offline":
 			return "The machine running this session isn't connected right now, so AgentPulse can't type into it. Continue will suggest prompts; reconnect the machine to send them.";
+		case "host_gone":
+			return "The machine that ran this session was removed from AgentPulse, so it can't be typed into. Continue will suggest prompts for you to copy.";
 		case "managed_state":
 			return "This session isn't in a state that can take a prompt right now. Continue will suggest prompts for you to copy.";
 		case "control_busy":

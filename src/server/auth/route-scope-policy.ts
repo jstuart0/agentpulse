@@ -99,6 +99,10 @@ export const INTENTIONALLY_MANAGE_ONLY: ReadonlySet<string> = new Set([
 	"/launches/:id",
 	"/ai/inbox",
 	"/ai/action-requests",
+	// Codex approvals (AGEN-87): the presentation carries the command, paths and diff. A person or a manage key
+	// reads them; no other scope does, and nothing is in SCOPE_GRANTS.respond until the iOS follow-up (D12).
+	"/sessions/:sessionId/approvals",
+	"/sessions/:sessionId/approvals/:approvalId",
 	// F23 — leaking DTO (arbitrary notes/metadata, githubRepoUrl userinfo)
 	"/projects",
 	// Deliberately manage-only surfaces (settings, keys, channels, labs, etc.)
@@ -382,6 +386,8 @@ export const OWNER_CHECKED_ROUTES: ReadonlySet<string> = new Set([
 	"PUT /ai/sessions/:sessionId/watcher",
 	"DELETE /ai/sessions/:sessionId/watcher",
 	"POST /ai/ask/threads/:id/cancel",
+	// Codex approvals: judged by the approval service against the session's owner; accept also needs a signed-in person.
+	"POST /sessions/:sessionId/approvals/:approvalId/decision",
 	// Ask threads belong to whoever asked: the list shows a member only their own, and a read or an archive
 	// of someone else's answers 404 (ask-service.ts threadAccessCondition).
 	"GET /ai/ask/threads",

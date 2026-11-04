@@ -10,7 +10,18 @@ import {
 import type { LaunchRequest, ManagedSession } from "../../shared/types.js";
 import { disposeRuntimesAndExit } from "../services/fatal-exit.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
-import { type JsonRpcNotification, findFreePort, spawnServer, waitForServer } from "./codex-rpc.js";
+import { type ApprovalLaunch, sharedCodexApprovals } from "./codex-approvals.js";
+import {
+	type Verdict,
+	bindVerdictToUserAgent,
+	codexProtocolVerdict,
+	resolveCodex,
+} from "./codex-protocol.js";
+import {
+	type JsonRpcNotification,
+	initializeCodexClient,
+	startCodexAppServer,
+} from "./codex-rpc.js";
 import {
 	type LaunchCallbacks,
 	type ManagedCodexRuntime,
@@ -28,18 +39,26 @@ export function managedCodexRuntimeCount(): number {
 /**
  * F31/D7: best-effort cleanup before a fatal (401 credential-rejected) exit
  * — dispose every managed Codex runtime this process still holds (closes
- * the app-server control channel, kills its process) before the process
- * itself exits.
+ * the app-server's stdin, then its process group if it lingers) before the
+ * process itself exits. Resolves once every child is gone or its escalation
+ * has run out; the caller bounds how long it waits.
  */
-export function disposeAllManagedCodexRuntimes(): void {
-	for (const runtime of runtimes.values()) {
-		try {
-			runtime.dispose();
-		} catch (err) {
-			console.error("[codex-managed] runtime dispose failed during fatal shutdown:", err);
-		}
-	}
+export async function disposeAllManagedCodexRuntimes(): Promise<void> {
+	await Promise.all(
+		[...runtimes.values()].map(async (runtime) => {
+			try {
+				await runtime.dispose();
+			} catch (err) {
+				console.error("[codex-managed] runtime dispose failed during fatal shutdown:", err);
+			}
+		}),
+	);
 }
+
+/** How long `turn/interrupt` gets before a stop gives up on it and disposes the runtime anyway. */
+export const INTERRUPT_TIMEOUT_MS = 5_000;
+/** How long a launch waits for the protocol verdict before it goes on without it. */
+const VERDICT_BOOTSTRAP_WAIT_MS = 3_000;
 
 // Log-once per distinct unexpected protocolVersion value so a persistently
 // misbehaving app-server doesn't spam logs across every managed launch.
@@ -186,221 +205,274 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 			runtime: {
 				sessionId: launch.launchCorrelationId,
 				threadId,
-				url: "dry-run",
 				client: null,
-				serverProcess: null,
 				currentThreadTitle: desiredState.session.displayName,
 				protocolVersion: "dry-run",
 				activeTurnId: null,
 				intentionalClose: false,
 				syncTitle: async () => {},
-				dispose: () => {},
+				dispose: async () => {},
 			} satisfies ManagedCodexRuntime,
 		};
 	}
 
-	const port = await findFreePort();
-	const url = `ws://127.0.0.1:${port}`;
-	const serverProcess = await spawnServer(url);
-	const client = await waitForServer(url);
-	const initResult = await client.request<Record<string, unknown>>("initialize", {
-		clientInfo: {
-			name: "agentpulse-supervisor",
-			title: "AgentPulse Supervisor",
-			version: "0.1.0",
-		},
-		capabilities: {
-			experimentalApi: true,
-		},
-	});
-
-	const started = await client.request<ThreadStartResult>("thread/start", {
+	const { binary, serverUrl } = await resolveCodex();
+	// Started before the spawn so a cold schema run overlaps it; it never rejects.
+	const verdictPromise = codexProtocolVerdict(binary, serverUrl);
+	const server = await startCodexAppServer({ executable: binary.path });
+	const { client } = server;
+	const tracker = sharedCodexApprovals();
+	const reportApprovalWarning: ApprovalLaunch["warn"] = (content, detail) =>
+		reportInSessionSafely(
+			"codex-managed",
+			launch.launchCorrelationId,
+			"approval-warning",
+			() =>
+				callbacks.reportEvents([
+					{
+						eventType: "ManagedWarning",
+						category: "system_event",
+						content,
+						rawPayload: { source: "approval_tracker", ...detail },
+					},
+				]),
+			disposeRuntimesAndExit,
+		);
+	// Before `initialize`, so every way the launch can fail from here on is covered by the client's close.
+	const approvals = tracker.attachClient(client, {
+		sessionId: launch.launchCorrelationId,
 		cwd: launch.cwd,
-		experimentalRawEvents: false,
-		persistExtendedHistory: true,
-		sessionStartSource: "startup",
-		...privileges.codexThread,
+		warn: reportApprovalWarning,
 	});
-	const threadId = started.thread.id;
-	let reportedByAgent: CodexReportedPrivileges;
+	let runtimeRef: ManagedCodexRuntime | undefined;
+
 	try {
-		reportedByAgent = assertCodexThreadPrivileges(started, privileges);
+		const initResult = await initializeCodexClient<Record<string, unknown>>(client, {
+			clientInfo: {
+				name: "agentpulse-supervisor",
+				title: "AgentPulse Supervisor",
+				version: "0.1.0",
+			},
+			capabilities: {
+				experimentalApi: true,
+			},
+		});
+
+		const boundVerdict: Promise<Verdict> = verdictPromise.then((verdict) =>
+			bindVerdictToUserAgent(verdict, binary, serverUrl, initResult.userAgent),
+		);
+		const earlyVerdict = await Promise.race([
+			boundVerdict,
+			Bun.sleep(VERDICT_BOOTSTRAP_WAIT_MS).then(() => null),
+		]);
+		const noteVerdict = (verdict: Verdict) => {
+			tracker.setVerdict(approvals, verdict);
+			if (verdict.verdict === "supported") return;
+			void reportApprovalWarning(
+				"AgentPulse can't answer this Codex version's approval requests, so they are declined automatically.",
+				{ method: "protocol", reason: verdict.reason },
+			);
+		};
+
+		const started = await client.request<ThreadStartResult>("thread/start", {
+			cwd: launch.cwd,
+			experimentalRawEvents: false,
+			persistExtendedHistory: true,
+			sessionStartSource: "startup",
+			...privileges.codexThread,
+		});
+		const threadId = started.thread.id;
+		const reportedByAgent = assertCodexThreadPrivileges(started, privileges);
+
+		const bootstrap = await callbacks.reportState({
+			sessionId: launch.launchCorrelationId,
+			launchRequestId: launch.id,
+			agentType: "codex_cli",
+			cwd: launch.cwd,
+			model: launch.model ?? null,
+			status: "active",
+			managedState: "managed",
+			providerSessionId: threadId,
+			providerThreadId: threadId,
+			correlationSource: "session_id",
+			providerProtocolVersion: resolveProviderProtocolVersion(initResult),
+			providerCapabilitySnapshot: {
+				...initResult,
+				...(earlyVerdict ? { agentpulseApprovals: earlyVerdict.verdict } : {}),
+			},
+			providerSyncState: "pending",
+		});
+		if (earlyVerdict) noteVerdict(earlyVerdict);
+		else {
+			// Not ready at bootstrap: the tracker declines in the meantime, and a follow-up report carries it.
+			void boundVerdict.then(async (verdict) => {
+				if (client.isClosed) return;
+				noteVerdict(verdict);
+				await reportInSessionSafely(
+					"codex-managed",
+					launch.launchCorrelationId,
+					"approvals-verdict",
+					() =>
+						callbacks.reportState({
+							sessionId: launch.launchCorrelationId,
+							launchRequestId: launch.id,
+							managedState: "managed",
+							providerCapabilitySnapshot: { ...initResult, agentpulseApprovals: verdict.verdict },
+						}),
+					disposeRuntimesAndExit,
+				);
+			});
+		}
+
+		async function syncTitle(title: string) {
+			await callbacks.reportState({
+				sessionId: launch.launchCorrelationId,
+				launchRequestId: launch.id,
+				providerSessionId: threadId,
+				providerThreadId: threadId,
+				managedState: "managed",
+				desiredThreadTitle: title,
+				providerSyncState: "pending",
+				providerSyncError: null,
+			});
+
+			await client.request("thread/name/set", { threadId, name: title });
+			await client.waitForNotification(
+				"thread/name/updated",
+				(notification) => {
+					const params = notification.params as { threadId?: string; threadName?: string };
+					return params.threadId === threadId && params.threadName === title;
+				},
+				5_000,
+			);
+
+			await callbacks.reportState({
+				sessionId: launch.launchCorrelationId,
+				launchRequestId: launch.id,
+				providerSessionId: threadId,
+				providerThreadId: threadId,
+				managedState: "managed",
+				desiredThreadTitle: title,
+				providerThreadTitle: title,
+				providerSyncState: "synced",
+				providerSyncError: null,
+				lastProviderSyncAt: new Date().toISOString(),
+			});
+		}
+
+		// A queued bootstrap has no server name to go by: pushing the short id as the thread's title would
+		// stick. The title is left for reconcileManagedCodexTitles, once the server has the session.
+		if (shouldPushBootstrapTitle(bootstrap.outcome)) {
+			await syncTitle(bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8));
+		}
+
+		const runtime: ManagedCodexRuntime = {
+			sessionId: launch.launchCorrelationId,
+			threadId,
+			client,
+			currentThreadTitle: shouldPushBootstrapTitle(bootstrap.outcome)
+				? bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8)
+				: "",
+			protocolVersion: resolveProviderProtocolVersion(initResult),
+			activeTurnId: null,
+			intentionalClose: false,
+			syncTitle: async (title: string) => {
+				await syncTitle(title);
+				runtime.currentThreadTitle = title;
+			},
+			dispose: async () => {
+				runtime.intentionalClose = true;
+				runtimes.delete(launch.launchCorrelationId);
+				tracker.dispose(approvals);
+				await server.shutdown();
+			},
+		};
+		runtimeRef = runtime;
+
+		client.onNotification(async (notification) => {
+			// F25/D6: in-session reporting (reportState/reportEvents) can now
+			// reject with a 403 session_not_owned, a 401 (credential revoked or
+			// rotated, F31/D7), or any other non-2xx, mid-session. Logged and
+			// isolated so a rejection here can never become an unhandled
+			// rejection or skip later notification branches — except a 401,
+			// which is fatal only once the credential tripwire confirms it (see
+			// reportInSessionSafely).
+			await reportInSessionSafely(
+				"codex-managed",
+				launch.launchCorrelationId,
+				"notification",
+				() => handleManagedCodexNotification(notification, launch, runtime, threadId, callbacks),
+				disposeRuntimesAndExit,
+			);
+		});
+
+		client.onClose(async (error) => {
+			if (runtime.intentionalClose) {
+				runtimes.delete(launch.launchCorrelationId);
+				return;
+			}
+			// F25/D6: same in-session-reporting hazard as the notification
+			// handler above — the control channel is already gone, so there's
+			// nothing more useful to do than log (or, for a 401, exit) and
+			// finish tearing the runtime down.
+			await reportInSessionSafely(
+				"codex-managed",
+				launch.launchCorrelationId,
+				"degraded-state",
+				() =>
+					callbacks.reportState({
+						sessionId: launch.launchCorrelationId,
+						launchRequestId: launch.id,
+						managedState: "degraded",
+						providerSyncState: "failed",
+						providerSyncError: error?.message ?? "Codex control channel closed",
+					}),
+				disposeRuntimesAndExit,
+			);
+			runtimes.delete(launch.launchCorrelationId);
+		});
+
+		runtimes.set(launch.launchCorrelationId, runtime);
+
+		await callbacks.reportEvents([
+			{
+				eventType: "ManagedSessionStart",
+				category: "system_event",
+				content: "Managed Codex session started.",
+				rawPayload: { threadId },
+			},
+		]);
+
+		const prompt = buildPrompt(launch);
+		const turn = await client.request<{ turn: { id: string } }>("turn/start", {
+			threadId,
+			input: [{ type: "text", text: prompt }],
+			cwd: launch.cwd,
+			model: launch.model ?? undefined,
+		});
+		runtime.activeTurnId = turn.turn.id;
+
+		return {
+			pid: server.pid,
+			metadata: {
+				mode: "managed_codex",
+				threadId,
+				privileges: {
+					...privilegeMetadata(privileges),
+					reportedByAgent,
+					permissive: reportedByAgent.permissive,
+				},
+			},
+			runtime,
+		};
 	} catch (error) {
-		try {
-			client.close();
-		} catch {}
-		try {
-			serverProcess.kill();
-		} catch {}
+		// Whatever failed, the child goes through the same shutdown as every other path.
+		if (runtimeRef) runtimeRef.intentionalClose = true;
+		runtimes.delete(launch.launchCorrelationId);
+		tracker.dispose(approvals);
+		await server.shutdown();
 		throw error;
 	}
-
-	const bootstrap = await callbacks.reportState({
-		sessionId: launch.launchCorrelationId,
-		launchRequestId: launch.id,
-		agentType: "codex_cli",
-		cwd: launch.cwd,
-		model: launch.model ?? null,
-		status: "active",
-		managedState: "managed",
-		providerSessionId: threadId,
-		providerThreadId: threadId,
-		correlationSource: "session_id",
-		providerProtocolVersion: resolveProviderProtocolVersion(initResult),
-		providerCapabilitySnapshot: initResult,
-		providerSyncState: "pending",
-		metadata: {
-			managedCodexUrl: url,
-		},
-	});
-
-	async function syncTitle(title: string) {
-		await callbacks.reportState({
-			sessionId: launch.launchCorrelationId,
-			launchRequestId: launch.id,
-			providerSessionId: threadId,
-			providerThreadId: threadId,
-			managedState: "managed",
-			desiredThreadTitle: title,
-			providerSyncState: "pending",
-			providerSyncError: null,
-		});
-
-		await client.request("thread/name/set", { threadId, name: title });
-		await client.waitForNotification(
-			"thread/name/updated",
-			(notification) => {
-				const params = notification.params as { threadId?: string; threadName?: string };
-				return params.threadId === threadId && params.threadName === title;
-			},
-			5_000,
-		);
-
-		await callbacks.reportState({
-			sessionId: launch.launchCorrelationId,
-			launchRequestId: launch.id,
-			providerSessionId: threadId,
-			providerThreadId: threadId,
-			managedState: "managed",
-			desiredThreadTitle: title,
-			providerThreadTitle: title,
-			providerSyncState: "synced",
-			providerSyncError: null,
-			lastProviderSyncAt: new Date().toISOString(),
-		});
-	}
-
-	// A queued bootstrap has no server name to go by: pushing the short id as the thread's title would
-	// stick. The title is left for reconcileManagedCodexTitles, once the server has the session.
-	if (shouldPushBootstrapTitle(bootstrap.outcome)) {
-		await syncTitle(bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8));
-	}
-
-	const runtime: ManagedCodexRuntime = {
-		sessionId: launch.launchCorrelationId,
-		threadId,
-		url,
-		client,
-		serverProcess,
-		currentThreadTitle: shouldPushBootstrapTitle(bootstrap.outcome)
-			? bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8)
-			: "",
-		protocolVersion: resolveProviderProtocolVersion(initResult),
-		activeTurnId: null,
-		intentionalClose: false,
-		syncTitle: async (title: string) => {
-			await syncTitle(title);
-			runtime.currentThreadTitle = title;
-		},
-		dispose: () => {
-			runtime.intentionalClose = true;
-			try {
-				client.close();
-			} catch {}
-			try {
-				serverProcess.kill();
-			} catch {}
-			runtimes.delete(launch.launchCorrelationId);
-		},
-	};
-
-	client.onNotification(async (notification) => {
-		// F25/D6: in-session reporting (reportState/reportEvents) can now
-		// reject with a 403 session_not_owned, a 401 (credential revoked or
-		// rotated, F31/D7), or any other non-2xx, mid-session. Logged and
-		// isolated so a rejection here can never become an unhandled
-		// rejection or skip later notification branches — except a 401,
-		// which is fatal only once the credential tripwire confirms it (see
-		// reportInSessionSafely).
-		await reportInSessionSafely(
-			"codex-managed",
-			launch.launchCorrelationId,
-			"notification",
-			() => handleManagedCodexNotification(notification, launch, runtime, threadId, callbacks),
-			disposeRuntimesAndExit,
-		);
-	});
-
-	client.onClose(async (error) => {
-		if (runtime.intentionalClose) {
-			runtimes.delete(launch.launchCorrelationId);
-			return;
-		}
-		// F25/D6: same in-session-reporting hazard as the notification
-		// handler above — the control channel is already gone, so there's
-		// nothing more useful to do than log (or, for a 401, exit) and
-		// finish tearing the runtime down.
-		await reportInSessionSafely(
-			"codex-managed",
-			launch.launchCorrelationId,
-			"degraded-state",
-			() =>
-				callbacks.reportState({
-					sessionId: launch.launchCorrelationId,
-					launchRequestId: launch.id,
-					managedState: "degraded",
-					providerSyncState: "failed",
-					providerSyncError: error?.message ?? "Codex control channel closed",
-				}),
-			disposeRuntimesAndExit,
-		);
-		runtimes.delete(launch.launchCorrelationId);
-	});
-
-	runtimes.set(launch.launchCorrelationId, runtime);
-
-	await callbacks.reportEvents([
-		{
-			eventType: "ManagedSessionStart",
-			category: "system_event",
-			content: "Managed Codex session started.",
-			rawPayload: { url, threadId },
-		},
-	]);
-
-	const prompt = buildPrompt(launch);
-	const turn = await client.request<{ turn: { id: string } }>("turn/start", {
-		threadId,
-		input: [{ type: "text", text: prompt }],
-		cwd: launch.cwd,
-		model: launch.model ?? undefined,
-	});
-	runtime.activeTurnId = turn.turn.id;
-
-	return {
-		pid: serverProcess.pid ?? 0,
-		metadata: {
-			mode: "managed_codex",
-			threadId,
-			url,
-			privileges: {
-				...privilegeMetadata(privileges),
-				reportedByAgent,
-				permissive: reportedByAgent.permissive,
-			},
-		},
-		runtime,
-	};
 }
 
 /**
@@ -479,7 +551,14 @@ async function handleManagedCodexNotification(
 	}
 }
 
-export async function stopManagedCodexSession(sessionId: string) {
+export async function stopManagedCodexSession(
+	sessionId: string,
+	options: { interruptTimeoutMs?: number } = {},
+) {
+	// Anything still held is declined now, so nothing is let through while the turn is being stopped. This
+	// comes before the runtime lookup: a stop for a session whose runtime isn't in the map still fences.
+	sharedCodexApprovals().fence(sessionId);
+
 	const runtime = runtimes.get(sessionId);
 	if (!runtime) {
 		throw new Error("Managed Codex runtime is not available on this supervisor.");
@@ -487,16 +566,17 @@ export async function stopManagedCodexSession(sessionId: string) {
 
 	if (runtime.client && runtime.activeTurnId) {
 		try {
-			await runtime.client.request("turn/interrupt", {
-				threadId: runtime.threadId,
-				turnId: runtime.activeTurnId,
-			});
+			await runtime.client.request(
+				"turn/interrupt",
+				{ threadId: runtime.threadId, turnId: runtime.activeTurnId },
+				{ timeoutMs: options.interruptTimeoutMs ?? INTERRUPT_TIMEOUT_MS },
+			);
 		} catch {
-			// Fall through to cleanup even if interrupt fails.
+			// Fall through to cleanup even if interrupt fails or never answers.
 		}
 	}
 
-	runtime.dispose();
+	await runtime.dispose();
 }
 
 export async function reconcileManagedCodexTitles(

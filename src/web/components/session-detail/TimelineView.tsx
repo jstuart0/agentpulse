@@ -231,6 +231,20 @@ export function TimelineCard({
 	);
 }
 
+/**
+ * The event the server writes when a Codex approval closes (AGEN-87). Fixed words
+ * only, from the server; it is a permission event by category, but it reads as the
+ * outcome of an approval, not as a permission prompt, so it gets its own label and
+ * is never rendered as Markdown. Hidden in Prompts and Conversation like every
+ * permission event (CATEGORY_MODES).
+ */
+export const APPROVAL_RESOLVED_EVENT = "ManagedApprovalResolved";
+
+/** The label for an event row: its category's, except for the approval outcome event. */
+export function eventRowLabel(event: Pick<SessionEvent, "category" | "eventType">): string {
+	return event.eventType === APPROVAL_RESOLVED_EVENT ? "Approval" : eventLabel(event.category);
+}
+
 export function eventLabel(category: EventCategory | null): string {
 	if (category === null) return "Event";
 	switch (category) {

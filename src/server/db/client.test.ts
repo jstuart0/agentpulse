@@ -41,6 +41,8 @@ describeSqliteOnly("initializeDatabase", () => {
 				"ai_session_summaries",
 				// Same: born with its FK (AGEN-83).
 				"managed_delivery_receipts",
+				// Same: born with its FK (AGEN-87). Its audit table has none, on purpose.
+				"codex_approvals",
 			];
 			for (const table of childTables) {
 				const fkRows = raw.prepare(`PRAGMA foreign_key_list('${table}')`).all() as Array<{

@@ -155,6 +155,12 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 - `GET /api/v1/sessions/:id/claude-md` — Get CLAUDE.md content
 - `PUT /api/v1/sessions/:id/claude-md` — Save CLAUDE.md content
 
+**Managed Codex approvals:**
+- `GET /api/v1/sessions/:id/approvals` — Open (and recently closed) command and file-change approvals for a managed Codex session, with the host's state (`manage` key or a signed-in person; owner or admin in team mode)
+- `GET /api/v1/sessions/:id/approvals/:approvalId` — One approval with the full text a person is shown and its hash
+- `POST /api/v1/sessions/:id/approvals/:approvalId/decision` — `{ decision: "accept" | "decline" | "cancel", presentationHash? }`; accept needs a signed-in person and the hash, never an API key
+- `POST /api/v1/supervisors/:id/managed-sessions/:sessionId/approvals` and `POST /api/v1/supervisors/:id/approvals/sync` — supervisor credential only: report a request, and poll for answers
+
 **Projects:**
 - `GET /api/v1/projects` — List projects, full detail (`manage`-scoped only)
 - `GET /api/v1/projects/summary` — Observe-safe project list (id/name/defaults, redacted `githubRepoUrl`)

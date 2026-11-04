@@ -4,7 +4,7 @@
  * limit on an AI prompt no supervisor took.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { eq } from "drizzle-orm";
+import { eq, ne } from "drizzle-orm";
 import "./ai/__test_db.js";
 import {
 	enableAiRuntime,
@@ -274,7 +274,7 @@ describe("claim-time limit on an AI prompt", () => {
 		const expiredId = await queueAutoPrompt(first);
 		await ageAction(expiredId, 120_000);
 		const second = newSessionId();
-		await getDb().delete(supervisors); // one supervisor owns both below
+		await getDb().delete(supervisors).where(ne(supervisors.id, supervisorId)); // one supervisor owns both below, and stays live
 		await seedLiveManagedSession(second);
 		await getDb()
 			.update(managedSessions)

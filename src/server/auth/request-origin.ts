@@ -67,6 +67,22 @@ function isAllowlistedHost(hostHeader: string): boolean {
 }
 
 /**
+ * With authentication off, is this Host one the page could legitimately have
+ * been loaded from: a loopback address or an allowlisted name? A page reached
+ * through DNS rebinding has Origin equal to Host, so "same origin" alone proves
+ * nothing there.
+ */
+export function isTrustedHostWhenAuthOff(hostHeader: string | undefined): boolean {
+	if (!hostHeader) return false;
+	return isLoopbackHost(hostHeader) || isAllowlistedHost(hostHeader);
+}
+
+/** Is the Host a loopback address (a client on this machine)? */
+export function isLoopbackHostHeader(hostHeader: string | undefined): boolean {
+	return !!hostHeader && isLoopbackHost(hostHeader);
+}
+
+/**
  * Which Origins may open the live-update socket. The configured allowlist is
  * accepted. Beyond it an Origin equal to the request's own is accepted too, so
  * an install reached on another address still gets live updates, but with
@@ -79,5 +95,5 @@ export function isAcceptedSocketOrigin(origin: string, hostHeader: string | unde
 	if (config.allowedOrigins.includes(origin)) return true;
 	if (!isSameOrigin(origin, hostHeader)) return false;
 	if (!config.disableAuth) return true;
-	return isLoopbackHost(hostHeader) || isAllowlistedHost(hostHeader);
+	return isTrustedHostWhenAuthOff(hostHeader);
 }

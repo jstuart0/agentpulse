@@ -37,6 +37,8 @@ import {
 	isTrustedDirectoryStat,
 	isTrustedStateFileStat,
 } from "./report-gate.js";
+import { createReportOutbox } from "./report-outbox.js";
+import { SupervisorNetworkError, SupervisorRequestError } from "./report-resilience.js";
 
 const SUPERVISOR_ID = "sup-1";
 const BASE = `/supervisors/${SUPERVISOR_ID}`;
@@ -1737,7 +1739,24 @@ describe("what became of a report (outcome), delivery ids and the replay marker 
 	});
 });
 
+/** The endpoint paths that carry session data; none may appear under src/supervisor outside the gate. */
+const SESSION_DATA_FRAGMENTS: [string, RegExp][] = [
+	["managed-session-state", /managed-session-state/],
+	["managed-sessions/<id>/events", /managed-sessions\/[^\n"'`]*events/],
+	["managed-sessions/<id>/approvals", /managed-sessions\/[^\n"'`]*approvals/],
+	["approvals/sync", /approvals\/sync/],
+	["control-actions/<id>/status", /control-actions\/[^\n"'`]*status/],
+	["launches/<id>/status", /launches\/[^\n"'`]*status/],
+];
+
 describe("nothing else sends session data (drift guards)", () => {
+	test("the two approval endpoint paths are in the drift list, beside the four that were there", () => {
+		const names = SESSION_DATA_FRAGMENTS.map(([name]) => name);
+		expect(names).toContain("managed-sessions/<id>/approvals");
+		expect(names).toContain("approvals/sync");
+		expect(names.length).toBeGreaterThanOrEqual(6);
+	});
+
 	function sourceFiles(dir: string): string[] {
 		const out: string[] = [];
 		for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -1750,12 +1769,7 @@ describe("nothing else sends session data (drift guards)", () => {
 	const SUPERVISOR_DIR = join(import.meta.dir, "..");
 
 	test("the four session-data endpoint paths appear under src/supervisor only inside report-gate.ts", () => {
-		const fragments: [string, RegExp][] = [
-			["managed-session-state", /managed-session-state/],
-			["managed-sessions/<id>/events", /managed-sessions\//],
-			["control-actions/<id>/status", /control-actions\/[^\n"'`]*status/],
-			["launches/<id>/status", /launches\/[^\n"'`]*status/],
-		];
+		const fragments = SESSION_DATA_FRAGMENTS;
 		const offenders: string[] = [];
 		for (const file of sourceFiles(SUPERVISOR_DIR)) {
 			if (file.endsWith("report-gate.ts")) continue;
@@ -2278,5 +2292,188 @@ describe("the terminal bridge script has no way to the network (drift guard)", (
 				/managed-session-state|managed-sessions\/|control-actions|launches\//,
 			);
 		}
+	});
+});
+
+describe("approvals through the gate", () => {
+	const reportBody = (over: Record<string, unknown> = {}) =>
+		({
+			v: 1,
+			runtimeEpoch: "epoch-1",
+			rpcId: "0",
+			requestKind: "command",
+			threadId: "t",
+			turnId: "u",
+			itemId: "i",
+			providerApprovalId: null,
+			ageMs: 0,
+			revision: 1,
+			command: "ls",
+			cwd: work,
+			reason: null,
+			grantRoot: null,
+			truncated: false,
+			declineOnly: [],
+			...over,
+		}) as never;
+
+	const SERVER_OK_STATE = {
+		session: { displayName: "from-server" },
+		managedSession: {},
+		events: [],
+	};
+	const answerBody = { v: 1 as const, approvalId: "ap-1", revision: 1, expiresInMs: 5 };
+	const syncAnswer = { v: 1, answers: [], closed: [], ack: [] };
+
+	function approvalGate(respond: (call: Call) => unknown, withOutbox = false) {
+		const calls: Call[] = [];
+		const headers: Array<Record<string, string> | undefined> = [];
+		const request = async (path: string, options?: RequestInit) => {
+			const call: Call = {
+				path,
+				method: options?.method ?? "GET",
+				body: options?.body ? JSON.parse(String(options.body)) : undefined,
+			};
+			calls.push(call);
+			headers.push(options?.headers as Record<string, string> | undefined);
+			return respond(call);
+		};
+		const outbox = withOutbox
+			? createReportOutbox({ home, supervisorId: SUPERVISOR_ID, now: () => clock })
+			: undefined;
+		const gate = createReportGate({
+			request,
+			supervisorId: SUPERVISOR_ID,
+			home,
+			version: "9.9.9",
+			now: () => clock,
+			outbox,
+		});
+		return { gate, calls, headers, outbox };
+	}
+
+	test("approval report never queues: with the server unreachable it throws, latches offline and keeps nothing", async () => {
+		let down = false;
+		const { gate, outbox } = approvalGate(() => {
+			if (down) throw new SupervisorNetworkError();
+			return SERVER_OK_STATE;
+		}, true);
+		await startSession(gate, "sess-1", work);
+		down = true;
+		const before = outbox?.summary().pending ?? 0;
+
+		await expect(gate.reportApproval("sess-1", reportBody())).rejects.toBeInstanceOf(
+			SupervisorNetworkError,
+		);
+
+		expect(gate.isOffline()).toBe(true);
+		await expect(gate.reportApproval("sess-1", reportBody({ rpcId: "1" }))).rejects.toBeDefined();
+		await expect(
+			gate.syncApprovals({
+				live: [{ sessionId: "sess-1", approvalId: "a", revision: 1 }],
+				resolved: [],
+			}),
+		).rejects.toBeDefined();
+		expect(outbox?.summary().pending ?? 0).toBe(before);
+	});
+
+	test("approval report never queues: a report goes to its own path, is never a replay, and returns the server's answer", async () => {
+		const { gate, calls, headers } = approvalGate(() => answerBody);
+		gate.noteCwd("sess-1", work);
+
+		const result = await gate.reportApproval("sess-1", reportBody());
+
+		expect(result).toEqual({ outcome: "sent", response: answerBody });
+		expect(paths(calls)).toEqual([`POST ${BASE}/managed-sessions/sess-1/approvals`]);
+		expect(headers[0]).toBeUndefined();
+	});
+
+	test("approval report never queues: an excluded or blocked session sends nothing", async () => {
+		const { gate, calls } = approvalGate(() => answerBody);
+		gate.noteCwd("sess-1", work);
+		writeRules([work]);
+		expect(await gate.reportApproval("sess-1", reportBody())).toEqual({ outcome: "excluded" });
+		writeRules(["not a rule line ~~~ [invalid"]);
+		const blocked = await gate.reportApproval("sess-1", reportBody());
+		// Rules that can't be read are not "no match": the session is held, not judged covered.
+		expect(blocked).toEqual({ outcome: "blocked" });
+		expect(calls).toEqual([]);
+	});
+
+	test("approval report never queues: an answer that isn't the contract is a server fault, not a delivery", async () => {
+		const { gate } = approvalGate(() => ({ v: 2, approvalId: "x" }));
+		gate.noteCwd("sess-1", work);
+
+		const error = await gate.reportApproval("sess-1", reportBody()).catch((e) => e);
+
+		expect(error).toBeInstanceOf(SupervisorRequestError);
+		expect((error as SupervisorRequestError).status).toBe(502);
+		expect(gate.isOffline()).toBe(false);
+	});
+
+	test("the poll drops excluded sessions from its body and sends nothing when nothing is left", async () => {
+		const { gate, calls } = approvalGate(() => syncAnswer);
+		gate.noteCwd("open", elsewhere);
+		gate.noteCwd("secret", work);
+		writeRules([work]);
+
+		const sent = await gate.syncApprovals({
+			live: [
+				{ sessionId: "open", approvalId: "a", revision: 1 },
+				{ sessionId: "secret", approvalId: "b", revision: 1 },
+			],
+			resolved: [
+				{
+					sessionId: "secret",
+					approvalId: "b",
+					outcome: "declined_local",
+					sentDecision: "decline",
+				},
+				{ sessionId: "open", approvalId: "a", outcome: "respond_sent", sentDecision: "accept" },
+			],
+		});
+
+		expect(sent.outcome).toBe("sent");
+		expect(calls).toHaveLength(1);
+		expect(calls[0].path).toBe(`${BASE}/approvals/sync`);
+		expect(calls[0].body).toEqual({
+			v: 1,
+			live: [{ approvalId: "a", revision: 1 }],
+			resolved: [{ approvalId: "a", outcome: "respond_sent", sentDecision: "accept" }],
+		});
+		const none = await gate.syncApprovals({
+			live: [{ sessionId: "secret", approvalId: "b", revision: 1 }],
+			resolved: [],
+		});
+		expect(none).toEqual({ outcome: "empty" });
+		expect(calls).toHaveLength(1);
+	});
+
+	test("the poll gives up on a server that doesn't answer within its limit, as a network failure", async () => {
+		const { gate } = approvalGate(() => new Promise(() => {}));
+		gate.noteCwd("open", elsewhere);
+		const realSetTimeout = globalThis.setTimeout;
+		globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) =>
+			realSetTimeout(fn, ms === 10_000 ? 5 : ms, ...rest)) as typeof setTimeout;
+		try {
+			const error = await gate
+				.syncApprovals({
+					live: [{ sessionId: "open", approvalId: "a", revision: 1 }],
+					resolved: [],
+				})
+				.catch((e) => e);
+			expect(error).toBeInstanceOf(SupervisorNetworkError);
+			expect(gate.isOffline()).toBe(true);
+		} finally {
+			globalThis.setTimeout = realSetTimeout;
+		}
+	});
+
+	test("a path is judged against the local rules: excluded when covered or when the rules can't be trusted", () => {
+		const { gate } = approvalGate(() => answerBody);
+		expect(gate.excludesPath(work)).toBe(false);
+		writeRules([work]);
+		expect(gate.excludesPath(join(work, "sub", "file.txt"))).toBe(true);
+		expect(gate.excludesPath(elsewhere)).toBe(false);
 	});
 });

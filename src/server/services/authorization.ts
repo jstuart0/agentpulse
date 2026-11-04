@@ -174,6 +174,59 @@ export const assertCanConfigureWatcher = assertSessionOwnerOrAdmin;
 export const assertCanDecideProposal = assertSessionOwnerOrAdmin;
 
 /**
+ * May this actor answer a Codex approval on this session? The pure rule, for a
+ * caller that already has the session's owner (the approvals list computes
+ * `viewer.canAccept` from it).
+ *
+ * Strict, unlike the alias above: a session the server can't find gives a
+ * non-admin nothing (so existence isn't revealed), and an unowned session is
+ * not open to everyone for an accept.
+ *  - Solo: allowed.
+ *  - Team: a host credential (role `none`) never; an admin always; a missing
+ *    session, nobody else.
+ *  - An unowned session: accept is an admin's alone; a decline or a cancel is
+ *    open to any identified member (a decline can only stop a command).
+ *  - An owned session: its owner (or an admin).
+ */
+export function mayAnswerApproval(
+	actor: Actor,
+	mode: InstanceModeName,
+	session: { ownerUserId: string | null } | null,
+	decision: "accept" | "decline" | "cancel",
+): boolean {
+	if (mode === "solo") return true;
+	if (actor.role === "none") return false;
+	if (actor.role === "admin") return true;
+	if (session === null) return false;
+	if (session.ownerUserId === null) return decision !== "accept" && actor.userId !== null;
+	return actor.userId !== null && actor.userId === session.ownerUserId;
+}
+
+/**
+ * Throws `NotOwnerError` unless the actor may answer an approval on this
+ * session (see `mayAnswerApproval`). Reads the session's owner; call it before
+ * the approval row is read, so a refusal says nothing about the row.
+ */
+export async function assertCanAnswerApproval(
+	actor: Actor,
+	sessionId: string,
+	decision: "accept" | "decline" | "cancel",
+): Promise<void> {
+	const mode = await modeOf(actor);
+	if (mode === "solo") return;
+	const [row] = await getDb()
+		.select({ ownerUserId: sessions.ownerUserId })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	if (
+		!mayAnswerApproval(actor, mode, row ? { ownerUserId: row.ownerUserId ?? null } : null, decision)
+	) {
+		throw new NotOwnerError("session");
+	}
+}
+
+/**
  * May this caller manage this device (change it, test it, delete it)? Solo: yes.
  * Team: its owner or an admin. A device whose key has no owner is an admin's,
  * except that the very key it registered with may manage it (an ownerless key is

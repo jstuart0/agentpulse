@@ -23,6 +23,10 @@ export type {
 export { sessionsPg as sessions } from "./core/sessions.js";
 export { eventsPg as events } from "./core/events.js";
 export { managedDeliveryReceiptsPg as managedDeliveryReceipts } from "./core/managed-delivery-receipts.js";
+export {
+	codexApprovalsPg as codexApprovals,
+	codexApprovalAuditPg as codexApprovalAudit,
+} from "./core/codex-approvals.js";
 export { usersPg as users } from "./core/users.js";
 export { authSessionsPg as authSessions } from "./core/auth-sessions.js";
 export { apiKeysPg as apiKeys } from "./core/api-keys.js";

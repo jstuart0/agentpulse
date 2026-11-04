@@ -1,8 +1,9 @@
 /**
  * AGEN-76 boundary contract (D6): after the sweep completes a session whose
  * supervisor lease expired, the wire shape is unchanged. `managed` still means
- * "a supervisor launched it", the host reads offline, and the session stays
- * controllable: prompt and stop queue as for any offline host and wait for it.
+ * "a supervisor launched it", the host reads offline, and prompt and stop are
+ * refused at once with 409 host_offline (AGEN-66), since no action queued now
+ * would be taken before its 90 s lock ran out.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
@@ -94,21 +95,18 @@ describe("a session completed by a lease-expired supervisor", () => {
 		expect(body.supervisors.find((s) => s.id === "dead-host")?.status).toBe("offline");
 	});
 
-	test("prompt and stop still queue, and stay queued after another sweep", async () => {
+	test("prompt and stop are refused with host_offline, and no action is queued after another sweep", async () => {
 		await world();
 		const prompt = await post("/sessions/stale-a/prompt", { prompt: "hi" });
-		expect(prompt.status).toBe(202);
-		const promptBody = (await prompt.json()) as { action: { status: string; actionType: string } };
-		expect(promptBody.action).toMatchObject({ status: "queued", actionType: "prompt" });
+		expect(prompt.status).toBe(409);
+		expect(((await prompt.json()) as { error: string }).error).toBe("host_offline");
 
 		const stop = await post("/sessions/stale-b/stop");
-		expect(stop.status).toBe(202);
-		expect(((await stop.json()) as { action: { status: string } }).action.status).toBe("queued");
+		expect(stop.status).toBe(409);
+		expect(((await stop.json()) as { error: string }).error).toBe("host_offline");
 
 		await updateStaleSessions();
-		const rows = await getDb().select().from(controlActions);
-		expect(rows.length).toBe(2);
-		expect(rows.every((r) => r.status === "queued")).toBe(true);
+		expect(await getDb().select().from(controlActions)).toHaveLength(0);
 		const [session] = await getDb()
 			.select()
 			.from(sessions)

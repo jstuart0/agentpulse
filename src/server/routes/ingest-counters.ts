@@ -19,6 +19,7 @@ let ingestForeignKeyDropped = 0;
 let sessionCreationLimited = 0;
 let ingestKeyBound = 0;
 let skipHeaderDropped = 0;
+let reservedToolUseIdDropped = 0;
 
 export function getBgErrorCount(): number {
 	return bgErrorCount;
@@ -127,6 +128,19 @@ export function incrementSkipHeaderDropped(): void {
 	skipHeaderDropped++;
 }
 
+/**
+ * Hook deliveries dropped because their `tool_use_id` starts with the prefix the
+ * server reserves for Codex approvals (`approval:`). A hook can't open, clear or
+ * imitate a wait the server keeps for an approval row. Answered 200, nothing stored.
+ * Not surfaced on /health: the response is a contract the clients decode.
+ */
+export function getIngestReservedToolUseIdDropped(): number {
+	return reservedToolUseIdDropped;
+}
+export function incrementIngestReservedToolUseIdDropped(): void {
+	reservedToolUseIdDropped++;
+}
+
 /** Reset all counters — for use in tests only. */
 export function _resetCountersForTest(): void {
 	bgErrorCount = 0;
@@ -139,6 +153,7 @@ export function _resetCountersForTest(): void {
 	sessionCreationLimited = 0;
 	ingestKeyBound = 0;
 	skipHeaderDropped = 0;
+	reservedToolUseIdDropped = 0;
 }
 
 /** Reset only the mismatch counter — for use in tests only. */

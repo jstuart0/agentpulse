@@ -7,11 +7,12 @@ import { Database } from "bun:sqlite";
  * name: a legacy inline UNIQUE and a Drizzle `_unique` index are the same thing.
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import "./__test_db.js";
-import { itSqliteOnly } from "../test-utils/backend.js";
+import { isSqliteTest, itSqliteOnly } from "../test-utils/backend.js";
+import { preexistingInstall, writePreexistingInstallFile } from "../test-utils/legacy-install.js";
 
 const { initializeDatabase } = await import("./client.js");
 const MIGRATIONS = resolve(import.meta.dir, "../../../drizzle/sqlite");
@@ -19,19 +20,6 @@ const TMP = mkdtempSync(join(tmpdir(), "ap-legacy-parity-"));
 
 /** What the opt-in vector table adds only when vector search is built in, and Drizzle's own bookkeeping. */
 const NOT_ON_LEGACY = new Set(["event_embeddings", "__drizzle_migrations"]);
-
-/** A pre-existing install's `sessions` table: its presence is what routes boot to the legacy init. */
-function preexistingInstall(): Database {
-	const db = new Database(":memory:");
-	db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
-	db.exec(`CREATE TABLE sessions (
-		id TEXT PRIMARY KEY, session_id TEXT NOT NULL UNIQUE, display_name TEXT, agent_type TEXT NOT NULL,
-		status TEXT NOT NULL DEFAULT 'active', cwd TEXT, transcript_path TEXT, model TEXT,
-		started_at TEXT NOT NULL DEFAULT (datetime('now')), last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
-		ended_at TEXT, semantic_status TEXT, current_task TEXT, plan_summary TEXT,
-		total_tool_uses INTEGER NOT NULL DEFAULT 0, metadata TEXT DEFAULT '{}')`);
-	return db;
-}
 
 async function drizzleBorn(): Promise<Database> {
 	const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
@@ -51,6 +39,31 @@ interface Shape {
 
 type Row = Record<string, string | number | null>;
 
+/**
+ * Tables whose columns are compared in full (NOT NULL, default, foreign key and its delete rule), not
+ * just by name and type. The older tables differ on purpose and harmlessly (a legacy `id TEXT PRIMARY
+ * KEY` is nullable, `events.session_id` is rebuilt with its cascade only after boot), so a blanket
+ * comparison would only report those. A table born in a migration with its constraints must match.
+ */
+const FULLY_COMPARED = new Set(["codex_approvals", "codex_approval_audit"]);
+
+/** SQLite reads `false` and `true` as 0 and 1, so a default spelled either way is the same default. */
+function normalizeDefault(value: unknown): string {
+	const text = normalizeSql(String(value));
+	return text === "false" ? "0" : text === "true" ? "1" : text;
+}
+
+/** A trigger's SQL with the spelling differences that don't change what it does taken out. */
+function normalizeSql(text: string): string {
+	return text
+		.replace(/[`"]/g, "")
+		.replace(/\bif not exists\b/gi, "")
+		.replace(/\s+/g, " ")
+		.replace(/\s*([(),;=<>])\s*/g, "$1")
+		.trim()
+		.toLowerCase();
+}
+
 function shapeOf(db: Database): Shape {
 	const shape: Shape = {
 		tables: new Set(),
@@ -59,15 +72,32 @@ function shapeOf(db: Database): Shape {
 		triggers: new Set<string>(),
 	};
 	const objects = db
-		.prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+		.prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
 		.all() as Row[];
 	for (const o of objects) {
 		const name = String(o.name);
-		if (o.type === "trigger") shape.triggers.add(name);
+		if (o.type === "trigger") {
+			// By name and by what it does: a trigger whose body drifted is a different trigger.
+			shape.triggers.add(name);
+			shape.triggers.add(`${name}: ${normalizeSql(String(o.sql))}`);
+		}
 		if (o.type !== "table" || NOT_ON_LEGACY.has(name) || name.includes("_fts")) continue;
 		shape.tables.add(name);
 		for (const c of db.prepare(`PRAGMA table_info('${name}')`).all() as Row[]) {
 			shape.columns.add(`${name}.${c.name} ${String(c.type).toUpperCase()}`);
+			// NOT NULL and the default decide what an insert may omit and what a row reads back as.
+			if (FULLY_COMPARED.has(name)) {
+				shape.columns.add(
+					`${name}.${c.name} notnull=${c.notnull} default=${normalizeDefault(c.dflt_value)}`,
+				);
+			}
+		}
+		for (const f of FULLY_COMPARED.has(name)
+			? (db.prepare(`PRAGMA foreign_key_list('${name}')`).all() as Row[])
+			: []) {
+			shape.columns.add(
+				`${name}.${f.from} -> ${f.table}.${f.to} on_delete=${f.on_delete} on_update=${f.on_update}`,
+			);
 		}
 		for (const i of db.prepare(`PRAGMA index_list('${name}')`).all() as Row[]) {
 			if (i.origin === "pk") continue;
@@ -107,6 +137,15 @@ const MOBILE_COMPANION_SQL = [
 const MANAGED_DELIVERY_SQL = [
 	"DROP TABLE IF EXISTS managed_delivery_receipts",
 	"ALTER TABLE events DROP COLUMN occurred_at",
+];
+
+/** What migration 0020 added (AGEN-87): both Codex approval tables (their indexes and triggers with them). */
+const CODEX_APPROVALS_SQL = [
+	"DROP TRIGGER IF EXISTS trg_codex_approvals_finalize_audit",
+	"DROP TRIGGER IF EXISTS trg_codex_approval_audit_update",
+	"DROP TRIGGER IF EXISTS trg_codex_approval_audit_delete",
+	"DROP TABLE IF EXISTS codex_approvals",
+	"DROP TABLE IF EXISTS codex_approval_audit",
 ];
 
 describe("legacy SQLite init parity with Drizzle migrations", () => {
@@ -163,6 +202,28 @@ describe("legacy SQLite init parity with Drizzle migrations", () => {
 		},
 	);
 
+	itSqliteOnly(
+		"an install that predates Codex approvals (0020) gets both tables, their indexes and the audit triggers",
+		async () => {
+			const legacy = preexistingInstall();
+			const born = await drizzleBorn();
+			open.push(legacy, born);
+			await initializeDatabase(legacy);
+			for (const statement of CODEX_APPROVALS_SQL) legacy.exec(statement);
+			// The drop list is real: the shape really lacks what it names.
+			const gap = missingFrom(shapeOf(legacy), shapeOf(born));
+			expect(gap).toContain("tables: codex_approvals");
+			expect(gap).toContain("tables: codex_approval_audit");
+			expect(gap).toContain("triggers: trg_codex_approvals_finalize_audit");
+			expect(gap).toContain("triggers: trg_codex_approval_audit_update");
+			expect(gap).toContain("triggers: trg_codex_approval_audit_delete");
+
+			await initializeDatabase(legacy);
+
+			expect(missingFrom(shapeOf(legacy), shapeOf(born))).toEqual([]);
+		},
+	);
+
 	itSqliteOnly("the legacy init is idempotent: a second boot changes nothing", async () => {
 		const legacy = preexistingInstall();
 		open.push(legacy);
@@ -172,6 +233,61 @@ describe("legacy SQLite init parity with Drizzle migrations", () => {
 		expect(missingFrom(shapeOf(legacy), first)).toEqual([]);
 		expect(missingFrom(first, shapeOf(legacy))).toEqual([]);
 	});
+
+	test.skipIf(!isSqliteTest)(
+		"the Codex approval suites pass unchanged on a database the legacy init built",
+		async () => {
+			// The suites that prove the audit is append-only, that a session delete cascades and finalizes
+			// its audit rows, and that a request is recorded, answered and synced, run in a child process
+			// against a file that held only an old install's `sessions` table, so boot takes the legacy
+			// path. Same suites, same assertions: nothing here is re-implemented against a different schema.
+			const dir = mkdtempSync(join(TMP, "legacy-run-"));
+			const file = join(dir, "legacy.db");
+			writePreexistingInstallFile(file);
+			const suites = [
+				"src/server/db/codex-approvals-migration.test.ts",
+				"src/server/services/codex-approvals.test.ts",
+				"src/server/services/codex-approvals-stop-fence.test.ts",
+				"src/server/services/codex-approvals-review.test.ts",
+				"src/server/routes/sessions-delete.test.ts",
+			];
+			const child = Bun.spawn([process.execPath, "test", ...suites], {
+				cwd: resolve(import.meta.dir, "../../.."),
+				env: { ...process.env, SQLITE_PATH: file, DATA_DIR: dir },
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const [stdout, stderr] = await Promise.all([
+				new Response(child.stdout).text(),
+				new Response(child.stderr).text(),
+			]);
+			await child.exited;
+			const output = `${stdout}\n${stderr}`;
+
+			// It really was the legacy path: boot said so, never "Fresh SQLite install", and the file has no
+			// Drizzle migration table.
+			expect(output).toContain("Existing SQLite install detected — using legacy init path");
+			expect(output).not.toContain("Fresh SQLite install");
+			const after = new Database(file, { readonly: true });
+			try {
+				const tables = (
+					after.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Row[]
+				).map((t) => t.name);
+				expect(tables).not.toContain("__drizzle_migrations");
+				expect(tables).toContain("codex_approvals");
+			} finally {
+				after.close();
+			}
+
+			// A population floor, so "0 failed" can't mean nothing ran.
+			const passed = Number(/^\s*(\d+) pass/m.exec(output)?.[1] ?? 0);
+			const failed = Number(/^\s*(\d+) fail/m.exec(output)?.[1] ?? Number.NaN);
+			expect(passed).toBeGreaterThanOrEqual(100);
+			expect(failed, output.slice(-3000)).toBe(0);
+			expect(existsSync(file)).toBe(true);
+		},
+		180_000,
+	);
 
 	test("the guard sees a gap: a shape missing a column is reported", () => {
 		const a: Shape = {

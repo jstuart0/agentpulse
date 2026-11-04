@@ -1,4 +1,3 @@
-import type { ChildProcess } from "node:child_process";
 import type {
 	LaunchRequest,
 	ManagedSession,
@@ -11,15 +10,14 @@ import type { RpcClient } from "./codex-rpc.js";
 export type ManagedCodexRuntime = {
 	sessionId: string;
 	threadId: string;
-	url: string;
 	client: RpcClient | null;
-	serverProcess: ChildProcess | null;
 	currentThreadTitle: string | null;
 	protocolVersion: string | null;
 	activeTurnId: string | null;
 	intentionalClose: boolean;
 	syncTitle: (title: string) => Promise<void>;
-	dispose: () => void;
+	/** Declines what is held, closes stdin, and escalates to the child's process group. Idempotent. */
+	dispose: () => Promise<void>;
 };
 
 export type LaunchCallbacks = {

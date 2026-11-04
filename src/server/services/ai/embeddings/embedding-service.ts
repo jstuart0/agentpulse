@@ -36,7 +36,7 @@ import { type EmbeddingAdapter, vectorToBuffer } from "./types.js";
  * doesn't add latency to the hook endpoint.
  */
 
-const EMBEDDED_EVENT_TYPES = [
+export const EMBEDDED_EVENT_TYPES = [
 	"UserPromptSubmit",
 	"AssistantMessage",
 	"Stop",

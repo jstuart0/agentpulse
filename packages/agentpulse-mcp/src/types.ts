@@ -162,6 +162,14 @@ export interface ResolvedProjectData {
 	defaultLaunchMode: LaunchMode | null;
 }
 
+export type HostControlState = "live" | "offline" | "gone";
+
+export interface HostControl {
+	state: HostControlState;
+	/** The host's last heartbeat; null when it is gone or never beat. */
+	lastSeenAt: string | null;
+}
+
 export interface ManagedSession {
 	sessionId: string;
 	launchRequestId: string;
@@ -233,6 +241,8 @@ export interface Session {
 	 */
 	machine?: string | null;
 	managedSession?: ManagedSession | null;
+	/** Detail response only, and only for a managed session: whether its host can take a stop or a prompt. Absent means "can't tell". */
+	hostControl?: HostControl;
 	managed?: boolean;
 	// F86 (ian mid-build, D14/Phase 2): optional for backward-compat with a
 	// server predating mapSessionDto — a get_session response from a
@@ -968,4 +978,144 @@ export interface ActionRequest {
 	resultEventId: string | null;
 	createdAt: string;
 	updatedAt: string;
+}
+
+// ── Managed Codex approvals (AGEN-87) ──────────────────────────────────────
+// Vendored from src/shared/codex-approvals.ts, the person-facing DTOs only
+// (scripts/check-dto-field-parity.ts holds the field names equal). MCP can read
+// these and decline; it never accepts, so the accept-only request shape isn't here.
+
+export type CodexApprovalStatus = "pending" | "answered" | "closed";
+export type CodexApprovalDecision = "accept" | "decline" | "cancel";
+export type CodexApprovalRequestKind = "command" | "file_change";
+// The closed sets this version knows (held equal to src/shared/codex-approvals.ts by
+// src/shared/codex-approvals-mcp-parity.test.ts). A newer or older server can send a value
+// outside them; the tools only pass these through and never branch on them, so an unknown
+// value is shown, not thrown on.
+export type CodexApprovalOutcome =
+	| "sending_accept"
+	| "sending_decline"
+	| "approved_sent"
+	| "declined"
+	| "declined_stopped"
+	| "expired"
+	| "answer_lapsed"
+	| "answer_withdrawn"
+	| "revision_changed"
+	| "may_have_run"
+	| "turn_ended"
+	| "codex_shut_down"
+	| "session_stopped"
+	| "approved_then_stopped";
+export type CodexApprovalNotApprovableReason =
+	| "redacted"
+	| "invisible_chars"
+	| "padded_text"
+	| "lookalike_text"
+	| "too_long"
+	| "no_diff"
+	| "no_command"
+	| "no_cwd"
+	| "write_stdin"
+	| "network"
+	| "grant_root"
+	| "unknown_param"
+	| "accept_not_offered";
+
+export interface CodexApprovalHost {
+	state: "live" | "offline" | "gone";
+	name: string | null;
+}
+
+export interface CodexApprovalViewer {
+	canAccept: boolean;
+}
+
+export interface CodexApprovalPathPreview {
+	path: string;
+	kind: string;
+}
+
+export interface CodexApprovalPreview {
+	cwd: string | null;
+	commandHead?: string;
+	lastLines?: string;
+	lineCount?: number;
+	charCount?: number;
+	fileCount?: number;
+	paths?: CodexApprovalPathPreview[];
+	pathOutsideCwd: boolean;
+	nonAscii: boolean;
+}
+
+export interface CodexApprovalSummary {
+	id: string;
+	requestKind: CodexApprovalRequestKind;
+	state: CodexApprovalStatus;
+	outcome: CodexApprovalOutcome | null;
+	decision: CodexApprovalDecision | null;
+	answeredAt: string | null;
+	revision: number;
+	presentationHash: string;
+	approvable: boolean;
+	notApprovableReason: CodexApprovalNotApprovableReason | null;
+	canCancel: boolean;
+	createdAt: string;
+	expiresAt: string;
+	expiresInSeconds: number;
+	preview: CodexApprovalPreview | null;
+}
+
+export interface CodexApprovalList {
+	v: 1;
+	approvals: CodexApprovalSummary[];
+	host: CodexApprovalHost;
+	viewer: CodexApprovalViewer;
+}
+
+export interface CodexApprovalPresentationChange {
+	path: string;
+	kind: string;
+	movePath: string | null;
+	diff: string;
+}
+
+export interface CodexApprovalCommandPresentation {
+	v: 1;
+	requestKind: "command";
+	command: string | null;
+	cwd: string | null;
+	reason: string | null;
+	grantRoot: string | null;
+}
+
+export interface CodexApprovalFileChangePresentation {
+	v: 1;
+	requestKind: "file_change";
+	changes: CodexApprovalPresentationChange[];
+	cwd: string | null;
+	reason: string | null;
+	grantRoot: string | null;
+}
+
+export type CodexApprovalPresentation =
+	| CodexApprovalCommandPresentation
+	| CodexApprovalFileChangePresentation;
+
+export interface CodexApprovalDetail {
+	v: 1;
+	approval: CodexApprovalSummary;
+	presentation: CodexApprovalPresentation | null;
+	/**
+	 * File changes only, one entry per `presentation.changes` entry in the same order: true when that
+	 * file (or where it moves to) is outside the working directory. Absent from an older server:
+	 * read it as "can't tell", never as "inside".
+	 */
+	outsideCwd?: boolean[];
+	reasonText: string | null;
+}
+
+export interface CodexApprovalDecisionResponse {
+	v: 1;
+	approval: CodexApprovalSummary;
 }
