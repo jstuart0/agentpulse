@@ -26,8 +26,46 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   are refused. `--ref` can only hold letters, digits, `.`, `_`, `/` and `-`, so a name with `@`, `^`, `~` or `+`, a
   `..`, or a leading `-` is refused. `--host` refuses IPv6 zone ids (`%…`), `*` and anything else outside letters, digits,
   `.`, `:`, `_`, `-` and a bracketed address.
+- **Upgrade the server first, then the supervisors.** Migrations 0018, 0019 and 0020 run at startup on SQLite and Postgres. On
+  Postgres, 0018 takes a brief exclusive lock on `events` for an `ADD COLUMN`.
+- **Update every supervisor that runs managed Codex sessions.** Earlier versions start `codex app-server --listen ws://`, a local
+  port any process on the machine could use to answer approvals. Managed Codex now runs over stdio with no listening socket.
+  After updating, stop any `codex app-server --listen ws://` a managed session left behind. Restarting a supervisor ends the
+  managed sessions it holds, so finish or stop them first.
+- An updated supervisor talking to an older server declines every approval itself.
+- `POST /sessions/:id/stop` and `/prompt` now refuse with `409 host_offline` or `409 host_gone` when the session's host can't
+  act on them, instead of queueing. A script that relied on queueing for an offline host must retry later.
+- A bridge started before a supervisor update warns once and its reports are rejected until the supervisor is restarted and a
+  new session is launched.
 
 ### Added
+
+- **Answer managed Codex approvals from the dashboard** (AGEN-87, migration 0020). A managed Codex session's command and
+  file-change requests appear as a card on the session page, showing the whole command or diff, with Approve and Decline. The
+  host holds the request and declines it if nobody answers within 20 minutes, so nothing runs by default.
+  - Anything that could hide what's being approved can only be declined: redacted text, invisible characters, padding,
+    lookalike characters, a command over 4 KiB, a file change with no diff, or a parameter the supervisor doesn't recognise.
+  - Accept needs a signed-in person. No API key can accept, even an admin's. MCP gains `list_pending_approvals` and
+    `decline_approval` and has no accept, because an agent's own MCP key could otherwise approve itself. No AI path can answer.
+  - A person who answers is recorded in an append-only audit table that outlives the session. Timeline events carry fixed text,
+    never the command.
+  - An excluded session or path is declined locally and reported to nobody.
+  - Approvals are answered only on a Codex whose protocol shape the supervisor recognises, and only over https or loopback.
+    Otherwise the session page says why they are declined automatically. Measured on Codex 0.163.0 on macOS only. Linux,
+    Windows, a real screen reader and streamed `patchUpdated` were not measured. Phones get the push but can't answer yet.
+  - Routes: `GET /sessions/:id/approvals`, `GET /sessions/:id/approvals/:approvalId`,
+    `POST /sessions/:id/approvals/:approvalId/decision`. Capability `codexApprovals`. `GET /sessions/:id` gains
+    `session.hostControl` for managed sessions.
+- **Supervisor offline outbox** (AGEN-83, migrations 0018 and 0019). When the server can't be reached, a supervisor keeps managed
+  session state and events on disk, bounded and private, and sends them in order when it returns. Managed sessions keep running
+  through an outage, and a supervisor holding one no longer exits on a stale heartbeat. Launch status, control status and approval
+  requests are never queued. Queued entries are re-judged against the exclude rules before each send, and replays carry a delivery
+  receipt so a retry isn't stored twice.
+  - The Hosts page shows catching up, back online and offline notices. The timeline shows when a late event happened and says
+    how late it arrived. `ManagedEventsLost` marks a gap.
+  - The interactive terminal bridge no longer holds a credential or opens a network connection: it writes reports to a private
+    spool that the supervisor drains through the same exclude gate.
+  - `SupervisorRecord.outbox` and `SessionEvent.occurredAt` are additive and optional.
 
 - **Health and digest pushes** (with mobile push, in a build with AI): `stuck` and `risky` when a session moves into that
   state (snoozes suppress, the first pass after a start only records), and a `daily_digest` at the hour a phone chose
@@ -62,6 +100,12 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Changed
 
+- ⚠ breaking **Stop and prompt refuse straight away on a host that can't act** (AGEN-66). `POST /sessions/:id/stop` and
+  `/prompt` answer `409 host_offline` when the host's lease has run out, and `409 host_gone` when it's revoked or removed, with
+  nothing queued. They used to wait out the 90 s lock and then fail. `POST /sessions/:id/retry` is refused only for `host_gone`.
+  Approving a watcher prompt for such a session answers `409 prompt_not_deliverable`, and the request stays open.
+- **Managed Codex runs over stdio.** `managedCodexUrl` and the runtime `url` are gone from new sessions' metadata and from
+  `ManagedSessionStart`.
 - **Ask: a respond key can stop only a turn it asked.** `POST /ai/ask/threads/:id/cancel` applies the same own-thread rule as the thread read: an admin's respond key and a solo respond key no longer stop another person's running turn (the 404 is the same as for no turn). Manage credentials keep the admin and solo rule.
 - **`ask_reply` push targets only phones that can open the thread.** The push still goes to the requester's devices, but a device is skipped when its respond key would get a 404 on `GET /ai/ask/threads/:id`: an admin or solo caller who continued another person's thread, a thread asked by a different ownerless key, and a thread that can't be found push to nobody. A key owned by a person reads every thread that person owns (including one started on the web), so the common case is unchanged. In solo, an ownerless respond key reads only threads that exact key asked; nothing links two ownerless keys to one person, so none is guessed.
 - A failed launch's `failureReason` now also reduces `/root/...` and `/var/root/...` to `~`. The scrub is pattern-based (documented in `session-card.ts`): homes in other locations and account names outside a path are not caught.
@@ -252,6 +296,14 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Fixed
 
+- **Security: a managed Codex session no longer opens a local port** (AGEN-87). Any process on the machine could use the old
+  `--listen ws://` listener to answer that session's approvals. See Upgrade notes.
+- **The dashboard stays on screen during a server outage** (AGEN-85). A foreground request that gets no answer probes `/health`
+  first. It reloads only when the answer looks like a blocked sign-in redirect. No answer, or a 502, 503 or 504, shows a notice and
+  keeps the page's state, where it used to reach the browser's error page.
+- **A paused dashboard socket recovers by itself** (AGEN-86). It tries one upgrade every 2 minutes, skipping its turn while the tab
+  is hidden or an outage is on.
+- A supervisor no longer exits when registration hits a network error during an outage. It retries with backoff.
 - **`install-local.sh` no longer stops silently at "Installing Bun…" when `unzip` is missing** (#38). It names the missing
   tools and how to install them, and exits nonzero.
 - **`setup-relay.sh` likewise names a missing `unzip` or checksum tool** (#38), with the install command, before it asks for
