@@ -1788,7 +1788,10 @@ describe("agentpulse exclude add — safe, serialised, validated writes", () => 
 		const home = await tempHome();
 		try {
 			const subs: string[] = [];
-			for (let i = 0; i < 6; i++) {
+			// Six PowerShells at once on a small Windows runner can run an ACL query past
+			// its 5 s limit, which correctly refuses the add. Three still contend for the lock.
+			const adds = process.platform === "win32" ? 3 : 6;
+			for (let i = 0; i < adds; i++) {
 				const sub = join(home, `proj-${i}`);
 				await mkdir(sub, { recursive: true });
 				subs.push(sub);
