@@ -1188,7 +1188,9 @@ function queryWindowsSecurity(targetPath: string): RawWindowsSecurityQuery | nul
 		].join("; ");
 		raw = execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
 			encoding: "utf-8",
-			timeout: 5000,
+			// Not 5 s: the first Windows PowerShell start on a cold machine measured past
+			// that on a CI runner (about 0.4 s once warm), and a timeout reads as invalid rules.
+			timeout: 15_000,
 			// A parent started from PowerShell 7 hands down a module path that Windows
 			// PowerShell can't load Get-Acl from, which would read as "rules invalid".
 			env: {
