@@ -114,6 +114,9 @@ function dedicatedTest(name: string, fn: () => void): void {
 	coveredDedicated.add(name);
 	test(name, fn);
 }
+/** Windows has no POSIX owner or mode bits: Node reports fixed values, and the ACL checks replace them. */
+const POSIX_MODES_ABSENT = process.platform === "win32";
+
 function dedicatedSkipIf(condition: boolean, name: string, fn: () => void): void {
 	coveredDedicated.add(name);
 	test.skipIf(condition)(name, fn);
@@ -388,7 +391,7 @@ describe("loadExcludeRules", () => {
 		});
 	});
 
-	dedicatedSkipIf(isRoot, "unreadable-file-invalid", () => {
+	dedicatedSkipIf(isRoot || POSIX_MODES_ABSENT, "unreadable-file-invalid", () => {
 		const home = tempHome();
 		try {
 			const path = writeRulesFile(home, "/a/work\n");
@@ -446,7 +449,7 @@ describe("loadExcludeRules", () => {
 	// Simulates a foreign-owned file by injecting a fake current-uid rather
 	// than requiring root to actually chown the file — the file's real owner
 	// (this test process) never changes.
-	dedicatedTest("not-owned-file-invalid", () => {
+	dedicatedSkipIf(POSIX_MODES_ABSENT, "not-owned-file-invalid", () => {
 		const home = tempHome();
 		try {
 			writeRulesFile(home, "/a/work\n");
@@ -522,7 +525,7 @@ describe("loadExcludeRules", () => {
 		}
 	});
 
-	dedicatedTest("group-writable-file-invalid", () => {
+	dedicatedSkipIf(POSIX_MODES_ABSENT, "group-writable-file-invalid", () => {
 		const home = tempHome();
 		try {
 			const path = writeRulesFile(home, "/a/work\n");
@@ -535,7 +538,7 @@ describe("loadExcludeRules", () => {
 		}
 	});
 
-	dedicatedTest("world-writable-file-invalid", () => {
+	dedicatedSkipIf(POSIX_MODES_ABSENT, "world-writable-file-invalid", () => {
 		const home = tempHome();
 		try {
 			const path = writeRulesFile(home, "/a/work\n");
@@ -564,7 +567,7 @@ describe("loadExcludeRules", () => {
 		}
 	});
 
-	dedicatedTest("agentpulse-dir-group-writable-invalid", () => {
+	dedicatedSkipIf(POSIX_MODES_ABSENT, "agentpulse-dir-group-writable-invalid", () => {
 		const home = tempHome();
 		try {
 			writeRulesFile(home, "/a/work\n");
@@ -578,7 +581,7 @@ describe("loadExcludeRules", () => {
 		}
 	});
 
-	dedicatedTest("agentpulse-dir-world-writable-invalid", () => {
+	dedicatedSkipIf(POSIX_MODES_ABSENT, "agentpulse-dir-world-writable-invalid", () => {
 		const home = tempHome();
 		try {
 			writeRulesFile(home, "/a/work\n");
@@ -719,33 +722,36 @@ describe("loadExcludeRules", () => {
 	// outcomes a sh/PowerShell harness can reproduce; this one is specific to
 	// this module's own TOCTOU-hardening internals (the fs provider
 	// injection), which those harnesses have no equivalent of.
-	test("a descriptor swapped between lstat and fstat is invalid, not silently read", () => {
-		const home = tempHome();
-		try {
-			const path = writeRulesFile(home, "/a/work\n");
-			const fakeFstat = (fd: number): StatLike => {
-				const real = fstatSync(fd);
-				return {
-					dev: real.dev,
-					ino: real.ino + 1,
-					nlink: real.nlink,
-					uid: real.uid,
-					mode: real.mode,
-					size: real.size,
-					mtimeMs: real.mtimeMs,
-					isSymbolicLink: () => real.isSymbolicLink(),
-					isFile: () => real.isFile(),
-					isDirectory: () => real.isDirectory(),
+	test.skipIf(POSIX_MODES_ABSENT)(
+		"a descriptor swapped between lstat and fstat is invalid, not silently read",
+		() => {
+			const home = tempHome();
+			try {
+				const path = writeRulesFile(home, "/a/work\n");
+				const fakeFstat = (fd: number): StatLike => {
+					const real = fstatSync(fd);
+					return {
+						dev: real.dev,
+						ino: real.ino + 1,
+						nlink: real.nlink,
+						uid: real.uid,
+						mode: real.mode,
+						size: real.size,
+						mtimeMs: real.mtimeMs,
+						isSymbolicLink: () => real.isSymbolicLink(),
+						isFile: () => real.isFile(),
+						isDirectory: () => real.isDirectory(),
+					};
 				};
-			};
-			const result = loadExcludeRules(home, { fstat: fakeFstat });
-			expect(result.state).toBe("invalid");
-			expect(result.reason).toContain("changed");
-			expect(path).toBeTruthy();
-		} finally {
-			rmSync(home, { recursive: true, force: true });
-		}
-	});
+				const result = loadExcludeRules(home, { fstat: fakeFstat });
+				expect(result.state).toBe("invalid");
+				expect(result.reason).toContain("changed");
+				expect(path).toBeTruthy();
+			} finally {
+				rmSync(home, { recursive: true, force: true });
+			}
+		},
+	);
 
 	test("the documented fs-call bound: one lstat for the file, one open, one fstat, one read, and one realpath per rule plus one for the directory", () => {
 		const home = tempHome();
@@ -791,7 +797,7 @@ describe("loadExcludeRules", () => {
 
 			expect(result.state).toBe("ok");
 			expect(result.rules.length).toBe(3);
-			expect(counts.lstat).toBe(2); // the .agentpulse directory, then the file
+			expect(counts.lstat).toBe(POSIX_MODES_ABSENT ? 3 : 2); // the .agentpulse directory, then the file (Windows looks at the file once more for its ACL check)
 			expect(counts.open).toBe(1);
 			expect(counts.fstat).toBe(1);
 			expect(counts.readFd).toBe(1);
@@ -910,7 +916,13 @@ describe("evaluateExclusion — matching semantics", () => {
 			const home = tempHome();
 			try {
 				const content = rawContentFor(fixture);
-				if (content !== undefined) writeRulesFile(home, content);
+				// A win32 fixture spells its rules out in full, with no "~": they have to
+				// move with the cwd, or the rule names a directory the cwd isn't in.
+				const movedContent =
+					fixture.platform === "win32" && fixture.home
+						? content?.replaceAll(fixture.home, home)
+						: content;
+				if (movedContent !== undefined) writeRulesFile(home, movedContent);
 				const loaded = loadExcludeRules(home);
 				const effectiveCwd = rewriteUnderHome(fixture.cwd, fixture.home, home);
 				const result = evaluateExclusion({ cwd: effectiveCwd, skip: undefined, rules: loaded });
@@ -1099,23 +1111,28 @@ describe("evaluateExclusion — matching semantics", () => {
 		}
 	});
 
-	test("evaluateExclusion never throws, even fed each fixture's rule line as a cwd", () => {
-		for (const fixture of fixtures) {
-			if (fixture.cwd === undefined && fixture.rulesFileLines === undefined) continue;
-			const home = tempHome();
-			try {
-				const content = rawContentFor(fixture);
-				if (content !== undefined) writeRulesFile(home, content);
-				const loaded = loadExcludeRules(home);
-				const probeCwd = fixture.rulesFileLines?.[0] ?? fixture.cwd ?? null;
-				expect(() =>
-					evaluateExclusion({ cwd: probeCwd, skip: undefined, rules: loaded }),
-				).not.toThrow();
-			} finally {
-				rmSync(home, { recursive: true, force: true });
+	// Windows spawns PowerShell for the ACL query on every load, about 650 ms each.
+	test(
+		"evaluateExclusion never throws, even fed each fixture's rule line as a cwd",
+		() => {
+			for (const fixture of fixtures) {
+				if (fixture.cwd === undefined && fixture.rulesFileLines === undefined) continue;
+				const home = tempHome();
+				try {
+					const content = rawContentFor(fixture);
+					if (content !== undefined) writeRulesFile(home, content);
+					const loaded = loadExcludeRules(home);
+					const probeCwd = fixture.rulesFileLines?.[0] ?? fixture.cwd ?? null;
+					expect(() =>
+						evaluateExclusion({ cwd: probeCwd, skip: undefined, rules: loaded }),
+					).not.toThrow();
+				} finally {
+					rmSync(home, { recursive: true, force: true });
+				}
 			}
-		}
-	});
+		},
+		POSIX_MODES_ABSENT ? 180_000 : 5_000,
+	);
 
 	test("precedence — skip beats path rules beats included", () => {
 		const home = tempHome();
@@ -1527,6 +1544,15 @@ describe("Windows drive-root path handling (pure, runs on every platform via an 
 		expect(resolved).toBe("C:/Users/alice/work");
 	});
 
+	test('".." moves up a level when realpath answers with backslashes, as it does on Windows', () => {
+		const backslashProvider = {
+			...identityProvider,
+			realpath: (p: string) => p.replace(/\//g, "\\"),
+		};
+		const resolved = resolveStepByStep("C:\\Users\\alice\\temp\\..\\work", backslashProvider);
+		expect(resolved).toBe("C:/Users/alice/work");
+	});
+
 	test("a rule on one drive does not match a cwd on another drive", () => {
 		const rule = normalizeForCompare(collapseSeparators("D:\\"));
 		const cwd = normalizeForCompare(
@@ -1809,7 +1835,7 @@ describe.skipIf(process.platform !== "darwin")(
 	"darwin: a rule resolves to the on-disk spelling, accents included",
 	() => {
 		test("a rule typed NFC excludes a directory stored NFD", () => {
-			const home = realpathSync(tempHome());
+			const home = realpathSync.native(tempHome());
 			try {
 				const nfd = "E\u0301cole".normalize("NFD");
 				const nfc = "\u00c9cole".normalize("NFC");
@@ -1824,7 +1850,7 @@ describe.skipIf(process.platform !== "darwin")(
 		});
 
 		test("a rule typed with the wrong accent case excludes the real directory", () => {
-			const home = realpathSync(tempHome());
+			const home = realpathSync.native(tempHome());
 			try {
 				mkdirSync(join(home, "\u00c9t\u00e9", "sub"), { recursive: true });
 				writeRulesFile(home, `${join(home, "\u00e9t\u00c9")}\n`);
@@ -1840,7 +1866,7 @@ describe.skipIf(process.platform !== "darwin")(
 
 describe("reresolveRules", () => {
 	test("follows a symlink that was created or retargeted after the rules were read, keeping line and raw text", () => {
-		const home = realpathSync(tempHome());
+		const home = realpathSync.native(tempHome());
 		try {
 			const a = join(home, "a");
 			const b = join(home, "b");
@@ -1864,7 +1890,7 @@ describe("reresolveRules", () => {
 	});
 
 	test("an unchanged rule comes back as the same object, and the cost is one resolution per rule", () => {
-		const home = realpathSync(tempHome());
+		const home = realpathSync.native(tempHome());
 		try {
 			mkdirSync(join(home, "d"));
 			writeRulesFile(home, `${join(home, "d")}\n`);
@@ -1884,7 +1910,7 @@ describe("reresolveRules", () => {
 	});
 
 	test("a rule written with ~ is expanded against the home it is given", () => {
-		const home = realpathSync(tempHome());
+		const home = realpathSync.native(tempHome());
 		try {
 			mkdirSync(join(home, "proj"));
 			writeRulesFile(home, "~/proj\n");

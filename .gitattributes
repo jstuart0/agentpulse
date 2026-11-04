@@ -2,3 +2,8 @@
 # against the generator, and write scripts that sh must read: LF everywhere.
 *.sh text eol=lf
 *.ps1 text eol=lf
+# Generators and fixtures are compared the same way, so their line endings can't
+# depend on the checkout.
+*.ts text eol=lf
+*.tsx text eol=lf
+*.json text eol=lf

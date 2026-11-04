@@ -86,7 +86,7 @@ function runPwsh(home: string, cwd: string, skip: string | undefined): PsRunResu
 	}
 	const result = spawnSync(PWSH_BIN, ["-NoProfile", "-NonInteractive", "-File", SNIPPET_FILE], {
 		cwd,
-		env: { ...process.env, HOME: home, AGENTPULSE_SKIP: skip ?? "" },
+		env: { ...process.env, HOME: home, USERPROFILE: home, AGENTPULSE_SKIP: skip ?? "" },
 		encoding: "utf-8",
 	});
 	const stdout = result.stdout ?? "";

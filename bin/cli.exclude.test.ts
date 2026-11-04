@@ -26,6 +26,23 @@ setDefaultTimeout(30_000);
 const CLI = join(import.meta.dir, "cli.ts");
 const UNREACHABLE_RELAY = "http://127.0.0.1:1";
 
+/** Windows can't start PowerShell for the ACL query without these; the rest of the env stays bare. */
+const WINDOWS_BASE_ENV: Record<string, string> =
+	process.platform === "win32"
+		? Object.fromEntries(
+				[
+					"SystemRoot",
+					"windir",
+					"ComSpec",
+					"TEMP",
+					"TMP",
+					"PATHEXT",
+					"LOCALAPPDATA",
+					"APPDATA",
+				].flatMap((k) => (process.env[k] ? [[k, process.env[k] as string]] : [])),
+			)
+		: {};
+
 async function runCli(
 	home: string,
 	cliArgs: string[],
@@ -36,6 +53,9 @@ async function runCli(
 		stdout: "pipe",
 		stderr: "pipe",
 		env: {
+			...WINDOWS_BASE_ENV,
+			// A child PowerShell's $HOME follows USERPROFILE, not HOME.
+			...(process.platform === "win32" ? { USERPROFILE: home } : {}),
 			PATH: process.env.PATH ?? "/usr/bin:/bin",
 			HOME: home,
 			AGENTPULSE_RELAY_LOCAL_URL: UNREACHABLE_RELAY,
@@ -426,7 +446,7 @@ describe("agentpulse exclude add", () => {
 
 			const { stat } = await import("node:fs/promises");
 			const mode = (await stat(join(home, ".agentpulse", "exclude"))).mode & 0o777;
-			expect(mode).toBe(0o600);
+			if (process.platform !== "win32") expect(mode).toBe(0o600);
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
@@ -478,7 +498,7 @@ describe("agentpulse exclude add", () => {
 
 			const { stat } = await import("node:fs/promises");
 			const mode = (await stat(rulesPath)).mode & 0o777;
-			expect(mode).toBe(0o600);
+			if (process.platform !== "win32") expect(mode).toBe(0o600);
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}

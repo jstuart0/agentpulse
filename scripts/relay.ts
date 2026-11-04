@@ -1050,14 +1050,17 @@ export function resolvePhysicalPath(raw: string, p: ResolvedProvider): string {
  */
 export function resolveStepByStep(raw: string, p: ResolvedProvider): string {
 	const { prefix, segments } = splitPathForPlatform(raw);
-	let resolved = p.realpath(prefix);
+	// parentOf reads "/" separators, and a Windows realpath answers with "\\".
+	// Left as it came, ".." would find no separator and stay where it was.
+	const slashed = (v: string) => (WINDOWS_DRIVE_PREFIX_RE.test(v) ? v.replace(/\\/g, "/") : v);
+	let resolved = slashed(p.realpath(prefix));
 	for (const seg of segments) {
 		if (seg === ".") continue;
 		if (seg === "..") {
 			resolved = parentOf(resolved);
 			continue;
 		}
-		resolved = p.realpath(join(resolved, seg));
+		resolved = slashed(p.realpath(join(resolved, seg)));
 	}
 	return resolved;
 }
