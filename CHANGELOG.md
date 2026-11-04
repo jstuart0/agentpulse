@@ -7,6 +7,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-11-04
+
 ### Upgrade notes
 
 - If you installed with `install-local.sh --dir ~/.agentpulse` (or any `--dir` that is your home directory, the data directory
@@ -26,13 +28,16 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   are refused. `--ref` can only hold letters, digits, `.`, `_`, `/` and `-`, so a name with `@`, `^`, `~` or `+`, a
   `..`, or a leading `-` is refused. `--host` refuses IPv6 zone ids (`%…`), `*` and anything else outside letters, digits,
   `.`, `:`, `_`, `-` and a bracketed address.
-- **Upgrade the server first, then the supervisors.** Migrations 0018, 0019 and 0020 run at startup on SQLite and Postgres. On
-  Postgres, 0018 takes a brief exclusive lock on `events` for an `ADD COLUMN`.
+- **Upgrade the server first, then the supervisors.** Migrations 0013 through 0020 run at startup on SQLite and Postgres. Take a
+  backup first. On Postgres, 0018 takes a brief exclusive lock on `events` for an `ADD COLUMN`.
 - **Update every supervisor that runs managed Codex sessions.** Earlier versions start `codex app-server --listen ws://`, a local
   port any process on the machine could use to answer approvals. Managed Codex now runs over stdio with no listening socket.
   After updating, stop any `codex app-server --listen ws://` a managed session left behind. Restarting a supervisor ends the
   managed sessions it holds, so finish or stop them first.
 - An updated supervisor talking to an older server declines every approval itself.
+- To pair phones behind an ingress, exempt `POST /api/v1/pair` from forwardauth (see `deploy/k8s/07-ingressroute.yaml`) and set
+  `AGENTPULSE_TRUSTED_PROXIES` to the ingress's CIDR. The pairing limiter counts by client address. Registering a phone also needs
+  `AGENTPULSE_SECRETS_KEY`, and mobile push needs that and `AGENTPULSE_PUSH_RELAY_URL`.
 - `POST /sessions/:id/stop` and `/prompt` now refuse with `409 host_offline` or `409 host_gone` when the session's host can't
   act on them, instead of queueing. A script that relied on queueing for an offline host must retry later.
 - A bridge started before a supervisor update warns once and its reports are rejected until the supervisor is restarted and a
@@ -40,6 +45,19 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Added
 
+- **`@craze0/agentpulse-mcp` 0.3.0** adds `list_pending_approvals` and `decline_approval`.
+- **Server support for mobile companion apps.**
+  - Pairing (migration 0013): Settings, Mobile, Pair a phone shows a single-use QR code that lasts five minutes.
+    `POST /pairing-codes` mints it and `POST /pair` redeems it for a scoped key.
+  - A new `respond` key scope reads what `observe` reads and can mark sessions seen and answer watcher requests. It never
+    implies `manage`, and it can't answer Codex approvals. `GET /capabilities` tells a client what this server offers.
+  - Devices (migration 0014): `POST`, `GET`, `PATCH` and `DELETE /devices`. The push send token is encrypted at rest. Removing a
+    paired phone also deactivates its key.
+  - Push, off unless configured: payloads are sealed to the phone's key, so a relay can't read them. It covers permission waits,
+    finished turns, failures, watcher requests, alert rules, launch status, Ask replies and Live Activities.
+  - A native WebSocket client can connect with a `respond` key and gets a filtered, size-limited feed.
+  - Watcher requests can be answered from a phone, and the delivery of an approved prompt can be tracked and retried
+    (migration 0015).
 - **Answer managed Codex approvals from the dashboard** (AGEN-87, migration 0020). A managed Codex session's command and
   file-change requests appear as a card on the session page, showing the whole command or diff, with Approve and Decline. The
   host holds the request and declines it if nobody answers within 20 minutes, so nothing runs by default.
@@ -3806,7 +3824,8 @@ All AI features ship gated behind per-feature Labs flags and a master
 - Local install: `docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true`.
 - Remote hook relay: `curl -sSL https://server/setup-relay.sh | bash -s -- --key ap_xxx`.
 
-[Unreleased]: https://github.com/jstuart0/agentpulse/compare/v0.2.0-pre.3...HEAD
+[Unreleased]: https://github.com/jstuart0/agentpulse/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/jstuart0/agentpulse/compare/v0.9.0...v0.10.0
 [0.2.0-pre.3]: https://github.com/jstuart0/agentpulse/releases/tag/v0.2.0-pre.3
 [0.2.0-pre.2]: https://github.com/jstuart0/agentpulse/releases/tag/v0.2.0-pre.2
 [0.2.0-pre.1]: https://github.com/jstuart0/agentpulse/releases/tag/v0.2.0-pre.1

@@ -9,12 +9,12 @@
 		"source": "github",
 		"subfolder": "packages/agentpulse-mcp"
 	},
-	"version": "0.2.2",
+	"version": "0.3.0",
 	"packages": [
 		{
 			"registryType": "npm",
 			"identifier": "@craze0/agentpulse-mcp",
-			"version": "0.2.2",
+			"version": "0.3.0",
 			"transport": { "type": "stdio" },
 			"packageArguments": [{ "type": "positional", "value": "serve" }],
 			"environmentVariables": [
