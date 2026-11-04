@@ -43,5 +43,6 @@
 		"reason": "add a greeting",
 		"grantRoot": null
 	},
+	"outsideCwd": [false],
 	"reasonText": "add a greeting"
 }

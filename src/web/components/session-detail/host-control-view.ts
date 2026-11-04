@@ -9,6 +9,7 @@
  */
 import type { HostControl, Session } from "../../../shared/types.js";
 import { ApiError } from "../../lib/api.js";
+import { hasPendingCodexApproval } from "../../lib/codex-approval-wait.js";
 import { parseDate } from "../../lib/utils.js";
 
 export type HostRefusalCode = "host_offline" | "host_gone";
@@ -51,17 +52,25 @@ function defaultFormatTime(iso: string): string {
 	return Number.isNaN(ms) ? iso : new Date(ms).toLocaleString();
 }
 
-/** The standing notice under the header, or null when the host is live (or unknown). */
+const ARCHIVE_CLAUSE = " You can archive it.";
+
+/**
+ * The standing notice under the header, or null when the host is live (or unknown). While Codex has
+ * an approval open on the session, archiving isn't the next step, so that clause is left off.
+ */
 export function hostControlHint(
-	session: Pick<Session, "hostControl" | "managedSession">,
+	session: Pick<Session, "hostControl" | "managedSession"> & Partial<Pick<Session, "metadata">>,
 	formatTime: (iso: string) => string = defaultFormatTime,
 ): string | null {
 	const host = hostControlOf(session);
 	if (host === null || host.state === "live") return null;
-	if (host.state === "gone") return REFUSALS.host_gone(hostNameOf(session));
+	const archive = hasPendingCodexApproval(session) ? "" : ARCHIVE_CLAUSE;
+	if (host.state === "gone") {
+		return REFUSALS.host_gone(hostNameOf(session)).replace(ARCHIVE_CLAUSE, archive);
+	}
 	const name = hostNameOf(session);
 	const since = host.lastSeenAt ? ` since ${formatTime(host.lastSeenAt)}` : "";
-	return `${name} has been offline${since}. If you re-enrolled it, this session stays with the old enrollment and can't be controlled from the new one. You can archive it.`;
+	return `${name} has been offline${since}. If you re-enrolled it, this session stays with the old enrollment and can't be controlled from the new one.${archive}`;
 }
 
 /** The sentence for a refused stop, prompt or retry; null for any other error, which keeps its usual text. */

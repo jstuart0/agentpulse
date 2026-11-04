@@ -8,9 +8,11 @@ import type { Session } from "../../shared/types.js";
 import {
 	detailMatchesRow,
 	fetchDelayMs,
+	readDismissed,
 	shouldRefetchOnSession,
 	splitRows,
 	updateKept,
+	writeDismissed,
 } from "../components/session-detail/codex-approval-view.js";
 import { ApiError } from "../lib/api.js";
 import { codexApprovalWaitIds } from "../lib/codex-approval-wait.js";
@@ -27,6 +29,15 @@ export interface ApprovalsData {
 	fetchedAtMono: number;
 	fetchedAtWall: number;
 	kept: ReadonlyMap<string, CodexApprovalSummary>;
+}
+
+/** `localStorage` can throw on access (blocked storage); the card then forgets a dismissal on reload. */
+function browserStore(): Storage | null {
+	try {
+		return typeof localStorage === "undefined" ? null : localStorage;
+	} catch {
+		return null;
+	}
 }
 
 const EMPTY: ApprovalsData = {
@@ -51,7 +62,9 @@ export function useCodexApprovals(session: Session) {
 	const [detail, setDetail] = useState<CodexApprovalDetail | null>(null);
 	const [detailFailed, setDetailFailed] = useState(false);
 	const [detailRetry, setDetailRetry] = useState(0);
-	const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
+	const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() =>
+		readDismissed(browserStore(), sessionId),
+	);
 	const [nowMono, setNowMono] = useState(() => performance.now());
 
 	const detailRef = useRef(detail);
@@ -114,14 +127,14 @@ export function useCodexApprovals(session: Session) {
 		generation.current += 1;
 		setData(EMPTY);
 		setDetail(null);
-		setDismissed(new Set());
+		setDismissed(readDismissed(browserStore(), sessionId));
 		previousIds.current = [];
 		void fetchList();
 		return () => {
 			generation.current += 1;
 			if (timer.current) clearTimeout(timer.current);
 		};
-	}, [fetchList]);
+	}, [fetchList, sessionId]);
 
 	// Ownership changed under an open page: ask again.
 	const ownerUserId = session.ownerUserId ?? null;
@@ -218,10 +231,16 @@ export function useCodexApprovals(session: Session) {
 		return () => clearInterval(id);
 	}, [open]);
 
-	const dismiss = useCallback((id: string) => {
-		setDismissed((prev) => new Set(prev).add(id));
-		setData((prev) => ({ ...prev, kept: updateKept(prev.kept, [], new Set([id])) }));
-	}, []);
+	const dismiss = useCallback(
+		(id: string) => {
+			const next = new Set(dismissedRef.current).add(id);
+			dismissedRef.current = next;
+			writeDismissed(browserStore(), sessionId, next);
+			setDismissed(next);
+			setData((prev) => ({ ...prev, kept: updateKept(prev.kept, [], new Set([id])) }));
+		},
+		[sessionId],
+	);
 
 	/** The answer came back: show that row's new state now, before the next list. */
 	const applyAnswered = useCallback((answered: CodexApprovalSummary) => {

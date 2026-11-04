@@ -43,13 +43,17 @@ describe("the card draws agent text as text", () => {
 	test("every pre wraps: whitespace-pre-wrap break-words", () => {
 		expect(card).toMatch(/const PRE_CLASS =\s*"[^"]*whitespace-pre-wrap break-words/);
 		const pres = card.match(/<pre\b[^>]*>/g) ?? [];
-		const withClass = (card.match(/<pre\b[\s\S]*?className=\{`\$\{PRE_CLASS\}/g) ?? []).length;
+		const withClass = (card.match(/<pre\b[^>]*?className=\{(`\$\{PRE_CLASS\}|PRE_CLASS\})/g) ?? [])
+			.length;
 		expect(pres.length).toBeGreaterThanOrEqual(3);
 		expect(withClass).toBe(pres.length);
 	});
 
-	test("a scrollable command is reachable by keyboard and named", () => {
-		expect(card).toMatch(/<pre[^>]*tabIndex=\{0\}[^>]*aria-label="Command"/);
+	test("a command box that scrolls (the cut one) is reachable by keyboard, named, and a region; an uncut one is none of these", () => {
+		expect(card).toMatch(
+			/\{\.\.\.\(cut \? \{ tabIndex: 0, role: "region", "aria-label": "Command" \} : \{\}\)\}/,
+		);
+		expect(card).not.toMatch(/<pre[^>]*aria-label="Command"/);
 		expect(card).toMatch(/aria-label=\{`Changes to \$\{change\.path\}`\}/);
 	});
 
@@ -82,8 +86,32 @@ describe("answering", () => {
 	});
 
 	test("the confirm button is disabled by a mid-confirm event, and the reason is shown through the dialog's error", () => {
-		expect(card).toMatch(/confirmDisabled=\{event !== null\}/);
+		expect(card).toMatch(/confirmDisabled=\{event !== null \|\| dialog\.needsCheck\}/);
 		expect(card).toMatch(/error=\{view\?\.text \?\? dialog\.error\}/);
+	});
+
+	test("both confirm dialogs ignore taps for 700 ms after they open", () => {
+		const dialogs = card.match(/<ConfirmDialog\b[\s\S]*?>/g) ?? [];
+		expect(dialogs).toHaveLength(2);
+		for (const d of dialogs) expect(d).toMatch(/armAfterMs=\{ARM_AFTER_MS\}/);
+		expect(read("components/session-detail/codex-approval-view.ts")).toMatch(
+			/export const ARM_AFTER_MS = 700/,
+		);
+	});
+
+	test("the dialog says nothing about what happened while an answer is in flight or unchecked", () => {
+		expect(card).toMatch(/dialog\.busy \|\| dialog\.needsCheck\s*\? null/);
+	});
+
+	test("Decline can't be sent twice: one guard for every send", () => {
+		expect(card).toMatch(/if \(inFlight\.current\) return;/);
+		expect(card).toMatch(/disabled=\{!armed \|\| props\.declining\}/);
+	});
+
+	test("an answer is a background request with a deadline, so a lost connection never reloads the page", () => {
+		const api = code("lib/codex-approvals-api.ts");
+		expect(api.match(/background: true/g)).toHaveLength(3);
+		expect(api).toMatch(/AbortSignal\.timeout\(ANSWER_TIMEOUT_MS\)/);
 	});
 
 	test("an accept's hash is the frozen one, from the version the confirm opened on", () => {
@@ -93,7 +121,8 @@ describe("answering", () => {
 	});
 
 	test("Approve is drawn only when the whole request for this version is loaded", () => {
-		expect(card).toMatch(/offers\.approve && detail\s*\?/);
+		expect(card).toMatch(/disabled=\{!armed \|\| !detail\}/);
+		expect(card).toMatch(/detail \? props\.onApprove\(detail\)/);
 	});
 
 	test("no keyboard shortcut approves", () => {

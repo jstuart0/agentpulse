@@ -48,6 +48,9 @@ describe("the dashboard card", () => {
 
 	test("the note names the owner as a field, with a fallback", () => {
 		expect(codexApprovalNoteOtherOwner("O")).toBe("Codex is asking O for approval.");
+		expect(codexApprovalNoteOtherOwner("O", true)).toBe(
+			"Codex is asking O for approval. Open the session to answer.",
+		);
 		expect(codexApprovalNoteOtherOwner(null)).toBe(
 			"Codex is asking the session's owner for approval.",
 		);

@@ -33,6 +33,7 @@ import {
 	requireOperatorScope,
 } from "../auth/route-scope-policy.js";
 import { config } from "../config.js";
+import { changesOutsideCwd } from "../services/codex-approval-presentation.js";
 import {
 	type ApprovalCaller,
 	ApprovalRefusal,
@@ -170,10 +171,15 @@ export function serializeApprovalList(list: CodexApprovalList): CodexApprovalLis
 }
 
 export function serializeApprovalDetail(detail: CodexApprovalDetail): CodexApprovalDetail {
+	const presentation = serializePresentation(detail.presentation);
 	return {
 		v: 1,
 		approval: serializeSummary(detail.approval),
-		presentation: serializePresentation(detail.presentation),
+		presentation,
+		// Beside the presentation, never in it: the hash covers the presentation as the person read it.
+		...(presentation?.requestKind === "file_change"
+			? { outsideCwd: changesOutsideCwd(presentation) }
+			: {}),
 		reasonText: detail.reasonText,
 	};
 }

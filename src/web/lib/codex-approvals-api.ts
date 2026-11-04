@@ -22,8 +22,15 @@ export function getCodexApproval(
 	sessionId: string,
 	approvalId: string,
 ): Promise<CodexApprovalDetail> {
-	return request<CodexApprovalDetail>(`${base(sessionId)}/${encodeURIComponent(approvalId)}`);
+	return request<CodexApprovalDetail>(
+		`${base(sessionId)}/${encodeURIComponent(approvalId)}`,
+		undefined,
+		{ background: true },
+	);
 }
+
+/** An answer that gets no reply in this long is reported as unconfirmed; the page is never reloaded for it. */
+export const ANSWER_TIMEOUT_MS = 15_000;
 
 /** The body is built by `decisionBody`: only an accept carries a hash, and it is the one frozen when the confirm step opened. */
 export function answerCodexApproval(
@@ -33,6 +40,11 @@ export function answerCodexApproval(
 ): Promise<CodexApprovalDecisionResponse> {
 	return request<CodexApprovalDecisionResponse>(
 		`${base(sessionId)}/${encodeURIComponent(approvalId)}/decision`,
-		{ method: "POST", body: JSON.stringify(body) },
+		{
+			method: "POST",
+			body: JSON.stringify(body),
+			signal: AbortSignal.timeout(ANSWER_TIMEOUT_MS),
+		},
+		{ background: true },
 	);
 }

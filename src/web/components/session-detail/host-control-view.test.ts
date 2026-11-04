@@ -59,6 +59,28 @@ describe("an offline host", () => {
 	});
 });
 
+describe("with a Codex approval open on the session", () => {
+	const asking = (session: Probe): Probe & Pick<Session, "metadata"> => ({
+		...session,
+		metadata: { permissionWait: { ids: ["approval:a1"] } },
+	});
+
+	test("the notice drops only the archive clause", () => {
+		expect(hostControlHint(asking(probe("offline")), fmt)).toBe(
+			"studio has been offline since 10:00. If you re-enrolled it, this session stays with the old enrollment and can't be controlled from the new one.",
+		);
+		expect(hostControlHint(asking(probe("gone")))).toBe(
+			"This session's host was removed from AgentPulse, so it can't be controlled.",
+		);
+	});
+
+	test("a different kind of wait keeps it, and so does the composer's reason", () => {
+		const other = { ...probe("offline"), metadata: { permissionWait: { ids: ["toolu_1"] } } };
+		expect(hostControlHint(other, fmt)).toEndWith("You can archive it.");
+		expect(controlBlockedReason(asking(probe("gone")))).toEndWith("You can archive it.");
+	});
+});
+
 describe("a host that was removed", () => {
 	test("the reason and the hint are the same sentence, and it points at archiving", () => {
 		const session = probe("gone");

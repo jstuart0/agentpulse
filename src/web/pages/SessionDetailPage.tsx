@@ -87,9 +87,16 @@ const CodexApprovalCard = lazy(() =>
 		.catch(() => ({
 			default: ({ session }: { session: Session }) =>
 				hasPendingCodexApproval(session) ? (
-					<p role="alert" className="mx-3 mt-2 text-sm text-foreground md:mx-6">
-						{CHUNK_LOAD_FAILED_COPY}
-					</p>
+					<div role="alert" className="mx-3 mt-2 flex flex-wrap items-center gap-2 md:mx-6">
+						<p className="text-sm text-foreground">{CHUNK_LOAD_FAILED_COPY}</p>
+						<button
+							type="button"
+							onClick={() => window.location.reload()}
+							className="min-h-[44px] rounded-md border border-border px-4 text-sm font-medium text-foreground hover:bg-accent"
+						>
+							Reload
+						</button>
+					</div>
 				) : (
 					<></>
 				),

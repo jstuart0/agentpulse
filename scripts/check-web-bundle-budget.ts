@@ -14,7 +14,7 @@
  * to DashboardPage 26,258 and index 116,943 on its own) the limits were re-based on that base + the same
  * modest headroom; measured with the Summary work: DashboardPage 26,341, index 117,586. AGEN-85 and AGEN-86 (the probe before a reload, the
  * paused socket's slow retry) measured index 118,197 and moved its limit to 118,400. AGEN-87 (the Codex approval card, a lazy chunk the page loads only for a managed Codex session) measured
- * CodexApprovalCard 9,385 and left every other limit where it was: index 118,191, SessionDetailPage 20,855, DashboardPage 26,393. No chunk may carry zod (the
+ * CodexApprovalCard 9,385 and left every other limit where it was: index 118,191, SessionDetailPage 20,855, DashboardPage 26,393. The review of that card (ruby's phase 6 findings: the double-tap guards, the changed-request line, the per-file diff flags, the outcome in the dialog) is what raised its own limit to 12,000 (measured 11,626); the card has never shipped, and the limit exists to catch growth. The review measured index 118,196 and SessionDetailPage 20,926. No chunk may carry zod (the
  * validating schema is server-only).
  */
 import { readFileSync, readdirSync } from "node:fs";
@@ -41,7 +41,7 @@ export interface Finding {
 export const BUDGETS: Budget[] = [
 	{ chunk: "SessionDetailPage", maxGzip: 23_500, measured: 22_260 },
 	{ chunk: "SessionSummaryTab", maxGzip: 12_500, measured: 11_582 },
-	{ chunk: "CodexApprovalCard", maxGzip: 10_200, measured: 9_385 },
+	{ chunk: "CodexApprovalCard", maxGzip: 12_000, measured: 11_626 },
 	{ chunk: "DashboardPage", maxGzip: 27_200, measured: 26_341 },
 	{ chunk: "index", maxGzip: 118_400, measured: 118_197 },
 ];

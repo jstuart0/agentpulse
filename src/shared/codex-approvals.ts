@@ -267,6 +267,12 @@ export interface CodexApprovalDetail {
 	v: 1;
 	approval: CodexApprovalSummary;
 	presentation: CodexApprovalPresentation | null;
+	/**
+	 * File changes only, one entry per `presentation.changes` entry in the same order: true when that
+	 * file (or where it moves to) is outside the working directory. Outside the presentation on
+	 * purpose, so the hash is unchanged. Absent from an older server: read it as "can't tell".
+	 */
+	outsideCwd?: boolean[];
 	reasonText: string | null;
 }
 

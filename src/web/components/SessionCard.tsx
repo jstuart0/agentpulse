@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { getOperationalStatus } from "../../shared/session-state.js";
 import type { Session } from "../../shared/types.js";
-import { useOwnershipUi } from "../hooks/useOwnershipUi.js";
+import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
 import { describeApiError } from "../lib/api-errors.js";
 import { type SessionIntelligence, api } from "../lib/api.js";
 import {
@@ -144,6 +144,7 @@ export function SessionCard({ session, intelligence, ownerChip }: SessionCardPro
 	const effectiveRole = useUserStore((s) => s.effectiveRole);
 	const disableAuth = useUserStore((s) => s.disableAuth);
 	const ownership = useOwnershipUi();
+	const viewerIsAdmin = useViewerIsAdmin();
 	// In team mode rename, pin, archive and delete belong to the owner or an
 	// admin: on someone else's session they aren't offered at all.
 	const access = sessionActionAccess(ownership, session, { userId: viewerUserId, effectiveRole });
@@ -155,7 +156,10 @@ export function SessionCard({ session, intelligence, ownerChip }: SessionCardPro
 	// Codex is asking the owner for approval: say whose turn it is, since the card has no button for it.
 	const askingOwner =
 		!canAck && hasPendingCodexApproval(session)
-			? codexApprovalNoteOtherOwner(ownerChip?.kind === "user" ? ownerChip.text : null)
+			? codexApprovalNoteOtherOwner(
+					ownerChip?.kind === "user" ? ownerChip.text : null,
+					viewerIsAdmin,
+				)
 			: null;
 	const modeStyle = getSessionMode(session);
 	const projectColorsEnabled = useUiPrefsStore((s) => s.projectColors);

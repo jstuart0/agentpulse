@@ -133,7 +133,7 @@ export const CANNOT_ACCEPT_TEXT =
 	"Nobody owns this session, so only an admin can approve this. You can decline it.";
 
 export function teamNotOwnerHeading(owner: string | null | undefined): string {
-	return `Codex is asking ${ownerLabelOr(owner)} to approve a command.`;
+	return `Codex is asking ${ownerLabelOr(owner)} for approval.`;
 }
 export function teamNotOwnerLine(owner: string | null | undefined): string {
 	const name = ownerLabelOr(owner);
@@ -151,8 +151,7 @@ const NOT_APPROVABLE_COPY: Record<NotApprovableReason, (ctx: { root: string }) =
 		"This has a long run of spaces or blank lines that could push part of it out of sight, so you can't be sure you're seeing all of it.",
 	lookalike_text: () =>
 		"This has characters that look like other characters or don't draw at all, so what you read may not be what would run.",
-	too_long: () =>
-		"This is too long to review in full here, so you can't approve it from this page.",
+	too_long: () => "This is too long to review in full here.",
 	no_diff: () => "Codex didn't share the changes, so there's nothing to review.",
 	no_command: () => "Codex didn't say what it would run, so there's nothing to review.",
 	no_cwd: () => "Codex didn't say which directory this would run in.",
@@ -193,12 +192,18 @@ export function notApprovableText(
 interface OutcomeCtx {
 	host: string;
 	time: string | null;
+	decision: ApprovalDecision | null;
 }
+
+/** The first words of the line for an answer that may have run. The card draws them in bold. */
+export const MAY_HAVE_RUN_LEAD = "This may have run.";
 
 const at = (time: string | null): string => (time ? ` at ${time}` : "");
 
 const OUTCOME_LINES: Record<CodexApprovalOutcome, (ctx: OutcomeCtx) => string> = {
-	sending_accept: ({ host }) => `Approved. Sending to ${host}…`,
+	// The accept is stored and may already have been issued, so this never says "sending".
+	sending_accept: ({ host }) =>
+		`Approved and on its way to ${host}. It may already be running. The result appears in the timeline.`,
 	sending_decline: ({ host }) => `Declined. Telling ${host}…`,
 	approved_sent: ({ host, time }) =>
 		`Approved${at(time)} and sent to ${host}. The result appears in the timeline.`,
@@ -213,9 +218,15 @@ const OUTCOME_LINES: Record<CodexApprovalOutcome, (ctx: OutcomeCtx) => string> =
 	revision_changed: () =>
 		"Codex changed what it's asking after you approved, so it was declined. Nothing ran.",
 	may_have_run: ({ host }) =>
-		`Approved, but ${host} never confirmed. This may have run. Check the machine before asking again.`,
-	turn_ended: () => "The turn ended before this was answered. Nothing ran.",
-	codex_shut_down: () => "Codex shut down before this was answered. Nothing ran.",
+		`${MAY_HAVE_RUN_LEAD} Approved, but ${host} never confirmed. Check the machine before asking again.`,
+	turn_ended: ({ decision }) =>
+		decision === "accept"
+			? "You approved this, but the turn ended before it was sent. Nothing ran."
+			: "The turn ended before this was answered. Nothing ran.",
+	codex_shut_down: ({ decision }) =>
+		decision === "accept"
+			? "You approved this, but Codex shut down before it was sent. Nothing ran."
+			: "Codex shut down before this was answered. Nothing ran.",
 	session_stopped: () => "The session stopped before this was answered. Nothing ran.",
 	approved_then_stopped: () =>
 		"You approved this, but the session was stopped before it was sent. Nothing ran.",
@@ -225,8 +236,9 @@ export function outcomeLine(
 	outcome: CodexApprovalOutcome,
 	host: string | null | undefined,
 	time: string | null,
+	decision: ApprovalDecision | null = null,
 ): string {
-	return OUTCOME_LINES[outcome]({ host: hostLabel(host), time });
+	return OUTCOME_LINES[outcome]({ host: hostLabel(host), time, decision });
 }
 
 /** Which timestamp an outcome line quotes: when it was answered, or when the time ran out. */
@@ -307,9 +319,12 @@ export function metaLine(host: string | null | undefined, cwd: string | null): s
 	return parts.length === 1 ? `${name} · ${cwd}` : `${name} · …/${dir}`;
 }
 
+export function statsText(lines: number, characters: number): string {
+	return `${plural(lines, "line", "lines")}, ${plural(characters, "character", "characters")}`;
+}
+
 export function commandStats(command: string): string {
-	const lines = command === "" ? 0 : command.split("\n").length;
-	return `${plural(lines, "line", "lines")}, ${plural(command.length, "character", "characters")}`;
+	return statsText(command === "" ? 0 : command.split("\n").length, command.length);
 }
 
 export const BLANK_RUN_MIN = 3;
@@ -336,14 +351,31 @@ export function markBlankRuns(text: string): string {
 }
 
 export const TAIL_LINES = 3;
+export const TAIL_MAX_CHARS = 600;
 
-/** The last lines of a command, as the confirm step shows them. */
-export function commandTail(command: string): string {
-	// Mark the blank runs first, so a gap of forty lines reads as a gap and doesn't use up the tail.
-	return markBlankRuns(command).split("\n").slice(-TAIL_LINES).join("\n");
+export interface CommandTail {
+	/** Never more than `TAIL_MAX_CHARS` plus the leading mark, so the box needs no scrolling. */
+	text: string;
+	/** Says how much of the command this is, or null when it is all of it. */
+	label: string | null;
 }
 
-export const NON_ASCII_HINT = "Contains non-English letters";
+/** The end of a command, as the confirm step shows it: the last lines, and no more than the last 600 characters of them. */
+export function commandTail(command: string): CommandTail {
+	// Mark the blank runs first, so a gap of forty lines reads as a gap and doesn't use up the tail.
+	const lines = markBlankRuns(command).split("\n");
+	const tail = lines.slice(-TAIL_LINES).join("\n");
+	const cut = tail.length > TAIL_MAX_CHARS;
+	const text = cut ? `…${tail.slice(-TAIL_MAX_CHARS)}` : tail;
+	if (cut)
+		return { text, label: lines.length === 1 ? "End of the line:" : "End of the last lines:" };
+	return {
+		text,
+		label: lines.length > TAIL_LINES ? `Last ${TAIL_LINES} of ${lines.length} lines:` : null,
+	};
+}
+
+export const NON_ASCII_HINT = "Contains characters outside plain English text.";
 
 export function outsideCwdText(cwd: string | null): string {
 	return cwd
@@ -388,13 +420,76 @@ export function signedDiffLines(kind: string, diff: string): string[] {
 	return lines.map((line) => (/^[+\- @\\]/.test(line) || line === "" ? line : `?${line}`));
 }
 
+export const OUTSIDE_LABEL = "Outside the working directory";
+export const OUTSIDE_MARK = `${OUTSIDE_LABEL}:`;
+
+/** Display order of the changed files: the ones outside the working directory first, otherwise as sent. */
+export function outsideFirst(count: number, outsideCwd: readonly boolean[] | null): number[] {
+	const order = Array.from({ length: count }, (_, i) => i);
+	if (!outsideCwd || outsideCwd.length !== count) return order;
+	return [
+		...order.filter((i) => outsideCwd[i] === true),
+		...order.filter((i) => outsideCwd[i] !== true),
+	];
+}
+
+/** The one line for a changed file; one the server says is outside the working directory says so first. */
+export function changeLine(
+	change: Pick<CodexApprovalPresentationChange, "path" | "kind" | "movePath">,
+	outside: boolean,
+): string {
+	return outside ? `${OUTSIDE_MARK} ${changeSummary(change)}` : changeSummary(change);
+}
+
+/**
+ * The files the confirm step lists, the ones outside the working directory first, so a risky file
+ * is never the one behind "and N more". `outsideCwd` is the detail's per-file flags; absent
+ * (an older server) or of another length, nothing is marked or moved.
+ */
 export function filesSummary(
 	changes: readonly Pick<CodexApprovalPresentationChange, "path" | "kind" | "movePath">[],
+	outsideCwd: readonly boolean[] | null = null,
 	shown = 5,
 ): { listed: string[]; more: string | null } {
-	const listed = changes.slice(0, shown).map(changeSummary);
+	const flags = outsideCwd && outsideCwd.length === changes.length ? outsideCwd : null;
+	const listed = outsideFirst(changes.length, flags)
+		.slice(0, shown)
+		.map((i) => changeLine(changes[i] as (typeof changes)[number], flags?.[i] === true));
 	const rest = changes.length - listed.length;
 	return { listed, more: rest > 0 ? `and ${rest} more` : null };
+}
+
+/** Added and removed lines of a change, counted on what the card draws. */
+export function diffDelta(kind: string, diff: string): { added: number; removed: number } {
+	let added = 0;
+	let removed = 0;
+	for (const line of signedDiffLines(kind, diff)) {
+		if (line.startsWith("+") && !line.startsWith("+++")) added++;
+		else if (line.startsWith("-") && !line.startsWith("---")) removed++;
+	}
+	return { added, removed };
+}
+
+/** `+12 −3`, or null for a change that carries no diff. */
+export function diffDeltaLabel(kind: string, diff: string): string | null {
+	if (diff === "") return null;
+	const { added, removed } = diffDelta(kind, diff);
+	return `+${added} \u2212${removed}`;
+}
+
+export const OPEN_ALL_MAX_FILES = 3;
+export const OPEN_ALL_MAX_DIFF_CHARS = 2000;
+
+/**
+ * Which diffs start open. A person can't approve what they haven't been shown, so a short request
+ * opens everything; a long one opens the first and says how much each of the others changes.
+ */
+export function defaultDiffsOpen(
+	changes: readonly Pick<CodexApprovalPresentationChange, "diff">[],
+): boolean[] {
+	const total = changes.reduce((sum, change) => sum + change.diff.length, 0);
+	const all = changes.length <= OPEN_ALL_MAX_FILES || total <= OPEN_ALL_MAX_DIFF_CHARS;
+	return changes.map((_, i) => all || i === 0);
 }
 
 // ── what is on screen: a pending row's frozen confirm ───────────────────────
@@ -407,6 +502,8 @@ export interface FrozenConfirm {
 	presentation: CodexApprovalPresentation;
 	preview: CodexApprovalPreview | null;
 	requestKind: CodexApprovalSummary["requestKind"];
+	/** Per file, from the detail; null when the server didn't say (an older one). */
+	outsideCwd: boolean[] | null;
 }
 
 /** The detail answers for the version the list just named; false means "reload before approving". */
@@ -432,32 +529,27 @@ export function freezeConfirm(detail: CodexApprovalDetail): FrozenConfirm | null
 		presentation: detail.presentation,
 		preview: detail.approval.preview,
 		requestKind: detail.approval.requestKind,
+		outsideCwd: Array.isArray(detail.outsideCwd) ? [...detail.outsideCwd] : null,
 	};
 }
 
-export type MidConfirmEvent = "expired" | "revision_changed" | "answered_elsewhere" | "stopped";
+export type MidConfirmEvent = "time_up" | "revision_changed" | "closed";
 
 /**
  * What changed under an open confirm, judged against the latest list. `null` means nothing did.
- * `current` is null when the row is no longer listed.
+ * `current` is null when the row is no longer listed. The page's clock reaching zero is `time_up`
+ * and claims nothing about what happened: only the server's row says an answer was declined.
  */
 export function midConfirmEvent(
 	frozen: Pick<FrozenConfirm, "hash" | "revision">,
-	current: Pick<CodexApprovalSummary, "state" | "outcome" | "presentationHash" | "revision"> | null,
+	current: Pick<CodexApprovalSummary, "state" | "presentationHash" | "revision"> | null,
 	secondsRemaining: number,
 ): MidConfirmEvent | null {
-	if (current === null) return "answered_elsewhere";
-	if (current.state !== "pending") {
-		if (current.outcome === "expired") return "expired";
-		if (current.outcome === "session_stopped" || current.outcome === "approved_then_stopped") {
-			return "stopped";
-		}
-		return "answered_elsewhere";
-	}
+	if (current === null || current.state !== "pending") return "closed";
 	if (current.presentationHash !== frozen.hash || current.revision !== frozen.revision) {
 		return "revision_changed";
 	}
-	if (secondsRemaining <= 0) return "expired";
+	if (secondsRemaining <= 0) return "time_up";
 	return null;
 }
 
@@ -467,22 +559,36 @@ export interface MidConfirmView {
 	cancelLabel: "Close" | "Back";
 }
 
-const MID_CONFIRM: Record<MidConfirmEvent, MidConfirmView> = {
-	expired: {
-		text: "Time ran out, so this was declined automatically. Nothing ran.",
-		cancelLabel: "Close",
-	},
-	revision_changed: {
-		text: "Codex changed what it's asking. Nothing was sent. Review the new version.",
-		cancelLabel: "Back",
-	},
-	answered_elsewhere: { text: "This was already answered.", cancelLabel: "Close" },
-	stopped: { text: "This session was stopped, so nothing was sent.", cancelLabel: "Close" },
-};
+export const TIME_UP_TEXT = "Time ran out. Checking what happened.";
+export const CLOSED_TEXT = "This request is no longer open.";
 
-export function midConfirmView(event: MidConfirmEvent): MidConfirmView {
-	return MID_CONFIRM[event];
+/** The dialog's line for each event. A closed row speaks in its own outcome, never in a guess. */
+export function midConfirmView(
+	event: MidConfirmEvent,
+	row: Pick<CodexApprovalSummary, "outcome" | "decision" | "answeredAt" | "expiresAt"> | null,
+	host: string | null | undefined,
+	time: (stored: string | null) => string | null,
+): MidConfirmView {
+	switch (event) {
+		case "time_up":
+			return { text: TIME_UP_TEXT, cancelLabel: "Close" };
+		case "revision_changed":
+			return {
+				text: "Codex changed what it's asking. Nothing was sent. Review the new version.",
+				cancelLabel: "Back",
+			};
+		case "closed":
+			return {
+				text: row?.outcome
+					? outcomeLine(row.outcome, host, time(outcomeTimeSource(row.outcome, row)), row.decision)
+					: CLOSED_TEXT,
+				cancelLabel: "Close",
+			};
+	}
 }
+
+/** Taps on a confirm button or a card's buttons are ignored this long after it appears. */
+export const ARM_AFTER_MS = 700;
 
 export interface ConfirmCopy {
 	title: string;
@@ -642,3 +748,54 @@ export function twoMinuteAnnouncement(declinesAt: string | null): string {
 
 export const approvalOutcomeFocusId = (id: string): string => `codex-approval-outcome-${id}`;
 export const approvalHeadingId = (id: string): string => `codex-approval-heading-${id}`;
+
+export const REVISION_CHANGED_LINE = "Codex changed what it's asking. Read it again.";
+export const NEXT_REQUEST_LINE = "Next request. The last one is shown below.";
+export const CHECK_FAILED_TEXT =
+	"AgentPulse couldn't confirm your answer went through, and couldn't check either. Check again before answering.";
+export const STILL_OPEN_TEXT =
+	"AgentPulse checked. This is still open, so your answer didn't go through. Nothing was sent.";
+
+/**
+ * "2 of 3": the request's place among those seen in this run of requests. `seen` is every id shown
+ * pending since the run began; an answered one still counts, so the number only moves forward.
+ */
+export function queuePosition(
+	seen: ReadonlySet<string>,
+	pendingIds: readonly string[],
+): { index: number; total: number; universe: Set<string> } {
+	const universe = new Set([...seen, ...pendingIds]);
+	return { index: universe.size - pendingIds.length + 1, total: universe.size, universe };
+}
+
+// ── what the person already dismissed ───────────────────────────────────────
+
+const DISMISSED_KEEP = 100;
+export const dismissedStorageKey = (sessionId: string): string =>
+	`agentpulse.codexApprovals.dismissed.${sessionId}`;
+
+type ReadStore = Pick<Storage, "getItem">;
+type WriteStore = Pick<Storage, "setItem">;
+
+/** Ids dismissed on this browser; anything unreadable is nothing dismissed. */
+export function readDismissed(store: ReadStore | null, sessionId: string): Set<string> {
+	try {
+		const parsed: unknown = JSON.parse(store?.getItem(dismissedStorageKey(sessionId)) ?? "[]");
+		return new Set(Array.isArray(parsed) ? parsed.filter((v) => typeof v === "string") : []);
+	} catch {
+		return new Set();
+	}
+}
+
+/** Remembers the newest hundred; a store that refuses is ignored, since the dismissal still holds for this page. */
+export function writeDismissed(
+	store: WriteStore | null,
+	sessionId: string,
+	ids: Iterable<string>,
+): void {
+	try {
+		store?.setItem(dismissedStorageKey(sessionId), JSON.stringify([...ids].slice(-DISMISSED_KEEP)));
+	} catch {
+		// Private mode or a full quota: the page still hides it.
+	}
+}

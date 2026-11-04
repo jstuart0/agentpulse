@@ -12,9 +12,13 @@ export const CODEX_APPROVAL_NOTE_CAN_ANSWER =
 export const CHUNK_LOAD_FAILED_COPY =
 	"Codex is asking for approval, but this part of the page didn't load. Reload to answer.";
 
-/** The note on a card the viewer can't answer; `owner` is a display name, or null when there is none. */
-export function codexApprovalNoteOtherOwner(owner: string | null): string {
-	return `Codex is asking ${owner?.trim() || "the session's owner"} for approval.`;
+/**
+ * The note on a card whose acknowledge control the viewer doesn't have; `owner` is a display name,
+ * or null when there is none. An admin can answer someone else's request, so the note says where.
+ */
+export function codexApprovalNoteOtherOwner(owner: string | null, canAnswer = false): string {
+	const asking = `Codex is asking ${owner?.trim() || "the session's owner"} for approval.`;
+	return canAnswer ? `${asking} Open the session to answer.` : asking;
 }
 
 /** The approval ids a session row says are open, in the order the server wrote them. */

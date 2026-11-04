@@ -18,6 +18,7 @@ import {
 	buildPresentation,
 	buildPreview,
 	canonicalJson,
+	changesOutsideCwd,
 	hashPresentation,
 } from "./codex-approval-presentation.js";
 
@@ -515,6 +516,21 @@ describe("the preview", () => {
 			).presentation,
 		);
 		expect(elsewhere.pathOutsideCwd).toBe(true);
+	});
+
+	test("each changed file is flagged on its own, a move target counts, and the flags are not in the presentation", () => {
+		const built = buildPresentation(
+			fileChangeReport({
+				changes: [
+					{ path: "/work/project/a.txt", kind: "add", movePath: null, diff: "+x\n" },
+					{ path: "/etc/passwd", kind: "update", movePath: null, diff: "+x\n" },
+					{ path: "/work/project/b.txt", kind: "update", movePath: "/tmp/b.txt", diff: "+x\n" },
+				],
+			}),
+		).presentation;
+		if (built.requestKind !== "file_change") throw new Error("kind");
+		expect(changesOutsideCwd(built)).toEqual([false, true, true]);
+		expect(canonicalJson(built)).not.toContain("outsideCwd");
 	});
 
 	test("a home shortcut and a backslash path are never inside the working directory", () => {

@@ -15,14 +15,21 @@ import {
 	describeApprovalError,
 } from "../../lib/approval-errors.js";
 import {
+	ARM_AFTER_MS,
 	CANNOT_ACCEPT_TEXT,
+	CHECK_FAILED_TEXT,
+	CLOSED_TEXT,
 	type CardStateKind,
 	HOST_FALLBACK,
 	HOST_GONE_TEXT,
+	NEXT_REQUEST_LINE,
 	NON_ASCII_HINT,
 	OWNER_FALLBACK,
+	REVISION_CHANGED_LINE,
+	STILL_OPEN_TEXT,
 	STOP_CONFIRM_BODY,
 	STOP_CONFIRM_TITLE,
+	TAIL_MAX_CHARS,
 	arrivalAnnouncement,
 	availabilityHint,
 	cardStateOf,
@@ -33,7 +40,10 @@ import {
 	countdownText,
 	crossedTwoMinutes,
 	decisionBody,
+	defaultDiffsOpen,
 	detailMatchesRow,
+	diffDeltaLabel,
+	dismissedStorageKey,
 	fetchDelayMs,
 	filesSummary,
 	freezeConfirm,
@@ -50,6 +60,9 @@ import {
 	outcomeLine,
 	outcomeTimeSource,
 	outsideCwdText,
+	outsideFirst,
+	queuePosition,
+	readDismissed,
 	remainingLabel,
 	requestHeading,
 	secondsLeft,
@@ -60,6 +73,7 @@ import {
 	teamNotOwnerLine,
 	twoMinuteAnnouncement,
 	updateKept,
+	writeDismissed,
 } from "./codex-approval-view.js";
 
 const STATE_WORDS = /\b(working|waiting|idle|error)\b/i;
@@ -193,7 +207,9 @@ describe("copy", () => {
 	});
 
 	test("the plan's lines, word for word", () => {
-		expect(outcomeLine("sending_accept", "H", "T")).toBe("Approved. Sending to H…");
+		expect(outcomeLine("sending_accept", "H", "T")).toBe(
+			"Approved and on its way to H. It may already be running. The result appears in the timeline.",
+		);
 		expect(outcomeLine("sending_decline", "H", "T")).toBe("Declined. Telling H…");
 		expect(outcomeLine("approved_sent", "H", "T")).toBe(
 			"Approved at T and sent to H. The result appears in the timeline.",
@@ -209,7 +225,7 @@ describe("copy", () => {
 			"You approved this, but it didn't reach H in time, so it was declined. Nothing ran.",
 		);
 		expect(outcomeLine("may_have_run", "H", "T")).toBe(
-			"Approved, but H never confirmed. This may have run. Check the machine before asking again.",
+			"This may have run. Approved, but H never confirmed. Check the machine before asking again.",
 		);
 	});
 
@@ -331,11 +347,9 @@ describe("copy", () => {
 		expect(metaLine(null, null)).toBe(HOST_FALLBACK);
 		expect(metaLine("   ", null)).toBe(HOST_FALLBACK);
 		expect(hostOfflineText(null, "T")).toContain(HOST_FALLBACK);
-		expect(teamNotOwnerHeading(null)).toBe(
-			`Codex is asking ${OWNER_FALLBACK} to approve a command.`,
-		);
+		expect(teamNotOwnerHeading(null)).toBe(`Codex is asking ${OWNER_FALLBACK} for approval.`);
 		expect(teamNotOwnerLine(" ")).toBe(`Only ${OWNER_FALLBACK} or an admin can answer.`);
-		expect(teamNotOwnerHeading("O")).toBe("Codex is asking O to approve a command.");
+		expect(teamNotOwnerHeading("O")).toBe("Codex is asking O for approval.");
 		expect(
 			confirmCopy({ requestKind: "command", fileCount: 0, host: null, declinesAt: "T" }).title,
 		).toBe(`Run this on ${HOST_FALLBACK}?`);
@@ -395,9 +409,18 @@ describe("copy", () => {
 			const h = availabilityHint(v === undefined ? {} : { agentpulseApprovals: v }, "H");
 			if (h) strings.push(h);
 		}
-		for (const e of ["expired", "revision_changed", "answered_elsewhere", "stopped"] as const) {
-			strings.push(midConfirmView(e).text);
+		for (const e of ["time_up", "revision_changed", "closed"] as const) {
+			strings.push(midConfirmView(e, null, "H", () => "T").text);
 		}
+		strings.push(
+			outcomeLine("turn_ended", "H", null, "accept"),
+			outcomeLine("codex_shut_down", "H", null, "accept"),
+			REVISION_CHANGED_LINE,
+			NEXT_REQUEST_LINE,
+			STILL_OPEN_TEXT,
+			CHECK_FAILED_TEXT,
+			NON_ASCII_HINT,
+		);
 		for (const kind of ["command", "file_change"] as const) {
 			const c = confirmCopy({
 				requestKind: kind,
@@ -443,54 +466,50 @@ describe("mid-confirm events", () => {
 		expect(midConfirmEvent(frozen, live(), 600)).toBeNull();
 	});
 
-	test("expired: the row closed expired, or the local countdown ran out", () => {
-		expect(midConfirmEvent(frozen, live({ state: "closed", outcome: "expired" }), 600)).toBe(
-			"expired",
-		);
-		expect(midConfirmEvent(frozen, live(), 0)).toBe("expired");
+	test("the clock reaching zero on a row that is still open is time_up, never a claim about the answer", () => {
+		expect(midConfirmEvent(frozen, live(), 0)).toBe("time_up");
+		expect(midConfirmView("time_up", null, "H", () => null)).toEqual({
+			text: "Time ran out. Checking what happened.",
+			cancelLabel: "Close",
+		});
 	});
 
 	test("revision changed: a new hash or a new revision on a row that is still open", () => {
 		expect(midConfirmEvent(frozen, live({ presentationHash: "h2" }), 600)).toBe("revision_changed");
 		expect(midConfirmEvent(frozen, live({ revision: 2 }), 600)).toBe("revision_changed");
-	});
-
-	test("answered elsewhere: answered, closed another way, or no longer listed", () => {
-		expect(
-			midConfirmEvent(frozen, live({ state: "answered", outcome: "sending_accept" }), 600),
-		).toBe("answered_elsewhere");
-		expect(midConfirmEvent(frozen, live({ state: "closed", outcome: "declined" }), 600)).toBe(
-			"answered_elsewhere",
-		);
-		expect(midConfirmEvent(frozen, null, 600)).toBe("answered_elsewhere");
-	});
-
-	test("stopped: the session was stopped before anything was sent", () => {
-		expect(
-			midConfirmEvent(frozen, live({ state: "closed", outcome: "session_stopped" }), 600),
-		).toBe("stopped");
-		expect(
-			midConfirmEvent(frozen, live({ state: "closed", outcome: "approved_then_stopped" }), 600),
-		).toBe("stopped");
-	});
-
-	test("the table: text and button for each", () => {
-		expect(midConfirmView("expired")).toEqual({
-			text: "Time ran out, so this was declined automatically. Nothing ran.",
-			cancelLabel: "Close",
-		});
-		expect(midConfirmView("revision_changed")).toEqual({
+		expect(midConfirmView("revision_changed", null, "H", () => null)).toEqual({
 			text: "Codex changed what it's asking. Nothing was sent. Review the new version.",
 			cancelLabel: "Back",
 		});
-		expect(midConfirmView("answered_elsewhere")).toEqual({
-			text: "This was already answered.",
-			cancelLabel: "Close",
-		});
-		expect(midConfirmView("stopped")).toEqual({
-			text: "This session was stopped, so nothing was sent.",
-			cancelLabel: "Close",
-		});
+	});
+
+	test("closed: a row that is no longer open, or no longer listed, speaks in its own outcome", () => {
+		for (const outcome of ["expired", "declined", "session_stopped", "sending_accept"] as const) {
+			expect(midConfirmEvent(frozen, live({ state: "closed", outcome }), 600)).toBe("closed");
+		}
+		expect(
+			midConfirmEvent(frozen, live({ state: "answered", outcome: "sending_accept" }), 600),
+		).toBe("closed");
+		expect(midConfirmEvent(frozen, null, 600)).toBe("closed");
+		const view = (over: Partial<CodexApprovalSummary>) =>
+			midConfirmView("closed", row(over), "H", (stored) => stored && "T");
+		expect(view({ outcome: "expired", expiresAt: "E" }).text).toBe(
+			"Nobody answered by T, so this was declined. Nothing ran.",
+		);
+		// The server's row, not a guess: an accept in flight is never "already answered" or "nothing ran".
+		expect(view({ outcome: "sending_accept" }).text).toBe(
+			"Approved and on its way to H. It may already be running. The result appears in the timeline.",
+		);
+		expect(view({ outcome: "turn_ended", decision: "accept" }).text).toBe(
+			"You approved this, but the turn ended before it was sent. Nothing ran.",
+		);
+		expect(view({ outcome: "codex_shut_down", decision: "accept" }).text).toBe(
+			"You approved this, but Codex shut down before it was sent. Nothing ran.",
+		);
+		expect(view({ outcome: "turn_ended", decision: "decline" }).text).toBe(
+			"The turn ended before this was answered. Nothing ran.",
+		);
+		expect(midConfirmView("closed", null, "H", () => null).text).toBe(CLOSED_TEXT);
 	});
 
 	test("closed reasons the server can send all land on a known event", () => {
@@ -550,13 +569,79 @@ describe("the confirm step", () => {
 		expect(filesSummary(changes.slice(0, 5)).more).toBeNull();
 	});
 
-	test("the dialog always shows the last lines, blank runs marked, whatever the command hides", () => {
+	test("the dialog shows the last lines, blank runs marked, and says how much it is", () => {
 		const command = `npm test${"\n".repeat(41)}rm -rf build`;
-		expect(commandTail(command)).toBe(
-			"npm test\n[40 blank lines]\nrm -rf build".split("\n").slice(-3).join("\n"),
-		);
-		expect(commandTail("a\nb\nc\nd\ne")).toBe("c\nd\ne");
-		expect(commandTail("one line")).toBe("one line");
+		expect(commandTail(command)).toEqual({
+			text: "npm test\n[40 blank lines]\nrm -rf build",
+			label: null,
+		});
+		expect(commandTail("a\nb\nc\nd\ne")).toEqual({ text: "c\nd\ne", label: "Last 3 of 5 lines:" });
+		expect(commandTail("one line")).toEqual({ text: "one line", label: null });
+	});
+
+	test("a long last line is cut to its last 600 characters, with a mark, so the box never scrolls", () => {
+		const long = `${"a".repeat(3000)}TAIL`;
+		const one = commandTail(long);
+		expect(one.text.startsWith("…")).toBe(true);
+		expect(one.text.endsWith("aTAIL")).toBe(true);
+		expect(one.text.length).toBe(TAIL_MAX_CHARS + 1);
+		expect(one.label).toBe("End of the line:");
+		const many = commandTail(`x\ny\nz\nw\n${long}`);
+		expect(many.text.length).toBeLessThanOrEqual(TAIL_MAX_CHARS + 1);
+		expect(many.text.endsWith("TAIL")).toBe(true);
+		expect(many.label).toBe("End of the last lines:");
+		// Exactly at the limit is not cut.
+		expect(commandTail("b".repeat(TAIL_MAX_CHARS))).toEqual({
+			text: "b".repeat(TAIL_MAX_CHARS),
+			label: null,
+		});
+	});
+
+	test("files outside the working directory are listed first and marked; no flags, no change", () => {
+		const changes = Array.from({ length: 8 }, (_, i) => ({
+			path: `/w/f${i}`,
+			kind: "update",
+			movePath: null,
+		}));
+		const flags = changes.map((_, i) => i === 7);
+		const flagged = filesSummary(changes, flags);
+		expect(flagged.listed[0]).toBe("Outside the working directory: Edit /w/f7");
+		expect(flagged.listed[1]).toBe("Edit /w/f0");
+		expect(flagged.more).toBe("and 3 more");
+		expect(filesSummary(changes, null)).toEqual(filesSummary(changes));
+		expect(filesSummary(changes, [true]).listed[0]).toBe("Edit /w/f0");
+		expect(outsideFirst(3, [false, true, true])).toEqual([1, 2, 0]);
+		expect(outsideFirst(3, null)).toEqual([0, 1, 2]);
+	});
+
+	test("a diff's size is counted on what is drawn, and a short request opens every diff", () => {
+		expect(diffDeltaLabel("update", "@@ -1 +1 @@\n-a\n+b\n+c\n context\n")).toBe("+2 \u22121");
+		expect(diffDeltaLabel("add", "x\ny\n")).toBe("+2 \u22120");
+		expect(diffDeltaLabel("delete", "x\n")).toBe("+0 \u22121");
+		expect(diffDeltaLabel("update", "")).toBeNull();
+		const small = (n: number) => Array.from({ length: n }, () => ({ diff: "+x\n" }));
+		expect(defaultDiffsOpen(small(3))).toEqual([true, true, true]);
+		expect(defaultDiffsOpen(small(9))).toEqual(Array(9).fill(true));
+		const big = Array.from({ length: 5 }, () => ({ diff: "+x\n".repeat(900) }));
+		expect(defaultDiffsOpen(big)).toEqual([true, false, false, false, false]);
+	});
+
+	test("the foreign frozen flags come from the detail, and are null when an older server sent none", () => {
+		const detail = {
+			v: 1,
+			approval: row({ requestKind: "file_change" }),
+			presentation: {
+				v: 1,
+				requestKind: "file_change",
+				changes: [],
+				cwd: null,
+				reason: null,
+				grantRoot: null,
+			},
+			reasonText: null,
+		} as unknown as CodexApprovalDetail;
+		expect(freezeConfirm(detail)?.outsideCwd).toBeNull();
+		expect(freezeConfirm({ ...detail, outsideCwd: [true] })?.outsideCwd).toEqual([true]);
 	});
 
 	test("the stats line counts lines and characters", () => {
@@ -828,5 +913,73 @@ describe("refresh rules", () => {
 		expect(fetchDelayMs(2000, false)).toBe(0);
 		expect(fetchDelayMs(60_000, false)).toBe(0);
 		expect(fetchDelayMs(0, true)).toBe(0);
+	});
+});
+
+describe("the numbering, honest", () => {
+	test("answering one of three moves the next to 2 of 3, and a new arrival grows the total", () => {
+		const first = queuePosition(new Set(), ["a", "b", "c"]);
+		expect(first).toMatchObject({ index: 1, total: 3 });
+		const second = queuePosition(first.universe, ["b", "c"]);
+		expect(second).toMatchObject({ index: 2, total: 3 });
+		const grown = queuePosition(second.universe, ["b", "c", "d"]);
+		expect(grown).toMatchObject({ index: 2, total: 4 });
+		expect(queuePosition(new Set(), ["x"])).toMatchObject({ index: 1, total: 1 });
+	});
+});
+
+describe("what was dismissed is remembered, and a store that fails changes nothing", () => {
+	const memory = () => {
+		const data = new Map<string, string>();
+		return {
+			getItem: (k: string) => data.get(k) ?? null,
+			setItem: (k: string, v: string) => void data.set(k, v),
+		};
+	};
+
+	test("round trip, per session, newest hundred", () => {
+		const store = memory();
+		writeDismissed(store, "s1", ["a", "b"]);
+		expect([...readDismissed(store, "s1")]).toEqual(["a", "b"]);
+		expect(readDismissed(store, "s2").size).toBe(0);
+		writeDismissed(
+			store,
+			"s1",
+			Array.from({ length: 150 }, (_, i) => `id${i}`),
+		);
+		const kept = readDismissed(store, "s1");
+		expect(kept.size).toBe(100);
+		expect(kept.has("id149")).toBe(true);
+		expect(kept.has("id0")).toBe(false);
+	});
+
+	test("unreadable, wrong-shaped, throwing or missing storage is nothing dismissed, and never throws", () => {
+		const bad = { getItem: () => "{not json", setItem: () => undefined };
+		expect(readDismissed(bad, "s").size).toBe(0);
+		const odd = { getItem: () => JSON.stringify({ a: 1 }) };
+		expect(readDismissed(odd, "s").size).toBe(0);
+		const mixed = { getItem: () => JSON.stringify(["a", 3, null, "b"]) };
+		expect([...readDismissed(mixed, "s")]).toEqual(["a", "b"]);
+		const full = {
+			getItem: () => {
+				throw new Error("blocked");
+			},
+			setItem: () => {
+				throw new Error("quota");
+			},
+		};
+		expect(readDismissed(full, "s").size).toBe(0);
+		expect(() => writeDismissed(full, "s", ["a"])).not.toThrow();
+		expect(readDismissed(null, "s").size).toBe(0);
+		expect(() => writeDismissed(null, "s", ["a"])).not.toThrow();
+		expect(dismissedStorageKey("s")).toContain("s");
+	});
+});
+
+describe("the new fixed words", () => {
+	test("they say what is true and no state word", () => {
+		expect(REVISION_CHANGED_LINE).toBe("Codex changed what it's asking. Read it again.");
+		expect(NEXT_REQUEST_LINE).toBe("Next request. The last one is shown below.");
+		expect(ARM_AFTER_MS).toBe(700);
 	});
 });

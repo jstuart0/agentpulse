@@ -125,6 +125,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 	return (
 		<div
 			ref={headerRef}
+			data-session-header=""
 			tabIndex={-1}
 			className="sticky top-0 z-10 bg-background border-b border-border flex-shrink-0 focus:outline-none"
 		>

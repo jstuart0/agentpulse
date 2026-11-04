@@ -55,6 +55,10 @@ describe("CodexApprovalCard (AGEN-87)", () => {
 		expect(index?.maxGzip as number).toBeLessThanOrEqual(118_400);
 		expect(page?.maxGzip as number).toBeLessThanOrEqual(23_500);
 	});
+
+	test("the card's own limit rose once, to 12,000, for the phase 6 review, and no further", () => {
+		expect(row?.maxGzip).toBe(12_000);
+	});
 });
 
 describe("T-6 main(), run as a script against a fixture build", () => {

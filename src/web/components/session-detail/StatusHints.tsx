@@ -93,7 +93,7 @@ export const HOST_CONTROL_HINT_ID = "host-control-hint";
 export function HostControlHint({
 	session,
 }: {
-	session: Pick<Session, "hostControl" | "managedSession">;
+	session: Pick<Session, "hostControl" | "managedSession" | "metadata">;
 }) {
 	const text = hostControlHint(session);
 	if (!text) return null;

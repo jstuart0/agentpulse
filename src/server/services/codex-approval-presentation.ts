@@ -11,6 +11,7 @@
  */
 import {
 	CODEX_APPROVAL_LIMITS,
+	type CodexApprovalFileChangePresentation,
 	type CodexApprovalPathPreview,
 	type CodexApprovalPresentation,
 	type CodexApprovalPresentationChange,
@@ -274,6 +275,20 @@ function isInside(path: string, cwd: string): boolean {
 	return normalizedPath === normalizedCwd || normalizedPath.startsWith(`${normalizedCwd}/`);
 }
 
+/**
+ * For each changed file, in order: whether it (or the place it moves to) is outside the working
+ * directory. Not part of the presentation, so not part of its hash: the detail carries it beside it.
+ */
+export function changesOutsideCwd(presentation: CodexApprovalFileChangePresentation): boolean[] {
+	const cwd = presentation.cwd;
+	return presentation.changes.map(
+		(change) =>
+			cwd === null ||
+			!isInside(change.path, cwd) ||
+			(change.movePath !== null && !isInside(change.movePath, cwd)),
+	);
+}
+
 /** The list-sized view of a presentation: bounded to 4 KiB, no full diff. */
 export function buildPreview(presentation: CodexApprovalPresentation): CodexApprovalPreview {
 	if (presentation.requestKind === "command") {
@@ -293,12 +308,7 @@ export function buildPreview(presentation: CodexApprovalPresentation): CodexAppr
 	const paths: CodexApprovalPathPreview[] = presentation.changes
 		.slice(0, 5)
 		.map((change) => ({ path: change.path.slice(0, 300), kind: change.kind }));
-	const outside = presentation.changes.some(
-		(change) =>
-			cwd === null ||
-			!isInside(change.path, cwd) ||
-			(change.movePath !== null && !isInside(change.movePath, cwd)),
-	);
+	const outside = changesOutsideCwd(presentation).some(Boolean);
 	return {
 		cwd,
 		fileCount: presentation.changes.length,
