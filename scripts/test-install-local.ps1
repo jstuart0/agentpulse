@@ -13,7 +13,9 @@ $failures = 0
 
 function Assert-True($condition, $message) {
 	if (-not $condition) {
-		Write-Error "FAIL: $message"
+		# Reported, not thrown: one run shows every failure, and the summary at the
+		# end fails the step.
+		Write-Host "FAIL: $message"
 		$script:failures++
 	} else {
 		Write-Host "ok: $message"
@@ -22,8 +24,15 @@ function Assert-True($condition, $message) {
 
 $tempProfile = Join-Path ([System.IO.Path]::GetTempPath()) ("ap-test-install-local-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tempProfile | Out-Null
-$env:USERPROFILE = $tempProfile
-$env:HOME = $tempProfile
+# The installer reads PowerShell's own $HOME, which the environment variables
+# don't change. Without this the test writes a fake key into the real profile.
+function Set-TestHome([string]$Path) {
+	$env:USERPROFILE = $Path
+	$env:HOME = $Path
+	Set-Variable -Name HOME -Value $Path -Scope Global -Force
+	if ($global:HOME -ne $Path) { throw "could not point `$HOME at $Path (it is $global:HOME)" }
+}
+Set-TestHome $tempProfile
 
 $installer = Resolve-Path (Join-Path $PSScriptRoot "install-local.ps1")
 . $installer -FunctionsOnly
@@ -50,6 +59,18 @@ if ($dirAcl.Access.Count -ne 1) {
 	$dirAcl.Access | Format-List IdentityReference, FileSystemRights, AccessControlType, IsInherited, InheritanceFlags, PropagationFlags | Out-Host
 }
 Assert-True ($dirAcl.Access.Count -eq 1) ".agentpulse dir has exactly one ACE (found $($dirAcl.Access.Count))"
+
+# An entry set directly on the directory is not inherited, so /inheritance:r
+# leaves it. Remove-ApOtherAces has to take it away, and a re-run must do so for
+# a directory an earlier install or another tool left broad.
+$broadDirCheck = icacls (Join-Path $HOME ".agentpulse") /grant "*S-1-5-32-545:(OI)(CI)R" 2>&1
+Assert-True ($LASTEXITCODE -eq 0) "test setup: granted Users on .agentpulse ($($broadDirCheck -join ' '))"
+Assert-True ((Get-Acl (Join-Path $HOME ".agentpulse")).Access.Count -eq 2) "test setup: .agentpulse now has a second, direct ACE"
+New-ApHookAuthHeaderFile -ApiKey "ap_test_key_123"
+$dirAclAfterBroad = Get-Acl (Join-Path $HOME ".agentpulse")
+Assert-True ($dirAclAfterBroad.Access.Count -eq 1) "a re-run removes a direct Users ACE from .agentpulse (found $($dirAclAfterBroad.Access.Count))"
+$dirAceSid = $dirAclAfterBroad.Access[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+Assert-True ($dirAceSid -eq [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value) "the ACE left on .agentpulse is the current user's"
 
 # ── AGEN-49/H2 (xander): $ApiKey set embeds the literal key in
 # settings.json, narrowed to a single-ACE user-only ACL — Claude Code's
@@ -111,12 +132,10 @@ New-Item -ItemType Directory -Force -Path (Join-Path $mergeProbeHome ".claude") 
 $mergeProbeSettings = Join-Path $mergeProbeHome ".claude\settings.json"
 '{"theme":"dark","customSetting":42}' | Set-Content -Path $mergeProbeSettings -Encoding UTF8
 $savedHomeForMerge = $env:USERPROFILE
-$env:USERPROFILE = $mergeProbeHome
-$env:HOME = $mergeProbeHome
+Set-TestHome $mergeProbeHome
 $ApiKey = "ap_test_key_123"
 Configure-Hooks
-$env:USERPROFILE = $savedHomeForMerge
-$env:HOME = $savedHomeForMerge
+Set-TestHome $savedHomeForMerge
 $mergedJson = Get-Content $mergeProbeSettings -Raw | ConvertFrom-Json
 Assert-True ($mergedJson.theme -eq "dark") "Configure-Hooks: an existing settings.json keeps its other keys (theme)"
 Assert-True ($mergedJson.customSetting -eq 42) "Configure-Hooks: an existing settings.json keeps its other keys (customSetting)"
@@ -126,7 +145,7 @@ Assert-True ($null -ne $mergedJson.hooks) "Configure-Hooks: hooks were still add
 $symlinkProbeHome = Join-Path $tempProfile "settings-symlink-probe"
 New-Item -ItemType Directory -Force -Path (Join-Path $symlinkProbeHome ".claude") | Out-Null
 $decoySettingsTarget = Join-Path $symlinkProbeHome "decoy-settings.json"
-Set-Content -Path $decoySettingsTarget -Value "should never change" -Encoding UTF8
+Set-Content -Path $decoySettingsTarget -Value "should never change" -Encoding UTF8 -NoNewline
 $symlinkedSettingsPath = Join-Path $symlinkProbeHome ".claude\settings.json"
 $canSymlinkSettings = $true
 try {
@@ -137,8 +156,7 @@ try {
 }
 if ($canSymlinkSettings) {
   $savedHomeForSymlink = $env:USERPROFILE
-  $env:USERPROFILE = $symlinkProbeHome
-  $env:HOME = $symlinkProbeHome
+  Set-TestHome $symlinkProbeHome
   $ApiKey = "ap_test_key_123"
   $symlinkThrew = $false
   try {
@@ -146,8 +164,7 @@ if ($canSymlinkSettings) {
   } catch {
     $symlinkThrew = $true
   }
-  $env:USERPROFILE = $savedHomeForSymlink
-  $env:HOME = $savedHomeForSymlink
+  Set-TestHome $savedHomeForSymlink
   Assert-True $symlinkThrew "Configure-Hooks: a symlinked settings.json throws instead of writing through it"
   Assert-True ((Get-Content $decoySettingsTarget -Raw) -eq "should never change") "Configure-Hooks: the symlink's target is untouched after the refused write"
 }
@@ -170,7 +187,8 @@ $scriptFile = Join-Path $tempProfile "hook-cmd.ps1"
 Set-Content -Path $scriptFile -Value $cmd -Encoding UTF8
 
 $fixture = '{"session_id":"pwsh-test-session","hook_event_name":"Stop"}'
-$fixture | powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptFile
+$hookElapsed = Measure-Command { $fixture | powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptFile }
+Write-Host "measured: the hook process returned in $([int]$hookElapsed.TotalMilliseconds) ms"
 
 $captured = $null
 if ($asyncResult.AsyncWaitHandle.WaitOne(10000)) {
@@ -192,9 +210,9 @@ Assert-True ($null -ne $captured) "the generated command delivered a request to 
 if ($null -ne $captured) {
 	Assert-True ($captured.Path -eq "/api/v1/hooks") "request path is /api/v1/hooks"
 	Assert-True ($captured.Query -eq "?event=Stop") "request query is ?event=Stop"
-	Assert-True ($captured.AgentType -eq "codex_cli") "X-Agent-Type header is codex_cli"
+	Assert-True ($captured.AgentType -eq "codex_cli") "X-Agent-Type header is codex_cli (found [$($captured.AgentType)])"
 	Assert-True ($captured.Authorization -eq "Bearer ap_test_key_123") "Authorization header present with the saved key"
-	Assert-True ($captured.Body -eq $fixture) "body arrives byte-exact"
+	Assert-True ($captured.Body.TrimEnd("`r", "`n") -eq $fixture) "body arrives intact, apart from the line ending this test's pipe adds (found [$($captured.Body)], $($captured.Body.Length) chars)"
 }
 
 # ── The native-coverage marker sid gate, executed for real ──
@@ -239,6 +257,15 @@ Assert-True ($entries.Count -eq 0) "a sid containing '/' leaves no marker file"
 
 $entries = Test-ApMarkerCase '{"session_id":"../../etc/passwd"}'
 Assert-True ($entries.Count -eq 0) "a sid containing '..' leaves no marker file"
+
+# The working directory goes to the detached process as a quoted argument, so a
+# quote in it must not break the command. The marker is written only if it runs.
+$quotedCwd = Join-Path $tempProfile "it's a dir"
+New-Item -ItemType Directory -Force -Path $quotedCwd | Out-Null
+Push-Location -LiteralPath $quotedCwd
+$entries = Test-ApMarkerCase "{`"session_id`":`"$validSid`"}"
+Pop-Location
+Assert-True ($entries.Count -eq 1 -and $entries[0].Name -eq $validSid) "a working directory containing a quote still runs the hook"
 
 $tooLongSid = "a" * 129
 $entries = Test-ApMarkerCase "{`"session_id`":`"$tooLongSid`"}"
@@ -354,8 +381,8 @@ Assert-True ($null -ne $copilotCaptured) "Copilot: the generated command deliver
 if ($null -ne $copilotCaptured) {
 	Assert-True ($copilotCaptured.Path -eq "/api/v1/hooks") "Copilot: request path is /api/v1/hooks"
 	Assert-True ($copilotCaptured.Query -eq "?event=sessionStart") "Copilot: request query is ?event=sessionStart"
-	Assert-True ($copilotCaptured.AgentType -eq "copilot_cli") "Copilot: X-Agent-Type header is copilot_cli"
-	Assert-True ($copilotCaptured.Body -eq $copilotFixture) "Copilot: body arrives byte-exact"
+	Assert-True ($copilotCaptured.AgentType -eq "copilot_cli") "Copilot: X-Agent-Type header is copilot_cli (found [$($copilotCaptured.AgentType)])"
+	Assert-True ($copilotCaptured.Body.TrimEnd("`r", "`n") -eq $copilotFixture) "Copilot: body arrives intact, apart from the line ending this test's pipe adds (found [$($copilotCaptured.Body)], $($copilotCaptured.Body.Length) chars)"
 }
 
 # ── F232/F233 (xander, Medium): Test-ApReparsePoint / Write-ApFileNoFollow — real execution ──
@@ -384,7 +411,7 @@ if ($canSymlink) {
 
 	# Write-ApFileNoFollow refuses a symlink at the destination — decoy untouched.
 	$decoyPath = Join-Path $reparseProbeDir "decoy-hooks.json"
-	Set-Content -Path $decoyPath -Value "should never change" -Encoding UTF8
+	Set-Content -Path $decoyPath -Value "should never change" -Encoding UTF8 -NoNewline
 	$hooksLinkPath = Join-Path $reparseProbeDir "hooks.json"
 	New-Item -ItemType SymbolicLink -Path $hooksLinkPath -Target $decoyPath | Out-Null
 	$threw = $false
@@ -400,7 +427,7 @@ if ($canSymlink) {
 	# primitive, a different path, matching the plan's "hooks path AND
 	# backup path" requirement.
 	$decoyBackupPath = Join-Path $reparseProbeDir "decoy-backup.json"
-	Set-Content -Path $decoyBackupPath -Value "backup should never change" -Encoding UTF8
+	Set-Content -Path $decoyBackupPath -Value "backup should never change" -Encoding UTF8 -NoNewline
 	$backupLinkPath = Join-Path $reparseProbeDir "hooks.json.agentpulse-bak.20260929T000000Z"
 	New-Item -ItemType SymbolicLink -Path $backupLinkPath -Target $decoyBackupPath | Out-Null
 	$backupThrew = $false
@@ -421,12 +448,11 @@ if ($canSymlink) {
 	$authProbeHome = Join-Path $tempProfile "auth-reparse-probe"
 	New-Item -ItemType Directory -Force -Path $authProbeHome | Out-Null
 	$savedHome = $env:USERPROFILE
-	$env:USERPROFILE = $authProbeHome
-	$env:HOME = $authProbeHome
+	Set-TestHome $authProbeHome
 	$agentpulseDir = Join-Path $authProbeHome ".agentpulse"
 	New-Item -ItemType Directory -Force -Path $agentpulseDir | Out-Null
 	$authDecoyPath = Join-Path $authProbeHome "decoy-auth-header"
-	Set-Content -Path $authDecoyPath -Value "should never change" -Encoding UTF8
+	Set-Content -Path $authDecoyPath -Value "should never change" -Encoding UTF8 -NoNewline
 	$authHeaderLinkPath = Join-Path $agentpulseDir "hook-auth-header"
 	New-Item -ItemType SymbolicLink -Path $authHeaderLinkPath -Target $authDecoyPath | Out-Null
 	$authThrew = $false
@@ -437,8 +463,7 @@ if ($canSymlink) {
 	}
 	Assert-True $authThrew "New-ApHookAuthHeaderFile (F233): a symlinked hook-auth-header throws instead of writing through it"
 	Assert-True ((Get-Content $authDecoyPath -Raw) -eq "should never change") "New-ApHookAuthHeaderFile (F233): the symlink's target is untouched after the refused write"
-	$env:USERPROFILE = $savedHome
-	$env:HOME = $savedHome
+	Set-TestHome $savedHome
 }
 
 # ── F242 (xander, re-verify): Test-ApMultipleHardLinks — real execution ──
@@ -448,7 +473,7 @@ if ($canSymlink) {
 $hardlinkProbeDir = Join-Path $tempProfile "hardlink-probe"
 New-Item -ItemType Directory -Force -Path $hardlinkProbeDir | Out-Null
 $hardlinkOriginal = Join-Path $hardlinkProbeDir "hooks.json"
-Set-Content -Path $hardlinkOriginal -Value "should never change" -Encoding UTF8
+Set-Content -Path $hardlinkOriginal -Value "should never change" -Encoding UTF8 -NoNewline
 $canHardlink = $true
 try {
 	$hardlinkAlias = Join-Path $hardlinkProbeDir "hooks-alias.json"
@@ -481,12 +506,11 @@ if ($canHardlink) {
 	$hardlinkAuthHome = Join-Path $tempProfile "auth-hardlink-probe"
 	New-Item -ItemType Directory -Force -Path $hardlinkAuthHome | Out-Null
 	$savedHomeHardlink = $env:USERPROFILE
-	$env:USERPROFILE = $hardlinkAuthHome
-	$env:HOME = $hardlinkAuthHome
+	Set-TestHome $hardlinkAuthHome
 	$agentpulseDirHardlink = Join-Path $hardlinkAuthHome ".agentpulse"
 	New-Item -ItemType Directory -Force -Path $agentpulseDirHardlink | Out-Null
 	$authHeaderTarget = Join-Path $hardlinkAuthHome "decoy-auth-header"
-	Set-Content -Path $authHeaderTarget -Value "should never change" -Encoding UTF8
+	Set-Content -Path $authHeaderTarget -Value "should never change" -Encoding UTF8 -NoNewline
 	$authHeaderHardlinkPath = Join-Path $agentpulseDirHardlink "hook-auth-header"
 	New-Item -ItemType HardLink -Path $authHeaderHardlinkPath -Target $authHeaderTarget | Out-Null
 	$authHardlinkThrew = $false
@@ -497,8 +521,7 @@ if ($canHardlink) {
 	}
 	Assert-True $authHardlinkThrew "New-ApHookAuthHeaderFile (F242): a multiply-linked hook-auth-header throws instead of writing through it"
 	Assert-True ((Get-Content $authHeaderTarget -Raw) -eq "should never change") "New-ApHookAuthHeaderFile (F242): the hard-linked target is untouched after the refused write"
-	$env:USERPROFILE = $savedHomeHardlink
-	$env:HOME = $savedHomeHardlink
+	Set-TestHome $savedHomeHardlink
 }
 
 # ── AGEN-21 (security, Medium): Write-ApPrivateFile / Write-ApPrivateJsonFile — real execution ──
@@ -534,7 +557,7 @@ Assert-True ($privateJsonAclAfterRotate.Access.Count -eq 1) "Write-ApPrivateJson
 if ($canSymlink) {
 	# Write-ApPrivateFile refuses a symlink at the destination — decoy untouched.
 	$privateDecoyPath = Join-Path $privateWriteProbeDir "decoy-env.local"
-	Set-Content -Path $privateDecoyPath -Value "should never change" -Encoding UTF8
+	Set-Content -Path $privateDecoyPath -Value "should never change" -Encoding UTF8 -NoNewline
 	$privateLinkPath = Join-Path $privateWriteProbeDir "env.local"
 	New-Item -ItemType SymbolicLink -Path $privateLinkPath -Target $privateDecoyPath | Out-Null
 	$privateThrew = $false

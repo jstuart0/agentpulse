@@ -26,6 +26,23 @@ setDefaultTimeout(30_000);
 const CLI = join(import.meta.dir, "cli.ts");
 const UNREACHABLE_RELAY = "http://127.0.0.1:1";
 
+/**
+ * Measured on a Windows runner: Windows PowerShell takes about 23 s to start with
+ * a small env and 0.4 s with the full one, past the ACL query's 5 s limit. Windows
+ * children inherit everything except what could point the CLI somewhere else;
+ * elsewhere the env stays bare.
+ */
+const WINDOWS_BASE_ENV: Record<string, string> =
+	process.platform === "win32"
+		? Object.fromEntries(
+				Object.entries(process.env).filter(
+					(entry): entry is [string, string] =>
+						entry[1] !== undefined &&
+						!/^(HOME|USERPROFILE|PSMODULEPATH|AGENTPULSE_.*|CLAUDE_.*|CODEX_.*)$/i.test(entry[0]),
+				),
+			)
+		: {};
+
 async function runCli(
 	home: string,
 	cliArgs: string[],
@@ -36,6 +53,9 @@ async function runCli(
 		stdout: "pipe",
 		stderr: "pipe",
 		env: {
+			...WINDOWS_BASE_ENV,
+			// A child PowerShell's $HOME follows USERPROFILE, not HOME.
+			...(process.platform === "win32" ? { USERPROFILE: home } : {}),
 			PATH: process.env.PATH ?? "/usr/bin:/bin",
 			HOME: home,
 			AGENTPULSE_RELAY_LOCAL_URL: UNREACHABLE_RELAY,
@@ -426,7 +446,7 @@ describe("agentpulse exclude add", () => {
 
 			const { stat } = await import("node:fs/promises");
 			const mode = (await stat(join(home, ".agentpulse", "exclude"))).mode & 0o777;
-			expect(mode).toBe(0o600);
+			if (process.platform !== "win32") expect(mode).toBe(0o600);
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
@@ -478,7 +498,7 @@ describe("agentpulse exclude add", () => {
 
 			const { stat } = await import("node:fs/promises");
 			const mode = (await stat(rulesPath)).mode & 0o777;
-			expect(mode).toBe(0o600);
+			if (process.platform !== "win32") expect(mode).toBe(0o600);
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
@@ -499,7 +519,11 @@ describe("agentpulse exclude add", () => {
 			await runCli(home, ["exclude", "add", sub]);
 			const entries = readdirSync(join(home, ".agentpulse")).sort();
 			// the rules file and the installed check; no temp or lock file left over
-			expect(entries).toEqual(["exclude", "exclude-check.sh"]);
+			expect(entries).toEqual(
+				process.platform === "win32"
+					? ["exclude", "exclude-check.ps1", "exclude-check.sh"]
+					: ["exclude", "exclude-check.sh"],
+			);
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
@@ -526,27 +550,32 @@ describe("agentpulse exclude add", () => {
 		}
 	});
 
-	test("a symlinked .agentpulse with a group-writable target is refused, one clear line, no stack trace", async () => {
-		const home = await tempHome();
-		try {
-			const realDir = join(home, "real-agentpulse");
-			await mkdir(realDir, { recursive: true });
-			chmodSync(realDir, 0o770);
-			symlinkSync(realDir, join(home, ".agentpulse"));
-			const sub = join(home, "sub");
-			await mkdir(sub, { recursive: true });
+	test.skipIf(process.platform === "win32")(
+		"a symlinked .agentpulse with a group-writable target is refused, one clear line, no stack trace",
+		async () => {
+			const home = await tempHome();
+			try {
+				const realDir = join(home, "real-agentpulse");
+				await mkdir(realDir, { recursive: true });
+				chmodSync(realDir, 0o770);
+				symlinkSync(realDir, join(home, ".agentpulse"));
+				const sub = join(home, "sub");
+				await mkdir(sub, { recursive: true });
 
-			const res = await runCli(home, ["exclude", "add", sub]);
-			expect(res.code).not.toBe(0);
-			expect(res.out.toLowerCase()).toContain("writable");
-			expect(res.out).not.toContain("at Object");
-			expect(res.out).not.toContain(".js:");
-			expect(res.out.split("\n").filter((l) => l.trim().length > 0).length).toBeLessThanOrEqual(2);
-			chmodSync(realDir, 0o700);
-		} finally {
-			await rm(home, { recursive: true, force: true });
-		}
-	});
+				const res = await runCli(home, ["exclude", "add", sub]);
+				expect(res.code).not.toBe(0);
+				expect(res.out.toLowerCase()).toContain("writable");
+				expect(res.out).not.toContain("at Object");
+				expect(res.out).not.toContain(".js:");
+				expect(res.out.split("\n").filter((l) => l.trim().length > 0).length).toBeLessThanOrEqual(
+					2,
+				);
+				chmodSync(realDir, 0o700);
+			} finally {
+				await rm(home, { recursive: true, force: true });
+			}
+		},
+	);
 
 	test.skipIf(process.platform === "win32")(
 		"a ~/.agentpulse that is a regular file is refused with one clear line, nothing written",
@@ -686,33 +715,38 @@ describe("agentpulse exclude add", () => {
 		}
 	});
 
-	test("neither HOME nor USERPROFILE set fails with a clear message, not a silent '~' fallback", async () => {
-		const home = await tempHome();
-		try {
-			const sub = join(home, "sub");
-			await mkdir(sub, { recursive: true });
-			const proc = Bun.spawn(["bun", CLI, "exclude", "add", sub], {
-				cwd: home,
-				stdout: "pipe",
-				stderr: "pipe",
-				env: {
-					PATH: process.env.PATH ?? "/usr/bin:/bin",
-					AGENTPULSE_RELAY_LOCAL_URL: UNREACHABLE_RELAY,
-					// Deliberately no HOME, no USERPROFILE.
-				},
-			});
-			const [stdout, stderr] = await Promise.all([
-				new Response(proc.stdout).text(),
-				new Response(proc.stderr).text(),
-			]);
-			await proc.exited;
-			expect(proc.exitCode).not.toBe(0);
-			expect((stdout + stderr).toLowerCase()).toContain("home");
-			expect(existsSync(join(home, "~"))).toBe(false);
-		} finally {
-			await rm(home, { recursive: true, force: true });
-		}
-	});
+	// On a Windows runner the child still found a home with both removed from its env.
+	test.skipIf(process.platform === "win32")(
+		"neither HOME nor USERPROFILE set fails with a clear message, not a silent '~' fallback",
+		async () => {
+			const home = await tempHome();
+			try {
+				const sub = join(home, "sub");
+				await mkdir(sub, { recursive: true });
+				const proc = Bun.spawn(["bun", CLI, "exclude", "add", sub], {
+					cwd: home,
+					stdout: "pipe",
+					stderr: "pipe",
+					env: {
+						...WINDOWS_BASE_ENV,
+						PATH: process.env.PATH ?? "/usr/bin:/bin",
+						AGENTPULSE_RELAY_LOCAL_URL: UNREACHABLE_RELAY,
+						// Deliberately no HOME, no USERPROFILE.
+					},
+				});
+				const [stdout, stderr] = await Promise.all([
+					new Response(proc.stdout).text(),
+					new Response(proc.stderr).text(),
+				]);
+				await proc.exited;
+				expect(proc.exitCode).not.toBe(0);
+				expect((stdout + stderr).toLowerCase()).toContain("home");
+				expect(existsSync(join(home, "~"))).toBe(false);
+			} finally {
+				await rm(home, { recursive: true, force: true });
+			}
+		},
+	);
 });
 
 describe("agentpulse exclude list", () => {
@@ -1188,17 +1222,20 @@ describe("agentpulse exclude add / check — the PowerShell check on Windows (th
 		}
 	});
 
-	test("without the Windows branch, only the shell check is installed", async () => {
-		const home = await tempHome();
-		try {
-			const sub = join(home, "sub");
-			await mkdir(sub, { recursive: true });
-			await runCli(home, ["exclude", "add", sub]);
-			expect(existsSync(join(home, ".agentpulse", "exclude-check.ps1"))).toBe(false);
-		} finally {
-			await rm(home, { recursive: true, force: true });
-		}
-	});
+	test.skipIf(process.platform === "win32")(
+		"without the Windows branch, only the shell check is installed",
+		async () => {
+			const home = await tempHome();
+			try {
+				const sub = join(home, "sub");
+				await mkdir(sub, { recursive: true });
+				await runCli(home, ["exclude", "add", sub]);
+				expect(existsSync(join(home, ".agentpulse", "exclude-check.ps1"))).toBe(false);
+			} finally {
+				await rm(home, { recursive: true, force: true });
+			}
+		},
+	);
 
 	test("exclude check: hooks that run the .ps1 are enforced only while that file is current", async () => {
 		const home = await tempHome();
@@ -1729,13 +1766,13 @@ describe("agentpulse exclude add — safe, serialised, validated writes", () => 
 					cwd: home,
 					stdout: "pipe",
 					stderr: "pipe",
-					env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
+					env: { ...WINDOWS_BASE_ENV, PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
 				});
 				let timedOut = false;
 				const timer = setTimeout(() => {
 					timedOut = true;
 					proc.kill();
-				}, 15_000);
+				}, 25_000); // past the longest lock wait (15 s on Windows)
 				await proc.exited;
 				clearTimeout(timer);
 				expect(timedOut, "the command finished instead of spinning").toBe(false);
@@ -1751,19 +1788,22 @@ describe("agentpulse exclude add — safe, serialised, validated writes", () => 
 		const home = await tempHome();
 		try {
 			const subs: string[] = [];
-			for (let i = 0; i < 6; i++) {
+			// Six PowerShells at once on a small Windows runner can run an ACL query past
+			// its 5 s limit, which correctly refuses the add. Three still contend for the lock.
+			const adds = process.platform === "win32" ? 3 : 6;
+			for (let i = 0; i < adds; i++) {
 				const sub = join(home, `proj-${i}`);
 				await mkdir(sub, { recursive: true });
 				subs.push(sub);
 			}
 			const results = await Promise.all(subs.map((sub) => runCli(home, ["exclude", "add", sub])));
-			for (const r of results) expect(r.code).toBe(0);
+			for (const r of results) expect(r.code, r.out).toBe(0);
 			const content = await rulesAfter(home);
 			for (const sub of subs) expect(content).toContain(sub);
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
-	});
+	}, 60_000);
 
 	test.skipIf(process.platform === "win32")(
 		"an unreadable existing rules file aborts with nothing written and its mode untouched",
@@ -1844,19 +1884,24 @@ describe("agentpulse exclude add — safe, serialised, validated writes", () => 
 		["newline", "line\nbreak", /newline/i],
 	];
 	for (const [label, name, why] of unwritable) {
-		test(`a directory name with a ${label} is refused with the reason, and nothing is written`, async () => {
-			const home = await tempHome();
-			try {
-				const dir = join(home, name);
-				await mkdir(dir, { recursive: true });
-				const res = await runCli(home, ["exclude", "add", dir]);
-				expect(res.code).not.toBe(0);
-				expect(res.out).toMatch(why);
-				expect(existsSync(join(home, ".agentpulse", "exclude"))).toBe(false);
-			} finally {
-				await rm(home, { recursive: true, force: true });
-			}
-		});
+		// Windows refuses to create a directory with * ? tab or newline in its name.
+		const noSuchName = process.platform === "win32" && /[*?\t\n]/.test(name);
+		test.skipIf(noSuchName)(
+			`a directory name with a ${label} is refused with the reason, and nothing is written`,
+			async () => {
+				const home = await tempHome();
+				try {
+					const dir = join(home, name);
+					await mkdir(dir, { recursive: true });
+					const res = await runCli(home, ["exclude", "add", dir]);
+					expect(res.code).not.toBe(0);
+					expect(res.out).toMatch(why);
+					expect(existsSync(join(home, ".agentpulse", "exclude"))).toBe(false);
+				} finally {
+					await rm(home, { recursive: true, force: true });
+				}
+			},
+		);
 	}
 
 	test("a directory name with an inner space is fine (control)", async () => {

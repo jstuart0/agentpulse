@@ -243,7 +243,7 @@ describe("hook-command-parity — install-local.ps1's New-ApHookCommand (static 
 			"hook-auth-header",
 			"session_id",
 			"codex-native",
-			"Start-Job",
+			"$apJob = {",
 			"curl.exe",
 			"--max-time",
 			"X-Agent-Type",
@@ -257,8 +257,8 @@ describe("hook-command-parity — install-local.ps1's New-ApHookCommand (static 
 		}
 	});
 
-	test("the marker hole sits INSIDE the Start-Job block of the template, and the marker reads the temp file itself", () => {
-		const startJob = PS_COMMAND_TEMPLATE.indexOf("Start-Job -ScriptBlock {");
+	test("the marker hole sits INSIDE the detached block of the template, and the marker reads the temp file itself", () => {
+		const startJob = PS_COMMAND_TEMPLATE.indexOf("$apJob = {");
 		const markerHole = PS_COMMAND_TEMPLATE.indexOf("@@AP_MARKER@@");
 		expect(startJob).toBeGreaterThan(-1);
 		expect(markerHole).toBeGreaterThan(startJob);
@@ -818,7 +818,7 @@ describe("the Windows installer test script's inputs (scripts/test-install-local
 		);
 		expect(commands).toHaveLength(12);
 		for (const command of commands) {
-			expect(command).toContain("Start-Job");
+			expect(command).toContain("$apJob = {");
 			expect(command).not.toContain("/bin/sh");
 			expect(command.length).toBeLessThan(8191);
 		}
@@ -831,7 +831,7 @@ describe("the Windows installer test script's inputs (scripts/test-install-local
 			"utf-8",
 		);
 		expect(powershell).not.toBe(shell);
-		expect(shell).not.toContain("Start-Job");
+		expect(shell).not.toContain("$apJob = {");
 	});
 
 	test("the test script compares New-ApCodexHooksFile with the PowerShell golden, never the shell one", () => {

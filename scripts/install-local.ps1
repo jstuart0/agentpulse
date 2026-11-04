@@ -691,7 +691,7 @@ $t = Join-Path $d ([guid]::NewGuid().ToString())
 $raw = [Console]::In.ReadToEnd()
 [IO.File]::WriteAllText($t, $raw)
 @@AP_HEADER_FILE@@
-Start-Job -ScriptBlock {
+$apJob = {
   param($t, $f, $url, $agent, $apJobCwd, $apJobSkip)
   try {
 @@AP_PRELUDE@@
@@ -699,12 +699,16 @@ Start-Job -ScriptBlock {
   if ($apGo) {
     @@AP_AUTH_ARG@@
     $curlArgs = @('-sS','--max-time','2','-o','NUL','-X','POST',$url,'-H','Content-Type: application/json','-H',"X-Agent-Type: $agent") + $headerArgs + @('--data-binary',"@$t")
-    Start-Process -FilePath curl.exe -WindowStyle Hidden -ArgumentList $curlArgs -Wait
+    $curlLine = @($curlArgs | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }) -join ' '
+    Start-Process -FilePath curl.exe -WindowStyle Hidden -ArgumentList $curlLine -Wait
   }
   } finally {
     Remove-Item -Force $t -ErrorAction SilentlyContinue
   }
-} -ArgumentList $t, $f, '@@AP_URL@@', '@@AP_AGENT@@', (Get-Location).Path, $env:AGENTPULSE_SKIP | Out-Null
+}
+$apArgs = foreach ($apV in @($t, $f, '@@AP_URL@@', '@@AP_AGENT@@', (Get-Location).Path, $env:AGENTPULSE_SKIP)) { if ($null -eq $apV) { '$null' } else { "'" + ([string]$apV).Replace("'", "''") + "'" } }
+$apCmd = '& {' + $apJob.ToString() + '} ' + ($apArgs -join ' ')
+Start-Process -FilePath (Get-Process -Id $PID).Path -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($apCmd)))
 Get-ChildItem $d -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-5) } | Remove-Item -Force -ErrorAction SilentlyContinue
 exit 0
 '@
@@ -812,7 +816,7 @@ function New-ApHookCommand {
   $url = "$BaseUrl/api/v1/hooks?event=$EventName"
   $headerFile = if ($Direct) { "`$f = Join-Path `$HOME '.agentpulse\hook-auth-header'" } else { "`$f = `$null" }
   $authArg = "`$headerArgs = @()`n    if (`$f -and (Test-Path `$f -ErrorAction SilentlyContinue) -and (Get-Item `$f -ErrorAction SilentlyContinue).Length -gt 0) { `$headerArgs = @('-H', `"@`$f`") }"
-  # The marker runs INSIDE the Start-Job block, reading the temp file there; the
+  # The marker runs INSIDE the detached block, reading the temp file there; the
   # parent only drains stdin and writes the temp file.
   $marker = ""
   if ($AgentType -eq "codex_cli") {
@@ -1149,6 +1153,7 @@ function New-ApHookAuthHeaderFile {
     if ($LASTEXITCODE -ne 0) {
       throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
     }
+    Remove-ApOtherAces -Path $d
   } catch {
     Write-ApAclWarning -Path $d -Detail $_.Exception.Message
   }
@@ -1165,6 +1170,7 @@ function New-ApHookAuthHeaderFile {
     if ($LASTEXITCODE -ne 0) {
       throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
     }
+    Remove-ApOtherAces -Path $f
   } catch {
     Write-ApAclWarning -Path $f -Detail $_.Exception.Message
   }
@@ -1223,6 +1229,37 @@ function Write-ApAclWarning {
   Write-Warning "Could not restrict access to $Path ($Detail). Other local users may be able to read the API key or credentials stored there."
 }
 
+# `icacls /inheritance:r /grant:r <user>` drops inherited entries and replaces
+# that user's own entry, but any other entry set directly on the path survives:
+# a directory that already allows Users stays readable by Users. This removes
+# those too, so the path ends up with the current user's entry alone. Each step
+# only takes access away. If the current user has no entry (the grant above went
+# to a different name), it does nothing rather than risk a lockout, and warns.
+function Remove-ApOtherAces {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  try {
+    $apMe = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $apAllowSids = @(
+      (Get-Acl -LiteralPath $Path).Access |
+        Where-Object { $_.AccessControlType.ToString() -eq 'Allow' } |
+        ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } |
+        Select-Object -Unique
+    )
+    if ($apAllowSids -notcontains $apMe) {
+      throw "the current user has no entry on it"
+    }
+    foreach ($apSid in $apAllowSids) {
+      if ($apSid -eq $apMe) { continue }
+      $icaclsOutput = icacls $Path /remove:g "*$apSid" 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
+      }
+    }
+  } catch {
+    Write-ApAclWarning -Path $Path -Detail $_.Exception.Message
+  }
+}
+
 # AGEN-21 (security, Medium): .env.local and supervisor.json both hold
 # secrets in plaintext (AGENTPULSE_INITIAL_API_KEY, and the supervisor
 # credential/enrollment token respectively) and were previously written via
@@ -1259,6 +1296,7 @@ function Write-ApPrivateFile {
     if ($LASTEXITCODE -ne 0) {
       throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
     }
+    Remove-ApOtherAces -Path $dir
   } catch {
     Write-ApAclWarning -Path $dir -Detail $_.Exception.Message
   }
@@ -1268,6 +1306,7 @@ function Write-ApPrivateFile {
     if ($LASTEXITCODE -ne 0) {
       throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
     }
+    Remove-ApOtherAces -Path $Path
   } catch {
     Write-ApAclWarning -Path $Path -Detail $_.Exception.Message
   }
@@ -1350,6 +1389,7 @@ function Configure-Hooks {
       if ($LASTEXITCODE -ne 0) {
         throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
       }
+      Remove-ApOtherAces -Path $claudeSettings
     } catch {
       Write-ApAclWarning -Path $claudeSettings -Detail $_.Exception.Message
     }
