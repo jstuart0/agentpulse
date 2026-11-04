@@ -1772,7 +1772,7 @@ describe("agentpulse exclude add — safe, serialised, validated writes", () => 
 				const timer = setTimeout(() => {
 					timedOut = true;
 					proc.kill();
-				}, 15_000);
+				}, 25_000); // past the longest lock wait (15 s on Windows)
 				await proc.exited;
 				clearTimeout(timer);
 				expect(timedOut, "the command finished instead of spinning").toBe(false);
