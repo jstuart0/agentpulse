@@ -1,0 +1,880 @@
+/**
+ * AGEN-91: a follow-up prompt starts a new turn on a managed Codex session's live thread.
+ *
+ * The launch goes through the real path against the fake `codex app-server` child (real spawn, real
+ * framing, real `RpcClient`, real approval tracker). The report callbacks are the test's recorders, so the
+ * order of what the supervisor reports and what it writes on the wire is asserted directly.
+ *
+ * Never waits on a fixed sleep for an outcome: state is polled with a deadline. The `turn/start` timeout is
+ * injected short; nothing here depends on elapsed time freeing a runtime, because nothing does.
+ */
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
+import {
+	appendFileSync,
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+	type Replacement,
+	normaliseFollowUp,
+	readOrUpdateFixture,
+} from "../../shared/__fixtures__/followup-normalise.js";
+import type {
+	LaunchRequest,
+	ManagedSessionEventInput,
+	ManagedSessionStateInput,
+} from "../../shared/types.js";
+import { type ControlProviders, createControlActionHandler } from "../control-actions.js";
+import { createReportGate } from "../services/report-gate.js";
+import { installFakeCodex, readFakeLog } from "./__fixtures__/fake-codex.js";
+import {
+	launchManagedCodexRequest,
+	promptManagedCodexSession,
+	stopManagedCodexSession,
+} from "./codex-managed.js";
+import { CodexPromptWithheld } from "./codex-shared.js";
+
+setDefaultTimeout(30_000);
+
+const COPY = {
+	busy: "Codex hasn't ended its current turn. Send this again when it ends.",
+	uncertain:
+		"The last prompt may still be running. Send this again after it ends, or stop the session.",
+	timeout:
+		"Codex didn't answer in time. The prompt may have started, so check the timeline. Prompts stay blocked until this turn ends or the session is stopped.",
+	noRuntime: "This session's Codex process isn't running on its host any more.",
+	tooLong: "This prompt is too long to send to Codex.",
+	notRecorded: "AgentPulse couldn't record this prompt, so it wasn't sent.",
+	completed: "Codex finished the turn.",
+	failed: "Codex turn failed.",
+	interrupted: "Codex turn was interrupted.",
+	unknownResult: "Codex turn ended with an unknown result.",
+	closed: "The connection to Codex closed during this turn.",
+	rejected: "Codex refused this prompt.",
+	stopped: "This prompt wasn't sent because the session stopped.",
+};
+
+type Seq =
+	| { kind: "state"; body: ManagedSessionStateInput }
+	| { kind: "event"; event: ManagedSessionEventInput };
+type Outcome = "sent" | "queued" | "excluded" | "blocked";
+
+type Hooks = {
+	onEvents?: (events: ManagedSessionEventInput[]) => Promise<Outcome | undefined> | undefined;
+	onState?: (body: ManagedSessionStateInput) => Promise<void> | undefined;
+};
+
+type World = {
+	id: string;
+	home: string;
+	logPath: string;
+	controlPath: string;
+	pid: number;
+	seq: Seq[];
+	hooks: Hooks;
+	callbacks: Parameters<typeof launchManagedCodexRequest>[1];
+	launchResult: Awaited<ReturnType<typeof launchManagedCodexRequest>>;
+};
+
+const ENV_KEYS = [
+	"HOME",
+	"AGENTPULSE_CODEX_COMMAND",
+	"AGENTPULSE_SERVER_URL",
+	"AGENTPULSE_SUPERVISOR_DRY_RUN",
+	"FAKE_CODEX_LOG",
+	"FAKE_CODEX_CONTROL",
+	"FAKE_CODEX_VERSION",
+	"FAKE_CODEX_REQUESTS",
+	"FAKE_CODEX_REQUESTS_ON_TURN",
+	"FAKE_CODEX_TURN_START_ERROR",
+	"FAKE_CODEX_TURN_START_SILENT",
+	"FAKE_CODEX_TURN_COMPLETE_BEFORE_REPLY",
+	"FAKE_CODEX_REALISTIC",
+];
+const saved: Record<string, string | undefined> = {};
+const worlds: World[] = [];
+const homes: string[] = [];
+
+beforeEach(() => {
+	for (const key of ENV_KEYS) saved[key] = process.env[key];
+});
+
+afterEach(async () => {
+	for (const world of worlds.splice(0)) {
+		try {
+			await stopManagedCodexSession(world.id, { interruptTimeoutMs: 100 });
+		} catch {
+			// Already gone: the test stopped it, or the launch failed.
+		}
+	}
+	for (const key of ENV_KEYS) {
+		if (saved[key] === undefined) delete process.env[key];
+		else process.env[key] = saved[key];
+	}
+	for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
+});
+
+async function waitFor<T>(what: string, read: () => T | undefined | false, ms = 8_000): Promise<T> {
+	const deadline = Date.now() + ms;
+	for (;;) {
+		const value = read();
+		if (value) return value;
+		if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
+		await Bun.sleep(10);
+	}
+}
+
+function launchRequest(id: string, over: Partial<LaunchRequest> = {}): LaunchRequest {
+	return {
+		id: "launch-1",
+		launchCorrelationId: id,
+		agentType: "codex_cli",
+		cwd: "/tmp",
+		baseInstructions: "",
+		taskPrompt: "go",
+		model: "m",
+		approvalPolicy: null,
+		sandboxMode: null,
+		requestedLaunchMode: "managed_codex",
+		env: {},
+		launchSpec: {},
+		status: "claimed",
+		...over,
+	} as unknown as LaunchRequest;
+}
+
+function prepare(knobs: Record<string, string> = {}) {
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "ap-codex-prompt-")));
+	homes.push(home);
+	const logPath = join(home, "fake.log");
+	const controlPath = join(home, "control.jsonl");
+	writeFileSync(controlPath, "");
+	process.env.HOME = home;
+	process.env.AGENTPULSE_CODEX_COMMAND = installFakeCodex(home);
+	process.env.AGENTPULSE_SERVER_URL = "http://localhost:3000";
+	process.env.AGENTPULSE_SUPERVISOR_DRY_RUN = "false";
+	process.env.FAKE_CODEX_VERSION = "0.163.0";
+	process.env.FAKE_CODEX_LOG = logPath;
+	process.env.FAKE_CODEX_CONTROL = controlPath;
+	for (const key of ENV_KEYS) if (key.startsWith("FAKE_CODEX_TURN_")) delete process.env[key];
+	for (const [key, value] of Object.entries(knobs)) process.env[key] = value;
+	return { home, logPath, controlPath };
+}
+
+function makeCallbacks(seq: Seq[], hooks: Hooks) {
+	return {
+		reportState: async (body: ManagedSessionStateInput) => {
+			await hooks.onState?.(body);
+			seq.push({ kind: "state", body });
+			return { session: { displayName: "n" }, managedSession: {}, outcome: "sent" as const };
+		},
+		reportEvents: async (events: ManagedSessionEventInput[]) => {
+			const outcome = (await hooks.onEvents?.(events)) ?? "sent";
+			for (const event of events) seq.push({ kind: "event", event });
+			return outcome;
+		},
+	} as unknown as Parameters<typeof launchManagedCodexRequest>[1];
+}
+
+/** Launches through the real path. `endLaunchTurn` (default) completes the launch's turn so the thread is idle. */
+async function launch(
+	opts: {
+		knobs?: Record<string, string>;
+		hooks?: Hooks;
+		endLaunchTurn?: boolean;
+		request?: Partial<LaunchRequest>;
+	} = {},
+): Promise<World> {
+	const { home, logPath, controlPath } = prepare(opts.knobs);
+	const id = crypto.randomUUID();
+	const seq: Seq[] = [];
+	const hooks: Hooks = opts.hooks ?? {};
+	const callbacks = makeCallbacks(seq, hooks);
+	const launchResult = await launchManagedCodexRequest(launchRequest(id, opts.request), callbacks);
+	const world: World = {
+		id,
+		home,
+		logPath,
+		controlPath,
+		pid: launchResult.pid,
+		seq,
+		hooks,
+		callbacks,
+		launchResult,
+	};
+	worlds.push(world);
+	if (opts.endLaunchTurn !== false) {
+		const before = idleReports(world).length;
+		endTurn(world, "turn-1");
+		await waitFor("the launch turn's idle report", () => idleReports(world).length > before);
+	}
+	return world;
+}
+
+const control = (world: World, command: unknown) =>
+	appendFileSync(world.controlPath, `${JSON.stringify(command)}\n`);
+
+function endTurn(
+	world: World,
+	turnId: string,
+	status = "completed",
+	extra: Record<string, unknown> = {},
+) {
+	control(world, {
+		send: {
+			method: "turn/completed",
+			params: { threadId: "thr-1", turn: { id: turnId, status, ...extra } },
+		},
+	});
+}
+
+const turnStarts = (world: World) =>
+	readFakeLog(world.logPath).filter((entry) => entry.method === "turn/start");
+const events = (world: World) =>
+	world.seq.flatMap((entry) => (entry.kind === "event" ? [entry.event] : []));
+const eventsOf = (world: World, ...types: string[]) =>
+	events(world).filter((event) => types.includes(event.eventType));
+const idleReports = (world: World) =>
+	world.seq.filter((entry) => entry.kind === "state" && entry.body.status === "idle");
+const prompt = (
+	world: World,
+	text: string,
+	options?: Parameters<typeof promptManagedCodexSession>[2],
+) => promptManagedCodexSession({ sessionId: world.id, prompt: text }, world.callbacks, options);
+
+async function expectRejects(promise: Promise<unknown>, message: string) {
+	const error = await promise.then(
+		() => null,
+		(thrown) => thrown as Error,
+	);
+	expect(error, `expected a rejection with "${message}"`).not.toBeNull();
+	expect((error as Error).message).toBe(message);
+	return error as Error;
+}
+
+const FOLLOW_UP_END = ["HeadlessPromptCompleted", "HeadlessPromptFailed"];
+
+describe("an accepted follow-up", () => {
+	test("sends exactly {threadId, input}, verbatim text, and returns the turn it started", async () => {
+		const world = await launch();
+		const framesBefore = readFakeLog(world.logPath).length;
+		const text = "-rf foo\nbar  /not-a-command";
+		const result = await prompt(world, text);
+		expect(result.metadata).toEqual({ mode: "managed_codex", threadId: "thr-1", turnId: "turn-2" });
+
+		const [, second] = turnStarts(world);
+		expect(second?.params).toEqual({ threadId: "thr-1", input: [{ type: "text", text }] });
+		expect(Object.keys(second?.params ?? {}).sort()).toEqual(["input", "threadId"]);
+		// Drift guard: between the call and its settle the only request on the wire is turn/start.
+		const methods = readFakeLog(world.logPath)
+			.slice(framesBefore)
+			.flatMap((entry) => (typeof entry.method === "string" ? [entry.method] : []));
+		expect(methods).toEqual(["turn/start"]);
+	});
+
+	test("a 1,000,000-character text arrives byte-equal; one more character is refused with no frame and no event", async () => {
+		const world = await launch();
+		const big = "x".repeat(1_000_000);
+		await prompt(world, big);
+		expect(turnStarts(world)[1]?.params.input[0].text).toBe(big);
+		endTurn(world, "turn-2");
+		await waitFor("the end event", () => eventsOf(world, ...FOLLOW_UP_END).length > 0);
+
+		const startsBefore = turnStarts(world).length;
+		const eventsBefore = events(world).length;
+		await expectRejects(prompt(world, "x".repeat(1_000_001)), COPY.tooLong);
+		expect(turnStarts(world)).toHaveLength(startsBefore);
+		expect(events(world)).toHaveLength(eventsBefore);
+	});
+
+	test("reports the prompt before the turn/start frame is written, with no turn id on it", async () => {
+		const world = await launch();
+		let startsWhenReported = -1;
+		world.hooks.onEvents = async (batch) => {
+			if (batch[0]?.eventType === "HeadlessPromptSubmitted") {
+				startsWhenReported = turnStarts(world).length;
+			}
+			return undefined;
+		};
+		await prompt(world, "do the thing");
+		// Only the launch's own turn/start existed when the prompt was reported.
+		expect(startsWhenReported).toBe(1);
+		const [submitted] = eventsOf(world, "HeadlessPromptSubmitted");
+		expect(submitted).toMatchObject({
+			eventType: "HeadlessPromptSubmitted",
+			category: "prompt",
+			content: "do the thing",
+			rawPayload: { source: "agentpulse_workspace", codexRuntime: true },
+		});
+		expect(JSON.stringify(submitted?.rawPayload)).not.toContain("codexTurnId");
+		expect(JSON.stringify(submitted?.rawPayload)).not.toContain("turn_id");
+	});
+
+	test("the events it emits equal the committed fixture the server's tests replay", async () => {
+		const world = await launch();
+		const from = events(world).length;
+		await prompt(world, "run the tests");
+		control(world, {
+			send: {
+				method: "item/completed",
+				params: {
+					threadId: "thr-1",
+					turnId: "turn-2",
+					item: { type: "agentMessage", id: "item-1", text: "All tests passed." },
+				},
+			},
+		});
+		await waitFor("the agent message", () => eventsOf(world, "ManagedAgentMessage").length > 0);
+		endTurn(world, "turn-2");
+		await waitFor("the end event", () => eventsOf(world, ...FOLLOW_UP_END).length > 0);
+
+		const replacements: Replacement[] = [
+			[world.id, "<session>"],
+			["thr-1", "<thread>"],
+			["turn-2", "<turn>"],
+		];
+		const actual = normaliseFollowUp(events(world).slice(from), replacements);
+		expect(actual).toEqual(
+			readOrUpdateFixture(
+				new URL("../../shared/__fixtures__/codex-followup-events.json", import.meta.url),
+				actual,
+			),
+		);
+		expect(actual.map((event) => event.eventType)).toEqual([
+			"HeadlessPromptSubmitted",
+			"ManagedAgentMessage",
+			"HeadlessPromptCompleted",
+		]);
+	});
+});
+
+describe("refusals before anything is sent", () => {
+	test("while the launch turn runs", async () => {
+		const world = await launch({ endLaunchTurn: false });
+		await expectRejects(prompt(world, "hi"), COPY.busy);
+		expect(turnStarts(world)).toHaveLength(1);
+		expect(eventsOf(world, "HeadlessPromptSubmitted")).toHaveLength(0);
+	});
+
+	test("in the launch's own turn/start window, before it settles (turnStarting from construction)", async () => {
+		const { logPath } = prepare({ FAKE_CODEX_TURN_START_SILENT: "1" });
+		const id = crypto.randomUUID();
+		const seq: Seq[] = [];
+		const callbacks = makeCallbacks(seq, {});
+		const launching = launchManagedCodexRequest(launchRequest(id), callbacks);
+		launching.catch(() => {});
+		await waitFor("the launch's turn/start", () =>
+			readFakeLog(logPath).some((entry) => entry.method === "turn/start"),
+		);
+		await expectRejects(
+			promptManagedCodexSession({ sessionId: id, prompt: "hi" }, callbacks),
+			COPY.busy,
+		);
+		expect(readFakeLog(logPath).filter((entry) => entry.method === "turn/start")).toHaveLength(1);
+		await stopManagedCodexSession(id, { interruptTimeoutMs: 100 });
+		await launching.then(
+			() => {},
+			() => {},
+		);
+	});
+
+	test("two prompts at once on an idle runtime send exactly one frame", async () => {
+		const world = await launch();
+		const results = await Promise.allSettled([prompt(world, "one"), prompt(world, "two")]);
+		expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+		const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+		expect((rejected.reason as Error).message).toBe(COPY.busy);
+		expect(turnStarts(world)).toHaveLength(2);
+	});
+
+	test("during a follow-up", async () => {
+		const world = await launch();
+		await prompt(world, "one");
+		await expectRejects(prompt(world, "two"), COPY.busy);
+		expect(turnStarts(world)).toHaveLength(2);
+	});
+
+	test("a turn/completed from another thread, or for another turn, doesn't free the runtime", async () => {
+		const world = await launch();
+		await prompt(world, "one");
+		control(world, {
+			send: {
+				method: "turn/completed",
+				params: { threadId: "someone-elses-thread", turn: { id: "turn-2", status: "completed" } },
+			},
+		});
+		endTurn(world, "turn-9");
+		await Bun.sleep(150);
+		await expectRejects(prompt(world, "two"), COPY.busy);
+		expect(eventsOf(world, ...FOLLOW_UP_END)).toHaveLength(0);
+
+		endTurn(world, "turn-2");
+		await waitFor("the end event", () => eventsOf(world, ...FOLLOW_UP_END).length === 1);
+		await prompt(world, "two");
+		expect(turnStarts(world)).toHaveLength(3);
+	});
+
+	test("after the runtime is stopped: the process is gone, nothing is sent, nothing is spawned", async () => {
+		const world = await launch();
+		await stopManagedCodexSession(world.id, { interruptTimeoutMs: 100 });
+		const framesBefore = readFakeLog(world.logPath).length;
+		await expectRejects(prompt(world, "hi"), COPY.noRuntime);
+		expect(readFakeLog(world.logPath)).toHaveLength(framesBefore);
+		expect(() => process.kill(world.pid, 0)).toThrow();
+	});
+
+	test("a session that was never launched here", async () => {
+		await expectRejects(
+			promptManagedCodexSession(
+				{ sessionId: crypto.randomUUID(), prompt: "hi" },
+				makeCallbacks([], {}),
+			),
+			COPY.noRuntime,
+		);
+	});
+});
+
+describe("how a turn ends", () => {
+	const cases: Array<[string, string, string, string]> = [
+		["completed", "HeadlessPromptCompleted", COPY.completed, "completed"],
+		["failed", "HeadlessPromptFailed", COPY.failed, "failed"],
+		["interrupted", "HeadlessPromptFailed", COPY.interrupted, "interrupted"],
+		["something-new", "HeadlessPromptFailed", COPY.unknownResult, "something-new"],
+	];
+	for (const [status, eventType, words, payloadStatus] of cases) {
+		test(`${status} -> exactly one ${eventType} saying "${words}", then one idle report`, async () => {
+			const world = await launch();
+			await prompt(world, "go");
+			const idleBefore = idleReports(world).length;
+			endTurn(world, "turn-2", status);
+			await waitFor("the idle report", () => idleReports(world).length > idleBefore);
+
+			const ends = eventsOf(world, ...FOLLOW_UP_END);
+			expect(ends).toHaveLength(1);
+			expect(ends[0]).toMatchObject({
+				eventType,
+				content: words,
+				rawPayload: { codexTurnId: "turn-2", status: payloadStatus, codexRuntime: true },
+			});
+			expect(JSON.stringify(ends[0])).not.toContain("turn_id");
+			// The end event comes before the report that says the session is idle.
+			const endAt = world.seq.findIndex(
+				(entry) => entry.kind === "event" && entry.event === ends[0],
+			);
+			const idleAt = world.seq.indexOf(idleReports(world).at(-1) as Seq);
+			expect(endAt).toBeLessThan(idleAt);
+		});
+	}
+
+	test("a turn's error text never reaches an event; the host log gets 300 characters of it, no control characters", async () => {
+		const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const world = await launch();
+			await prompt(world, "go");
+			const message = `quota-exceeded\u0007\u001b[31m${"z".repeat(600)}`;
+			endTurn(world, "turn-2", "failed", { error: { message } });
+			await waitFor("the end event", () => eventsOf(world, ...FOLLOW_UP_END).length === 1);
+			expect(JSON.stringify(events(world))).not.toContain("quota-exceeded");
+
+			const logged = errorSpy.mock.calls
+				.map((call) => call.map(String).join(" "))
+				.find((line) => line.includes("quota-exceeded"));
+			expect(logged, "the host log has the reason").toBeDefined();
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: asserting they are gone
+			expect(logged).not.toMatch(/[\u0000-\u0008\u000b-\u001f]/);
+			expect(logged).not.toContain("z".repeat(301));
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
+	test("the launch turn's completion emits no boundary event but still reports idle", async () => {
+		const world = await launch({ endLaunchTurn: false });
+		endTurn(world, "turn-1");
+		await waitFor("the idle report", () => idleReports(world).length === 1);
+		expect(eventsOf(world, "HeadlessPromptSubmitted", ...FOLLOW_UP_END)).toHaveLength(0);
+		expect(idleReports(world)[0]).toMatchObject({ body: { managedState: "managed" } });
+	});
+
+	test("a turn that completes before its reply: one end event, one idle report, and the runtime isn't stuck busy", async () => {
+		const world = await launch({ knobs: { FAKE_CODEX_TURN_COMPLETE_BEFORE_REPLY: "2" } });
+		const idleBefore = idleReports(world).length;
+		await prompt(world, "quick");
+		await waitFor("the idle report", () => idleReports(world).length > idleBefore);
+		await Bun.sleep(50);
+		expect(eventsOf(world, ...FOLLOW_UP_END)).toHaveLength(1);
+		expect(idleReports(world).length - idleBefore).toBe(1);
+		await prompt(world, "next");
+		expect(turnStarts(world)).toHaveLength(3);
+	});
+
+	test("the launch turn completing before its reply sends its idle report and leaves the runtime usable", async () => {
+		const world = await launch({
+			knobs: { FAKE_CODEX_TURN_COMPLETE_BEFORE_REPLY: "1" },
+			endLaunchTurn: false,
+		});
+		await waitFor("the launch turn's idle report", () => idleReports(world).length >= 1);
+		await prompt(world, "after");
+		expect(turnStarts(world)).toHaveLength(2);
+	});
+});
+
+describe("when Codex says no, or says nothing", () => {
+	test("a JSON-RPC error: one Failed, the flags are undone and the next prompt is accepted", async () => {
+		const world = await launch({ knobs: { FAKE_CODEX_TURN_START_ERROR: "2" } });
+		await expectRejects(prompt(world, "refused"), COPY.rejected);
+		const failed = eventsOf(world, "HeadlessPromptFailed");
+		expect(failed).toHaveLength(1);
+		expect(failed[0]?.content).toBe(COPY.rejected);
+		await prompt(world, "again");
+		expect(turnStarts(world)).toHaveLength(3);
+	});
+
+	test("an accepted-but-silent turn: the timeout copy, no Failed, and nothing releases it by time", async () => {
+		const world = await launch({ knobs: { FAKE_CODEX_TURN_START_SILENT: "2" } });
+		await expectRejects(prompt(world, "silent", { turnStartTimeoutMs: 60 }), COPY.timeout);
+		expect(eventsOf(world, "HeadlessPromptFailed")).toHaveLength(0);
+
+		await Bun.sleep(400);
+		await expectRejects(prompt(world, "retry"), COPY.uncertain);
+		expect(turnStarts(world)).toHaveLength(2);
+	});
+
+	test("a reply with no usable turn id is the same as a timeout", async () => {
+		for (const result of [{}, { turn: {} }, { turn: { id: "" } }, { turn: { id: 7 } }]) {
+			const world = await launch({ knobs: { FAKE_CODEX_TURN_START_SILENT: "2" } });
+			const pending = prompt(world, "odd");
+			const second = await waitFor("the second turn/start", () => turnStarts(world)[1]);
+			control(world, { send: { id: second.id, result } });
+			await expectRejects(pending, COPY.timeout);
+			await expectRejects(prompt(world, "retry"), COPY.uncertain);
+			await stopManagedCodexSession(world.id, { interruptTimeoutMs: 100 });
+		}
+	});
+
+	test("way out 1: a late turn/started then turn/completed gives one end event and frees the runtime", async () => {
+		const world = await launch({ knobs: { FAKE_CODEX_TURN_START_SILENT: "2" } });
+		await expectRejects(prompt(world, "silent", { turnStartTimeoutMs: 60 }), COPY.timeout);
+		control(world, {
+			send: { method: "turn/started", params: { threadId: "thr-1", turn: { id: "turn-2" } } },
+		});
+		await Bun.sleep(100);
+		// Started clears "uncertain", but the turn is now known and running.
+		await expectRejects(prompt(world, "retry"), COPY.busy);
+		endTurn(world, "turn-2");
+		await waitFor("the end event", () => eventsOf(world, ...FOLLOW_UP_END).length === 1);
+		expect(eventsOf(world, ...FOLLOW_UP_END)[0]?.eventType).toBe("HeadlessPromptCompleted");
+		await prompt(world, "free");
+		expect(turnStarts(world)).toHaveLength(3);
+	});
+
+	test("way out 2: the channel closing gives Failed with the closed words", async () => {
+		const world = await launch({ knobs: { FAKE_CODEX_TURN_START_SILENT: "2" } });
+		await expectRejects(prompt(world, "silent", { turnStartTimeoutMs: 60 }), COPY.timeout);
+		control(world, { exit: 1 });
+		await waitFor("Failed", () => eventsOf(world, "HeadlessPromptFailed").length === 1);
+		expect(eventsOf(world, "HeadlessPromptFailed")[0]?.content).toBe(COPY.closed);
+	});
+
+	test("way out 3: Stop, through the real handler, end to end", async () => {
+		const world = await launch({ knobs: { FAKE_CODEX_TURN_START_SILENT: "2" } });
+		await expectRejects(prompt(world, "silent", { turnStartTimeoutMs: 60 }), COPY.timeout);
+		const idleBefore = idleReports(world).length;
+
+		const posted: Array<{ path: string; body: any }> = [];
+		const gate = createReportGate({
+			request: async (path: string, options?: RequestInit) => {
+				posted.push({ path, body: options?.body ? JSON.parse(String(options.body)) : {} });
+				return { session: { displayName: "n" }, managedSession: {}, events: [] };
+			},
+			supervisorId: "sup-1",
+			home: world.home,
+			now: () => 0,
+			log: () => {},
+		} as never);
+		mkdirSync(join(world.home, ".agentpulse"), { recursive: true, mode: 0o700 });
+		chmodSync(join(world.home, ".agentpulse"), 0o700);
+		const handle = createControlActionHandler({
+			gate,
+			trustedRoots: [world.home],
+			providers: {
+				stopManagedCodexSession,
+				promptManagedCodexSession,
+				hasManagedCodexRuntime: () => false,
+			} as unknown as ControlProviders,
+			executeCleanupWorkArea: (async () => ({})) as never,
+			log: () => {},
+		});
+		await handle({
+			id: "stop-1",
+			sessionId: world.id,
+			launchRequestId: null,
+			actionType: "stop",
+			requestedBy: null,
+			status: "claimed",
+			error: null,
+			metadata: null,
+		} as never);
+
+		const status = posted.find((p) => p.path.endsWith("/control-actions/stop-1/status"));
+		expect(status?.body).toEqual({ status: "succeeded" });
+		expect(
+			posted.some(
+				(p) => p.path.includes("managed-session-state") && p.body.managedState === "stopped",
+			),
+		).toBe(true);
+		await waitFor("the process to exit", () => {
+			try {
+				process.kill(world.pid, 0);
+				return false;
+			} catch {
+				return true;
+			}
+		});
+		await Bun.sleep(100);
+		expect(idleReports(world)).toHaveLength(idleBefore);
+		expect(eventsOf(world, "HeadlessPromptFailed")).toHaveLength(0);
+		await expectRejects(prompt(world, "after"), COPY.noRuntime);
+	});
+});
+
+describe("the channel closing", () => {
+	test("with a follow-up running: degraded + idle, then Failed with the closed words", async () => {
+		const world = await launch();
+		await prompt(world, "go");
+		const from = world.seq.length;
+		control(world, { exit: 1 });
+		await waitFor("Failed", () => eventsOf(world, "HeadlessPromptFailed").length === 1);
+		const after = world.seq.slice(from);
+		const degradedAt = after.findIndex(
+			(entry) =>
+				entry.kind === "state" &&
+				entry.body.managedState === "degraded" &&
+				entry.body.status === "idle",
+		);
+		const failedAt = after.findIndex(
+			(entry) => entry.kind === "event" && entry.event.eventType === "HeadlessPromptFailed",
+		);
+		expect(degradedAt).toBeGreaterThanOrEqual(0);
+		expect(failedAt).toBeGreaterThan(degradedAt);
+		expect(eventsOf(world, "HeadlessPromptFailed")[0]).toMatchObject({
+			content: COPY.closed,
+			rawPayload: { codexRuntime: true },
+		});
+	});
+
+	test("with no follow-up: degraded + idle and no event", async () => {
+		const world = await launch();
+		control(world, { exit: 1 });
+		await waitFor("the degraded report", () =>
+			world.seq.some((e) => e.kind === "state" && e.body.managedState === "degraded"),
+		);
+		const degraded = world.seq.find(
+			(e) => e.kind === "state" && e.body.managedState === "degraded",
+		) as Extract<Seq, { kind: "state" }>;
+		expect(degraded.body.status).toBe("idle");
+		await Bun.sleep(50);
+		expect(eventsOf(world, "HeadlessPromptFailed", "HeadlessPromptCompleted")).toHaveLength(0);
+	});
+
+	test("a planned stop reports no degraded state and no event", async () => {
+		const world = await launch();
+		await prompt(world, "go");
+		await stopManagedCodexSession(world.id, { interruptTimeoutMs: 100 });
+		await Bun.sleep(100);
+		expect(
+			world.seq.filter((e) => e.kind === "state" && e.body.managedState === "degraded"),
+		).toHaveLength(0);
+		expect(eventsOf(world, "HeadlessPromptFailed")).toHaveLength(0);
+	});
+});
+
+describe("what the report gate says about the prompt event", () => {
+	for (const outcome of ["excluded", "blocked"] as const) {
+		test(`${outcome}: no frame, CodexPromptWithheld, and the flags are undone`, async () => {
+			const world = await launch();
+			world.hooks.onEvents = async () => outcome;
+			const error = await prompt(world, "secret").then(
+				() => null,
+				(thrown) => thrown,
+			);
+			expect(error).toBeInstanceOf(CodexPromptWithheld);
+			expect(turnStarts(world)).toHaveLength(1);
+
+			world.hooks.onEvents = undefined;
+			await prompt(world, "fine");
+			expect(turnStarts(world)).toHaveLength(2);
+		});
+	}
+
+	test("queued proceeds", async () => {
+		const world = await launch();
+		world.hooks.onEvents = async () => "queued";
+		await prompt(world, "later");
+		expect(turnStarts(world)).toHaveLength(2);
+	});
+
+	test("a throw: no frame, the not-recorded error (not a withheld), and exactly one idle report", async () => {
+		const world = await launch();
+		const idleBefore = idleReports(world).length;
+		world.hooks.onEvents = async () => {
+			throw new Error("413 body too large");
+		};
+		const error = await expectRejects(prompt(world, "x"), COPY.notRecorded);
+		expect(error).not.toBeInstanceOf(CodexPromptWithheld);
+		expect(turnStarts(world)).toHaveLength(1);
+		expect(idleReports(world).length - idleBefore).toBe(1);
+
+		world.hooks.onEvents = undefined;
+		await prompt(world, "after");
+		expect(turnStarts(world)).toHaveLength(2);
+	});
+
+	test("a throw, and the idle report throws too: still the not-recorded error, nothing propagates", async () => {
+		const world = await launch();
+		world.hooks.onEvents = async () => {
+			throw new Error("unreachable");
+		};
+		world.hooks.onState = async () => {
+			throw new Error("unreachable");
+		};
+		await expectRejects(prompt(world, "x"), COPY.notRecorded);
+		expect(turnStarts(world)).toHaveLength(1);
+	});
+
+	test("Stop during that report: no frame, exactly one Failed saying the session stopped", async () => {
+		const world = await launch();
+		let release: () => void = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let reached = false;
+		world.hooks.onEvents = async (batch) => {
+			if (batch[0]?.eventType !== "HeadlessPromptSubmitted") return undefined;
+			reached = true;
+			await held;
+			return undefined;
+		};
+		const pending = prompt(world, "x");
+		pending.catch(() => {});
+		await waitFor("the report to be in flight", () => reached);
+		await stopManagedCodexSession(world.id, { interruptTimeoutMs: 100 });
+		release();
+		await expectRejects(pending, COPY.noRuntime);
+		expect(turnStarts(world)).toHaveLength(1);
+		const failed = eventsOf(world, "HeadlessPromptFailed");
+		expect(failed).toHaveLength(1);
+		expect(failed[0]?.content).toBe(COPY.stopped);
+	});
+
+	test("Stop while the end event is being reported: no idle report follows", async () => {
+		const world = await launch();
+		await prompt(world, "go");
+		let release: () => void = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let reached = false;
+		world.hooks.onEvents = async (batch) => {
+			if (!FOLLOW_UP_END.includes(batch[0]?.eventType ?? "")) return undefined;
+			reached = true;
+			await held;
+			return undefined;
+		};
+		const idleBefore = idleReports(world).length;
+		endTurn(world, "turn-2");
+		await waitFor("the end event to be in flight", () => reached);
+		await stopManagedCodexSession(world.id, { interruptTimeoutMs: 100 });
+		release();
+		await Bun.sleep(150);
+		expect(idleReports(world).length).toBe(idleBefore);
+	});
+
+	test("a new turn begins while the end event is being reported: turn A sends no idle report", async () => {
+		const world = await launch();
+		await prompt(world, "A");
+		let release: () => void = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let reached = false;
+		world.hooks.onEvents = async (batch) => {
+			if (!FOLLOW_UP_END.includes(batch[0]?.eventType ?? "")) return undefined;
+			reached = true;
+			await held;
+			return undefined;
+		};
+		const idleBefore = idleReports(world).length;
+		endTurn(world, "turn-2");
+		await waitFor("the end event to be in flight", () => reached);
+		world.hooks.onEvents = undefined;
+		await prompt(world, "B");
+		release();
+		await Bun.sleep(150);
+		expect(idleReports(world).length).toBe(idleBefore);
+		await expectRejects(prompt(world, "C"), COPY.busy);
+	});
+});
+
+describe("launching", () => {
+	test("the real start event carries codexRuntime; a dry run does not", async () => {
+		const world = await launch({ endLaunchTurn: false });
+		const [start] = eventsOf(world, "ManagedSessionStart");
+		expect(start?.rawPayload).toMatchObject({ threadId: "thr-1", codexRuntime: true });
+
+		prepare();
+		process.env.AGENTPULSE_SUPERVISOR_DRY_RUN = "true";
+		const seq: Seq[] = [];
+		await launchManagedCodexRequest(launchRequest(crypto.randomUUID()), makeCallbacks(seq, {}));
+		const dryStart = seq.flatMap((e) => (e.kind === "event" ? [e.event] : []))[0];
+		expect(dryStart?.eventType).toBe("ManagedSessionStart");
+		expect(JSON.stringify(dryStart?.rawPayload)).not.toContain("codexRuntime");
+	});
+
+	test("a launch that throws after its start event reports degraded + idle, and a failing report doesn't mask the error", async () => {
+		const { home } = prepare({ FAKE_CODEX_TURN_START_ERROR: "1" });
+		expect(home).toBeTruthy();
+		const seq: Seq[] = [];
+		const hooks: Hooks = {};
+		const callbacks = makeCallbacks(seq, hooks);
+		await expect(
+			launchManagedCodexRequest(launchRequest(crypto.randomUUID()), callbacks),
+		).rejects.toThrow(/turn refused/);
+		const startAt = seq.findIndex(
+			(e) => e.kind === "event" && e.event.eventType === "ManagedSessionStart",
+		);
+		const degradedAt = seq.findIndex(
+			(e) => e.kind === "state" && e.body.managedState === "degraded" && e.body.status === "idle",
+		);
+		expect(startAt).toBeGreaterThanOrEqual(0);
+		expect(degradedAt).toBeGreaterThan(startAt);
+
+		// Now the report itself fails: the launch error is still the one that surfaces.
+		prepare({ FAKE_CODEX_TURN_START_ERROR: "1" });
+		const failing = makeCallbacks([], {
+			onState: async (body) => {
+				if (body.managedState === "degraded") throw new Error("report failed");
+			},
+		});
+		await expect(
+			launchManagedCodexRequest(launchRequest(crypto.randomUUID()), failing),
+		).rejects.toThrow(/turn refused/);
+	});
+});
+
+describe("the evidence the plan relies on", () => {
+	test("writes a fixture-friendly file only on request (guards the helper's contract)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ap-fixture-"));
+		homes.push(dir);
+		const url = new URL(`file://${join(dir, "missing.json")}`);
+		expect(() => readOrUpdateFixture(url, { a: 1 })).toThrow(
+			/regenerate it with UPDATE_FIXTURES=1/,
+		);
+	});
+});

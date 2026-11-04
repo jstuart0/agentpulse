@@ -15,6 +15,12 @@
  *   FAKE_CODEX_REQUESTS=<json array>   server requests to send after turn/start: [{method, params, id?}]
  *   FAKE_CODEX_IGNORE_INTERRUPT=1      never answer turn/interrupt
  *   FAKE_CODEX_FORCE_APPROVAL / FORCE_SANDBOX / SANDBOX_EXTRAS   as thread/start's answer
+ *   FAKE_CODEX_REQUESTS_ON_TURN=<n>    which turn/start sends FAKE_CODEX_REQUESTS (default 1, the first)
+ *   FAKE_CODEX_TURN_START_ERROR=<n>    the nth turn/start is answered with a JSON-RPC error
+ *   FAKE_CODEX_TURN_START_SILENT=<n>   the nth turn/start is logged and never answered
+ *   FAKE_CODEX_TURN_COMPLETE_BEFORE_REPLY=<n>   the nth turn/start writes turn/started and turn/completed
+ *                                      for its own turn before its response
+ * Turn ids count up: turn-1, turn-2, ...
  *
  * Behaviour recorded from a real Codex 0.163.0 (src/supervisor/providers/__fixtures__/codex-0.163), on when
  * FAKE_CODEX_REALISTIC=1: the first answer to a server request is final (a second is logged as
@@ -106,6 +112,7 @@ const beforeFirstAnswer = () => {
 	}
 };
 
+let turnStarts = 0;
 const REALISTIC = env.FAKE_CODEX_REALISTIC === "1";
 const sentRequests = new Map<string, { threadId: string }>();
 const answeredRequests = new Set<string>();
@@ -171,7 +178,23 @@ function handle(m: any) {
 			params: { threadId: m.params.threadId, threadName: m.params.name },
 		});
 	} else if (m.method === "turn/start") {
-		reply({ turn: { id: "turn-1" } });
+		turnStarts += 1;
+		const nth = turnStarts;
+		const turnId = `turn-${nth}`;
+		if (Number(env.FAKE_CODEX_TURN_START_SILENT) === nth) return;
+		if (Number(env.FAKE_CODEX_TURN_START_ERROR) === nth) {
+			send({ id: m.id, error: { code: -32000, message: "turn refused" } });
+			return;
+		}
+		if (Number(env.FAKE_CODEX_TURN_COMPLETE_BEFORE_REPLY) === nth) {
+			send({ method: "turn/started", params: { threadId: "thr-1", turn: { id: turnId } } });
+			send({
+				method: "turn/completed",
+				params: { threadId: "thr-1", turn: { id: turnId, status: "completed" } },
+			});
+		}
+		reply({ turn: { id: turnId } });
+		if (nth !== Number(env.FAKE_CODEX_REQUESTS_ON_TURN || 1)) return;
 		const requests = JSON.parse(env.FAKE_CODEX_REQUESTS || "[]") as Array<{
 			method: string;
 			params?: unknown;
