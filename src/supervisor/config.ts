@@ -7,6 +7,7 @@ import {
 	tightenPrivateFilePermissionsSync,
 	writePrivateFileSyncNoFollow,
 } from "../shared/private-file.js";
+import { RESUMES_SESSIONS } from "../shared/session-resume.js";
 import type { SupervisorRegistrationInput } from "../shared/types.js";
 
 export interface SupervisorConfig {
@@ -85,6 +86,7 @@ export function buildDefaultConfig(): SupervisorConfig {
 				"can_cleanup_workarea",
 				"managed_codex",
 				CODEX_FOLLOW_UP_PROMPTS,
+				RESUMES_SESSIONS,
 				"headless_claude",
 				"enforces_launch_privileges",
 				"offline_outbox",
@@ -254,7 +256,7 @@ export async function withExecutableCapabilities(
 				...(git.resolvedPath ? ["can_scaffold_workarea", "can_clone_repo"] : []),
 				...(terminalSupport.length > 0 ? ["interactive_terminal"] : []),
 				...(interactiveTerminalControl.available ? ["interactive_terminal_control"] : []),
-				...(codex.resolvedPath ? ["managed_codex", CODEX_FOLLOW_UP_PROMPTS] : []),
+				...(codex.resolvedPath ? ["managed_codex", CODEX_FOLLOW_UP_PROMPTS, RESUMES_SESSIONS] : []),
 			],
 			interactiveTerminalControl,
 			executables: {

@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CODEX_FOLLOW_UP_PROMPTS } from "../shared/constants.js";
+import { RESUMES_SESSIONS } from "../shared/session-resume.js";
 import { buildDefaultConfig, withExecutableCapabilities } from "./config.js";
 import { installFakeCodex } from "./providers/__fixtures__/fake-codex.js";
 
@@ -42,8 +43,39 @@ describe("codex_follow_up_prompts", () => {
 		expect(withCodex.capabilities.features).toContain("managed_codex");
 		expect(without.capabilities.features).not.toContain("codex_follow_up_prompts");
 		expect(without.capabilities.features).not.toContain("managed_codex");
-		// Exactly the two Codex entries differ.
-		expect(withCodex.capabilities.features.length - without.capabilities.features.length).toBe(2);
+		// Exactly the three Codex entries differ: managed_codex, codex_follow_up_prompts and resumes_sessions.
+		expect(withCodex.capabilities.features.length - without.capabilities.features.length).toBe(3);
 		expect(without.capabilities.features.length).toBeGreaterThanOrEqual(5);
+	});
+});
+
+describe("resumes_sessions (AGEN-115, Pattern 8)", () => {
+	test("is the literal the server reads", () => {
+		expect(RESUMES_SESSIONS).toBe("resumes_sessions");
+	});
+
+	test("is in the default list", () => {
+		expect(buildDefaultConfig().capabilities.features).toContain("resumes_sessions");
+	});
+
+	test("is in the detected list only when Codex resolved: a host without Codex can't resume anything", async () => {
+		const withCodex = await withExecutableCapabilities({
+			...buildDefaultConfig(),
+			codexCommand: installFakeCodex(scratch),
+		});
+		const without = await withExecutableCapabilities({
+			...buildDefaultConfig(),
+			codexCommand: join(scratch, "no-such-codex"),
+		});
+		expect(withCodex.capabilities.features).toContain("resumes_sessions");
+		expect(without.capabilities.features).not.toContain("resumes_sessions");
+	});
+
+	test("both lists carry it, so neither builder can drop it unnoticed (a source check on config.ts)", () => {
+		const text = require("node:fs").readFileSync(
+			new URL("./config.ts", import.meta.url),
+			"utf8",
+		) as string;
+		expect(text.match(/RESUMES_SESSIONS/g)?.length).toBeGreaterThanOrEqual(3);
 	});
 });

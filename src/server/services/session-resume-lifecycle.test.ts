@@ -59,6 +59,7 @@ const {
 	upsertManagedSessionState,
 	degradeCodexSessionsOfRestartedHost,
 	appendManagedSessionEvents,
+	listManagedSessionsNeedingSync,
 	_setAfterResumeCheckHookForTest,
 } = await import("./managed-session-state.js");
 const { SessionOwnershipError } = await import("./session-ownership.js");
@@ -294,6 +295,21 @@ describe("completeResumeAction", () => {
 		expect((await actionOf(ctx.action.id)).status).toBe("running");
 		expect(after.timeline).toEqual([]);
 		expect((after.session.metadata ?? {}) as object).not.toHaveProperty("managedResumeAt");
+	});
+});
+
+describe("a takeover's first report doesn't rename the person's thread", () => {
+	test("the host is told to sync a title that is the session's own name, which the resumed runtime already carries", async () => {
+		// Phase 3's supervisor test pairs with this one: its runtime's title is the same literal, so the
+		// reconcile that follows (listManagedSessionsNeedingSync -> reconcileManagedCodexTitles) sends no thread/name/set.
+		const ctx = await takeover({ session: { displayName: "refactor the parser" } });
+		await claim(ctx.host);
+		await hostReportsManaged(ctx.host, ctx);
+		await hostSays(ctx.host, ctx.action, "succeeded");
+		const needing = await listManagedSessionsNeedingSync(ctx.host);
+		const mine = needing.find((row) => row.sessionId === ctx.id);
+		expect(mine?.desiredThreadTitle).toBe("refactor the parser");
+		expect(mine?.providerThreadTitle ?? null).toBeNull();
 	});
 });
 
