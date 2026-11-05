@@ -308,6 +308,80 @@ describe("a valid answer", () => {
 	});
 });
 
+describe("a turn that failed is never reported as finished", () => {
+	const FAILED_NOTE = "The last turn didn't finish. Open the session to see what happened.";
+
+	async function failedWorld(endType: "HeadlessPromptFailed" | "HeadlessPromptCompleted") {
+		const sessionId = `nf-${++n}-${crypto.randomUUID().slice(0, 6)}`;
+		await seedSession(sessionId, { agentType: "codex_cli" });
+		await seedEvent(sessionId, {
+			eventType: "HeadlessPromptSubmitted",
+			category: "prompt",
+			content: "run the tests",
+		});
+		const messageId = await seedEvent(sessionId, {
+			eventType: "ManagedAgentMessage",
+			category: "assistant_message",
+			content: "Starting the run",
+		});
+		const endId = await seedEvent(sessionId, { eventType: endType, category: "system_event" });
+		const session = {
+			sessionId,
+			agentType: "codex_cli",
+			displayName: sessionId,
+			cwd: "/work/project",
+			gitBranch: null,
+			currentTask: null,
+		};
+		return { sessionId, messageId, endId, endType, session };
+	}
+	const run = (w: Awaited<ReturnType<typeof failedWorld>>) =>
+		runNotify(
+			w.session,
+			{ channelId: null, maxDailyCents: null },
+			{ id: "run-f" },
+			{ id: w.endId, eventType: w.endType },
+			provider(),
+			KEY,
+		);
+
+	test("a finished verdict on a HeadlessPromptFailed trigger is stored as needs_you with the fixed note", async () => {
+		const w = await failedWorld("HeadlessPromptFailed");
+		stub.script("openai", { text: answer([w.messageId]) });
+		expect(await run(w)).toEqual({ did: "report" });
+		expect((await rowsFor(w.sessionId))[0]).toMatchObject({
+			status: "delivered",
+			verdict: "needs_you",
+			why: FAILED_NOTE,
+		});
+	});
+
+	test("positive control: the same answer on a HeadlessPromptCompleted trigger stays finished with the model's note", async () => {
+		const w = await failedWorld("HeadlessPromptCompleted");
+		stub.script("openai", { text: answer([w.messageId]) });
+		expect(await run(w)).toEqual({ did: "report" });
+		expect((await rowsFor(w.sessionId))[0]).toMatchObject({
+			verdict: "finished",
+			why: "The build is fixed and the tests pass.",
+		});
+	});
+
+	test("stuck and needs_you verdicts on a failed trigger are the model's own, unchanged", async () => {
+		for (const verdict of ["stuck", "needs_you"]) {
+			await getDb().delete(aiWatcherReports);
+			const w = await failedWorld("HeadlessPromptFailed");
+			stub.script("openai", {
+				text: answer([w.messageId], { verdict, why: "Quota is exhausted." }),
+			});
+			expect(await run(w)).toEqual({ did: "report" });
+			expect((await rowsFor(w.sessionId))[0]).toMatchObject({
+				verdict,
+				why: "Quota is exhausted.",
+			});
+		}
+	});
+});
+
 describe("one report per turn", () => {
 	test("the same turn again gives no new row and no call; a SessionEnd after a reported Stop with no new prompt also gives none", async () => {
 		const w = await world();
