@@ -25,6 +25,7 @@ import type { Actor } from "../auth/actor.js";
 import { OwnerDisabledError, OwnerNotFoundError } from "../auth/owner-state.js";
 import { config } from "../config.js";
 import { isInsideTransaction, withAdminLock } from "../db/admin-lock.js";
+import { afterCommit } from "../db/after-commit.js";
 import { getDb } from "../db/client.js";
 import {
 	events,
@@ -178,7 +179,6 @@ export async function expireStaleControlLock(
 			await settle(db);
 		} else {
 			await withTransaction(settle);
-			await flushResumeAnnouncements();
 		}
 		return;
 	}
@@ -246,27 +246,18 @@ function resumeKindOf(action: ResumeActionRef): ResumeKind {
 		: "takeover";
 }
 
-/** Sessions whose signals are owed to a settle that ran inside someone else's transaction. */
-const owedResumeAnnouncements = new Set<string>();
-
 /**
- * Tells everyone a resume action's rows moved: one `session_updated` per session and one socket
- * revalidation for the batch. Called after the settling transaction has committed; a failure to announce
- * is logged and never undoes the settle.
+ * Tells everyone a resume action's rows moved: one `session_updated` and one socket revalidation. A failure
+ * to announce is logged and never undoes the settle.
  */
-export async function flushResumeAnnouncements(): Promise<void> {
-	if (owedResumeAnnouncements.size === 0) return;
-	const ids = [...owedResumeAnnouncements];
-	owedResumeAnnouncements.clear();
+async function announceResumeSettled(sessionId: string): Promise<void> {
 	try {
-		for (const id of ids) {
-			const [row] = await getDb()
-				.select()
-				.from(sessions)
-				.where(eq(sessions.sessionId, id))
-				.limit(1);
-			if (row) notifySessionUpdated(row);
-		}
+		const [row] = await getDb()
+			.select()
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+		if (row) notifySessionUpdated(row);
 		await requestWsRevalidation();
 	} catch (error) {
 		console.error(
@@ -336,10 +327,14 @@ export async function failResumeAction(
 	return outcome;
 }
 
+/**
+ * The signals for a settle go out once the transaction it ran in has committed: at once when this call
+ * opened (and so already committed) it, else after the caller's own commit, and never if that rolls back.
+ */
 async function announceAfterSettle(handle: unknown | null, outcome: ResumeSettle): Promise<void> {
 	if (!outcome.settled) return;
-	owedResumeAnnouncements.add(outcome.sessionId);
-	if (handle === null) await flushResumeAnnouncements();
+	const announce = () => announceResumeSettled(outcome.sessionId);
+	if (handle === null || !afterCommit(announce)) await announce();
 }
 
 /** The fixed words of the permission wait that survive a resume: approval ids are rows of ours, native ids died with the process. */
@@ -374,7 +369,15 @@ export async function completeResumeAction(
 			.from(managedSessions)
 			.where(eq(managedSessions.sessionId, sessionId))
 			.limit(1);
-		if (!managed || managed.launchRequestId !== action.launchRequestId) return { settled: false };
+		// A takeover's launch row always matches the managed row's, so the state is what says the host did
+		// its part: only a row the host reported `managed` has worked.
+		if (
+			!managed ||
+			managed.launchRequestId !== action.launchRequestId ||
+			managed.managedState !== "managed"
+		) {
+			return { settled: false };
+		}
 
 		const timestamp = nowIso();
 		const flipped = await tx
@@ -547,7 +550,6 @@ export async function sweepExpiredResumeActions(nowMs: number = Date.now()): Pro
 			);
 		}
 	}
-	await flushResumeAnnouncements();
 	return settled;
 }
 
@@ -942,7 +944,6 @@ export async function queueStopAction(
 	const result = tx
 		? await enqueueStopInTx(tx, input)
 		: await withAdminLock((own) => enqueueStopInTx(own, input));
-	if (!tx) await flushResumeAnnouncements();
 	if (!result.ok) throw refusalToError(result.reason);
 	if (!tx) await runApprovalClosedEffects(result.fencedApprovals, deps);
 	return result.action;
@@ -1073,7 +1074,6 @@ export async function queuePromptAction(
 	const result = tx
 		? await enqueuePromptInTx(tx, input)
 		: await withAdminLock((own) => enqueuePromptInTx(own, input));
-	if (!tx) await flushResumeAnnouncements();
 	if (!result.ok) throw refusalToError(result.reason);
 	return result.action;
 }
@@ -1449,7 +1449,28 @@ export async function updateControlAction(input: {
 				input.error ?? resumeFailureMessage("rejected", "The host", resumeKindOf(current)),
 			);
 		} else {
-			await completeResumeAction(null, current);
+			// The host says it worked. If the row never became `managed`, it didn't: that's a failure.
+			const [managed] = await getDb()
+				.select({
+					managedState: managedSessions.managedState,
+					launchRequestId: managedSessions.launchRequestId,
+				})
+				.from(managedSessions)
+				.where(eq(managedSessions.sessionId, current.sessionId ?? ""))
+				.limit(1);
+			if (
+				managed &&
+				managed.launchRequestId === current.launchRequestId &&
+				managed.managedState !== "managed"
+			) {
+				await failResumeAction(
+					null,
+					current,
+					resumeFailureMessage("rejected", "The host", resumeKindOf(current)),
+				);
+			} else {
+				await completeResumeAction(null, current);
+			}
 		}
 		const [fresh] = await getDb()
 			.select()

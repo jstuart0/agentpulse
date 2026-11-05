@@ -267,6 +267,14 @@ describe("completeResumeAction", () => {
 		expect((await rows(ctx.id)).session.metadata ?? {}).not.toHaveProperty("managedResumeAt");
 	});
 
+	test("a row still pending, though it names this launch, has not worked: nothing changes", async () => {
+		const ctx = await takeover();
+		expect((await rows(ctx.id)).managed.managedState).toBe("pending");
+		expect(await cx.completeResumeAction(null, ctx.action as never)).toEqual({ settled: false });
+		expect((await actionOf(ctx.action.id)).status).toBe("queued");
+		expect((await rows(ctx.id)).timeline).toEqual([]);
+	});
+
 	test("a zero-row write inside the settle rolls the whole settle back", async () => {
 		const ctx = await takeover();
 		await claim(ctx.host);
@@ -506,7 +514,7 @@ describe("the D10 table, row by row, for both kinds", () => {
 		expect(after.managed.managedState).toBe("degraded");
 	});
 
-	test("a resume candidate on an older host doesn't stop the claim reaching the next action, and a non-resume candidate reads no capabilities", async () => {
+	test("a resume candidate on an older host doesn't stop the claim reaching the next action", async () => {
 		const old = await recovery();
 		await getDb()
 			.update(supervisors)
@@ -523,6 +531,33 @@ describe("the D10 table, row by row, for both kinds", () => {
 
 		expect(next?.actionType).toBe("stop");
 		expect((await actionOf(old.action.id)).status).toBe("failed");
+	});
+
+	test("a non-resume candidate costs no capabilities read; a resume candidate adds exactly one", async () => {
+		const { countDbCalls } = await import("../test-utils/db-call-counter.js");
+		// Two identical hosts, each with one session holding one queued action. Only the action's type differs.
+		const stopHost = await seedTakeoverHost();
+		const stopSession = await seedDegradedLaunched(stopHost);
+		await getDb()
+			.update(managedSessions)
+			.set({ managedState: "managed", providerSyncError: null })
+			.where(eq(managedSessions.sessionId, stopSession.sessionId));
+		await cx.queueStopAction(stopSession.sessionId, SOLO);
+		const resume = await recovery();
+
+		let stopClaim: unknown = null;
+		const baseline = await countDbCalls(async () => {
+			stopClaim = await cx.claimNextControlAction(stopHost);
+		});
+		let resumeClaim: unknown = null;
+		const withResume = await countDbCalls(async () => {
+			resumeClaim = await cx.claimNextControlAction(resume.host);
+		});
+
+		expect((stopClaim as { actionType: string }).actionType).toBe("stop");
+		expect((resumeClaim as { actionType: string }).actionType).toBe("resume");
+		// The one extra read is the host's capabilities (getSupervisor), and nothing else.
+		expect(withResume).toBe(baseline + 1);
 	});
 
 	test("host restart, takeover: released with the restart words (before the degrade, so it is gone, not degraded)", async () => {
@@ -569,6 +604,38 @@ describe("the D10 table, row by row, for both kinds", () => {
 			.where(eq(managedSessions.sessionId, ctx.id));
 		await hostSays(ctx.host, ctx.action, "succeeded");
 		expect((await actionOf(ctx.action.id)).status).toBe("running");
+	});
+
+	test("a host that says succeeded while the row never became managed has failed: the takeover is released", async () => {
+		const ctx = await takeover();
+		await claim(ctx.host);
+		// No state report: the row is still pending, and it names this launch.
+		await hostSays(ctx.host, ctx.action, "succeeded");
+		const after = await rows(ctx.id);
+		expect((await actionOf(ctx.action.id)).status).toBe("failed");
+		expect([after.managed, after.launch].map(Boolean)).toEqual([false, false]);
+		expect(after.timeline.some((e) => e.eventType === "ManagedSessionResumed")).toBe(false);
+	});
+
+	test("the status route allows running, succeeded and failed for a resume, and nothing else", async () => {
+		const { createSupervisorCredential } = await import("../auth/supervisor-auth.js");
+		const ctx = await takeover();
+		await claim(ctx.host);
+		const credential = await createSupervisorCredential(ctx.host, "lc-status");
+		const post = (status: string) =>
+			app.request(`/api/v1/supervisors/${ctx.host}/control-actions/${ctx.action.id}/status`, {
+				method: "POST",
+				headers: new Headers({
+					Authorization: `Bearer ${credential.token}`,
+					"Content-Type": "application/json",
+				}),
+				body: JSON.stringify({ status }),
+			});
+		for (const status of ["queued", "cancelled", "", "SUCCEEDED"]) {
+			expect((await post(status)).status).toBe(400);
+		}
+		expect((await actionOf(ctx.action.id)).status).toBe("running");
+		expect((await post("running")).status).toBe(200);
 	});
 
 	test("only the claiming host can settle its action", async () => {
@@ -778,6 +845,21 @@ describe("a state report that carries resumeActionId", () => {
 		expect((await actionOf(ctx.action.id)).status).toBe("failed");
 		// The invariant: never "action failed" with a managed row the report just wrote.
 		expect([after.managed, after.launch].map(Boolean)).toEqual([false, false]);
+	});
+
+	test("ownership is judged before the action: a foreign host learns nothing about an action's state", async () => {
+		// Recoveries, whose rows survive a failure, so only the action's state differs between the two.
+		const open = await recovery();
+		const closed = await recovery();
+		await cx.failResumeAction(null, closed.action as never, "x");
+		const stranger = await seedTakeoverHost();
+		const reasons: unknown[] = [];
+		for (const ctx of [open, closed]) {
+			const error = await hostReportsManaged(stranger, ctx).catch((e) => e);
+			expect(error).toBeInstanceOf(SessionOwnershipError);
+			reasons.push((error as { reason: string }).reason);
+		}
+		expect(reasons[0]).toBe(reasons[1]);
 	});
 
 	test("a report with no resumeActionId is unaffected", async () => {
@@ -1325,6 +1407,20 @@ describe("ManagedSessionResumed is the server's alone", () => {
 		).rejects.toThrow();
 	});
 
+	test("a supervisor event that names it as its provider event type is refused too", async () => {
+		const ctx = await takeover();
+		await expect(
+			appendManagedSessionEvents(ctx.host, ctx.id, [
+				{
+					eventType: "ManagedWarning",
+					category: "system_event",
+					providerEventType: "ManagedSessionResumed",
+					content: "x",
+				},
+			]),
+		).rejects.toThrow();
+	});
+
 	test("the event it writes makes no boundary", async () => {
 		const ctx = await takeover();
 		await claim(ctx.host);
@@ -1390,6 +1486,48 @@ describe("a SessionEnd after a resume (D14)", () => {
 		expect(session.status).toBe("idle");
 		expect(session.endedAt).toBeNull();
 	});
+
+	test.each(["Stop", "Interrupt"])(
+		"a %s with a turn id that read its snapshot before the resume settled leaves the fence and the trimmed wait alone",
+		async (hookName) => {
+			const ctx = await takeover({
+				session: {
+					lastActivityMs: Date.now() - 70 * MIN,
+					metadata: {
+						endedByEvent: { at: new Date(Date.now() - 80 * MIN).toISOString() },
+						permissionWait: { ids: ["native-1", "approval:abc"], anon: 1, prevStatus: "working" },
+					},
+				},
+			});
+			await claim(ctx.host);
+			await hostReportsManaged(ctx.host, ctx);
+			_setSessionEndSnapshotHookForTest(async () => {
+				_setSessionEndSnapshotHookForTest(null);
+				await hostSays(ctx.host, ctx.action, "succeeded");
+			});
+
+			await processHookEvent(
+				{ hook_event_name: hookName, session_id: ctx.id, turn_id: "turn-1" } as never,
+				"codex_cli",
+			);
+
+			const metadata = (await rows(ctx.id)).session.metadata as Record<string, any>;
+			expect(typeof metadata.managedResumeAt).toBe("string");
+			expect(metadata.endedByEvent).toBeUndefined();
+			expect(metadata.permissionWait?.ids ?? []).not.toContain("native-1");
+			// The event's own effect is applied, to the fresh row.
+			expect(metadata.closedTurnIds).toContain("turn-1");
+
+			// And a forged SessionEnd afterwards still ends nothing.
+			await processHookEvent(
+				{ hook_event_name: "SessionEnd", session_id: ctx.id } as never,
+				"codex_cli",
+			);
+			const { session } = await rows(ctx.id);
+			expect(session.endedAt).toBeNull();
+			expect(session.status).not.toBe("completed");
+		},
+	);
 
 	test("a supervisor state report can neither set nor clear managedResumeAt", async () => {
 		const ctx = await takeover();
@@ -1623,6 +1761,83 @@ describe("expiry is atomic wherever it is reached", () => {
 	});
 });
 
+describe("expireStaleControlLock inside someone else's transaction", () => {
+	async function expiredRunning() {
+		const ctx = await takeover();
+		await claim(ctx.host);
+		await expireLock(ctx.id);
+		return ctx;
+	}
+
+	async function watchSignals() {
+		const revalidate = spyOn(wsRevalidation, "requestWsRevalidation");
+		const updated: unknown[] = [];
+		const on = (s: unknown) => updated.push(s);
+		sessionBus.on("session_updated", on);
+		return {
+			counts: () => ({ revalidations: revalidate.mock.calls.length, updates: updated.length }),
+			stop: () => {
+				sessionBus.off("session_updated", on);
+				revalidate.mockRestore();
+			},
+		};
+	}
+
+	test("no signal inside the callback; exactly one session_updated and one revalidation after the commit", async () => {
+		const ctx = await expiredRunning();
+		const { withTransaction } = await import("../db/with-transaction.js");
+		const watch = await watchSignals();
+		try {
+			const inside: Array<{ revalidations: number; updates: number }> = [];
+			await withTransaction(async (tx) => {
+				await cx.expireStaleControlLock(tx, ctx.id);
+				inside.push(watch.counts());
+			});
+			expect(inside).toEqual([{ revalidations: 0, updates: 0 }]);
+			expect(watch.counts()).toEqual({ revalidations: 1, updates: 1 });
+		} finally {
+			watch.stop();
+		}
+		expect((await rows(ctx.id)).managed).toBeUndefined();
+	});
+
+	test("the same inside the admin lock", async () => {
+		const ctx = await expiredRunning();
+		const { withAdminLock } = await import("../db/admin-lock.js");
+		const watch = await watchSignals();
+		try {
+			await withAdminLock(async (tx) => {
+				await cx.expireStaleControlLock(tx, ctx.id);
+				expect(watch.counts()).toEqual({ revalidations: 0, updates: 0 });
+			});
+			expect(watch.counts()).toEqual({ revalidations: 1, updates: 1 });
+		} finally {
+			watch.stop();
+		}
+	});
+
+	test("a callback that throws after the expiry: zero signals, rows unchanged", async () => {
+		const ctx = await expiredRunning();
+		const { withTransaction } = await import("../db/with-transaction.js");
+		const watch = await watchSignals();
+		try {
+			await expect(
+				withTransaction(async (tx) => {
+					await cx.expireStaleControlLock(tx, ctx.id);
+					throw new Error("the caller failed after the expiry");
+				}),
+			).rejects.toThrow("the caller failed");
+			expect(watch.counts()).toEqual({ revalidations: 0, updates: 0 });
+		} finally {
+			watch.stop();
+		}
+		const after = await rows(ctx.id);
+		expect((await actionOf(ctx.action.id)).status).toBe("running");
+		expect(after.managed).toBeDefined();
+		expect(after.launch).toBeDefined();
+	});
+});
+
 // ── post-commit signals (item 29) ───────────────────────────────────────────
 
 describe("post-commit signals", () => {
@@ -1701,13 +1916,41 @@ describe("drift guards", () => {
 		]);
 	});
 
-	test("isTurnStale ignores a resume action", async () => {
+	test("isTurnStale ignores a resume action: false after the takeover is queued and after it settles; a prompt action is the control", async () => {
+		const { isTurnStale, computeTurnKey } = await import("./ai/turn-identity.js");
 		const ctx = await takeover();
-		const { isTurnStale } = await import("./ai/turn-identity.js");
-		expect(typeof isTurnStale).toBe("function");
-		const text = readFileSync(join(REPO, "src/server/services/ai/turn-identity.ts"), "utf8");
-		expect(text).not.toContain('"resume"');
-		expect(ctx.id).toBeDefined();
+		const [trigger] = await getDb()
+			.insert(events)
+			.values({
+				sessionId: ctx.id,
+				eventType: "Stop",
+				category: "system_event",
+				source: "observed_hook",
+				rawPayload: {},
+				// Before the takeover was queued, as a turn that ended before anyone asked.
+				createdAt: new Date(Date.now() - 15 * MIN).toISOString(),
+			})
+			.returning();
+		const session = { sessionId: ctx.id, agentType: "codex_cli" } as never;
+		const turnKey = await computeTurnKey(getDb(), session, { id: trigger.id, rawPayload: {} });
+
+		expect(await isTurnStale(getDb(), session, turnKey, { id: trigger.id })).toBe(false);
+
+		await claim(ctx.host);
+		await hostReportsManaged(ctx.host, ctx);
+		await hostSays(ctx.host, ctx.action, "succeeded");
+		expect(await isTurnStale(getDb(), session, turnKey, { id: trigger.id })).toBe(false);
+
+		// Control: a prompt action created after the trigger makes the same turn stale.
+		await getDb()
+			.insert(controlActions)
+			.values({
+				sessionId: ctx.id,
+				actionType: "prompt",
+				status: "queued",
+				metadata: { prompt: "hello" },
+			});
+		expect(await isTurnStale(getDb(), session, turnKey, { id: trigger.id })).toBe(true);
 	});
 });
 

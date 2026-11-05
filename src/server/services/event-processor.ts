@@ -473,8 +473,8 @@ const BOUNDARY_EVENT_TYPES = new Set([
 // boundary semantics (29.999s latched, 30.000s/30.001s not).
 const TERMINAL_LATCH_WINDOW_MS = 30_000;
 
-// Test seam (AGEN-115): runs after a SessionEnd has read its snapshot and before its terminal update,
-// so a test can land a resume in that window.
+// Test seam (AGEN-115): runs after an event that changes metadata has read its snapshot and before its
+// update, so a test can land a resume in that window.
 let sessionEndSnapshotHook: (() => Promise<void>) | null = null;
 export function _setSessionEndSnapshotHookForTest(hook: (() => Promise<void>) | null): void {
 	sessionEndSnapshotHook = hook;
@@ -1399,11 +1399,13 @@ export async function processHookEvent(
 	}
 
 	let sessionEndFenced = false;
-	if (eventType === "SessionEnd") {
-		// A resumed session is not ended by a hook (D14): the real end of a taken-over session comes from
-		// the host's reports. The fence is read again here, in the terminal update's own transaction
-		// (FOR UPDATE on Postgres), because `priorRow` may have been read before the resume committed.
-		// Only SessionEnd pays for this; every other event keeps its single statement.
+	if (metadataUpdate) {
+		// An event that changes metadata (SessionEnd's endedByEvent, a turn-scoped Stop/Interrupt's closed
+		// turn ids) merges against the row as it is NOW, in a late read-modify-write (FOR UPDATE on
+		// Postgres), applying only the keys it changes. Writing back the snapshot read at the top of this
+		// call would erase what a resume that settled in between wrote (managedResumeAt, a trimmed
+		// permission wait) and bring back endedByEvent. Events with no metadata change keep their single
+		// statement.
 		await sessionEndSnapshotHook?.();
 		sessionEndFenced = await withTransaction(async (tx) => {
 			const read = tx
@@ -1413,8 +1415,9 @@ export async function processHookEvent(
 				.limit(1);
 			const [fresh] = await (config.dialect === "postgres" ? read.for("update") : read);
 			const freshMetadata = (fresh?.metadata ?? {}) as Record<string, unknown>;
-			if (freshMetadata.managedResumeAt) {
-				// Stored, but with no lifecycle effect and no latch.
+			// A resumed session is not ended by a hook (D14): the real end of a taken-over session comes from
+			// the host's reports. Stored, with no lifecycle effect and no latch.
+			if (eventType === "SessionEnd" && freshMetadata.managedResumeAt) {
 				const {
 					status: _s,
 					endedAt: _e,

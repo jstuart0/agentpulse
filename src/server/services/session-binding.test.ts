@@ -47,9 +47,8 @@ const authz = await import("./authorization.js");
 const { resolveSessionOwner } = await import("./session-ownership.js");
 const { mapLaunchRequest } = await import("./launch-validator.js");
 const { claimNextLaunchRequest } = await import("./launch-dispatch.js");
-const { claimNextControlAction, queuePromptAction, queueStopAction } = await import(
-	"./control-actions.js"
-);
+const { ControlBusyError, claimNextControlAction, queuePromptAction, queueStopAction } =
+	await import("./control-actions.js");
 const { ENFORCES_LAUNCH_PRIVILEGES } = await import("./launch-compatibility.js");
 const { updateStaleSessions } = await import("./session-tracker.js");
 const { sessionBus } = await import("./notifier.js");
@@ -1147,8 +1146,13 @@ describe("owner on success, not at bind", () => {
 		expect(authz.mayBindSession(MEMBER(t.bob.id), "team", { ownerUserId: null })).toBe(false);
 		await bind(id, host, ADMIN(t.admin.id));
 
-		await expect(queueStopAction(id, MEMBER(t.bob.id))).rejects.toThrow(/in progress|busy|lock/i);
-		await expect(queuePromptAction(id, "hello", MEMBER(t.bob.id))).rejects.toThrow();
+		const before = (await rowsFor(id)).actions.length;
+		// The specific refusal, and nothing was added to the control history.
+		await expect(queueStopAction(id, MEMBER(t.bob.id))).rejects.toBeInstanceOf(ControlBusyError);
+		await expect(queuePromptAction(id, "hello", MEMBER(t.bob.id))).rejects.toBeInstanceOf(
+			ControlBusyError,
+		);
+		expect((await rowsFor(id)).actions.length).toBe(before);
 	});
 });
 

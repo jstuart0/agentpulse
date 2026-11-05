@@ -574,3 +574,33 @@ describe("retry on a taken-over session (D19)", () => {
 			.where(inArray(controlActions.sessionId, [launchedId]));
 	});
 });
+
+describe("the carrier row in launch lists and in launchesToday (D2, documented)", () => {
+	test("GET /launches shows it to its requester only; launchesToday counts it for the owner", async () => {
+		const t = await team();
+		const host = await seedHost(t.alice.id);
+		const id = await seedObserved({ ownerUserId: t.alice.id });
+		const adminHeaders = await browser(t.admin.id);
+		const stats = async () =>
+			(
+				(await (
+					await app.request(`/api/v1/sessions/stats?owner=${t.alice.id}`, { headers: adminHeaders })
+				).json()) as { launchesToday: number }
+			).launchesToday;
+		const before = await stats();
+
+		const res = await bind(id, await browser(t.alice.id), confirmed(host));
+		expect(res.status).toBe(202);
+		const { launchRequestId } = (await res.json()) as { launchRequestId: string };
+
+		const ids = async (userId: string) =>
+			(
+				(await (
+					await app.request("/api/v1/launches", { headers: await browser(userId) })
+				).json()) as { launches: Array<{ id: string }> }
+			).launches.map((launch) => launch.id);
+		expect(await ids(t.alice.id)).toContain(launchRequestId);
+		expect(await ids(t.bob.id)).not.toContain(launchRequestId);
+		expect(await stats()).toBe(before + 1);
+	});
+});

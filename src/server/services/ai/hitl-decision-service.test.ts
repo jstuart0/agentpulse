@@ -13,6 +13,7 @@ import {
 	describe,
 	expect,
 	setDefaultTimeout,
+	spyOn,
 	test,
 } from "bun:test";
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -1097,6 +1098,66 @@ describe("delivery", () => {
 		expect(out.ok).toBe(true);
 		return hitl;
 	}
+
+	test("a takeover whose lock ran out is settled atomically when the delivery state reads it (the getDb() expiry site at deriveDelivery)", async () => {
+		const ownership = await import("../session-ownership.js");
+		const { proposalId } = await approvedAndQueued("v-takeover");
+		// Make the delivery's action a takeover's resume, with the rows a takeover leaves, and let its lock run out.
+		const [launch] = await getDb()
+			.select()
+			.from(launchRequests)
+			.where(eq(launchRequests.launchCorrelationId, "v-takeover"));
+		await getDb()
+			.update(launchRequests)
+			.set({ metadata: { boundObservedSession: true, boundByUserId: null } })
+			.where(eq(launchRequests.id, launch.id));
+		const [delivery] = await deliveries();
+		await getDb()
+			.update(controlActions)
+			.set({
+				actionType: "resume",
+				status: "running",
+				launchRequestId: launch.id,
+				metadata: { resumeKind: "takeover" },
+			})
+			.where(eq(controlActions.id, delivery?.controlActionId as string));
+		await getDb()
+			.update(managedSessions)
+			.set({
+				managedState: "pending",
+				controlLockExpiresAt: new Date(Date.now() - 1_000).toISOString(),
+			})
+			.where(eq(managedSessions.sessionId, "v-takeover"));
+		const release = spyOn(ownership, "releaseObservedBinding").mockImplementation(async () => {
+			throw new Error("injected in the release");
+		});
+		try {
+			await getDeliveryState(proposalId, manageCtx()).catch(() => undefined);
+			expect(release).toHaveBeenCalled();
+		} finally {
+			release.mockRestore();
+		}
+
+		// The settle was one transaction: the action did not move without the rows.
+		const [action] = await actionsFor("v-takeover");
+		expect(action?.status).toBe("running");
+		expect(
+			(
+				await getDb()
+					.select()
+					.from(managedSessions)
+					.where(eq(managedSessions.sessionId, "v-takeover"))
+			).length,
+		).toBe(1);
+		expect(
+			(
+				await getDb()
+					.select()
+					.from(launchRequests)
+					.where(eq(launchRequests.launchCorrelationId, "v-takeover"))
+			).length,
+		).toBe(1);
+	});
 
 	test("follows the control action through queued, running and succeeded, and never carries the prompt", async () => {
 		const { proposalId } = await approvedAndQueued("v-1");

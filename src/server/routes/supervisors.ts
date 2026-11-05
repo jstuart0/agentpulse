@@ -720,6 +720,10 @@ supervisorsAgentRouter.post(
 			error?: string | null;
 			metadata?: Record<string, unknown> | null;
 		}>();
+		// A body with no status at all keeps its old answer (the recorded pre-team behaviour); a present one must be a real status.
+		if (body.status !== undefined && !["running", "succeeded", "failed"].includes(body.status)) {
+			return c.json({ error: "invalid_status" }, 400);
+		}
 		const action = await updateControlAction({
 			actionId,
 			supervisorId,

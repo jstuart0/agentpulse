@@ -28,6 +28,7 @@ import {
 	type NormalizedEvent,
 	isApprovalResolvedEventName,
 	isServerOnlyEventName,
+	isSessionResumedEventName,
 } from "./event-normalizer.js";
 import {
 	type ManagedInsertDeps,
@@ -179,9 +180,6 @@ async function writeManagedSessionState(
 	options: { replay?: boolean },
 	resumeActionId: string | null,
 ) {
-	await assertSupervisorCanWriteSession(supervisorId, input.sessionId, {
-		launchRequestId: input.launchRequestId,
-	});
 	const supervisorMetadata = withoutServerOwnedMetadata(input.metadata);
 	const timestamp = nowIso();
 	const [existingManaged] = await db
@@ -410,6 +408,10 @@ export async function upsertManagedSessionState(
 		typeof input.resumeActionId === "string" && input.resumeActionId !== ""
 			? input.resumeActionId
 			: null;
+	// Who owns the session is judged first, so a refusal for a foreign host never reveals the state of an action.
+	await assertSupervisorCanWriteSession(supervisorId, input.sessionId, {
+		launchRequestId: input.launchRequestId,
+	});
 	// A report that belongs to a resume checks that action and writes in one transaction; every other
 	// report runs exactly as it always did (no extra read, no transaction of its own).
 	const { currentSession, managedRow } =
@@ -461,6 +463,7 @@ function isReservedEvent(event: ManagedSessionEventInput): boolean {
 	return (
 		(typeof event.category === "string" && event.category.startsWith("ai_")) ||
 		isServerOnlyEventName(event.eventType) ||
+		isSessionResumedEventName(event.providerEventType) ||
 		isApprovalResolvedEventName(event.providerEventType)
 	);
 }

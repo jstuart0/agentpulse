@@ -67,6 +67,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { sql } from "drizzle-orm";
 import { config } from "../config.js";
+import { withAfterCommit } from "./after-commit.js";
 import { getDb, getSqlite } from "./client.js";
 
 // 0xA9E1A925 — distinct from db/client.ts's migration-boot advisory lock
@@ -162,6 +163,14 @@ export async function withAdminLock<T>(
 	// biome-ignore lint/suspicious/noExplicitAny: tx type unified in a later schema-extraction pass (same posture as with-transaction.ts)
 	fn: (tx: any) => T | Promise<T>,
 	opts: AdminLockOptions = {},
+): Promise<T> {
+	return withAfterCommit(() => runAdminLock(fn, opts));
+}
+
+async function runAdminLock<T>(
+	// biome-ignore lint/suspicious/noExplicitAny: see withAdminLock
+	fn: (tx: any) => T | Promise<T>,
+	opts: AdminLockOptions,
 ): Promise<T> {
 	if (config.dialect === "postgres") {
 		const db = getDb();
