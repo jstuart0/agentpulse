@@ -101,7 +101,7 @@ export function usePromptComposer({
 				signal: controller.signal,
 			});
 			const settled = settleFollow(result);
-			if (controller.signal.aborted || !alive.current || settled === null) return;
+			if (!alive.current || settled === null) return;
 			setPhase(settled.phase);
 			if (settled.clearDraft) {
 				setPrompt("");

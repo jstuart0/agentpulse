@@ -113,6 +113,7 @@ describe("SessionComposerSlot", () => {
 		const out = render(session("codex_cli", "managed"));
 		const id = /<label[^>]*for="([^"]+)"/.exec(out)?.[1] ?? "";
 		expect(id).not.toBe("");
+		expect(out).toMatch(/<label[^>]*>Prompt for this session<\/label>/);
 		expect(out).toContain(`id="${id}"`);
 		expect(out).toMatch(/<textarea[^>]*aria-describedby="[^"]+"/);
 	});

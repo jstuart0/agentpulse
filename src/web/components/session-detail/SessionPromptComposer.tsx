@@ -15,7 +15,8 @@ import {
 	composerMode,
 	composerNotice,
 	composerStatus,
-	shouldRefocusBox,
+	focusBoxAfterSettle,
+	lockedNotice,
 } from "./prompt-composer-view.js";
 import { usePromptComposer } from "./usePromptComposer.js";
 
@@ -66,7 +67,7 @@ export function SessionPromptComposer({
 		onSubmitted,
 		onSettled: () => {
 			const matchMedia = typeof window === "undefined" ? undefined : window.matchMedia;
-			if (shouldRefocusBox(matchMedia?.bind(window))) textareaRef.current?.focus();
+			focusBoxAfterSettle(textareaRef.current, matchMedia?.bind(window));
 		},
 	});
 	const [interactiveControlState, setInteractiveControlState] = useState<{
@@ -102,21 +103,18 @@ export function SessionPromptComposer({
 	}, [interactive, session.managedSession?.supervisorId]);
 
 	const hasDraft = prompt.trim() !== "";
-	if (mode === null) {
-		return hasDraft ? (
-			<LockedDraft reason={COMPOSER_ENDED} showDraft draft={prompt} startNew={false} />
-		) : null;
-	}
-	if (mode.kind === "blocked") {
+	const locked = lockedNotice(mode, hasDraft);
+	if (locked !== null) {
 		return (
 			<LockedDraft
-				reason={mode.reason}
+				reason={locked.reason}
 				showDraft={hasDraft}
 				draft={prompt}
-				startNew={mode.startNew}
+				startNew={locked.startNew}
 			/>
 		);
 	}
+	if (mode === null || mode.kind === "blocked") return null;
 
 	const capabilitySnapshot =
 		session.managedSession?.providerCapabilitySnapshot &&

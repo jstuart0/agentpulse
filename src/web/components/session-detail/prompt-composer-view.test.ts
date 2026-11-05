@@ -19,8 +19,10 @@ import {
 	composerNotice,
 	composerStatus,
 	describeSendFailure,
+	focusBoxAfterSettle,
 	followPromptAction,
 	followsAction,
+	lockedNotice,
 	settleFollow,
 	shouldRefocusBox,
 } from "./prompt-composer-view.js";
@@ -422,6 +424,38 @@ describe("shouldRefocusBox", () => {
 		expect(shouldRefocusBox(coarse)).toBe(false);
 		expect(shouldRefocusBox(fine)).toBe(true);
 		expect(shouldRefocusBox(undefined)).toBe(true);
+	});
+});
+
+describe("focusBoxAfterSettle", () => {
+	test("focuses the box, except on a touch screen or when there is no box", () => {
+		let focused = 0;
+		const box = { focus: () => void (focused += 1) };
+		focusBoxAfterSettle(box, () => ({ matches: false }));
+		expect(focused).toBe(1);
+		focusBoxAfterSettle(box, (q) => ({ matches: q === "(pointer: coarse)" }));
+		expect(focused).toBe(1);
+		focusBoxAfterSettle(null, undefined);
+	});
+});
+
+describe("lockedNotice", () => {
+	test("a blocked mode is its reason; an ended session with text in the box keeps it; otherwise the box shows", () => {
+		const blocked = composerMode(probe("codex_cli", "degraded"), ALLOWED);
+		expect(lockedNotice(blocked, false)).toEqual({
+			reason: COMPOSER_BLOCKED_CONNECTION,
+			startNew: true,
+		});
+		expect(lockedNotice(blocked, true)).toEqual({
+			reason: COMPOSER_BLOCKED_CONNECTION,
+			startNew: true,
+		});
+		expect(lockedNotice(null, true)).toEqual({
+			reason: "This session has ended, so it can't take prompts. Your text is still here to copy.",
+			startNew: false,
+		});
+		expect(lockedNotice(null, false)).toBeNull();
+		expect(lockedNotice(composerMode(probe("codex_cli", "managed"), ALLOWED), true)).toBeNull();
 	});
 });
 

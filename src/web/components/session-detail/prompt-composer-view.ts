@@ -255,6 +255,23 @@ export function shouldRefocusBox(
 	return !matchMedia?.("(pointer: coarse)").matches;
 }
 
+/** Puts focus back in the box after a send settles, except on a touch screen. */
+export function focusBoxAfterSettle(
+	box: { focus: () => void } | null,
+	matchMedia: ((query: string) => { matches: boolean }) | undefined,
+): void {
+	if (box && shouldRefocusBox(matchMedia)) box.focus();
+}
+
+/** The reason to show in place of the box (with the way to a new session), or null when the box itself shows. */
+export function lockedNotice(
+	mode: ComposerMode | null,
+	hasDraft: boolean,
+): { reason: string; startNew: boolean } | null {
+	if (mode === null) return hasDraft ? { reason: COMPOSER_ENDED, startNew: false } : null;
+	return mode.kind === "blocked" ? { reason: mode.reason, startNew: mode.startNew } : null;
+}
+
 export const FOLLOW_POLL_MS = 1500;
 /** The 90 s control lock plus margin. */
 export const FOLLOW_DEADLINE_MS = 100_000;

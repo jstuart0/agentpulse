@@ -349,6 +349,25 @@ describe("how a followed send ends", () => {
 	});
 });
 
+describe("a box that can't send", () => {
+	test("a blocked mode sends nothing even if asked", async () => {
+		let sends = 0;
+		client.sendSessionPrompt = async () => {
+			sends += 1;
+			return { action: action() };
+		};
+		const s = session("codex_cli", "degraded");
+		const t = mount({ s });
+		await t.render();
+		await t.type("draft kept while blocked");
+		await t.send();
+		expect(sends).toBe(0);
+		expect(t.now().prompt).toBe("draft kept while blocked");
+		expect(t.now().posting).toBe(false);
+		await t.h.unmount();
+	});
+});
+
 describe("leaving the page", () => {
 	test("unmounting mid-follow stops the polling and applies nothing when the poll comes back", async () => {
 		client.sendSessionPrompt = async () => ({ action: action() });
@@ -364,7 +383,8 @@ describe("leaving the page", () => {
 		await t.send();
 		expect(polls).toBe(1);
 		await t.h.unmount();
-		pending.resolve({ controlActions: [action({ status: "succeeded" })] });
+		// Still running when it answers: without the abort the follow would go on to poll again.
+		pending.resolve({ controlActions: [action({ status: "running" })] });
 		await flush(30);
 		expect(polls).toBe(1);
 		expect(t.calls.settled).toBe(0);
