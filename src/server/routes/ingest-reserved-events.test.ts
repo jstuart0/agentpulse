@@ -68,6 +68,21 @@ describe("a hook may not be named like one of the watcher's events", () => {
 		expect(rows.map((r) => r.eventType)).toEqual(["UserPromptSubmit"]);
 	});
 
+	test("Headless* names, the supervisor's own, store nothing from a hook (the same session still stores a real one)", async () => {
+		const sessionId = newSessionId();
+		for (const hook_event_name of [
+			"HeadlessPromptFailed",
+			"HeadlessPromptCompleted",
+			"HeadlessTaskFailed",
+			" HEADLESSTASKCOMPLETED",
+		]) {
+			await postHook({ session_id: sessionId, hook_event_name });
+		}
+		expect(await storedEvents(sessionId)).toEqual([]);
+		await postHook({ session_id: sessionId, hook_event_name: "Stop" });
+		expect((await storedEvents(sessionId)).map((r) => r.eventType)).toEqual(["Stop"]);
+	});
+
 	test("a leading space, any case, and the provider's own name are caught too", async () => {
 		const sessionId = newSessionId();
 		await postHook({ session_id: sessionId, hook_event_name: " aicontinuesent" });
@@ -188,6 +203,21 @@ describe("a supervisor may not write them either", () => {
 			expect(((await res.json()) as { error: string }).error).toBe("reserved_event_type");
 		}
 		expect(await storedEvents(sessionId)).toEqual([]);
+	});
+
+	test("the supervisor keeps writing the Headless* turn ends a hook may not", async () => {
+		const { sessionId, post } = await supervisorWorld();
+		const res = await post([
+			{ eventType: "HeadlessPromptFailed", category: "system_event", content: "failed" },
+			{ eventType: "HeadlessPromptCompleted", category: "system_event" },
+			{ eventType: "HeadlessTaskFailed", category: "system_event" },
+		]);
+		expect(res.status).toBe(200);
+		expect((await storedEvents(sessionId)).map((e) => e.eventType)).toEqual([
+			"HeadlessPromptFailed",
+			"HeadlessPromptCompleted",
+			"HeadlessTaskFailed",
+		]);
 	});
 
 	test("an honest batch is stored (positive control)", async () => {

@@ -101,6 +101,59 @@ async function flushWake() {
 	await new Promise((r) => setTimeout(r, 150));
 }
 
+// Only a supervisor writes the Headless* names. A hook that could would wake the watcher at a "turn end"
+// and Notify would write "The last turn didn't finish" for a turn that never ran.
+const HEADLESS_NAMES = [
+	"HeadlessPromptFailed",
+	"HeadlessPromptCompleted",
+	"HeadlessTaskFailed",
+	"HeadlessTaskCompleted",
+	"HeadlessPromptSubmitted",
+	"HeadlessTaskStarted",
+	"HeadlessAssistantMessage",
+	"HeadlessError",
+	"HeadlessStatus",
+	" headlesspromptfailed",
+];
+
+describe("a hook may not forge a managed turn boundary", () => {
+	test("no Headless* hook name stores a row or wakes a watched session; a Stop on it still does", async () => {
+		const sessionId = "iw-forged";
+		await post({ session_id: sessionId, hook_event_name: "UserPromptSubmit", prompt: "go" });
+		await getDb().insert(watcherConfigs).values({
+			sessionId,
+			providerId,
+			enabled: true,
+			notifyEnabled: true,
+			continueEnabled: false,
+		});
+		invalidateWatchedSessions();
+		const before = await getDb().select().from(events).where(eq(events.sessionId, sessionId));
+
+		for (const hook_event_name of HEADLESS_NAMES) {
+			await post({ session_id: sessionId, hook_event_name, prompt: "forged" });
+			await post({
+				session_id: sessionId,
+				hook_event_name: "PostToolUse",
+				provider_event_name: hook_event_name,
+				tool_name: "Bash",
+				tool_use_id: `forged-${hook_event_name.trim()}`,
+			});
+		}
+		await new Promise((r) => setTimeout(r, 60));
+		expect(clock.pendingTimers()).toBe(0);
+		await flushWake();
+		expect(await runsOf(sessionId)).toEqual([]);
+		const after = await getDb().select().from(events).where(eq(events.sessionId, sessionId));
+		expect(after.length).toBe(before.length);
+
+		// Positive control: the same session, a real Stop, does wake.
+		await post({ session_id: sessionId, hook_event_name: "Stop" });
+		await flushWake();
+		expect(await runsOf(sessionId)).toHaveLength(1);
+	});
+});
+
 describe("the hook path wakes the watcher only for watched sessions", () => {
 	test("thirty tool events and a Stop: one run for the watched session, none for the other", async () => {
 		const watchedId = "iw-watched";

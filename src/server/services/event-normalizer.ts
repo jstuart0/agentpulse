@@ -322,6 +322,18 @@ export function isApprovalResolvedEventName(name: unknown): boolean {
 	);
 }
 
+/**
+ * Names only a supervisor writes: its managed sessions' turn starts and ends (HeadlessPromptFailed,
+ * HeadlessTaskCompleted, ...). A hook can choose its name, and a forged turn end wakes the watcher, whose
+ * Notify then reports a turn that never ran. The supervisor route keeps writing them, so this is not part of
+ * `isServerOnlyEventName`, which both paths share.
+ */
+const SUPERVISOR_ONLY_EVENT_NAME_RE = /^headless/i;
+
+export function isSupervisorOnlyEventName(name: unknown): boolean {
+	return typeof name === "string" && SUPERVISOR_ONLY_EVENT_NAME_RE.test(name.trim());
+}
+
 export function normalizeHookEvent(
 	payload: HookEventPayload,
 	agentType: AgentType,
@@ -332,7 +344,7 @@ export function normalizeHookEvent(
 	// forged AiContinueSent would read as proof that a prompt was sent.
 	for (const claimed of [payload.hook_event_name, payload.provider_event_name]) {
 		const name = typeof claimed === "string" ? claimed.trim() : "";
-		if (isServerOnlyEventName(name)) {
+		if (isServerOnlyEventName(name) || isSupervisorOnlyEventName(name)) {
 			console.warn(
 				JSON.stringify({
 					kind: "ingest_reserved_event_type",
