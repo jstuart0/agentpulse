@@ -332,6 +332,13 @@ describe("Resume session on a Codex session whose process is gone (AGEN-115)", (
 		expect(out).not.toContain("<textarea");
 	});
 
+	test("a disabled button looks disabled, not just inert", () => {
+		const out = renderWith(degraded({}, { hostControl: { state: "offline", lastSeenAt: null } }));
+		expect(out).toMatch(
+			/<button[^>]*disabled:opacity-50[^>]*disabled=""|<button[^>]*disabled=""[^>]*disabled:opacity-50/,
+		);
+	});
+
 	test("the button is a 44px target and not disabled when the host is live", () => {
 		const out = renderWith(degraded());
 		expect(out).toMatch(/<button[^>]*min-h-\[44px\][^>]*>Resume session/);
@@ -370,6 +377,8 @@ describe("Resume session on a Codex session whose process is gone (AGEN-115)", (
 		});
 		expect(out).toMatch(/role="alert"[^>]*>[^<]*studio no longer has this session&#x27;s history/);
 		expect(out).toMatch(/<button[^>]*>Resume session<\/button>/);
+		// The sentence above already links to Templates, so the failure doesn't offer a second one.
+		expect(out.match(/Go to Templates/g)).toHaveLength(1);
 	});
 
 	test("a failed takeover is not shown here: it belongs to the takeover card", () => {

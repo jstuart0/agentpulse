@@ -76,6 +76,17 @@ describe("the feature's own code", () => {
 		);
 	});
 
+	test("the machine list is built from hosts alone: the session's reported machine never filters or preselects", () => {
+		const view = code("components/session-detail/takeover-card-view.ts");
+		const start = view.indexOf("export function bindableHosts");
+		const body = view.slice(start, view.indexOf("\n}\n", start));
+		expect(start).toBeGreaterThan(0);
+		expect(body).not.toMatch(/reportedHost|\.machine\b/);
+		// And nothing in the card chooses a host for the person: the state starts empty and only onChange sets it.
+		expect(card).toMatch(/useState\(""\)/);
+		expect(card).not.toMatch(/setHostId\((?!""|id\))/);
+	});
+
 	test("never compares the instance mode: that is ownership-ui.ts's alone", () => {
 		for (const rel of FEATURE) {
 			expect(code(rel)).not.toMatch(/mode\s*===\s*["']team["']|mode\s*!==\s*["']team["']/);

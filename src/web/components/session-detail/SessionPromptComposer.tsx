@@ -263,14 +263,14 @@ export function LockedDraft({
 							onClick={resume.onResume}
 							disabled={busy || resume.offer.state === "disabled"}
 							aria-describedby={reasonId}
-							className="min-h-[44px] rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 aria-disabled:opacity-50 md:min-h-0"
+							className="min-h-[44px] rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0"
 						>
 							{busy ? RESUME_BUTTON_BUSY : RESUME_BUTTON}
 						</button>
 						{resume.alert ? (
 							<p role="alert" className="text-xs text-red-700 dark:text-red-400">
 								{resume.alert.reason}
-								{resume.alert.startNew ? <StartNewLink /> : null}
+								{resume.alert.startNew && !startNew ? <StartNewLink /> : null}
 							</p>
 						) : null}
 					</div>
