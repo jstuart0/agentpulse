@@ -99,6 +99,7 @@ const log = (entry: unknown) => {
 	if (logFile) appendFileSync(logFile, `${JSON.stringify(entry)}\n`);
 };
 log({ argv: process.argv.slice(2), pid: process.pid, cwd: process.cwd() });
+log({ envNames: Object.keys(process.env) });
 
 if (env.FAKE_CODEX_EARLY_EXIT) process.exit(Number(env.FAKE_CODEX_EARLY_EXIT));
 

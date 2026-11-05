@@ -16,6 +16,11 @@ import { readPrivateFileNoFollow } from "./private-store.js";
 
 export const MAX_THREAD_RECORD_ENTRIES = 1024;
 const MAX_FILE_BYTES = 512 * 1024;
+/**
+ * `createdAt` for a record that replaced a file it couldn't trust: no thread can predate "none", so nothing
+ * qualifies for the pre-upgrade path afterwards (a forged file could otherwise have set an old date).
+ */
+const NO_CREATED_AT = "none";
 
 interface Entry {
 	launchRequestId: string;
@@ -75,18 +80,30 @@ export function createManagedThreadRecord(options: {
 				read()?.entries.find((entry) => entry.launchRequestId === launchRequestId)?.threadId ?? null
 			);
 		},
-		createdAt: () => read()?.createdAt ?? null,
+		createdAt() {
+			const stored = read()?.createdAt;
+			return stored === undefined || stored === NO_CREATED_AT ? null : stored;
+		},
 		write(launchRequestId, threadId) {
 			const temp = `${options.path}.${process.pid}.tmp`;
 			try {
 				mkdirSync(dirname(options.path), { recursive: true, mode: 0o700 });
 				const existing = read();
 				const stamp = new Date(now()).toISOString();
+				// A file is there but can't be believed (not private, a link, not valid): whatever it said about
+				// when the record began is not to be inherited.
+				const replacesUntrusted =
+					existing === null &&
+					readPrivateFileNoFollow(options.path, MAX_FILE_BYTES).kind !== "absent";
 				const entries = [
 					{ launchRequestId, threadId, at: stamp },
 					...(existing?.entries ?? []).filter((entry) => entry.launchRequestId !== launchRequestId),
 				].slice(0, MAX_THREAD_RECORD_ENTRIES);
-				const stored: Stored = { version: 1, createdAt: existing?.createdAt ?? stamp, entries };
+				const stored: Stored = {
+					version: 1,
+					createdAt: existing?.createdAt ?? (replacesUntrusted ? NO_CREATED_AT : stamp),
+					entries,
+				};
 				writeFileSync(temp, JSON.stringify(stored), { mode: 0o600 });
 				chmodSync(temp, 0o600);
 				renameSync(temp, options.path);

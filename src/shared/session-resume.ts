@@ -118,7 +118,7 @@ const TAKEOVER_WORDS: KindWords = {
 	reports_pending: WAITING_ON_REPORTS,
 	reports_held: HELD_REPORTS,
 	project_config: (host) =>
-		`This session's directory has its own Codex settings, and ${host} doesn't mark that directory as trusted, so it wasn't taken over. Trust it in Codex there, or remove its \`.codex\` folder.`,
+		`This session's directory has its own Codex settings (a .codex/config.toml file), which Codex would apply, so it wasn't taken over. Remove that file on ${host}, then try again.`,
 	// A takeover never consults the host's thread record; the sentence exists so the table is total.
 	thread_unverified: (host) =>
 		`AgentPulse can't confirm this session can be resumed on ${host}. ${SAYS_RESUMED_ABOUT_RETRY}`,
@@ -144,10 +144,11 @@ const RECOVERY_WORDS: KindWords = {
 		`This session's directory on ${host} has changed, so it wasn't resumed. ${SAYS_RESUMED_ABOUT_RETRY}`,
 	privileges: (host) =>
 		`${host} wouldn't run this session under its approval settings, so it wasn't resumed.`,
-	// A recovery proceeds on a Codex it can't answer approvals for (it declines them locally) and is never
-	// refused for a directory's own settings, so these two read as the generic refusal.
+	// A recovery proceeds on a Codex it can't answer approvals for (it declines them locally), so that
+	// kind reads as the generic refusal.
 	unsupported_codex: RECOVERY_REJECTED,
-	project_config: RECOVERY_REJECTED,
+	project_config: (host) =>
+		`This session's directory has its own Codex settings (a .codex/config.toml file), which Codex would apply, so it wasn't resumed. Remove that file on ${host}, then try again.`,
 	reports_pending: WAITING_ON_REPORTS,
 	reports_held: HELD_REPORTS,
 	thread_unverified: (host) =>

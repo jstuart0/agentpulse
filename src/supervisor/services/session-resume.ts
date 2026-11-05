@@ -278,3 +278,16 @@ export function createSessionResumer(
 		}
 	};
 }
+
+/**
+ * Whether the Codex observer must post nothing for this id: a resume is in progress for it, or this host holds
+ * a runtime keyed by it. Runtimes are keyed by SESSION id, so a launched session's thread id (a different
+ * string) is not held and its shadow row's lines still post; a resumed runtime's session id is its thread id.
+ */
+export function isObserverHeld(
+	resuming: ReadonlySet<string>,
+	hasRuntime: (id: string) => boolean,
+	id: string,
+): boolean {
+	return resuming.has(id) || hasRuntime(id);
+}

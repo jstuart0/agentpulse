@@ -1,6 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import {
 	CODEX_SANDBOX_RESPONSE_TYPE,
 	LaunchPrivilegeError,
@@ -1106,25 +1105,37 @@ function assertExactWorkspaceWriteSandbox(sandbox: unknown): void {
 		throw new CodexResumeError("privileges", "the answered sandbox is not the one asked for");
 }
 
-/**
- * Whether the user's own Codex config marks this directory (or a parent) trusted. Codex applies a project's
- * `.codex/config.toml` only then, and it applies it at `thread/resume`: its MCP servers start and its sandbox
- * extras show in the answer (measured on 0.163.0, see codex-resume.real.test.ts).
- */
-function userTrustsDirectory(directory: string, codexHome: string): boolean {
-	let projects: Record<string, { trust_level?: unknown }> | undefined;
+/** Whether anything is at this path, by `lstat` so a symlink (dangling included), a directory or a FIFO counts; never reads or opens it. Any other error fails closed. */
+function entryExists(path: string): boolean {
 	try {
-		const parsed = Bun.TOML.parse(readFileSync(join(codexHome, "config.toml"), "utf8")) as {
-			projects?: Record<string, { trust_level?: unknown }>;
-		};
-		projects = parsed.projects;
-	} catch {
-		return false;
+		lstatSync(path);
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code !== "ENOENT" && code !== "ENOTDIR";
 	}
-	if (!projects) return false;
-	for (let dir = directory; ; dir = dirname(dir)) {
-		if (projects[dir]?.trust_level === "trusted") return true;
-		if (dirname(dir) === dir) return false;
+}
+
+/**
+ * Whether a project `.codex/config.toml` could apply to a thread whose directory is `real`: in it, or in a
+ * parent up to the git root, or the trusted root when there is no git root. Measured (codex-resume.real.test.ts):
+ * Codex applies such a file at `thread/resume` once the user trusts the directory, and starts its MCP servers
+ * there, before anything this host could compare in the answer. So the file's presence is the refusal and
+ * trust is not an allow signal (D7). The walk to the git root is cheap and fails closed whether or not
+ * Codex layers a parent's file (the real test records which it does).
+ */
+function projectConfigPresent(real: string, trustedRoots: string[]): boolean {
+	const roots = trustedRoots.map((root) => {
+		try {
+			return realpathSync(root);
+		} catch {
+			return resolvePath(root);
+		}
+	});
+	for (let dir = real; ; dir = dirname(dir)) {
+		if (entryExists(join(dir, ".codex", "config.toml"))) return true;
+		if (entryExists(join(dir, ".git"))) return false;
+		if (roots.includes(dir) || dirname(dir) === dir) return false;
 	}
 }
 
@@ -1186,7 +1197,7 @@ type ThreadAnswer = { thread?: { id?: unknown; cwd?: unknown }; cwd?: unknown };
 export async function resumeManagedCodexSession(
 	input: ResumeInput,
 	callbacks: ResumeCallbacks,
-	deps: { timeoutMs?: number; codexHome?: string } = {},
+	deps: { timeoutMs?: number } = {},
 ): Promise<{ pid: number; metadata: Record<string, unknown> }> {
 	startingSessions.add(input.sessionId);
 	try {
@@ -1199,7 +1210,7 @@ export async function resumeManagedCodexSession(
 async function runResume(
 	input: ResumeInput,
 	callbacks: ResumeCallbacks,
-	deps: { timeoutMs?: number; codexHome?: string },
+	deps: { timeoutMs?: number },
 ): Promise<{ pid: number; metadata: Record<string, unknown> }> {
 	const { sessionId, launchRequestId, threadId, privileges } = input;
 	const takeover = input.resumeKind === "takeover";
@@ -1210,7 +1221,12 @@ async function runResume(
 	if (takeover && early.verdict !== "supported") throw new CodexResumeError("unsupported_codex");
 
 	const neutral = await callbacks.neutralCwd();
-	const server = await startCodexAppServer({ executable: binary.path, cwd: neutral });
+	// No AGENTPULSE_* name reaches Codex (it needs none, and this process holds the supervisor's own settings);
+	// everything else is kept, because a person's provider or proxy variables are theirs.
+	const env = Object.fromEntries(
+		Object.entries(process.env).filter(([name]) => !name.startsWith("AGENTPULSE_")),
+	);
+	const server = await startCodexAppServer({ executable: binary.path, cwd: neutral, env });
 	const { client } = server;
 	const tracker = sharedCodexApprovals();
 	let approvals: ReturnType<typeof tracker.attachClient> | null = null;
@@ -1274,12 +1290,7 @@ async function runResume(
 		if (real !== input.candidateCwd) {
 			throw new CodexResumeError("cwd_mismatch", "the thread's directory is not the candidate");
 		}
-		const codexHome = deps.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
-		if (
-			takeover &&
-			existsSync(join(real, ".codex", "config.toml")) &&
-			!userTrustsDirectory(real, codexHome)
-		) {
+		if (projectConfigPresent(real, callbacks.trustedRoots)) {
 			throw new CodexResumeError("project_config");
 		}
 

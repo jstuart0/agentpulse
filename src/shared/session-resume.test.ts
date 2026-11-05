@@ -106,7 +106,7 @@ describe("resumeFailureMessage, takeover", () => {
 		reports_held:
 			"build-box has earlier reports for this session that it can't send, so nothing was started. Its supervisor log names the folder under `~/.agentpulse/supervisor-outbox/`.",
 		project_config:
-			"This session's directory has its own Codex settings, and build-box doesn't mark that directory as trusted, so it wasn't taken over. Trust it in Codex there, or remove its `.codex` folder.",
+			"This session's directory has its own Codex settings (a .codex/config.toml file), which Codex would apply, so it wasn't taken over. Remove that file on build-box, then try again.",
 		timeout:
 			"build-box didn't answer in time, so the session wasn't taken over. Check that the machine is awake, then try again.",
 		restart: "build-box restarted before it finished, so the session wasn't taken over. Try again.",
@@ -156,12 +156,16 @@ describe("resumeFailureMessage, recovery", () => {
 		);
 	});
 
-	test("kinds that only a takeover can hit read as a refused resume, never as 'taken over'", () => {
-		for (const kind of ["unsupported_codex", "project_config"] as const) {
-			expect(resumeFailureMessage(kind, HOST, "recovery")).toBe(
-				resumeFailureMessage("rejected", HOST, "recovery"),
-			);
-		}
+	test("a Codex the approvals can't be answered on only fails a takeover, so a recovery reads as a refused resume", () => {
+		expect(resumeFailureMessage("unsupported_codex", HOST, "recovery")).toBe(
+			resumeFailureMessage("rejected", HOST, "recovery"),
+		);
+	});
+
+	test("project_config applies to a recovery too, in resumed words", () => {
+		expect(resumeFailureMessage("project_config", HOST, "recovery")).toBe(
+			"This session's directory has its own Codex settings (a .codex/config.toml file), which Codex would apply, so it wasn't resumed. Remove that file on build-box, then try again.",
+		);
 	});
 });
 

@@ -57,7 +57,11 @@ import {
 	parseRetryAfterMs,
 	setSharedCredentialTripwire,
 } from "./services/report-resilience.js";
-import { createSessionResumer, resolveNeutralCwd } from "./services/session-resume.js";
+import {
+	createSessionResumer,
+	isObserverHeld,
+	resolveNeutralCwd,
+} from "./services/session-resume.js";
 import { assertTrustedRootsExcludeAgentpulseDir } from "./services/spawn-cwd.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -210,7 +214,7 @@ async function main() {
 			apiKey: config.apiKey ?? null,
 			rules,
 			hostName: config.hostName,
-			isHeld: (id) => resumingSessions.has(id) || hasManagedCodexRuntime(id),
+			isHeld: (id) => isObserverHeld(resumingSessions, hasManagedCodexRuntime, id),
 		}).catch((error) => {
 			console.error("[codex-observer] failed to start:", error);
 		});

@@ -155,4 +155,35 @@ describe("managed thread record (recovery's proof)", () => {
 		);
 		expect(record().lookup("l")).toBeNull();
 	});
+
+	test("a file that exists but can't be trusted is replaced with a 'none' marker: no thread qualifies for the pre-upgrade path afterwards", () => {
+		const untrusted = JSON.stringify({
+			version: 1,
+			createdAt: "2020-01-01T00:00:00.000Z",
+			entries: [],
+		});
+		for (const make of [
+			() => writeFileSync(file, untrusted, { mode: 0o644 }),
+			() => writeFileSync(file, "{not json", { mode: 0o600 }),
+		]) {
+			rmSync(file, { force: true });
+			make();
+			chmodSync(file, statSync(file).mode & 0o777);
+			const r = record();
+			r.write("launch-1", "thread-1");
+			expect(JSON.parse(readFileSync(file, "utf8")).createdAt).toBe("none");
+			expect(r.createdAt()).toBeNull();
+			// The entry itself is still recorded, so a recovery of THIS launch works.
+			expect(r.lookup("launch-1")).toBe("thread-1");
+			// And a later write doesn't turn the marker into a date.
+			r.write("launch-2", "thread-2");
+			expect(r.createdAt()).toBeNull();
+		}
+	});
+
+	test("an absent file still gets a real createdAt (the control)", () => {
+		const r = record();
+		r.write("launch-1", "thread-1");
+		expect(r.createdAt()).toBe("2026-11-05T10:00:00.000Z");
+	});
 });

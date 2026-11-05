@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { requireLaunchPrivileges } from "../../shared/launch-privileges.js";
 import type { ReportOutcome } from "../services/report-gate.js";
+import { isObserverHeld } from "../services/session-resume.js";
 import { installFakeCodex, readFakeLog } from "./__fixtures__/fake-codex.js";
 import {
 	hasManagedCodexRuntime,
@@ -620,10 +621,13 @@ describe("a recovery with no record of the thread (the pre-upgrade path, P3.11)"
 	});
 });
 
-describe("D9's branch: a project's own .codex/config.toml", () => {
-	function projectConfig() {
-		mkdirSync(join(work, ".codex"), { recursive: true });
-		writeFileSync(join(work, ".codex", "config.toml"), 'sandbox_mode = "workspace-write"\n');
+describe("D7: a project's own .codex/config.toml refuses the resume, trusted or not", () => {
+	// Measured (codex-resume.real.test.ts): an untrusted project's file is ignored, a trusted one is applied AND
+	// its MCP servers start at thread/resume, before any sandbox comparison could act. Trust is therefore not an
+	// allow signal: the file's presence is the refusal, for a takeover and a recovery alike.
+	function projectConfig(dir = work) {
+		mkdirSync(join(dir, ".codex"), { recursive: true });
+		writeFileSync(join(dir, ".codex", "config.toml"), 'sandbox_mode = "workspace-write"\n');
 	}
 	const trust = () =>
 		writeFileSync(
@@ -631,29 +635,102 @@ describe("D9's branch: a project's own .codex/config.toml", () => {
 			`[projects."${work}"]\ntrust_level = "trusted"\n`,
 		);
 
-	test("a takeover into a directory with a project config the user hasn't trusted is project_config, before thread/resume", async () => {
-		projectConfig();
-		const w = world();
-		expect(await kindOf(resumeManagedCodexSession(input(), w.callbacks))).toBe("project_config");
-		expect(methods()).not.toContain("thread/resume");
-		await processGone(fakePid());
-	});
+	test.each(["takeover", "recovery"] as const)(
+		"a %s into a directory with a project config is project_config, before thread/resume",
+		async (resumeKind) => {
+			projectConfig();
+			const w = world();
+			expect(await kindOf(resumeManagedCodexSession(input({ resumeKind }), w.callbacks))).toBe(
+				"project_config",
+			);
+			expect(methods()).not.toContain("thread/resume");
+			await processGone(fakePid());
+			expect(w.states).toEqual([]);
+		},
+	);
 
-	test("passes when the user's own config marks the directory trusted", async () => {
+	test("the user's own trust of the directory changes nothing", async () => {
 		projectConfig();
 		trust();
-		expect(await kindOf(resumeManagedCodexSession(input(), world().callbacks))).toBe("ok");
+		expect(await kindOf(resumeManagedCodexSession(input(), world().callbacks))).toBe(
+			"project_config",
+		);
+		expect(
+			await kindOf(resumeManagedCodexSession(input({ resumeKind: "recovery" }), world().callbacks)),
+		).toBe("project_config");
 	});
 
 	test("passes with no project config", async () => {
 		expect(await kindOf(resumeManagedCodexSession(input(), world().callbacks))).toBe("ok");
 	});
 
-	test("a recovery is never refused for it", async () => {
-		projectConfig();
+	test("a dangling symlink, a directory and a FIFO named config.toml all count, and are never read or opened", async () => {
+		const { symlinkSync } = require("node:fs");
+		const { spawnSync } = require("node:child_process");
+		const cases: Array<[string, (path: string) => void]> = [
+			["a dangling symlink", (path) => symlinkSync(join(root, "nowhere"), path)],
+			["a directory", (path) => mkdirSync(path)],
+			["a FIFO", (path) => void spawnSync("mkfifo", [path])],
+		];
+		for (const [, make] of cases) {
+			rmSync(join(work, ".codex"), { recursive: true, force: true });
+			mkdirSync(join(work, ".codex"), { recursive: true });
+			make(join(work, ".codex", "config.toml"));
+			rmSync(logPath, { force: true });
+			const began = Date.now();
+			expect(await kindOf(resumeManagedCodexSession(input(), world().callbacks))).toBe(
+				"project_config",
+			);
+			// A FIFO opened for reading would block until a writer appears: the refusal is prompt.
+			expect(Date.now() - began).toBeLessThan(10_000);
+			expect(methods()).not.toContain("thread/resume");
+		}
+	});
+
+	test("a parent's config counts up to the git root, or the trusted root when there is none; above that it doesn't", async () => {
+		// No git root: the trusted root (root) is inclusive.
+		projectConfig(root);
+		expect(await kindOf(resumeManagedCodexSession(input(), world().callbacks))).toBe(
+			"project_config",
+		);
+		rmSync(join(root, ".codex"), { recursive: true, force: true });
+
+		// A git root at the project: a config above it is not this project's.
+		mkdirSync(join(work, ".git"), { recursive: true });
+		projectConfig(root);
+		expect(await kindOf(resumeManagedCodexSession(input(), world().callbacks))).toBe("ok");
+		await stopManagedCodexSession(SESSION).catch(() => undefined);
+		rmSync(join(root, ".codex"), { recursive: true, force: true });
+
+		// A git root above the project: a config between them counts.
+		rmSync(join(work, ".git"), { recursive: true, force: true });
+		const nested = join(work, "pkg");
+		mkdirSync(nested, { recursive: true });
+		mkdirSync(join(work, ".git"), { recursive: true });
+		projectConfig(work);
+		process.env.FAKE_CODEX_THREAD_CWD = nested;
 		expect(
-			await kindOf(resumeManagedCodexSession(input({ resumeKind: "recovery" }), world().callbacks)),
-		).toBe("ok");
+			await kindOf(resumeManagedCodexSession(input({ candidateCwd: nested }), world().callbacks)),
+		).toBe("project_config");
+		rmSync(join(work, ".git"), { recursive: true, force: true });
+		rmSync(nested, { recursive: true, force: true });
+	});
+});
+
+describe("the app-server's environment on a resume", () => {
+	test("every AGENTPULSE_* name is stripped; everything else (a proxy, a provider key) is kept", async () => {
+		process.env.AGENTPULSE_RESUME_TEST_SECRET = "x";
+		process.env.RESUME_TEST_HTTPS_PROXY = "http://proxy.invalid";
+		try {
+			await resumeManagedCodexSession(input(), world().callbacks);
+		} finally {
+			Reflect.deleteProperty(process.env, "AGENTPULSE_RESUME_TEST_SECRET");
+			Reflect.deleteProperty(process.env, "RESUME_TEST_HTTPS_PROXY");
+		}
+		const names = readFakeLog(logPath).find((e) => e.envNames)?.envNames as string[];
+		expect(names.filter((n) => n.startsWith("AGENTPULSE_"))).toEqual([]);
+		expect(names).toContain("RESUME_TEST_HTTPS_PROXY");
+		expect(names).toContain("PATH");
 	});
 });
 
@@ -709,5 +786,41 @@ describe("a launch records its thread before its first report (recovery's proof)
 		);
 		expect(result.pid).toBeGreaterThan(0);
 		await stopManagedCodexSession(request.launchCorrelationId);
+	});
+});
+
+describe("what the observer holds (D16)", () => {
+	test("a launched session's runtime holds its session id and NOT its thread id, so the shadow row's lines still post; a resumed runtime (session = thread) holds both", async () => {
+		const launched = {
+			id: "launch-hold-1",
+			launchCorrelationId: crypto.randomUUID(),
+			agentType: "codex_cli",
+			cwd: work,
+			baseInstructions: "",
+			taskPrompt: "go",
+			model: null,
+			approvalPolicy: null,
+			sandboxMode: null,
+			requestedLaunchMode: "managed_codex",
+			env: {},
+			launchSpec: {},
+			status: "claimed",
+		} as never;
+		const sessionId = (launched as { launchCorrelationId: string }).launchCorrelationId;
+		await launchManagedCodexRequest(launched, world().callbacks as never);
+		const held = (id: string) => isObserverHeld(new Set(), hasManagedCodexRuntime, id);
+		expect(held(sessionId)).toBe(true);
+		expect(held("thr-1")).toBe(false);
+		await stopManagedCodexSession(sessionId);
+
+		await resumeManagedCodexSession(input(), world().callbacks);
+		expect(held(SESSION)).toBe(true);
+		expect(held(THREAD)).toBe(true);
+	});
+
+	test("an id being resumed is held until the resumer lets it go, runtime or not", () => {
+		const resuming = new Set([THREAD]);
+		expect(isObserverHeld(resuming, () => false, THREAD)).toBe(true);
+		expect(isObserverHeld(resuming, () => false, "another")).toBe(false);
 	});
 });
