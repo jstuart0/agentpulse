@@ -146,16 +146,40 @@ const resolve = (id: string | number) => {
 
 const KNOWN_THREAD = env.FAKE_CODEX_THREAD_ID || "thr-1";
 const threadCwd = () => env.FAKE_CODEX_THREAD_CWD || process.cwd();
+// The key set of a real Codex 0.163.0 `thread` (thread/read and thread/resume), so a fake answer and a real
+// one can be compared key for key (codex-resume.real.test.ts). Values are placeholders except the ones used.
 const threadBody = (cwd: string, status: string) => ({
 	id: KNOWN_THREAD,
+	environments: [{ environmentId: "local", cwd, runtimeWorkspaceRoots: [cwd] }],
+	extra: null,
 	sessionId: KNOWN_THREAD,
-	cwd,
+	forkedFromId: null,
+	parentThreadId: null,
+	preview: "",
+	ephemeral: false,
+	section: null,
+	sectionEnteredAt: null,
+	projectId: null,
+	historyMode: "paginated",
+	modelProvider: "openai",
+	model: "fake-model",
+	reasoningEffort: null,
+	createdAt: 0,
+	updatedAt: 0,
+	recencyAt: 0,
 	status: { type: status },
 	path: `/fake/sessions/rollout-${KNOWN_THREAD}.jsonl`,
+	cwd,
 	cliVersion: VERSION,
 	originator: env.FAKE_CODEX_THREAD_ORIGINATOR || "codex_exec",
 	source: "exec",
+	canAcceptDirectInput: null,
+	threadSource: "user",
+	agentNickname: null,
+	agentRole: null,
+	gitInfo: null,
 	name: null,
+	daybreakEnabled: null,
 	turns: [],
 });
 let resumedHere = false;
@@ -205,8 +229,21 @@ function handleThreadCall(m: any, reply: (result: unknown) => void) {
 	reply({
 		thread: threadBody(cwd, "idle"),
 		model: "fake-model",
+		modelProvider: "openai",
+		serviceTier: null,
+		disabledPluginIds: [],
 		cwd,
+		runtimeWorkspaceRoots: [cwd],
+		instructionSources: [],
 		approvalPolicy: approval,
+		approvalsReviewer: "user",
+		activePermissionProfile: null,
+		reasoningEffort: null,
+		collaborationMode: null,
+		multiAgentMode: null,
+		initialTurnsPage: null,
+		turnsBackwardsCursor: null,
+		itemsBackwardsCursor: null,
 		sandbox: {
 			type: SANDBOX_TYPE[sandbox],
 			...(sandbox === "read-only" ? { networkAccess: false } : {}),
