@@ -94,12 +94,15 @@ describe("a host that was removed", () => {
 });
 
 describe("hostRefusalMessage", () => {
-	test("maps the three 409 codes and nothing else", () => {
+	test("maps the four 409 codes and nothing else", () => {
 		const session = probe("live");
 		expect(hostRefusalMessage(conflict("host_offline"), session)).toContain("studio is offline");
 		expect(hostRefusalMessage(conflict("host_gone"), session)).toContain("was removed");
 		expect(hostRefusalMessage(conflict("host_upgrade_required"), session)).toBe(
-			"This session's host is running an older supervisor that can't send prompts to Codex. Update the supervisor on that host.",
+			"This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.",
+		);
+		expect(hostRefusalMessage(conflict("managed_state_not_continuable"), session)).toBe(
+			"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.",
 		);
 		expect(hostRefusalMessage(conflict("control_busy"), session)).toBeNull();
 		expect(hostRefusalMessage(new ApiError(400, "x", { error: "host_gone" }), session)).toBeNull();

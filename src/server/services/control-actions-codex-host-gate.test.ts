@@ -34,6 +34,8 @@ const {
 	sessions,
 	supervisorEnrollmentTokens,
 	supervisors,
+	aiDispatchAudit,
+	aiHitlDeliveries,
 	watcherConfigs,
 	watcherProposals,
 } = schema;
@@ -48,11 +50,16 @@ const { promptDeliverability } = await import("./ai/prompt-deliverability.js");
 const { dispatchPrompt, resolveProposal } = await import("./ai/proposal-resolution.js");
 const feature = await import("./ai/feature.js");
 const { withAdminLock } = await import("../db/admin-lock.js");
+const { decideHitl, retryDelivery } = await import("./ai/hitl-decision-service.js");
+const { insertAuditIntent, markAuditSent } = await import("./ai/dispatch-audit-service.js");
 const { deleteAllSupervisors } = await import("./__test_supervisors.js");
 
 /** The sentence every reader of this refusal carries (the plan's copy, D7). */
 const UPGRADE_COPY =
-	"This session's host is running an older supervisor that can't send prompts to Codex. Update the supervisor on that host.";
+	"This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.";
+/** A Codex session whose process ended when its host restarted (registration degrades it). */
+const ENDED_COPY =
+	"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.";
 const ACTOR = { userId: null, label: "user" } as const;
 const originalDisableAuth = config.disableAuth;
 
@@ -387,6 +394,9 @@ describe("the sentence the automatic path shows a person", () => {
 		for (const code of ["auto_send_blocked", "prompt_not_deliverable"]) {
 			expect(autoRefusalWhy({ code, reason: "host_upgrade_required" }, config)).toBe(UPGRADE_COPY);
 		}
+		expect(
+			autoRefusalWhy({ code: "prompt_not_deliverable", reason: "managed_state" }, config),
+		).toBe(ENDED_COPY);
 	});
 });
 
@@ -446,68 +456,68 @@ const oldFormMetadata = (agentType: string) => ({
 	env: { SECRET: "x" },
 });
 
-describe("claimNextControlAction", () => {
-	async function hostWorld(agent: "codex_cli" | "claude_code", features: string[]) {
-		const hostName = `claim-${++counter}`;
-		const host = { ...(await enrollHost(hostName, features)), hostName };
-		const sessionId = `cl-${counter}-${crypto.randomUUID().slice(0, 6)}`;
-		await getDb()
-			.insert(sessions)
-			.values({ sessionId, agentType: agent, status: "active", cwd: "/work/project" });
-		const [launch] = await getDb()
-			.insert(launchRequests)
-			.values({
-				launchCorrelationId: sessionId,
-				agentType: agent,
-				cwd: "/work/project",
-				requestedSupervisorId: host.id,
-				claimedBySupervisorId: host.id,
-				requestedLaunchMode: agent === "codex_cli" ? "managed_codex" : "headless",
-				status: "running",
-			})
-			.returning();
-		await getDb()
-			.insert(managedSessions)
-			.values({
-				sessionId,
-				launchRequestId: launch?.id as string,
-				supervisorId: host.id,
-				managedState: "managed",
-			});
-		return { host, sessionId, launchId: launch?.id as string };
-	}
-
-	/** Queue a prompt directly, with the session's lock held for it, as the old server would have. */
-	async function queueOldForm(
-		sessionId: string,
-		launchId: string,
-		metadata: Record<string, unknown>,
-		createdAt = new Date().toISOString(),
-	) {
-		const id = crypto.randomUUID();
-		await getDb().insert(controlActions).values({
-			id,
+async function hostWorld(agent: "codex_cli" | "claude_code", features: string[]) {
+	const hostName = `claim-${++counter}`;
+	const host = { ...(await enrollHost(hostName, features)), hostName };
+	const sessionId = `cl-${counter}-${crypto.randomUUID().slice(0, 6)}`;
+	await getDb()
+		.insert(sessions)
+		.values({ sessionId, agentType: agent, status: "active", cwd: "/work/project" });
+	const [launch] = await getDb()
+		.insert(launchRequests)
+		.values({
+			launchCorrelationId: sessionId,
+			agentType: agent,
+			cwd: "/work/project",
+			requestedSupervisorId: host.id,
+			claimedBySupervisorId: host.id,
+			requestedLaunchMode: agent === "codex_cli" ? "managed_codex" : "headless",
+			status: "running",
+		})
+		.returning();
+	await getDb()
+		.insert(managedSessions)
+		.values({
 			sessionId,
-			launchRequestId: launchId,
-			actionType: "prompt",
-			requestedBy: "user",
-			status: "queued",
-			metadata,
-			createdAt,
-			updatedAt: createdAt,
+			launchRequestId: launch?.id as string,
+			supervisorId: host.id,
+			managedState: "managed",
 		});
-		await getDb()
-			.update(managedSessions)
-			.set({
-				activeControlActionId: id,
-				controlLockExpiresAt: new Date(Date.now() + 90_000).toISOString(),
-			})
-			.where(eq(managedSessions.sessionId, sessionId));
-		return id;
-	}
-	const actionById = async (id: string) =>
-		(await getDb().select().from(controlActions).where(eq(controlActions.id, id)))[0];
+	return { host, sessionId, launchId: launch?.id as string };
+}
 
+/** Queue a prompt directly, with the session's lock held for it, as the old server would have. */
+async function queueOldForm(
+	sessionId: string,
+	launchId: string,
+	metadata: Record<string, unknown>,
+	createdAt = new Date().toISOString(),
+) {
+	const id = crypto.randomUUID();
+	await getDb().insert(controlActions).values({
+		id,
+		sessionId,
+		launchRequestId: launchId,
+		actionType: "prompt",
+		requestedBy: "user",
+		status: "queued",
+		metadata,
+		createdAt,
+		updatedAt: createdAt,
+	});
+	await getDb()
+		.update(managedSessions)
+		.set({
+			activeControlActionId: id,
+			controlLockExpiresAt: new Date(Date.now() + 90_000).toISOString(),
+		})
+		.where(eq(managedSessions.sessionId, sessionId));
+	return id;
+}
+const actionById = async (id: string) =>
+	(await getDb().select().from(controlActions).where(eq(controlActions.id, id)))[0];
+
+describe("claimNextControlAction", () => {
 	test("an old-form Codex prompt on a host that re-registered without the feature is failed, not handed over, and the lock is freed", async () => {
 		const w = await hostWorld("codex_cli", [CODEX_FOLLOW_UP_PROMPTS]);
 		// The supervisor restarts as an older build; registration already fails what was waiting for it.
@@ -659,5 +669,365 @@ describe("claimNextControlAction", () => {
 			metadata: {},
 		});
 		expect((await claimNextControlAction(w.host.id))?.id).toBe(id);
+	});
+});
+
+// ── review fixes ────────────────────────────────────────────────────────────────────
+
+const manageCtx = {
+	actor: { userId: null, label: "api_key", role: "admin", mode: "solo" },
+	source: "api_key" as const,
+	keyId: "key-manage",
+	scopes: ["manage"],
+	canCustomPrompt: true,
+} as never;
+
+async function openRequestFor(sessionId: string, prompt = "Run the failing test and fix it") {
+	const turn = await seedFinishedTurn(sessionId);
+	const ids = await seedProposalWithHitl({
+		sessionId,
+		providerId,
+		prompt,
+		turnKey: turn.turnKey,
+		triggerEventId: turn.stopId,
+	});
+	return { ...turn, ...ids, prompt };
+}
+
+describe("C1: retrying a delivery after the host reported a Codex failure", () => {
+	test("the failure report replaces the stored metadata, and the retry still queues the same prompt", async () => {
+		const w = await hostWorld("codex_cli", [CODEX_FOLLOW_UP_PROMPTS]);
+		const r = await openRequestFor(w.sessionId);
+		const approved = await decideHitl(
+			{ kind: "proposal", proposalId: r.proposalId },
+			"approve",
+			{ promptHash: sha256(r.prompt) },
+			manageCtx,
+		);
+		expect(approved.ok).toBe(true);
+		const claimed = await claimNextControlAction(w.host.id);
+		expect(claimed?.status).toBe("running");
+
+		// What the supervisor's Codex branch reports: its own metadata replaces the stored one.
+		const report = await app.request(
+			`/api/v1/supervisors/${w.host.id}/control-actions/${claimed?.id}/status`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-AgentPulse-Supervisor-Token": w.host.token,
+				},
+				body: JSON.stringify({
+					status: "failed",
+					error: "Codex hasn't ended its current turn. Send this again when it ends.",
+					metadata: { mode: "managed_codex" },
+				}),
+			},
+		);
+		expect(report.status).toBe(200);
+		expect((await actionById(claimed?.id as string))?.metadata).toEqual({ mode: "managed_codex" });
+
+		const retried = await retryDelivery(r.proposalId, manageCtx);
+		expect(retried).toMatchObject({ ok: true, state: "queued" });
+		const queued = (await promptRows(w.sessionId)).filter((a) => a.status === "queued");
+		expect(queued).toHaveLength(1);
+		expect((queued[0]?.metadata as { prompt?: string }).prompt).toBe(r.prompt);
+	});
+
+	test("a retry whose audited text does not match the delivery's hash is still refused", async () => {
+		const w = await hostWorld("codex_cli", [CODEX_FOLLOW_UP_PROMPTS]);
+		const r = await openRequestFor(w.sessionId);
+		await decideHitl(
+			{ kind: "proposal", proposalId: r.proposalId },
+			"approve",
+			{ promptHash: sha256(r.prompt) },
+			manageCtx,
+		);
+		const claimed = await claimNextControlAction(w.host.id);
+		await getDb()
+			.update(controlActions)
+			.set({ status: "failed", metadata: { mode: "managed_codex" } })
+			.where(eq(controlActions.id, claimed?.id as string));
+		// The delivery was approved for different text than the audit row now holds.
+		await getDb()
+			.update(aiHitlDeliveries)
+			.set({ promptHash: sha256("another prompt") });
+		const retried = await retryDelivery(r.proposalId, manageCtx);
+		expect(retried).toMatchObject({ ok: false, refusal: { code: "not_retryable" } });
+		expect(await promptRows(w.sessionId)).toHaveLength(1);
+	});
+});
+
+describe("C2: a Codex session that is no longer continuable", () => {
+	const degrade = (sessionId: string, state = "degraded") =>
+		getDb()
+			.update(managedSessions)
+			.set({ managedState: state })
+			.where(eq(managedSessions.sessionId, sessionId));
+
+	test("POST /prompt is 409 managed_state_not_continuable with no action and no lock", async () => {
+		const w = await hostWorld("codex_cli", [CODEX_FOLLOW_UP_PROMPTS]);
+		await degrade(w.sessionId);
+		const res = await postPrompt(w.sessionId);
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({
+			error: "managed_state_not_continuable",
+			message: ENDED_COPY,
+		});
+		expect(await promptRows(w.sessionId)).toEqual([]);
+		expect(await lockOf(w.sessionId)).toEqual({ id: null, expires: null });
+	});
+
+	test("an approval answers prompt_not_deliverable / managed_state and the request stays open", async () => {
+		const w = await hostWorld("codex_cli", [CODEX_FOLLOW_UP_PROMPTS]);
+		const r = await openRequestFor(w.sessionId);
+		await degrade(w.sessionId);
+		const result = await resolveProposal({
+			hitlId: r.hitlId,
+			action: "approve",
+			promptSha256: sha256(r.prompt),
+			actor: ACTOR,
+			actorKind: "user",
+		});
+		expect(result).toMatchObject({
+			ok: false,
+			status: 409,
+			code: "prompt_not_deliverable",
+			reason: "managed_state",
+		});
+		expect(
+			(await getDb().select().from(aiHitlRequests).where(eq(aiHitlRequests.id, r.hitlId)))[0]
+				?.status,
+		).toBe("awaiting_reply");
+		expect(await promptRows(w.sessionId)).toEqual([]);
+	});
+
+	test("the order: offline, then gone, then mismatch, then upgrade, then this", async () => {
+		const code = async (sessionId: string) =>
+			((await (await postPrompt(sessionId)).json()) as { error: string }).error;
+
+		const offline = await hostWorld("codex_cli", []);
+		await degrade(offline.sessionId);
+		await getDb()
+			.update(supervisors)
+			.set({ heartbeatLeaseExpiresAt: new Date(Date.now() - 1_000).toISOString() })
+			.where(eq(supervisors.id, offline.host.id));
+		expect(await code(offline.sessionId)).toBe("host_offline");
+
+		const gone = await hostWorld("codex_cli", []);
+		await degrade(gone.sessionId);
+		await getDb()
+			.update(supervisors)
+			.set({ enrollmentState: "revoked" })
+			.where(eq(supervisors.id, gone.host.id));
+		expect(await code(gone.sessionId)).toBe("host_gone");
+
+		const mismatch = await hostWorld("codex_cli", []);
+		await degrade(mismatch.sessionId);
+		await setAgent(mismatch.sessionId, "claude_code", "launch");
+		await expect(queuePromptAction(mismatch.sessionId, "x", ACTOR)).rejects.toBeInstanceOf(
+			LaunchMismatchError,
+		);
+
+		const old = await hostWorld("codex_cli", []);
+		await degrade(old.sessionId);
+		expect(await code(old.sessionId)).toBe("host_upgrade_required");
+
+		const current = await hostWorld("codex_cli", [CODEX_FOLLOW_UP_PROMPTS]);
+		await degrade(current.sessionId);
+		expect(await code(current.sessionId)).toBe("managed_state_not_continuable");
+	});
+
+	test("Claude is unchanged: a degraded Claude session still queues; a managed Codex session in its turn reaches the busy path", async () => {
+		const claude = await hostWorld("claude_code", []);
+		await degrade(claude.sessionId);
+		expect((await postPrompt(claude.sessionId)).status).toBe(202);
+
+		const codex = await hostWorld("codex_cli", [CODEX_FOLLOW_UP_PROMPTS]);
+		await getDb()
+			.update(sessions)
+			.set({ isWorking: true })
+			.where(eq(sessions.sessionId, codex.sessionId));
+		expect((await postPrompt(codex.sessionId)).status).toBe(202);
+	});
+
+	test("a real upgrade: the session launched before it is refused with the new copy; one launched after is sent", async () => {
+		const before = await hostWorld("codex_cli", []);
+		const r = await openRequestFor(before.sessionId);
+		const approve = () =>
+			resolveProposal({
+				hitlId: r.hitlId,
+				action: "approve",
+				promptSha256: sha256(r.prompt),
+				actor: ACTOR,
+				actorKind: "user",
+			});
+		expect(await approve()).toMatchObject({ reason: "host_upgrade_required" });
+
+		// The supervisor is upgraded and registers again, through the real route.
+		await registerHost(before.host.hostName, [CODEX_FOLLOW_UP_PROMPTS], {
+			credential: before.host.token,
+			id: before.host.id,
+		});
+		expect(
+			(await (await postPrompt(before.sessionId)).json()) as { error: string; message: string },
+		).toEqual({ error: "managed_state_not_continuable", message: ENDED_COPY });
+		expect(await approve()).toMatchObject({ ok: false, reason: "managed_state" });
+		expect(await promptRows(before.sessionId)).toEqual([]);
+
+		// A session launched after it, on the same host.
+		const after = await hostWorld("codex_cli", [CODEX_FOLLOW_UP_PROMPTS]);
+		await getDb()
+			.update(launchRequests)
+			.set({ claimedBySupervisorId: before.host.id, requestedSupervisorId: before.host.id })
+			.where(eq(launchRequests.id, after.launchId));
+		await getDb()
+			.update(managedSessions)
+			.set({ supervisorId: before.host.id })
+			.where(eq(managedSessions.sessionId, after.sessionId));
+		expect((await postPrompt(after.sessionId)).status).toBe(202);
+	});
+});
+
+describe("C4/C5/T-series: the claim", () => {
+	test("C4: an action another claimer already took is not claimed twice", async () => {
+		const w = await hostWorld("claude_code", []);
+		const id = await queueOldForm(w.sessionId, w.launchId, oldFormMetadata("claude_code"));
+		const [a, b] = await Promise.all([
+			claimNextControlAction(w.host.id),
+			claimNextControlAction(w.host.id),
+		]);
+		expect([a, b].filter((x) => x?.id === id)).toHaveLength(1);
+	});
+
+	test("C5: a prompt with no launch row fails closed unless it says claude_code", async () => {
+		const orphan = async (metadata: Record<string, unknown> | null) => {
+			const w = await hostWorld("claude_code", []);
+			const id = await queueOldForm(w.sessionId, w.launchId, metadata ?? {});
+			await getDb()
+				.update(controlActions)
+				.set({ launchRequestId: null, metadata: metadata as never });
+			await getDb().update(managedSessions).set({ launchRequestId: w.sessionId });
+			await getDb().delete(launchRequests).where(eq(launchRequests.id, w.launchId));
+			return { w, id };
+		};
+		const bare = await orphan({});
+		expect(await claimNextControlAction(bare.w.host.id)).toBeNull();
+		expect((await actionById(bare.id))?.status).toBe("failed");
+		expect(await lockOf(bare.w.sessionId)).toEqual({ id: null, expires: null });
+
+		const claude = await orphan(oldFormMetadata("claude_code"));
+		expect((await claimNextControlAction(claude.w.host.id))?.id).toBe(claude.id);
+	});
+
+	test("T1: with two hosts, the one without the feature fails and the one with it claims", async () => {
+		const old = await hostWorld("codex_cli", []);
+		const current = await hostWorld("codex_cli", [CODEX_FOLLOW_UP_PROMPTS]);
+		const oldId = await queueOldForm(old.sessionId, old.launchId, oldFormMetadata("codex_cli"));
+		const currentId = await queueOldForm(
+			current.sessionId,
+			current.launchId,
+			oldFormMetadata("codex_cli"),
+		);
+		expect(await claimNextControlAction(old.host.id)).toBeNull();
+		expect((await actionById(oldId))?.status).toBe("failed");
+		expect((await claimNextControlAction(current.host.id))?.id).toBe(currentId);
+	});
+
+	test("T2: a refused prompt's `sent` audit row reads failed with expired_unclaimed", async () => {
+		const w = await hostWorld("codex_cli", []);
+		const id = await queueOldForm(w.sessionId, w.launchId, oldFormMetadata("codex_cli"));
+		const auditId = await insertAuditIntent(getDb(), {
+			sessionId: w.sessionId,
+			sessionName: null,
+			actorKind: "user",
+			actorUserId: null,
+			actorLabel: "user",
+			promptSha256: sha256("p"),
+			promptText: "p",
+			controlActionId: id,
+		});
+		await markAuditSent(getDb(), auditId);
+		expect(await claimNextControlAction(w.host.id)).toBeNull();
+		const [row] = await getDb()
+			.select()
+			.from(aiDispatchAudit)
+			.where(eq(aiDispatchAudit.id, auditId));
+		expect(row).toMatchObject({ outcome: "failed", refusalCode: "expired_unclaimed" });
+	});
+
+	test("T3: refusing a queued prompt leaves a lock held by a different action alone", async () => {
+		const w = await hostWorld("codex_cli", []);
+		const refusedId = await queueOldForm(
+			w.sessionId,
+			w.launchId,
+			oldFormMetadata("codex_cli"),
+			new Date(Date.now() - 5_000).toISOString(),
+		);
+		const stopId = crypto.randomUUID();
+		const lockExpires = new Date(Date.now() + 90_000).toISOString();
+		await getDb().insert(controlActions).values({
+			id: stopId,
+			sessionId: w.sessionId,
+			launchRequestId: w.launchId,
+			actionType: "stop",
+			requestedBy: "user",
+			status: "queued",
+			metadata: {},
+			createdAt: new Date().toISOString(),
+		});
+		await getDb()
+			.update(managedSessions)
+			.set({ activeControlActionId: stopId, controlLockExpiresAt: lockExpires })
+			.where(eq(managedSessions.sessionId, w.sessionId));
+		expect((await claimNextControlAction(w.host.id))?.id).toBe(stopId);
+		expect((await actionById(refusedId))?.status).toBe("failed");
+		expect(await lockOf(w.sessionId)).toEqual({ id: stopId, expires: lockExpires });
+	});
+
+	test("T4: a Codex launch on an old host fails whatever the action's metadata says", async () => {
+		for (const metadata of [{}, { prompt: "x" }]) {
+			const w = await hostWorld("codex_cli", []);
+			const id = await queueOldForm(w.sessionId, w.launchId, metadata);
+			expect(await claimNextControlAction(w.host.id)).toBeNull();
+			const row = await actionById(id);
+			expect(row?.status).toBe("failed");
+			expect(row?.error).toBe(UPGRADE_COPY);
+		}
+	});
+
+	test("T5: a live lock on the old Codex session does not hide the upgrade reason", async () => {
+		const w = await hostWorld("codex_cli", []);
+		const turn = await seedFinishedTurn(w.sessionId);
+		// Queued before the turn ended: a later one would make the dispatch's turn check say "moved on" first.
+		await queueOldForm(
+			w.sessionId,
+			w.launchId,
+			oldFormMetadata("codex_cli"),
+			new Date(Date.now() - 3_600_000).toISOString(),
+		);
+		expect(await promptDeliverability(w.sessionId)).toEqual({
+			deliverable: false,
+			reason: "host_upgrade_required",
+		});
+		expect(((await (await postPrompt(w.sessionId)).json()) as { error: string }).error).toBe(
+			"host_upgrade_required",
+		);
+		expect(
+			await dispatchPrompt(w.sessionId, { kind: "human", text: "go" }, ACTOR, {
+				actorKind: "user",
+				proposalId: crypto.randomUUID(),
+				triggerEventId: turn.stopId,
+				turnKey: turn.turnKey,
+			}),
+		).toMatchObject({ ok: false, reason: "host_upgrade_required" });
+	});
+
+	test("T5: a prompt queued by this server for a host with the feature is claimed (round trip)", async () => {
+		const w = await hostWorld("codex_cli", [CODEX_FOLLOW_UP_PROMPTS]);
+		const action = await queuePromptAction(w.sessionId, "go on", ACTOR);
+		const claimed = await claimNextControlAction(w.host.id);
+		expect(claimed?.id).toBe(action.id);
+		expect(claimed?.status).toBe("running");
 	});
 });

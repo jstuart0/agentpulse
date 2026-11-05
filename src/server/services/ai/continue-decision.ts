@@ -90,12 +90,13 @@ export function autoRefusalWhy(
 		case "codex_needs_person":
 			return "Automatic sending isn't available for Codex sessions yet, so this waits for you.";
 		case "host_upgrade_required":
-			return "This session's host is running an older supervisor that can't send prompts to Codex. Update the supervisor on that host.";
+			return "This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.";
 		case "launch_mismatch":
 			return "This session's records don't match how it was launched, so nothing was sent.";
+		case "managed_state":
+			return "This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.";
 		case "supervisor_offline":
 		case "observed":
-		case "managed_state":
 		case "control_busy":
 			return `This session can't receive prompts (${refused.reason}).`;
 		default:

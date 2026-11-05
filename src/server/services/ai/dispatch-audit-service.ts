@@ -194,6 +194,23 @@ export async function markAuditExpiredUnclaimed(
 }
 
 /**
+ * The (redacted) prompt text the dispatch recorded for a control action, or null. A supervisor's failure
+ * report replaces the action's own metadata, so the audit row is the durable record of what was queued.
+ */
+export async function loadAuditedPromptText(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	controlActionId: string,
+): Promise<string | null> {
+	const [row] = await db
+		.select({ promptText: aiDispatchAudit.promptText })
+		.from(aiDispatchAudit)
+		.where(eq(aiDispatchAudit.controlActionId, controlActionId))
+		.limit(1);
+	return typeof row?.promptText === "string" ? row.promptText : null;
+}
+
+/**
  * The prompts the watcher itself sent to a session, by exact text, with when
  * each was first sent (ms). The transcript uses it to label a prompt the
  * watcher typed as WATCHER-SENT rather than as the human's, and the tripwire's

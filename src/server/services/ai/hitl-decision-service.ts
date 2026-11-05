@@ -31,6 +31,7 @@ import { NOT_OWNER_MESSAGE, NotOwnerError, assertCanChangeSessions } from "../au
 import { CONTROL_TIMEOUT_ERROR, expireStaleControlLock } from "../control-actions.js";
 import { notifyInboxChanged } from "../notifier.js";
 import { emitAiEvent } from "./ai-events.js";
+import { loadAuditedPromptText } from "./dispatch-audit-service.js";
 import {
 	type HitlRequestRecord,
 	effectiveExpiry,
@@ -527,7 +528,11 @@ export async function retryDelivery(
 			}),
 		);
 	}
-	const prompt = (previous?.metadata as { prompt?: unknown } | null)?.prompt;
+	// The audit row, not the action: a supervisor's failure report replaces the action's metadata (a Codex
+	// failure carries none of the prompt). The action's own text is the fallback for an attempt with no row.
+	const prompt =
+		(await loadAuditedPromptText(getDb(), row.controlActionId)) ??
+		(previous?.metadata as { prompt?: unknown } | null)?.prompt;
 	if (
 		typeof prompt !== "string" ||
 		!prompt ||

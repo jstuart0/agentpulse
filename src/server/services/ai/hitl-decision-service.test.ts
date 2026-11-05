@@ -1278,13 +1278,13 @@ describe("delivery", () => {
 			expect(action?.status).toBe("succeeded");
 		});
 
-		test("a retry whose recorded prompt was tampered with is not_retryable", async () => {
+		test("a retry whose audited prompt no longer matches the approved hash is not_retryable", async () => {
+			// The text comes from the append-only audit row (a failure report replaces the action's metadata),
+			// so the hash on the delivery is what a mismatch is made of.
 			const { proposalId } = await failedByTimeout("t-2e");
-			const [action] = await actionsFor("t-2e");
 			await getDb()
-				.update(controlActions)
-				.set({ metadata: { ...(action?.metadata as object), prompt: "something else entirely" } })
-				.where(eq(controlActions.id, action?.id as string));
+				.update(aiHitlDeliveries)
+				.set({ promptHash: hashPrompt("something else entirely") });
 
 			const out = await retryDelivery(proposalId, manageCtx(), { confirm: true });
 

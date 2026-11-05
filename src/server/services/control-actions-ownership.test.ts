@@ -81,7 +81,11 @@ async function seedManagedRowRaw(
 		.execute();
 }
 
-async function seedQueuedPrompt(sessionId: string, launchRequestId: string) {
+async function seedQueuedPrompt(
+	sessionId: string,
+	launchRequestId: string,
+	metadata: Record<string, unknown> = {},
+) {
 	const now = new Date().toISOString();
 	const [row] = await getDb()
 		.insert(controlActions)
@@ -91,7 +95,7 @@ async function seedQueuedPrompt(sessionId: string, launchRequestId: string) {
 			actionType: "prompt",
 			requestedBy: "test",
 			status: "queued",
-			metadata: {},
+			metadata,
 			createdAt: now,
 			updatedAt: now,
 		})
@@ -116,7 +120,8 @@ describe("claimNextControlAction routes by owner of record (D8)", () => {
 	test("launch-less row owned by B (control, unchanged behavior)", async () => {
 		const sessionId = "launchless-sess";
 		await seedManagedRowRaw(sessionId, "sup-B", sessionId);
-		const queued = await seedQueuedPrompt(sessionId, sessionId);
+		// With no launch row the action's own record decides, and only an explicit Claude one is handed over.
+		const queued = await seedQueuedPrompt(sessionId, sessionId, { agentType: "claude_code" });
 
 		expect(await claimNextControlAction("sup-A")).toBeNull();
 		const claimedByB = await claimNextControlAction("sup-B");

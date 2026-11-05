@@ -378,7 +378,10 @@ function hitlOutcomeReply(
 	switch (result.code) {
 		case "prompt_not_deliverable":
 			if (result.reason === "host_upgrade_required") {
-				return "This session's host needs a supervisor update before it can take prompts, so nothing was sent.";
+				return "This session's host needs a supervisor update, which ends sessions already running there, so nothing was sent. Start a new session for this work.";
+			}
+			if (result.reason === "managed_state") {
+				return "This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.";
 			}
 			return result.reason === "supervisor_offline" || result.reason === "host_gone"
 				? "This session's host isn't connected, so nothing was sent."

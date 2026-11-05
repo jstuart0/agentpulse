@@ -171,9 +171,36 @@ describe("approving from Telegram", () => {
 			.set({ agentType: "codex_cli", requestedLaunchMode: "managed_codex" });
 		const { answers } = await tap(w, "approve");
 		expect(answers).toEqual([
-			"This session's host needs a supervisor update before it can take prompts, so nothing was sent.",
+			"This session's host needs a supervisor update, which ends sessions already running there, so nothing was sent. Start a new session for this work.",
 		]);
 		expect(answers[0]?.toLowerCase()).not.toContain("copy");
+		expect(await hitlStatus(w.hitlId)).toBe("awaiting_reply");
+		expect(await promptActions(w.sessionId)).toHaveLength(0);
+	});
+
+	test("a Codex session whose process ended with its host's restart says so", async () => {
+		const w = await world();
+		await getDb().update(sessions).set({ agentType: "codex_cli" });
+		await getDb()
+			.update(launchRequests)
+			.set({ agentType: "codex_cli", requestedLaunchMode: "managed_codex" });
+		await getDb().update(managedSessions).set({ managedState: "degraded" });
+		await getDb()
+			.update(supervisors)
+			.set({
+				capabilities: {
+					version: 1,
+					agentTypes: ["codex_cli"],
+					launchModes: ["managed_codex"],
+					os: "linux",
+					terminalSupport: [],
+					features: ["codex_follow_up_prompts"],
+				},
+			});
+		const { answers } = await tap(w, "approve");
+		expect(answers).toEqual([
+			"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.",
+		]);
 		expect(await hitlStatus(w.hitlId)).toBe("awaiting_reply");
 		expect(await promptActions(w.sessionId)).toHaveLength(0);
 	});

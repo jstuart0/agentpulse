@@ -248,13 +248,16 @@ describe("mapError — a session whose host isn't there (AGEN-66)", () => {
 		expect(text).not.toContain("host_gone");
 	});
 
-	test("a Codex session on a host too old to send prompts says to update the supervisor, whichever route refused", () => {
+	test("a Codex session on a host too old to send prompts says to start a new session, whichever route refused", () => {
 		const copy =
-			"This session's host is running an older supervisor that can't send prompts to Codex. Update the supervisor on that host.";
-		const bare = mapError(
+			"This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.";
+		const withMessage = mapError(
 			new ApiError(409, { error: "host_upgrade_required", message: copy }),
 			BASE_URL,
 		).content[0].text;
+		expect(withMessage).toBe(copy);
+		const bare = mapError(new ApiError(409, { error: "host_upgrade_required" }), BASE_URL)
+			.content[0].text;
 		expect(bare).toBe(copy);
 		const decided = mapError(
 			new ApiError(409, { error: "prompt_not_deliverable", reason: "host_upgrade_required" }),
@@ -262,7 +265,25 @@ describe("mapError — a session whose host isn't there (AGEN-66)", () => {
 		).content[0].text;
 		expect(decided).toContain("NOT sent");
 		expect(decided).toContain("still open");
-		expect(decided).toContain("Update the supervisor");
+		expect(decided).toContain("Decline it");
+		expect(decided).toContain("start a new session");
+		expect(decided).not.toContain("call decide_hitl again");
 		expect(decided).not.toContain("host_upgrade_required");
+	});
+
+	test("a Codex session whose process ended with its host's restart says so, whichever route refused", () => {
+		const copy =
+			"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.";
+		expect(
+			mapError(new ApiError(409, { error: "managed_state_not_continuable" }), BASE_URL).content[0]
+				.text,
+		).toBe(copy);
+		const decided = mapError(
+			new ApiError(409, { error: "prompt_not_deliverable", reason: "managed_state" }),
+			BASE_URL,
+		).content[0].text;
+		expect(decided).toContain("process ended when its host restarted");
+		expect(decided).toContain("NOT sent");
+		expect(decided).not.toContain("managed_state");
 	});
 });

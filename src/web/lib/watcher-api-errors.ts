@@ -32,7 +32,9 @@ registerApiErrorMessages({
 
 registerApiErrorReasonMessages({
 	prompt_not_deliverable: {
+		managed_state:
+			"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.",
 		host_upgrade_required:
-			"This session's host is running an older supervisor that can't send prompts to Codex. Update the supervisor on that host.",
+			"This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.",
 	},
 });

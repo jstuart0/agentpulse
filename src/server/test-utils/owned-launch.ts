@@ -83,7 +83,8 @@ async function seedLiveHostIfAbsent(supervisorId: string): Promise<void> {
 				launchModes: ["headless", "interactive_terminal", "managed_codex"],
 				os: "linux",
 				terminalSupport: ["terminal"],
-				// A fixture host takes Codex follow-ups; a test about an older supervisor seeds its own.
+				// A fixture host takes Codex follow-ups; a test about an older supervisor seeds its own. (supervisor-fixture.ts's
+				// seedSupervisor differs on purpose: its default host is an older one, with no features.)
 				features: [CODEX_FOLLOW_UP_PROMPTS],
 				executables: {
 					claude: {

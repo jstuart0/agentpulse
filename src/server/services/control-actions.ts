@@ -7,6 +7,7 @@ import type {
 	LaunchMode,
 	LaunchRequest,
 	LaunchableAgentType,
+	ManagedState,
 	SessionTemplateInput,
 } from "../../shared/types.js";
 import type { Actor } from "../auth/actor.js";
@@ -23,6 +24,7 @@ import {
 } from "../db/schema/index.js";
 import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
+import { CONTINUABLE_MANAGED_STATES } from "./ai/continuability.js";
 import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
 import { fenceApprovalsForStop } from "./codex-approvals-fence.js";
 import { type ClosedApproval, runApprovalClosedEffects } from "./codex-approvals.js";
@@ -330,7 +332,7 @@ export class HostGoneError extends Error {
 
 /** The words every reader of this refusal shares: the 409 body, the AI path, the claim-time failure. */
 export const HOST_UPGRADE_REQUIRED_MESSAGE =
-	"This session's host is running an older supervisor that can't send prompts to Codex. Update the supervisor on that host.";
+	"This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.";
 
 /**
  * The host's supervisor predates `codex_follow_up_prompts`, so it would send a Codex prompt down the
@@ -344,6 +346,22 @@ export class HostUpgradeRequiredError extends Error {
 	}
 }
 
+/** What a person is told when a Codex session's process is gone (its host restarted): nothing can be sent to it. */
+export const MANAGED_STATE_NOT_CONTINUABLE_MESSAGE =
+	"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.";
+
+/**
+ * A Codex session whose managed state can no longer take a prompt: registration moves the host's Codex
+ * sessions to `degraded` because their app-servers died with the previous supervisor process.
+ */
+export class ManagedStateNotContinuableError extends Error {
+	readonly code = "managed_state_not_continuable";
+	constructor() {
+		super(MANAGED_STATE_NOT_CONTINUABLE_MESSAGE);
+		this.name = "ManagedStateNotContinuableError";
+	}
+}
+
 export type EnqueueRefusal =
 	| "not_managed"
 	| "session_missing"
@@ -352,7 +370,8 @@ export type EnqueueRefusal =
 	| "control_busy"
 	| "host_offline"
 	| "host_gone"
-	| "host_upgrade_required";
+	| "host_upgrade_required"
+	| "managed_state";
 
 function refusalToError(reason: EnqueueRefusal): Error {
 	switch (reason) {
@@ -372,6 +391,8 @@ function refusalToError(reason: EnqueueRefusal): Error {
 			return new HostGoneError();
 		case "host_upgrade_required":
 			return new HostUpgradeRequiredError();
+		case "managed_state":
+			return new ManagedStateNotContinuableError();
 	}
 }
 
@@ -571,7 +592,6 @@ export async function enqueuePromptInTx(
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
 	if (!managed) return { ok: false, reason: "not_managed" };
-	if (managed.activeControlActionId) return { ok: false, reason: "control_busy" };
 
 	const [session] = await tx
 		.select()
@@ -601,6 +621,14 @@ export async function enqueuePromptInTx(
 	if (isCodex && !(await hostTakesCodexPrompts(tx, sessionId))) {
 		return { ok: false, reason: "host_upgrade_required" };
 	}
+	// A Codex session's process dies with its host's supervisor, and registration then marks it degraded: a
+	// prompt queued for it would only be refused by the host after the person was told it was sent.
+	if (isCodex && !CONTINUABLE_MANAGED_STATES.has(managed.managedState as ManagedState)) {
+		return { ok: false, reason: "managed_state" };
+	}
+	// Judged after the refusals above, so a held lock doesn't hide why the session can't take a prompt;
+	// the conditional lock below still decides a race.
+	if (managed.activeControlActionId) return { ok: false, reason: "control_busy" };
 
 	const timestamp = nowIso();
 	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp))) {
@@ -891,7 +919,15 @@ async function claimRefusalForPrompt(
 	if (launchAgentType !== null && recordedType !== null && recordedType !== launchAgentType) {
 		return LAUNCH_MISMATCH_CLAIM_MESSAGE;
 	}
-	if ((launchAgentType ?? recordedType) !== "codex_cli") return null;
+	const effective = launchAgentType ?? recordedType;
+	// With no launch row there is nothing to check a record against: only an explicit Claude record passes.
+	if (launchAgentType === null && effective !== "claude_code" && effective !== "codex_cli") {
+		console.warn(
+			`[control-actions] prompt ${action.id} has no launch row and no usable agent type; failing it`,
+		);
+		return LAUNCH_MISMATCH_CLAIM_MESSAGE;
+	}
+	if (effective !== "codex_cli") return null;
 	return (await supervisorTakesCodexPrompts(getDb(), supervisorId))
 		? null
 		: HOST_UPGRADE_REQUIRED_MESSAGE;
@@ -988,9 +1024,11 @@ export async function claimNextControlAction(supervisorId: string) {
 				claimedBySupervisorId: supervisorId,
 				updatedAt: timestamp,
 			})
-			.where(eq(controlActions.id, candidate.id))
+			// Only a still-queued action: another claim may have taken it since it was read.
+			.where(and(eq(controlActions.id, candidate.id), eq(controlActions.status, "queued")))
 			.returning();
-		return updated ? mapControlAction(updated) : null;
+		if (!updated) continue;
+		return mapControlAction(updated);
 	}
 	return null;
 }

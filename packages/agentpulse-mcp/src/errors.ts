@@ -116,7 +116,10 @@ const ERROR_TABLE: ReadonlyArray<{
 				return "AgentPulse is busy: another action is already running on that session, so the prompt was NOT sent and the request is still open. Retryable: wait a few seconds and call decide_hitl again.";
 			}
 			if (reason === "host_upgrade_required") {
-				return "AgentPulse can't type into that session: its host is running an older supervisor that can't send prompts to Codex, so the prompt was NOT sent and the request is still open. Update the supervisor on that host, then call decide_hitl again, or decline it.";
+				return "AgentPulse can't type into that session: its host is running an older supervisor that can't send prompts to Codex, and updating it ends sessions already running there, so the prompt was NOT sent and the request is still open. Decline it, or start a new session for this work.";
+			}
+			if (reason === "managed_state") {
+				return "AgentPulse can't type into that session: its process ended when its host restarted, so the prompt was NOT sent and the request is still open. Decline it, or start a new session for this work.";
 			}
 			if (reason === "host_gone") {
 				return "AgentPulse can't type into that session: the host that ran it was removed, so the prompt was NOT sent and the request is still open. Decline it, or answer in the session.";
@@ -230,7 +233,14 @@ const ERROR_TABLE: ReadonlyArray<{
 		error: "host_upgrade_required",
 		message: (body) =>
 			bodyMessage(body) ??
-			"This session's host is running an older supervisor that can't send prompts to Codex. Update the supervisor on that host.",
+			"This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.",
+	},
+	{
+		status: 409,
+		error: "managed_state_not_continuable",
+		message: (body) =>
+			bodyMessage(body) ??
+			"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.",
 	},
 	// Ownership and role refusals (team mode). The bare codes are opaque to a
 	// model or a script; each says what is needed instead.

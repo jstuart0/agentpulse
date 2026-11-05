@@ -52,6 +52,7 @@ import {
 	HostGoneError,
 	HostOfflineError,
 	HostUpgradeRequiredError,
+	ManagedStateNotContinuableError,
 	listControlActionsForSession,
 	queuePromptAction,
 	queueStopAction,
@@ -906,7 +907,8 @@ function hostRefusalResponse(c: Context, error: unknown) {
 	if (
 		error instanceof HostOfflineError ||
 		error instanceof HostGoneError ||
-		error instanceof HostUpgradeRequiredError
+		error instanceof HostUpgradeRequiredError ||
+		error instanceof ManagedStateNotContinuableError
 	) {
 		return c.json({ error: error.code, message: error.message }, 409);
 	}
