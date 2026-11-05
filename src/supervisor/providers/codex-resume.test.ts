@@ -18,6 +18,7 @@ import type { ReportOutcome } from "../services/report-gate.js";
 import { installFakeCodex, readFakeLog } from "./__fixtures__/fake-codex.js";
 import {
 	hasManagedCodexRuntime,
+	launchManagedCodexRequest,
 	promptManagedCodexSession,
 	reconcileManagedCodexTitles,
 	resumeManagedCodexSession,
@@ -44,6 +45,7 @@ const ENV_KEYS = [
 	"FAKE_CODEX_VERSION",
 	"FAKE_CODEX_THREAD_ID",
 	"FAKE_CODEX_THREAD_CWD",
+	"FAKE_CODEX_THREAD_ORIGINATOR",
 	"FAKE_CODEX_RESUME_CWD",
 	"FAKE_CODEX_READ_ERROR",
 	"FAKE_CODEX_RESUME_ERROR",
@@ -576,6 +578,48 @@ describe("the protocol check", () => {
 	});
 });
 
+describe("a recovery with no record of the thread (the pre-upgrade path, P3.11)", () => {
+	// Measured on Codex 0.163.0: thread/read answers `originator` as the client's name at thread start;
+	// "agentpulse-supervisor" for this supervisor's own client, "codex-tui" / "codex_exec" for others.
+	const FAR_FUTURE = Date.parse("2100-01-01T00:00:00Z");
+	const asRecovery = (over: Record<string, unknown> = {}) =>
+		input({ resumeKind: "recovery", preUpgrade: { createdAtMs: FAR_FUTURE }, ...over });
+
+	test("the supervisor's own originator and a thread older than the record: resumes", async () => {
+		process.env.FAKE_CODEX_THREAD_ORIGINATOR = "agentpulse-supervisor";
+		expect(await kindOf(resumeManagedCodexSession(asRecovery(), world().callbacks))).toBe("ok");
+	});
+
+	test.each([
+		["a TUI's originator", { FAKE_CODEX_THREAD_ORIGINATOR: "codex-tui" }, FAR_FUTURE],
+		[
+			"a thread newer than the record",
+			{ FAKE_CODEX_THREAD_ORIGINATOR: "agentpulse-supervisor" },
+			1_000,
+		],
+	])("%s is thread_unverified, with no resume sent", async (_name, env, createdAtMs) => {
+		Object.assign(process.env, env);
+		const w = world();
+		expect(
+			await kindOf(
+				resumeManagedCodexSession(asRecovery({ preUpgrade: { createdAtMs } }), w.callbacks),
+			),
+		).toBe("thread_unverified");
+		expect(methods()).not.toContain("thread/resume");
+		expect(w.states).toEqual([]);
+	});
+
+	test("another directory than the launch's is refused by the ordinary directory check", async () => {
+		process.env.FAKE_CODEX_THREAD_ORIGINATOR = "agentpulse-supervisor";
+		const other = join(root, "other");
+		mkdirSync(other, { recursive: true });
+		process.env.FAKE_CODEX_THREAD_CWD = other;
+		expect(await kindOf(resumeManagedCodexSession(asRecovery(), world().callbacks))).toBe(
+			"cwd_mismatch",
+		);
+	});
+});
+
 describe("D9's branch: a project's own .codex/config.toml", () => {
 	function projectConfig() {
 		mkdirSync(join(work, ".codex"), { recursive: true });
@@ -610,5 +654,60 @@ describe("D9's branch: a project's own .codex/config.toml", () => {
 		expect(
 			await kindOf(resumeManagedCodexSession(input({ resumeKind: "recovery" }), world().callbacks)),
 		).toBe("ok");
+	});
+});
+
+describe("a launch records its thread before its first report (recovery's proof)", () => {
+	const launch = () =>
+		({
+			id: "launch-rec-1",
+			launchCorrelationId: crypto.randomUUID(),
+			agentType: "codex_cli",
+			cwd: work,
+			baseInstructions: "",
+			taskPrompt: "go",
+			model: null,
+			approvalPolicy: null,
+			sandboxMode: null,
+			requestedLaunchMode: "managed_codex",
+			env: {},
+			launchSpec: {},
+			status: "claimed",
+		}) as never;
+
+	test("recordThread runs before the first reportState, with the launch id and the thread id", async () => {
+		const order: string[] = [];
+		const request = launch() as { launchCorrelationId: string };
+		await launchManagedCodexRequest(
+			request as never,
+			{
+				recordThread: (launchId: string, threadId: string) =>
+					order.push(`record ${launchId} ${threadId}`),
+				reportState: async () => {
+					order.push("reportState");
+					return { session: { displayName: "n" }, managedSession: {} };
+				},
+				reportEvents: async () => "sent",
+			} as never,
+		);
+		expect(order[0]).toBe("record launch-rec-1 thr-1");
+		expect(order.indexOf("reportState")).toBeGreaterThan(0);
+		await stopManagedCodexSession(request.launchCorrelationId);
+	});
+
+	test("a record that throws doesn't fail the launch", async () => {
+		const request = launch() as { launchCorrelationId: string };
+		const result = await launchManagedCodexRequest(
+			request as never,
+			{
+				recordThread: () => {
+					throw new Error("disk full");
+				},
+				reportState: async () => ({ session: { displayName: "n" }, managedSession: {} }),
+				reportEvents: async () => "sent",
+			} as never,
+		);
+		expect(result.pid).toBeGreaterThan(0);
+		await stopManagedCodexSession(request.launchCorrelationId);
 	});
 });

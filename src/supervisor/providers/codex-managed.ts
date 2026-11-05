@@ -19,6 +19,7 @@ import type {
 import { disposeRuntimesAndExit } from "../services/fatal-exit.js";
 import type { ReportOutcome } from "../services/report-gate.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
+import { uuidV7Millis } from "../services/session-resume.js";
 import { canonicalSpawnCwd } from "../services/spawn-cwd.js";
 import { type ApprovalLaunch, sharedCodexApprovals } from "./codex-approvals.js";
 import {
@@ -587,6 +588,15 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		});
 		const threadId = started.thread.id;
 		const reportedByAgent = assertCodexThreadPrivileges(started, privileges);
+		// Recovery's proof of which thread this supervisor started for the launch, written before the first
+		// report so no report can name a thread the record doesn't. A record that can't be written never fails a launch.
+		try {
+			callbacks.recordThread?.(launch.id, threadId);
+		} catch (error) {
+			console.error(
+				`[codex-managed] couldn't record the thread (launch=${launch.id}): ${forHostLog(error)}`,
+			);
+		}
 
 		const bootstrap = await callbacks.reportState({
 			sessionId: launch.launchCorrelationId,
@@ -1089,6 +1099,11 @@ export interface ResumeInput {
 	resumeActionId: string;
 	/** The session's name as the person sees it; the runtime's title, so nothing renames their thread. */
 	sessionName: string;
+	/**
+	 * A recovery of a session this host has no record of: it is believed only if the thread was started by this
+	 * supervisor's own client (its `originator`) before the record existed.
+	 */
+	preUpgrade?: { createdAtMs: number };
 }
 
 export interface ResumeCallbacks extends LaunchCallbacks {
@@ -1167,6 +1182,18 @@ export async function resumeManagedCodexSession(
 		}
 		if (read?.thread?.id !== threadId || typeof read.thread.cwd !== "string") {
 			throw new CodexResumeError("missing", "thread/read answered something else");
+		}
+
+		if (input.preUpgrade) {
+			const originator = (read.thread as { originator?: unknown }).originator;
+			const startedAt = uuidV7Millis(threadId);
+			if (
+				originator !== "agentpulse-supervisor" ||
+				startedAt === null ||
+				startedAt >= input.preUpgrade.createdAtMs
+			) {
+				throw new CodexResumeError("thread_unverified", "not provably started by this supervisor");
+			}
 		}
 
 		// 8: the real directory, judged before anything acts in it.

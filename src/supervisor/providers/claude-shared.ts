@@ -38,6 +38,8 @@ export type LaunchCallbacks = {
 	 * reports into, once the bridge's config is on disk. Optional: only the dispatcher supplies it.
 	 */
 	admitBridgeSpool?: (sessionId: string) => void;
+	/** Codex only: records the thread a launch started, for recovery's proof. */
+	recordThread?: (launchRequestId: string, threadId: string) => void;
 };
 
 export type ClaudePromptAction = {

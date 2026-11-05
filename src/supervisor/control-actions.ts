@@ -50,6 +50,8 @@ export interface ControlActionDeps {
 	trustedRoots: string[];
 	providers: ControlProviders;
 	executeCleanupWorkArea: typeof executeCleanupWorkArea;
+	/** Runs a `resume` action (see services/session-resume.ts). Absent: this build can't, and says so. */
+	resumeSession?: (action: ControlAction, sessionId: string) => Promise<void>;
 	log?: (line: string) => void;
 }
 
@@ -300,6 +302,12 @@ export function createControlActionHandler(
 
 	return async function handleControlAction(action) {
 		const sessionId = action.sessionId ?? null;
+		// A resume runs BEFORE the gate's verdict: this host may not know the session yet (while exclude rules
+		// exist the gate calls an unknown session excluded), and the resumer does its own sequence, judging the
+		// real directory itself and refusing through refuseResume.
+		if (action.actionType === "resume" && sessionId && deps.resumeSession) {
+			return deps.resumeSession(action, sessionId);
+		}
 		const named = namedDirectory(action);
 		const verdict = sessionId ? gate.verdict(sessionId, named) : gate.verdictForDirectory(named);
 		if (verdict !== "send") {

@@ -851,3 +851,91 @@ describe("O-marker literal pin", () => {
 		);
 	});
 });
+
+describe("isHeld: a session being resumed is not posted for (AGEN-115, D16)", () => {
+	const rules = NO_EXCLUDE_RULES;
+	const run = (
+		path: string,
+		state: Parameters<typeof processRolloutFile>[1],
+		fetchImpl: ReturnType<typeof fakeFetch>,
+		home: string,
+		isHeld?: (id: string) => boolean,
+	) =>
+		processRolloutFile(
+			path,
+			state,
+			"http://x",
+			null,
+			new Map(),
+			fetchImpl,
+			home,
+			rules,
+			null,
+			isHeld,
+		);
+
+	test("a held id posts nothing and its offset advances past what it read", async () => {
+		const dir = mkTmp("ap-codex-held-");
+		const home = mkTmp("ap-codex-home-");
+		const { path, sessionId } = writeFixtureCopy(dir);
+		const captured: Captured[] = [];
+		const state = await run(path, undefined, fakeFetch(captured), home, (id) => id === sessionId);
+		expect(captured).toEqual([]);
+		expect(state.offset).toBe(statSync(path).size);
+	});
+
+	test("a thread_settings_applied line for a held id posts nothing either", async () => {
+		const dir = mkTmp("ap-codex-held-");
+		const home = mkTmp("ap-codex-home-");
+		const sessionId = crypto.randomUUID();
+		const path = singleLineRollout(dir, sessionId, [
+			JSON.stringify({
+				type: "event_msg",
+				payload: { type: "thread_settings_applied", settings: { approval_policy: "untrusted" } },
+			}),
+		]);
+		const captured: Captured[] = [];
+		await run(path, undefined, fakeFetch(captured), home, () => true);
+		expect(captured).toEqual([]);
+	});
+
+	test("when the hold drops, the observer continues from the end with no replay of what was skipped", async () => {
+		const dir = mkTmp("ap-codex-held-");
+		const home = mkTmp("ap-codex-home-");
+		const sessionId = crypto.randomUUID();
+		const path = singleLineRollout(dir, sessionId, [
+			userMessageLine([{ type: "input_text", text: "while held" }]),
+		]);
+		let held = true;
+		const captured: Captured[] = [];
+		const state = await run(path, undefined, fakeFetch(captured), home, () => held);
+		expect(captured).toEqual([]);
+
+		held = false;
+		appendFileSync(path, `${userMessageLine([{ type: "input_text", text: "after the hold" }])}\n`);
+		const after: Captured[] = [];
+		await run(path, state, fakeFetch(after), home, () => held);
+		const prompts = after.filter((c) => c.body.hook_event_name === "UserPromptSubmit");
+		expect(prompts.map((c) => c.body.prompt)).toEqual(["after the hold"]);
+	});
+
+	test("isHeld throwing fails open: the observer posts (a duplicate beats a loss)", async () => {
+		const dir = mkTmp("ap-codex-held-");
+		const home = mkTmp("ap-codex-home-");
+		const { path } = writeFixtureCopy(dir);
+		const captured: Captured[] = [];
+		await run(path, undefined, fakeFetch(captured), home, () => {
+			throw new Error("boom");
+		});
+		expect(captured.length).toBeGreaterThan(0);
+	});
+
+	test("a different session in the same pass is unaffected (only the held id is skipped)", async () => {
+		const dir = mkTmp("ap-codex-held-");
+		const home = mkTmp("ap-codex-home-");
+		const { path } = writeFixtureCopy(dir);
+		const captured: Captured[] = [];
+		await run(path, undefined, fakeFetch(captured), home, () => false);
+		expect(captured.length).toBeGreaterThan(0);
+	});
+});

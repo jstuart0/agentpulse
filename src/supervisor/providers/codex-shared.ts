@@ -47,6 +47,8 @@ export type LaunchCallbacks = {
 	}>;
 	/** Resolves to the report gate's outcome ("sent", "queued", "excluded", "blocked") when it came from the gate. */
 	reportEvents: (events: ManagedSessionEventInput[]) => Promise<ReportOutcome>;
+	/** Records the thread this supervisor started for a launch, before the launch's first state report (recovery's proof). Optional; a failure never fails the launch. */
+	recordThread?: (launchRequestId: string, threadId: string) => void;
 };
 
 /** The report gate would not let the prompt's event out (an exclude rule covers the session), so nothing was sent. */
