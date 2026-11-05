@@ -3,5 +3,5 @@
 	"agentType": "codex_cli",
 	"cwd": "<cwd>",
 	"managedState": "managed",
-	"launchMode": "interactive_terminal"
+	"launchMode": "managed_codex"
 }

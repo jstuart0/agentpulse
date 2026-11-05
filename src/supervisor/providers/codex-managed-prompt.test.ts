@@ -8,7 +8,16 @@
  * Never waits on a fixed sleep for an outcome: state is polled with a deadline. The `turn/start` timeout is
  * injected short; nothing here depends on elapsed time freeing a runtime, because nothing does.
  */
-import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	setDefaultTimeout,
+	setSystemTime,
+	spyOn,
+	test,
+} from "bun:test";
 import {
 	appendFileSync,
 	chmodSync,
@@ -16,6 +25,7 @@ import {
 	mkdtempSync,
 	realpathSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,6 +42,7 @@ import type {
 } from "../../shared/types.js";
 import { type ControlProviders, createControlActionHandler } from "../control-actions.js";
 import { createReportGate } from "../services/report-gate.js";
+import { SupervisorRequestError } from "../services/report-resilience.js";
 import { installFakeCodex, readFakeLog } from "./__fixtures__/fake-codex.js";
 import {
 	launchManagedCodexRequest,
@@ -58,6 +69,7 @@ const COPY = {
 	closed: "The connection to Codex closed during this turn.",
 	rejected: "Codex refused this prompt.",
 	stopped: "This prompt wasn't sent because the session stopped.",
+	notSentBusy: "This prompt wasn't sent because Codex was still busy.",
 };
 
 type Seq =
@@ -66,7 +78,7 @@ type Seq =
 type Outcome = "sent" | "queued" | "excluded" | "blocked";
 
 type Hooks = {
-	onEvents?: (events: ManagedSessionEventInput[]) => Promise<Outcome | undefined> | undefined;
+	onEvents?: (events: ManagedSessionEventInput[]) => Promise<unknown> | undefined;
 	onState?: (body: ManagedSessionStateInput) => Promise<void> | undefined;
 };
 
@@ -176,7 +188,7 @@ function makeCallbacks(seq: Seq[], hooks: Hooks) {
 			return { session: { displayName: "n" }, managedSession: {}, outcome: "sent" as const };
 		},
 		reportEvents: async (events: ManagedSessionEventInput[]) => {
-			const outcome = (await hooks.onEvents?.(events)) ?? "sent";
+			const outcome = hooks.onEvents ? await hooks.onEvents(events) : "sent";
 			for (const event of events) seq.push({ kind: "event", event });
 			return outcome;
 		},
@@ -189,15 +201,22 @@ async function launch(
 		knobs?: Record<string, string>;
 		hooks?: Hooks;
 		endLaunchTurn?: boolean;
-		request?: Partial<LaunchRequest>;
+		request?:
+			| Partial<LaunchRequest>
+			| ((ctx: { home: string; id: string }) => Partial<LaunchRequest>);
+		/** Replaces the recording callbacks, e.g. with the real report gate. */
+		callbacks?: (ctx: { home: string; id: string }) => Parameters<
+			typeof launchManagedCodexRequest
+		>[1];
 	} = {},
 ): Promise<World> {
 	const { home, logPath, controlPath } = prepare(opts.knobs);
 	const id = crypto.randomUUID();
 	const seq: Seq[] = [];
 	const hooks: Hooks = opts.hooks ?? {};
-	const callbacks = makeCallbacks(seq, hooks);
-	const launchResult = await launchManagedCodexRequest(launchRequest(id, opts.request), callbacks);
+	const callbacks = opts.callbacks ? opts.callbacks({ home, id }) : makeCallbacks(seq, hooks);
+	const request = typeof opts.request === "function" ? opts.request({ home, id }) : opts.request;
+	const launchResult = await launchManagedCodexRequest(launchRequest(id, request), callbacks);
 	const world: World = {
 		id,
 		home,
@@ -216,6 +235,29 @@ async function launch(
 		await waitFor("the launch turn's idle report", () => idleReports(world).length > before);
 	}
 	return world;
+}
+
+let settleSeq = 0;
+/**
+ * Waits until the supervisor has handled everything Codex sent before this call: a sentinel agent message
+ * goes down the same ordered pipe, and its event can only appear after the notifications ahead of it.
+ */
+async function settle(world: World) {
+	const text = `settle-${++settleSeq}`;
+	control(world, {
+		send: {
+			method: "item/completed",
+			params: { threadId: "thr-1", item: { type: "agentMessage", id: text, text } },
+		},
+	});
+	await waitFor(`the ${text} sentinel`, () =>
+		events(world).some((event) => event.content === text),
+	);
+}
+
+/** For after the process is gone: nothing can be sent down the pipe, so let the pending continuations run. */
+async function flush() {
+	for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
 }
 
 const control = (world: World, command: unknown) =>
@@ -259,6 +301,32 @@ async function expectRejects(promise: Promise<unknown>, message: string) {
 	return error as Error;
 }
 
+/** Records the timers of a second or more that are set and not yet fired or cleared. */
+function trackLongTimers() {
+	const realSet = globalThis.setTimeout;
+	const realClear = globalThis.clearTimeout;
+	const live = new Set<unknown>();
+	globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+		const handle = realSet(() => {
+			live.delete(handle);
+			fn(...args);
+		}, ms);
+		if (typeof ms === "number" && ms >= 1000) live.add(handle);
+		return handle;
+	}) as unknown as typeof setTimeout;
+	globalThis.clearTimeout = ((handle: Parameters<typeof clearTimeout>[0]) => {
+		live.delete(handle);
+		realClear(handle);
+	}) as typeof clearTimeout;
+	return {
+		live,
+		restore: () => {
+			globalThis.setTimeout = realSet;
+			globalThis.clearTimeout = realClear;
+		},
+	};
+}
+
 const FOLLOW_UP_END = ["HeadlessPromptCompleted", "HeadlessPromptFailed"];
 
 describe("an accepted follow-up", () => {
@@ -272,6 +340,8 @@ describe("an accepted follow-up", () => {
 		const [, second] = turnStarts(world);
 		expect(second?.params).toEqual({ threadId: "thr-1", input: [{ type: "text", text }] });
 		expect(Object.keys(second?.params ?? {}).sort()).toEqual(["input", "threadId"]);
+		expect(second?.params.input).toHaveLength(1);
+		expect(Object.keys(second?.params.input[0]).sort()).toEqual(["text", "type"]);
 		// Drift guard: between the call and its settle the only request on the wire is turn/start.
 		const methods = readFakeLog(world.logPath)
 			.slice(framesBefore)
@@ -301,7 +371,7 @@ describe("an accepted follow-up", () => {
 			if (batch[0]?.eventType === "HeadlessPromptSubmitted") {
 				startsWhenReported = turnStarts(world).length;
 			}
-			return undefined;
+			return "sent";
 		};
 		await prompt(world, "do the thing");
 		// Only the launch's own turn/start existed when the prompt was reported.
@@ -411,7 +481,7 @@ describe("refusals before anything is sent", () => {
 			},
 		});
 		endTurn(world, "turn-9");
-		await Bun.sleep(150);
+		await settle(world);
 		await expectRejects(prompt(world, "two"), COPY.busy);
 		expect(eventsOf(world, ...FOLLOW_UP_END)).toHaveLength(0);
 
@@ -495,6 +565,56 @@ describe("how a turn ends", () => {
 		}
 	});
 
+	test("a failing end event is logged and the idle report is still sent", async () => {
+		const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const world = await launch();
+			await prompt(world, "go");
+			const idleBefore = idleReports(world).length;
+			world.hooks.onEvents = async (batch) => {
+				if (FOLLOW_UP_END.includes(batch[0]?.eventType ?? ""))
+					throw new Error("server unreachable");
+				return "sent";
+			};
+			endTurn(world, "turn-2");
+			await waitFor("the idle report", () => idleReports(world).length > idleBefore);
+			expect(eventsOf(world, ...FOLLOW_UP_END)).toHaveLength(0);
+			world.hooks.onEvents = undefined;
+			await prompt(world, "next");
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
+	test("a repeated turn/completed for a turn that already ended changes nothing", async () => {
+		const world = await launch();
+		await prompt(world, "go");
+		const idleBefore = idleReports(world).length;
+		endTurn(world, "turn-2");
+		await waitFor("the idle report", () => idleReports(world).length === idleBefore + 1);
+		endTurn(world, "turn-2");
+		await settle(world);
+		expect(idleReports(world).length).toBe(idleBefore + 1);
+		expect(eventsOf(world, ...FOLLOW_UP_END)).toHaveLength(1);
+	});
+
+	test("a request raised during a follow-up leaves the runtime busy", async () => {
+		const world = await launch({
+			knobs: {
+				FAKE_CODEX_REQUESTS_ON_TURN: "2",
+				FAKE_CODEX_REQUESTS: JSON.stringify([
+					{ method: "item/commandExecution/requestApproval", params: { command: "touch x" } },
+				]),
+			},
+		});
+		await prompt(world, "go");
+		await waitFor("the approval request to be answered", () =>
+			readFakeLog(world.logPath).some((entry) => entry.answer),
+		);
+		await expectRejects(prompt(world, "again"), COPY.busy);
+		expect(turnStarts(world)).toHaveLength(2);
+	});
+
 	test("the launch turn's completion emits no boundary event but still reports idle", async () => {
 		const world = await launch({ endLaunchTurn: false });
 		endTurn(world, "turn-1");
@@ -508,7 +628,7 @@ describe("how a turn ends", () => {
 		const idleBefore = idleReports(world).length;
 		await prompt(world, "quick");
 		await waitFor("the idle report", () => idleReports(world).length > idleBefore);
-		await Bun.sleep(50);
+		await settle(world);
 		expect(eventsOf(world, ...FOLLOW_UP_END)).toHaveLength(1);
 		expect(idleReports(world).length - idleBefore).toBe(1);
 		await prompt(world, "next");
@@ -542,9 +662,26 @@ describe("when Codex says no, or says nothing", () => {
 		await expectRejects(prompt(world, "silent", { turnStartTimeoutMs: 60 }), COPY.timeout);
 		expect(eventsOf(world, "HeadlessPromptFailed")).toHaveLength(0);
 
-		await Bun.sleep(400);
-		await expectRejects(prompt(world, "retry"), COPY.uncertain);
+		// Ten minutes later by every clock the code could read: still blocked, still nothing sent.
+		setSystemTime(new Date(Date.now() + 10 * 60_000));
+		try {
+			await expectRejects(prompt(world, "retry"), COPY.uncertain);
+		} finally {
+			setSystemTime();
+		}
 		expect(turnStarts(world)).toHaveLength(2);
+	});
+
+	test("no timer is left behind by the uncertain state once the session stops", async () => {
+		const world = await launch({ knobs: { FAKE_CODEX_TURN_START_SILENT: "2" } });
+		const timers = trackLongTimers();
+		try {
+			await expectRejects(prompt(world, "silent", { turnStartTimeoutMs: 60 }), COPY.timeout);
+			await stopManagedCodexSession(world.id, { interruptTimeoutMs: 100 });
+			expect([...timers.live], "timers of a second or more still pending").toEqual([]);
+		} finally {
+			timers.restore();
+		}
 	});
 
 	test("a reply with no usable turn id is the same as a timeout", async () => {
@@ -565,7 +702,7 @@ describe("when Codex says no, or says nothing", () => {
 		control(world, {
 			send: { method: "turn/started", params: { threadId: "thr-1", turn: { id: "turn-2" } } },
 		});
-		await Bun.sleep(100);
+		await settle(world);
 		// Started clears "uncertain", but the turn is now known and running.
 		await expectRejects(prompt(world, "retry"), COPY.busy);
 		endTurn(world, "turn-2");
@@ -638,10 +775,14 @@ describe("when Codex says no, or says nothing", () => {
 				return true;
 			}
 		});
-		await Bun.sleep(100);
+		await flush();
 		expect(idleReports(world)).toHaveLength(idleBefore);
 		expect(eventsOf(world, "HeadlessPromptFailed")).toHaveLength(0);
 		await expectRejects(prompt(world, "after"), COPY.noRuntime);
+		// No turn was known to be active, so there was nothing to interrupt.
+		expect(readFakeLog(world.logPath).some((entry) => entry.method === "turn/interrupt")).toBe(
+			false,
+		);
 	});
 });
 
@@ -680,7 +821,7 @@ describe("the channel closing", () => {
 			(e) => e.kind === "state" && e.body.managedState === "degraded",
 		) as Extract<Seq, { kind: "state" }>;
 		expect(degraded.body.status).toBe("idle");
-		await Bun.sleep(50);
+		await flush();
 		expect(eventsOf(world, "HeadlessPromptFailed", "HeadlessPromptCompleted")).toHaveLength(0);
 	});
 
@@ -688,7 +829,7 @@ describe("the channel closing", () => {
 		const world = await launch();
 		await prompt(world, "go");
 		await stopManagedCodexSession(world.id, { interruptTimeoutMs: 100 });
-		await Bun.sleep(100);
+		await flush();
 		expect(
 			world.seq.filter((e) => e.kind === "state" && e.body.managedState === "degraded"),
 		).toHaveLength(0);
@@ -713,6 +854,85 @@ describe("what the report gate says about the prompt event", () => {
 			expect(turnStarts(world)).toHaveLength(2);
 		});
 	}
+
+	for (const outcome of [undefined, "weird"]) {
+		test(`an outcome of ${String(outcome)} is not a recorded prompt: withheld, no frame`, async () => {
+			const world = await launch();
+			world.hooks.onEvents = async () => outcome;
+			const error = await prompt(world, "x").then(
+				() => null,
+				(thrown) => thrown,
+			);
+			expect(error).toBeInstanceOf(CodexPromptWithheld);
+			expect(turnStarts(world)).toHaveLength(1);
+		});
+	}
+
+	test("a Codex turn starting while the prompt is being recorded: nothing is sent, one Failed, busy", async () => {
+		const world = await launch();
+		let release: () => void = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let reached = false;
+		world.hooks.onEvents = async (batch) => {
+			if (batch[0]?.eventType === "HeadlessPromptSubmitted") {
+				reached = true;
+				await held;
+			}
+			return "sent";
+		};
+		const pending = prompt(world, "x");
+		pending.catch(() => {});
+		await waitFor("the report to be in flight", () => reached);
+		control(world, {
+			send: { method: "turn/started", params: { threadId: "thr-1", turn: { id: "turn-77" } } },
+		});
+		await settle(world);
+		release();
+		await expectRejects(pending, COPY.busy);
+		expect(turnStarts(world)).toHaveLength(1);
+		const failed = eventsOf(world, "HeadlessPromptFailed");
+		expect(failed.map((event) => event.content)).toEqual([COPY.notSentBusy]);
+	});
+
+	test("the not-recorded undo sends no idle report when a stop began meanwhile", async () => {
+		const world = await launch();
+		let release: () => void = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let reached = false;
+		world.hooks.onEvents = async () => {
+			reached = true;
+			await held;
+			throw new Error("unreachable");
+		};
+		const idleBefore = idleReports(world).length;
+		const pending = prompt(world, "x");
+		pending.catch(() => {});
+		await waitFor("the report to be in flight", () => reached);
+		await stopManagedCodexSession(world.id, { interruptTimeoutMs: 100 });
+		release();
+		await expectRejects(pending, COPY.notRecorded);
+		await flush();
+		expect(idleReports(world).length).toBe(idleBefore);
+	});
+
+	test("an unplanned close during a stop's interrupt window reports no degraded state", async () => {
+		const world = await launch({ knobs: { FAKE_CODEX_IGNORE_INTERRUPT: "1" } });
+		await prompt(world, "go");
+		const stopping = stopManagedCodexSession(world.id, { interruptTimeoutMs: 600 });
+		await waitFor("the interrupt", () =>
+			readFakeLog(world.logPath).some((entry) => entry.method === "turn/interrupt"),
+		);
+		control(world, { exit: 1 });
+		await waitFor("Failed", () => eventsOf(world, "HeadlessPromptFailed").length === 1);
+		await stopping;
+		expect(
+			world.seq.filter((e) => e.kind === "state" && e.body.managedState === "degraded"),
+		).toEqual([]);
+	});
 
 	test("queued proceeds", async () => {
 		const world = await launch();
@@ -757,10 +977,10 @@ describe("what the report gate says about the prompt event", () => {
 		});
 		let reached = false;
 		world.hooks.onEvents = async (batch) => {
-			if (batch[0]?.eventType !== "HeadlessPromptSubmitted") return undefined;
+			if (batch[0]?.eventType !== "HeadlessPromptSubmitted") return "sent";
 			reached = true;
 			await held;
-			return undefined;
+			return "sent";
 		};
 		const pending = prompt(world, "x");
 		pending.catch(() => {});
@@ -785,7 +1005,7 @@ describe("what the report gate says about the prompt event", () => {
 		// Not "busy": the session is going away, and the person should be told so.
 		await expectRejects(prompt(world, "too late"), COPY.noRuntime);
 		endTurn(world, "turn-2");
-		await Bun.sleep(150);
+		await settle(world);
 		await stopping;
 		expect(idleReports(world).length).toBe(idleBefore);
 	});
@@ -799,17 +1019,17 @@ describe("what the report gate says about the prompt event", () => {
 		});
 		let reached = false;
 		world.hooks.onEvents = async (batch) => {
-			if (!FOLLOW_UP_END.includes(batch[0]?.eventType ?? "")) return undefined;
+			if (!FOLLOW_UP_END.includes(batch[0]?.eventType ?? "")) return "sent";
 			reached = true;
 			await held;
-			return undefined;
+			return "sent";
 		};
 		const idleBefore = idleReports(world).length;
 		endTurn(world, "turn-2");
 		await waitFor("the end event to be in flight", () => reached);
 		await stopManagedCodexSession(world.id, { interruptTimeoutMs: 100 });
 		release();
-		await Bun.sleep(150);
+		await flush();
 		expect(idleReports(world).length).toBe(idleBefore);
 	});
 
@@ -822,10 +1042,10 @@ describe("what the report gate says about the prompt event", () => {
 		});
 		let reached = false;
 		world.hooks.onEvents = async (batch) => {
-			if (!FOLLOW_UP_END.includes(batch[0]?.eventType ?? "")) return undefined;
+			if (!FOLLOW_UP_END.includes(batch[0]?.eventType ?? "")) return "sent";
 			reached = true;
 			await held;
-			return undefined;
+			return "sent";
 		};
 		const idleBefore = idleReports(world).length;
 		endTurn(world, "turn-2");
@@ -833,9 +1053,83 @@ describe("what the report gate says about the prompt event", () => {
 		world.hooks.onEvents = undefined;
 		await prompt(world, "B");
 		release();
-		await Bun.sleep(150);
+		await settle(world);
 		expect(idleReports(world).length).toBe(idleBefore);
 		await expectRejects(prompt(world, "C"), COPY.busy);
+	});
+});
+
+describe("with the real report gate behind the callbacks", () => {
+	const gateWorld = () => {
+		const posted: Array<{ path: string; body: any }> = [];
+		let gate: ReturnType<typeof createReportGate>;
+		const workOf = (home: string) => join(home, "work");
+		const launching = launch({
+			endLaunchTurn: false,
+			request: ({ home }) => ({ cwd: workOf(home) }),
+			callbacks: ({ home, id }) => {
+				mkdirSync(workOf(home), { recursive: true });
+				mkdirSync(join(home, ".agentpulse"), { recursive: true, mode: 0o700 });
+				chmodSync(join(home, ".agentpulse"), 0o700);
+				gate = createReportGate({
+					request: async (path: string, options?: RequestInit) => {
+						const text = options?.body ? String(options.body) : "";
+						// The server's own body limit.
+						if (Buffer.byteLength(text) > 2 * 1024 * 1024) {
+							throw new SupervisorRequestError(413, "Payload Too Large", "payload_too_large");
+						}
+						posted.push({ path, body: text ? JSON.parse(text) : {} });
+						return { session: { displayName: "n" }, managedSession: {}, events: [] };
+					},
+					supervisorId: "sup-1",
+					home,
+					now: () => 0,
+					log: () => {},
+				} as never);
+				gate.noteLaunch("launch-1", id, workOf(home));
+				return {
+					reportState: (body: ManagedSessionStateInput) => gate.reportState(body),
+					reportEvents: (batch: ManagedSessionEventInput[]) => gate.reportEvents(id, batch),
+				} as never;
+			},
+		});
+		const idleSent = () =>
+			posted.filter((p) => p.path.endsWith("/managed-session-state") && p.body.status === "idle");
+		return { posted, idleSent, workOf, launching };
+	};
+
+	test("a really excluded session: the prompt is withheld, nothing is sent, and its text never leaves", async () => {
+		const g = gateWorld();
+		const world = await g.launching;
+		endTurn(world, "turn-1");
+		await waitFor("the launch turn's idle report", () => g.idleSent().length > 0);
+
+		const rules = join(world.home, ".agentpulse", "exclude");
+		writeFileSync(rules, `${g.workOf(world.home)}\n`, { mode: 0o600 });
+		chmodSync(rules, 0o600);
+		utimesSync(rules, new Date("2026-02-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z"));
+
+		const error = await prompt(world, "EXCLUDED-SECRET").then(
+			() => null,
+			(thrown) => thrown,
+		);
+		expect(error).toBeInstanceOf(CodexPromptWithheld);
+		expect(turnStarts(world)).toHaveLength(1);
+		expect(JSON.stringify(g.posted)).not.toContain("EXCLUDED-SECRET");
+	});
+
+	test("an over-limit multibyte prompt gets a real 413: not recorded, nothing sent, one idle report", async () => {
+		const g = gateWorld();
+		const world = await g.launching;
+		endTurn(world, "turn-1");
+		await waitFor("the launch turn's idle report", () => g.idleSent().length > 0);
+		const idleBefore = g.idleSent().length;
+
+		// Under the 1,000,000-character cap, about 3 MB as UTF-8: over the server's 2 MiB body limit.
+		const error = await expectRejects(prompt(world, "字".repeat(1_000_000)), COPY.notRecorded);
+		expect(error).not.toBeInstanceOf(CodexPromptWithheld);
+		expect(turnStarts(world)).toHaveLength(1);
+		expect(g.idleSent().length - idleBefore).toBe(1);
 	});
 });
 
@@ -874,13 +1168,18 @@ describe("launching", () => {
 
 		// Now the report itself fails: the launch error is still the one that surfaces.
 		prepare({ FAKE_CODEX_TURN_START_ERROR: "1" });
+		let degradedReportsAttempted = 0;
 		const failing = makeCallbacks([], {
 			onState: async (body) => {
-				if (body.managedState === "degraded") throw new Error("report failed");
+				if (body.managedState === "degraded") {
+					degradedReportsAttempted += 1;
+					throw new Error("report failed");
+				}
 			},
 		});
 		await expect(
 			launchManagedCodexRequest(launchRequest(crypto.randomUUID()), failing),
 		).rejects.toThrow(/turn refused/);
+		expect(degradedReportsAttempted, "the failing report was really tried").toBeGreaterThan(0);
 	});
 });

@@ -93,7 +93,7 @@ describe("streamHeadlessClaude in-session reporting resilience (F25/F32)", () =>
 						}
 						return { session: {} as never, managedSession: {} as never };
 					},
-					reportEvents: async () => {},
+					reportEvents: async () => "sent" as const,
 				},
 				startEvent: {
 					eventType: "HeadlessTaskStarted",
@@ -170,7 +170,7 @@ describe("streamHeadlessClaude in-session reporting resilience (F25/F32)", () =>
 						}
 						return { session: {} as never, managedSession: {} as never };
 					},
-					reportEvents: async () => {},
+					reportEvents: async () => "sent" as const,
 				},
 				startEvent: {
 					eventType: "HeadlessTaskStarted",
@@ -223,7 +223,7 @@ describe("streamHeadlessClaude in-session reporting resilience (F25/F32)", () =>
 						}
 						return { session: {} as never, managedSession: {} as never };
 					},
-					reportEvents: async () => {},
+					reportEvents: async () => "sent" as const,
 				},
 				startEvent: {
 					eventType: "HeadlessTaskStarted",
@@ -281,7 +281,7 @@ describe("streamHeadlessClaude in-session reporting resilience (F25/F32)", () =>
 						}
 						return { session: {} as never, managedSession: {} as never };
 					},
-					reportEvents: async () => {},
+					reportEvents: async () => "sent" as const,
 				},
 				startEvent: {
 					eventType: "HeadlessTaskStarted",

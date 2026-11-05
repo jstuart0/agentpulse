@@ -5,14 +5,14 @@
  *
  * Real: the control handler and the report gate (transport stubbed). Spied: the providers.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ControlAction } from "../shared/types.js";
 import { type ControlProviders, createControlActionHandler } from "./control-actions.js";
 import { CodexPromptWithheld } from "./providers/codex-shared.js";
-import { createReportGate } from "./services/report-gate.js";
+import { LAUNCH_REFUSED_MESSAGE, createReportGate } from "./services/report-gate.js";
 
 const SUPERVISOR_ID = "sup-1";
 const STATUS_PATH = `/supervisors/${SUPERVISOR_ID}/control-actions/act-1/status`;
@@ -93,6 +93,11 @@ function harness(
 	return { calls, codexArgs, claudeArgs, posted, logs, gate, handle };
 }
 
+/** What the server really queues for a Codex prompt (held equal to enqueuePromptInTx's output by its own test). */
+const CODEX_ACTION_METADATA = JSON.parse(
+	readFileSync(new URL("../shared/__fixtures__/codex-prompt-action.json", import.meta.url), "utf8"),
+) as Record<string, unknown>;
+
 const promptAction = (metadata: Record<string, unknown>): ControlAction =>
 	({
 		id: "act-1",
@@ -102,7 +107,7 @@ const promptAction = (metadata: Record<string, unknown>): ControlAction =>
 		requestedBy: null,
 		status: "claimed",
 		error: null,
-		metadata: { prompt: "go on", cwd: work, ...metadata },
+		metadata: { ...CODEX_ACTION_METADATA, prompt: "go on", cwd: work, ...metadata },
 	}) as unknown as ControlAction;
 
 const statusBodies = (h: ReturnType<typeof harness>) =>
@@ -143,7 +148,7 @@ const ROWS: Row[] = [
 	})),
 	{
 		label: "codex_cli + no managedState",
-		metadata: { agentType: "codex_cli" },
+		metadata: { agentType: "codex_cli", managedState: undefined },
 		calls: [],
 		failedWith: WRONG_STATE("not ready"),
 	},
@@ -151,7 +156,7 @@ const ROWS: Row[] = [
 		[
 			["copilot_cli", { agentType: "copilot_cli", managedState: "managed" }],
 			["a nonsense agentType", { agentType: "nonsense", managedState: "managed" }],
-			["an absent agentType", { managedState: "managed" }],
+			["an absent agentType", { agentType: undefined, managedState: "managed" }],
 			["a null agentType", { agentType: null, managedState: "managed" }],
 		] as const
 	).map(([label, metadata]) => ({
@@ -276,13 +281,12 @@ describe("a Codex session's prompt", () => {
 				throw new CodexPromptWithheld();
 			},
 		});
+		const refuse = spyOn(h.gate, "refuseControlAction");
 		await h.handle(promptAction({ agentType: "codex_cli", managedState: "managed" }));
-		const bodies = statusBodies(h);
-		expect(bodies).toHaveLength(1);
-		expect(bodies[0]?.status).toBe("failed");
-		// The generic refusal, with no metadata and no exception text.
-		expect(JSON.stringify(bodies[0])).not.toContain("CodexPromptWithheld");
-		expect(bodies[0]).not.toHaveProperty("metadata");
+		expect(refuse).toHaveBeenCalledTimes(1);
+		expect(refuse).toHaveBeenCalledWith("act-1");
+		// The gate's one generic body: no metadata, no exception text.
+		expect(statusBodies(h)).toEqual([{ status: "failed", error: LAUNCH_REFUSED_MESSAGE }]);
 	});
 
 	test("a gate throw is the not-recorded failure with {mode:'managed_codex'}, never a refusal", async () => {
@@ -291,7 +295,9 @@ describe("a Codex session's prompt", () => {
 				throw new Error(NOT_RECORDED);
 			},
 		});
+		const refuse = spyOn(h.gate, "refuseControlAction");
 		await h.handle(promptAction({ agentType: "codex_cli", managedState: "managed" }));
+		expect(refuse).not.toHaveBeenCalled();
 		expect(statusBodies(h)).toEqual([
 			{ status: "failed", error: NOT_RECORDED, metadata: { mode: "managed_codex" } },
 		]);
@@ -380,7 +386,6 @@ describe("exclusion", () => {
 		h.gate.noteCwd("sess-1", work);
 		await h.handle(promptAction({ agentType: "codex_cli", managedState: "managed" }));
 		expect(h.calls).toEqual([]);
-		expect(statusBodies(h)).toHaveLength(1);
-		expect(statusBodies(h)[0]?.status).toBe("failed");
+		expect(statusBodies(h)).toEqual([{ status: "failed", error: LAUNCH_REFUSED_MESSAGE }]);
 	});
 });

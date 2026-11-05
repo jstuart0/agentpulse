@@ -44,7 +44,7 @@ test("bridge.json holds no credential, no server address and no supervisor id, c
 	const admitted: string[] = [];
 	await launchClaudeInteractiveRequest(launch("cfg-1"), {
 		reportState: async () => ({}) as never,
-		reportEvents: async () => undefined,
+		reportEvents: async () => "sent" as const,
 		admitBridgeSpool: (id) => void admitted.push(id),
 	});
 	const file = join(home, ".agentpulse", "interactive", "cfg-1", "bridge.json");
@@ -63,7 +63,7 @@ test("bridge.json holds no credential, no server address and no supervisor id, c
 
 	await launchClaudeInteractiveRequest(launch("cfg-2"), {
 		reportState: async () => ({}) as never,
-		reportEvents: async () => undefined,
+		reportEvents: async () => "sent" as const,
 	});
 	const second = JSON.parse(
 		readFileSync(join(home, ".agentpulse", "interactive", "cfg-2", "bridge.json"), "utf-8"),

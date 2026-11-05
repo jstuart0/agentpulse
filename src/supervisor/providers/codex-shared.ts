@@ -5,6 +5,7 @@ import type {
 	ManagedSessionStateInput,
 	Session,
 } from "../../shared/types.js";
+import type { ReportOutcome } from "../services/report-gate.js";
 import type { RpcClient } from "./codex-rpc.js";
 
 /** A follow-up prompt's turn, from the moment it is reported until its one end event is written. */
@@ -45,7 +46,7 @@ export type LaunchCallbacks = {
 		outcome?: "sent" | "queued" | "excluded" | "blocked";
 	}>;
 	/** Resolves to the report gate's outcome ("sent", "queued", "excluded", "blocked") when it came from the gate. */
-	reportEvents: (events: ManagedSessionEventInput[]) => Promise<unknown>;
+	reportEvents: (events: ManagedSessionEventInput[]) => Promise<ReportOutcome>;
 };
 
 /** The report gate would not let the prompt's event out (an exclude rule covers the session), so nothing was sent. */

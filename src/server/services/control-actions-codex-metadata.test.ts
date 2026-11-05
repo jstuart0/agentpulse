@@ -49,6 +49,7 @@ async function seed(
 		.update(launchRequests)
 		.set({
 			agentType: opts.launchAgent,
+			requestedLaunchMode: opts.launchAgent === "codex_cli" ? "managed_codex" : "headless",
 			cwd: "/work/launch-dir",
 			model: "launch-model",
 			approvalPolicy: "on-request",
@@ -151,6 +152,28 @@ describe("a session row that disagrees with its launch", () => {
 		await expect(queuePromptAction("forged-sess-2", "hello", ACTOR)).rejects.toBeInstanceOf(
 			LaunchMismatchError,
 		);
+	});
+
+	test("POST /prompt answers it as it does today (400 with the error's words), queuing nothing", async () => {
+		await seed("forged-route-1", { launchAgent: "codex_cli", sessionAgent: "claude_code" });
+		const { config } = await import("../config.js");
+		const { app } = await import("../app.js");
+		const original = config.disableAuth;
+		(config as Record<string, unknown>).disableAuth = true;
+		try {
+			const res = await app.request("/api/v1/sessions/forged-route-1/prompt", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ prompt: "hello" }),
+			});
+			expect(res.status).toBe(400);
+			expect(((await res.json()) as { error: string }).error).toBe(
+				new LaunchMismatchError().message,
+			);
+			expect(await getDb().select().from(controlActions)).toEqual([]);
+		} finally {
+			(config as Record<string, unknown>).disableAuth = original;
+		}
 	});
 
 	test("the other way round (Codex row under a Claude launch) is refused too", async () => {

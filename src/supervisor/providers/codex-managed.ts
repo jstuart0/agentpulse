@@ -14,6 +14,7 @@ import type {
 	ManagedSessionStateInput,
 } from "../../shared/types.js";
 import { disposeRuntimesAndExit } from "../services/fatal-exit.js";
+import type { ReportOutcome } from "../services/report-gate.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
 import { type ApprovalLaunch, sharedCodexApprovals } from "./codex-approvals.js";
 import {
@@ -24,6 +25,7 @@ import {
 } from "./codex-protocol.js";
 import {
 	type JsonRpcNotification,
+	RpcTimeoutError,
 	initializeCodexClient,
 	startCodexAppServer,
 } from "./codex-rpc.js";
@@ -93,6 +95,7 @@ const PROMPT_COPY = {
 	closed: "The connection to Codex closed during this turn.",
 	rejected: "Codex refused this prompt.",
 	stopped: "This prompt wasn't sent because the session stopped.",
+	notSentBusy: "This prompt wasn't sent because Codex was still busy.",
 } as const;
 
 type TurnEnd = { failed: boolean; content: string; status: string; turnId?: string | null };
@@ -181,8 +184,7 @@ function forHostLog(value: unknown): string {
 	return out.slice(0, HOST_LOG_ERROR_CHARS);
 }
 
-const isRequestTimeout = (error: unknown) =>
-	error instanceof Error && error.message.startsWith("Timed out waiting for turn/start");
+const isRequestTimeout = (error: unknown) => error instanceof RpcTimeoutError;
 
 async function emitEndSafely(
 	runtime: ManagedCodexRuntime,
@@ -700,7 +702,7 @@ export async function promptManagedCodexSession(
 	};
 	const writeEnd = (end: TurnEnd) => emitEndSafely(runtime, followUp, callbacks, end);
 
-	let outcome: unknown;
+	let outcome: ReportOutcome | undefined;
 	try {
 		outcome = await callbacks.reportEvents([
 			{
@@ -719,7 +721,8 @@ export async function promptManagedCodexSession(
 		await reportIdle(runtime, callbacks, generation);
 		throw new Error(PROMPT_COPY.notRecorded);
 	}
-	if (outcome === "excluded" || outcome === "blocked") {
+	// Only a recorded prompt goes on: anything else (including an outcome this code has never heard of) is withheld.
+	if (outcome !== "sent" && outcome !== "queued") {
 		undo();
 		throw new CodexPromptWithheld();
 	}
@@ -734,6 +737,14 @@ export async function promptManagedCodexSession(
 		undo();
 		if (taken) await writeEnd({ failed: true, content: PROMPT_COPY.stopped, status: "not_sent" });
 		throw new Error(PROMPT_COPY.noRuntime);
+	}
+	// Codex spoke up while the prompt was being recorded (a turn started or went uncertain): sending now could steer it.
+	if (runtime.activeTurnId || runtime.turnUncertain) {
+		const taken = stillMine();
+		undo();
+		if (taken)
+			await writeEnd({ failed: true, content: PROMPT_COPY.notSentBusy, status: "not_sent" });
+		throw new Error(PROMPT_COPY.busy);
 	}
 
 	const markUncertain = (): never => {
@@ -863,6 +874,9 @@ async function handleManagedCodexNotification(
 		const turn = params.turn;
 		const turnId = typeof turn?.id === "string" && turn.id ? turn.id : null;
 		if (turnId && runtime.activeTurnId && turnId !== runtime.activeTurnId) return;
+		// A turn already known to have ended, or not the follow-up this runtime is starting, ends nothing now.
+		if (turnId && turnId === runtime.lastCompletedTurnId) return;
+		if (turnId && runtime.followUp?.turnId && turnId !== runtime.followUp.turnId) return;
 
 		// All of this is synchronous: nothing else may observe the runtime between the clears and the take.
 		if (turnId) runtime.lastCompletedTurnId = turnId;
@@ -878,7 +892,7 @@ async function handleManagedCodexNotification(
 					`[codex-managed] turn ended with an error (session=${runtime.sessionId}): ${forHostLog(error.message)}`,
 				);
 			}
-			await emitFollowUpEnd(followUp, callbacks, { ...endForStatus(turn?.status), turnId });
+			await emitEndSafely(runtime, followUp, callbacks, { ...endForStatus(turn?.status), turnId });
 		}
 		await reportIdle(runtime, callbacks, generation);
 	}

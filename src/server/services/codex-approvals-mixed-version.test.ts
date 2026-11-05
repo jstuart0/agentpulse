@@ -301,7 +301,7 @@ describe("a new supervisor and a Codex with no stdio transport", () => {
 					} as never,
 					{
 						reportState: async () => ({ session: {}, managedSession: {} }) as never,
-						reportEvents: async () => undefined,
+						reportEvents: async () => "sent" as const,
 					},
 				),
 			).rejects.toThrow();
