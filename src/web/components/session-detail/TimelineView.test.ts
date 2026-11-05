@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionEvent } from "../../../shared/types.js";
-import { APPROVAL_RESOLVED_EVENT, eventRowLabel, getVisibleEvents } from "./TimelineView.js";
+import {
+	APPROVAL_RESOLVED_EVENT,
+	eventRowLabel,
+	eventRowTone,
+	getVisibleEvents,
+} from "./TimelineView.js";
 
 function ackEvent(overrides: Partial<SessionEvent> = {}): SessionEvent {
 	return {
@@ -71,5 +76,39 @@ describe("Codex approval events on the timeline (AGEN-87)", () => {
 		for (const mode of ["progress", "terminal", "debug"] as const) {
 			expect(getVisibleEvents(events, mode, false, false, true)).toHaveLength(2);
 		}
+	});
+});
+
+describe("a failed prompt turn on the timeline (AGEN-91)", () => {
+	const failed = ackEvent({
+		eventType: "HeadlessPromptFailed",
+		category: "system_event",
+		content: "The turn didn't finish",
+	});
+	const otherSystem = ackEvent({
+		id: 3,
+		eventType: "ManagedWarning",
+		category: "system_event",
+		content: "warning",
+	});
+
+	test("it shows in Conversation, where other system rows stay hidden", () => {
+		expect(getVisibleEvents([failed, otherSystem], "conversation", false, false, true)).toEqual([
+			failed,
+		]);
+		expect(getVisibleEvents([failed, otherSystem], "prompts", false, false, true)).toEqual([
+			failed,
+		]);
+	});
+
+	test("the show-system toggle still hides it", () => {
+		expect(getVisibleEvents([failed], "conversation", false, false, false)).toHaveLength(0);
+		expect(getVisibleEvents([failed], "progress", false, false, false)).toHaveLength(0);
+	});
+
+	test("the row is drawn amber; an ordinary system row is not", () => {
+		expect(eventRowTone(failed)).toBe("amber");
+		expect(eventRowTone(otherSystem)).toBe("default");
+		expect(eventRowTone(ackEvent({ eventType: "x", category: "status_update" }))).toBe("emerald");
 	});
 });

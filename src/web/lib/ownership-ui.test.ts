@@ -141,6 +141,7 @@ describe("sessionActionAccess", () => {
 		canArchive: true,
 		canDelete: true,
 		canEditNotes: true,
+		canPrompt: true,
 	};
 	const none = {
 		canRename: false,
@@ -148,6 +149,7 @@ describe("sessionActionAccess", () => {
 		canArchive: false,
 		canDelete: false,
 		canEditNotes: false,
+		canPrompt: false,
 	};
 
 	test("solo: always allowed, whoever owns the session", () => {
@@ -205,6 +207,24 @@ describe("sessionActionAccess", () => {
 				{ userId: null, effectiveRole: "member" },
 			),
 		).toEqual(none);
+	});
+});
+
+describe("canPrompt follows the same owner-or-admin rule", () => {
+	const solo = ownershipUi("solo", { effectiveRole: "member" });
+	const team = ownershipUi("team", { effectiveRole: "member" });
+	const admin = ownershipUi("team", { effectiveRole: "admin" });
+
+	test("solo always, team owner and admin, not a team member who isn't the owner", () => {
+		expect(sessionActionAccess(solo, { ownerUserId: "a" }, { userId: "b" }).canPrompt).toBe(true);
+		const owner = { userId: "a", effectiveRole: "member" as const };
+		expect(sessionActionAccess(team, { ownerUserId: "a" }, owner).canPrompt).toBe(true);
+		const other = { userId: "b", effectiveRole: "member" as const };
+		expect(sessionActionAccess(team, { ownerUserId: "a" }, other).canPrompt).toBe(false);
+		expect(
+			sessionActionAccess(admin, { ownerUserId: "a" }, { userId: "c", effectiveRole: "admin" })
+				.canPrompt,
+		).toBe(true);
 	});
 });
 
