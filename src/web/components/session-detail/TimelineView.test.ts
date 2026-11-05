@@ -1,3 +1,4 @@
+import { SESSION_RESUMED_CONTENT, SESSION_RESUMED_EVENT_TYPE } from "../../../shared/session-resume.js";
 import { describe, expect, test } from "bun:test";
 import type { SessionEvent } from "../../../shared/types.js";
 import {
@@ -110,6 +111,14 @@ describe("a failed prompt turn on the timeline (AGEN-91)", () => {
 	test("it is shown as plain text, never Markdown (a remote image would leak the viewer's address)", () => {
 		expect(eventRowIsPlainText(failed)).toBe(true);
 		expect(eventRowIsPlainText(otherSystem)).toBe(false);
+	});
+
+	test("the takeover and recovery rows are plain text, and carry the server's fixed words", () => {
+		expect(eventRowIsPlainText({ eventType: SESSION_RESUMED_EVENT_TYPE })).toBe(true);
+		expect(SESSION_RESUMED_CONTENT.takeover).toBe("AgentPulse took over this session.");
+		expect(SESSION_RESUMED_CONTENT.recovery).toBe(
+			"AgentPulse resumed this session. Any turn that was running when its process ended didn't finish.",
+		);
 	});
 
 	test("the row is drawn amber; an ordinary system row is not", () => {

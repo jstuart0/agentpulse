@@ -299,3 +299,99 @@ describe("LockedDraft", () => {
 		expect(ended).toContain("kept");
 	});
 });
+
+describe("Resume session on a Codex session whose process is gone (AGEN-115)", () => {
+	const THREAD = "0199e3a2-7c1d-7a31-9e2f-123456789abc";
+	const degraded = (managed: object = {}, over: object = {}) =>
+		session("codex_cli", "degraded", {
+			managedSession: {
+				managedState: "degraded",
+				hostName: "studio",
+				providerSyncError: HOST_RESTARTED_SYNC_ERROR,
+				providerThreadId: THREAD,
+				...managed,
+			},
+			...over,
+		});
+	const renderWith = (s: Session, attempt: object = { state: "none" }) =>
+		html(
+			createElement(SessionComposerSlot, {
+				session: s,
+				attempt,
+				onSubmitted: async () => {},
+			} as never),
+		);
+
+	test("the owner or an admin gets the sentence, a Resume session button and the way to a new session", () => {
+		const out = renderWith(degraded());
+		expect(out).toContain("Resume it to keep going, or start a new session for this work.");
+		expect(out).toMatch(/<button[^>]*>Resume session<\/button>/);
+		expect(out).toContain("Go to Templates");
+		expect(out).not.toContain("<textarea");
+	});
+
+	test("the button is a 44px target and not disabled when the host is live", () => {
+		const out = renderWith(degraded());
+		expect(out).toMatch(/<button[^>]*min-h-\[44px\][^>]*>Resume session/);
+		expect(out).not.toMatch(/<button[^>]*disabled[^>]*>Resume session/);
+	});
+
+	test("an offline host: the button is disabled and the sentence is the offline one alone", () => {
+		const out = renderWith(degraded({}, { hostControl: { state: "offline", lastSeenAt: null } }));
+		expect(out).toMatch(/<button[^>]*disabled[^>]*>Resume session<\/button>/);
+		expect(out).toContain("studio is offline, so this session can&#x27;t take prompts until it&#x27;s back.");
+		expect(out).not.toContain("Resume it to keep going");
+	});
+
+	test("in flight: a busy button and the status, no box", () => {
+		const out = renderWith(degraded(), {
+			state: "in_flight",
+			actionId: "a",
+			kind: "recovery",
+			startedAt: "2026-11-04T12:00:00.000Z",
+		});
+		expect(out).toMatch(/<button[^>]*disabled[^>]*>Resuming…<\/button>/);
+		expect(out).toContain("Asking studio to resume this session…");
+		expect(out).not.toContain("<textarea");
+	});
+
+	test("a failed recovery shows the host's sentence in an alert, and the Resume button is back", () => {
+		const reason = "studio no longer has this session's history, so it can't be resumed. Start a new session for this work.";
+		const out = renderWith(degraded(), {
+			state: "failed",
+			actionId: "a",
+			kind: "recovery",
+			reason,
+		});
+		expect(out).toMatch(/role="alert"[^>]*>[^<]*studio no longer has this session&#x27;s history/);
+		expect(out).toMatch(/<button[^>]*>Resume session<\/button>/);
+	});
+
+	test("a failed takeover is not shown here: it belongs to the takeover card", () => {
+		const out = renderWith(degraded(), {
+			state: "failed",
+			actionId: "a",
+			kind: "takeover",
+			reason: "a takeover reason",
+		});
+		expect(out).not.toContain("a takeover reason");
+	});
+
+	test("a viewer who can't resume gets the 'ask' sentence and no button", () => {
+		useUserStore.setState({ mode: "team", userId: "viewer", effectiveRole: "member" });
+		const out = renderWith(degraded({}, { ownerUserId: null }));
+		expect(out).toContain("Ask an admin to resume it, or start a new session for this work.");
+		expect(out).not.toContain("Resume session");
+	});
+
+	test("no thread id, no button", () => {
+		const out = renderWith(degraded({ providerThreadId: null }));
+		expect(out).not.toContain("Resume session");
+		expect(out).toContain("Start a new session for this work.");
+	});
+
+	test("a kept draft stays readable beside the busy button", () => {
+		const out = renderWith(degraded());
+		expect(out).not.toContain("Your unsent prompt");
+	});
+});

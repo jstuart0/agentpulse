@@ -4,6 +4,7 @@ import {
 	NOTES_BLOCKED_REASON,
 	RENAME_BLOCKED_REASON,
 	sessionActionAccess,
+	sessionBindAccess,
 } from "./session-action-access.js";
 
 describe("notes and CLAUDE.md editing", () => {
@@ -114,5 +115,46 @@ describe("canPrompt follows the same owner-or-admin rule", () => {
 describe("RENAME_BLOCKED_REASON", () => {
 	test("the one owner-gated action the detail page explains is renaming", () => {
 		expect(RENAME_BLOCKED_REASON).toBe("Only the owner or an admin can rename this session.");
+	});
+});
+
+describe("sessionBindAccess: taking over, or resuming, a session", () => {
+	const solo = ownershipUi("solo", { effectiveRole: "member" });
+	const team = ownershipUi("team", { effectiveRole: "member" });
+	const ask = (
+		ui: ReturnType<typeof ownershipUi>,
+		owner: string | null,
+		viewer: { userId?: string | null; effectiveRole?: "admin" | "member" | null },
+	) => sessionBindAccess(ui, { ownerUserId: owner }, viewer);
+
+	test("solo: anyone, whoever owns the session", () => {
+		expect(ask(solo, "alice", { userId: "bob" })).toBe(true);
+		expect(ask(solo, null, {})).toBe(true);
+	});
+
+	test("team: the owner, an admin, and nobody else", () => {
+		expect(ask(team, "alice", { userId: "alice", effectiveRole: "member" })).toBe(true);
+		expect(ask(team, "alice", { userId: "bob", effectiveRole: "member" })).toBe(false);
+		expect(ask(team, "alice", { userId: "root", effectiveRole: "admin" })).toBe(true);
+	});
+
+	test("team: an unowned session is an admin's alone, unlike prompting, which any member may do", () => {
+		expect(ask(team, null, { userId: "bob", effectiveRole: "member" })).toBe(false);
+		expect(ask(team, null, { userId: "root", effectiveRole: "admin" })).toBe(true);
+		expect(
+			sessionActionAccess(team, { ownerUserId: null }, { userId: "bob", effectiveRole: "member" })
+				.canPrompt,
+		).toBe(true);
+	});
+
+	test("a signed-out viewer in team mode may not", () => {
+		expect(ask(team, "alice", { userId: null })).toBe(false);
+		expect(ask(team, null, { userId: null })).toBe(false);
+	});
+
+	test("sessionActionAccess keeps exactly its keys: the iOS harness reads them", () => {
+		expect(
+			Object.keys(sessionActionAccess(solo, { ownerUserId: null }, {})).sort(),
+		).toEqual(["canArchive", "canDelete", "canEditNotes", "canPin", "canPrompt", "canRename"]);
 	});
 });

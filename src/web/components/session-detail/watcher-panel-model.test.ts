@@ -37,6 +37,18 @@ describe("promptDeliveryNotice", () => {
 		);
 	});
 
+	test("an observed Codex session is also told it can be taken over to send them from here", () => {
+		expect(promptDeliveryNotice(true, no("observed"), "codex_cli")).toBe(
+			"AgentPulse didn't start this session, so it can't type into it. Continue will suggest prompts for you to copy. To send them from here, take the session over.",
+		);
+	});
+
+	test("an observed Claude session isn't told to take it over, which it can't be", () => {
+		expect(promptDeliveryNotice(true, no("observed"), "claude_code")).toBe(
+			"AgentPulse didn't launch this session, so it can't type into it. Continue will suggest prompts for you to copy.",
+		);
+	});
+
 	test("a host too old to send prompts to Codex says so in the one sentence every reader shares", () => {
 		// Typed as the api.ts union, so the union has to carry the reason for this file to compile.
 		const reason: PromptNotDeliverableReason = "host_upgrade_required";

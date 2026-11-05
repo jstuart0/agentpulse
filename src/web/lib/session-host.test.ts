@@ -117,3 +117,21 @@ describe("one term for a machine, everywhere a session names it", () => {
 		expect(label?.title.toLowerCase()).not.toContain("not verified");
 	});
 });
+
+describe("sessionHostLabel on a taken-over session", () => {
+	test("the tooltip says it runs through the supervisor, not that the supervisor launched it", () => {
+		const label = sessionHostLabel({
+			managedSession: { hostName: "studio", hostAffinityReason: "taken_over" },
+		});
+		expect(label?.title).toBe("Runs on studio, through its AgentPulse supervisor.");
+	});
+
+	test("negative control: a launched session keeps the launch tooltip", () => {
+		const label = sessionHostLabel({
+			managedSession: { hostName: "studio", hostAffinityReason: "launched" },
+		});
+		expect(label?.title).toBe(
+			"Runs on studio, the machine whose AgentPulse supervisor launched it.",
+		);
+	});
+});

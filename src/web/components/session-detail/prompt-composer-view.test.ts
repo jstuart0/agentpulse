@@ -18,6 +18,7 @@ import {
 	composerMode,
 	composerNotice,
 	composerStatus,
+	describeResumeFailure,
 	describeSendFailure,
 	focusBoxAfterSettle,
 	followPromptAction,
@@ -28,14 +29,18 @@ import {
 } from "./prompt-composer-view.js";
 
 type Probe = Pick<Session, "agentType" | "managedSession" | "isWorking" | "metadata"> &
-	Partial<Pick<Session, "hostControl">>;
+	Partial<Pick<Session, "hostControl" | "ownerUserId">>;
 
 function probe(
 	agentType: string,
 	managedState: ManagedState | null,
-	extra: Partial<Probe> & { syncError?: string | null; host?: HostControl["state"] } = {},
+	extra: Partial<Probe> & {
+		syncError?: string | null;
+		host?: HostControl["state"];
+		threadId?: string | null;
+	} = {},
 ): Probe {
-	const { syncError = null, host, ...rest } = extra;
+	const { syncError = null, host, threadId = null, ...rest } = extra;
 	return {
 		agentType: agentType as Session["agentType"],
 		managedSession: managedState
@@ -43,6 +48,7 @@ function probe(
 					managedState,
 					hostName: "studio",
 					providerSyncError: syncError,
+					providerThreadId: threadId,
 				} as Probe["managedSession"])
 			: null,
 		isWorking: false,
@@ -57,7 +63,7 @@ function settled(result: Parameters<typeof settleFollow>[0]) {
 	return out;
 }
 function modeOf(session: Probe, canPrompt = true) {
-	const mode = composerMode(session, { canPrompt });
+	const mode = composerMode(session, { canPrompt, canResume: canPrompt });
 	if (mode === null) throw new Error("expected a mode");
 	return mode;
 }
@@ -72,8 +78,8 @@ function hasControlOrBidi(text: string): boolean {
 		);
 	});
 }
-const ALLOWED = { canPrompt: true };
-const DENIED = { canPrompt: false };
+const ALLOWED = { canPrompt: true, canResume: true };
+const DENIED = { canPrompt: false, canResume: false };
 const IDLE = { step: "idle" } as const;
 const NO_FLIGHT = { posting: false };
 
@@ -568,5 +574,166 @@ describe("followPromptAction", () => {
 			outcome: "aborted",
 		});
 		expect(calls).toHaveLength(1);
+	});
+});
+
+describe("composerMode: a Codex session whose process is gone can be resumed (AGEN-115)", () => {
+	const THREAD = "0199e3a2-7c1d-7a31-9e2f-123456789abc";
+	const degraded = (extra: Parameters<typeof probe>[2] = {}) =>
+		probe("codex_cli", "degraded", { threadId: THREAD, ...extra });
+	const withAccess = (canResume: boolean, resumeInFlight = false) => ({
+		canPrompt: true,
+		canResume,
+		resumeInFlight,
+	});
+
+	test("restarted host: the sentence offers Resume and a new session, and Resume is available", () => {
+		expect(
+			composerMode(degraded({ syncError: HOST_RESTARTED_SYNC_ERROR }), withAccess(true)),
+		).toEqual({
+			kind: "blocked",
+			reason:
+				"This session's process ended when its host restarted. Resume it to keep going, or start a new session for this work.",
+			startNew: true,
+			resume: { state: "available" },
+		});
+	});
+
+	test("lost connection: its own sentence", () => {
+		expect(composerMode(degraded(), withAccess(true))).toEqual({
+			kind: "blocked",
+			reason:
+				"This session lost its connection to Codex, so it can't take prompts. Resume it to reconnect, or start a new session to keep going.",
+			startNew: true,
+			resume: { state: "available" },
+		});
+	});
+
+	test("a viewer who can't resume is told who can, by whether the session has an owner", () => {
+		expect(
+			composerMode(
+				degraded({ syncError: HOST_RESTARTED_SYNC_ERROR, ownerUserId: "alice" }),
+				withAccess(false),
+			),
+		).toEqual({
+			kind: "blocked",
+			reason:
+				"This session's process ended when its host restarted. Ask its owner or an admin to resume it, or start a new session for this work.",
+			startNew: true,
+		});
+		expect(composerMode(degraded({ ownerUserId: null }), withAccess(false))).toEqual({
+			kind: "blocked",
+			reason:
+				"This session lost its connection to Codex, so it can't take prompts. Ask an admin to resume it, or start a new session for this work.",
+			startNew: true,
+		});
+	});
+
+	test("an offline host: the disabled button points at the existing offline sentence, with no second sentence", () => {
+		const mode = composerMode(degraded({ host: "offline" }), withAccess(true));
+		expect(mode).toEqual({
+			kind: "blocked",
+			reason: "studio is offline, so this session can't take prompts until it's back.",
+			startNew: false,
+			resume: { state: "disabled" },
+		});
+	});
+
+	test("a removed host says so and offers no Resume", () => {
+		const mode = composerMode(degraded({ host: "gone" }), withAccess(true));
+		expect(mode).toMatchObject({ kind: "blocked", startNew: false });
+		expect((mode as { resume?: unknown }).resume).toBeUndefined();
+	});
+
+	test("Resume is hidden when the session has no thread id, and the old sentence stands", () => {
+		const noThread = probe("codex_cli", "degraded", { syncError: HOST_RESTARTED_SYNC_ERROR });
+		expect(composerMode(noThread, withAccess(true))).toEqual({
+			kind: "blocked",
+			reason: COMPOSER_BLOCKED_RESTARTED,
+			startNew: true,
+		});
+	});
+
+	test("Resume is never offered on a managed session, a pending one, or another agent", () => {
+		for (const state of ["managed", "pending", "linked"] as const) {
+			const mode = composerMode(probe("codex_cli", state, { threadId: THREAD }), withAccess(true));
+			expect((mode as { resume?: unknown } | null)?.resume).toBeUndefined();
+		}
+		const claude = composerMode(
+			probe("claude_code", "degraded", { threadId: THREAD }),
+			withAccess(true),
+		);
+		expect((claude as { resume?: unknown } | null)?.resume).toBeUndefined();
+	});
+
+	test("while a resume is in flight the box is not offered: a status and a busy button instead, the draft kept by the slot", () => {
+		const mode = composerMode(degraded(), withAccess(true, true));
+		expect(mode).toEqual({
+			kind: "blocked",
+			reason: "Asking studio to resume this session…",
+			startNew: false,
+			resume: { state: "in_flight" },
+		});
+	});
+
+	test("the person who can't prompt at all still gets only the not-owner sentence", () => {
+		expect(composerMode(degraded(), { canPrompt: false, canResume: false })).toEqual({
+			kind: "blocked",
+			reason: COMPOSER_BLOCKED_NOT_OWNER,
+			startNew: false,
+		});
+	});
+
+	test("the reorder: degraded is judged before the host, so an offline degraded session reaches the disabled button", () => {
+		const online = composerMode(degraded({ host: "live" }), withAccess(true)) as {
+			resume?: { state: string };
+		};
+		const offline = composerMode(degraded({ host: "offline" }), withAccess(true)) as {
+			resume?: { state: string };
+		};
+		expect(online.resume?.state).toBe("available");
+		expect(offline.resume?.state).toBe("disabled");
+	});
+});
+
+describe("describeResumeFailure: a refusal from POST /resume, in the recovery's words", () => {
+	test("the host's name, and the way back for a session that can't be resumed", () => {
+		const session = probe("codex_cli", "degraded", { threadId: "t" });
+		const out = describeResumeFailure(new ApiError(409, "x", { error: "not_resumable" }), session);
+		expect(out.reason).toBe(
+			"AgentPulse can't confirm this session can be resumed on studio. Start a new session for this work.",
+		);
+		expect(out.startNew).toBe(true);
+		expect(describeResumeFailure(new ApiError(409, "x", { error: "host_offline" }), session)).toEqual(
+			{
+				reason: "studio is offline, so nothing was started. Try again when it's back.",
+				startNew: false,
+			},
+		);
+	});
+
+	test("a network failure keeps its own plain sentence", () => {
+		expect(
+			describeResumeFailure(new TypeError("Failed to fetch"), probe("codex_cli", "degraded")).reason,
+		).toBe("Couldn't reach AgentPulse. Check your connection and try again.");
+	});
+});
+
+describe("composerMode: the hint says whose settings a Codex turn runs under", () => {
+	test("a launched session keeps 'the launch's approval policy and sandbox'", () => {
+		const session = probe("codex_cli", "managed");
+		(session.managedSession as { hostAffinityReason: string | null }).hostAffinityReason = "launched";
+		expect(composerMode(session, ALLOWED)).toMatchObject({
+			hint: "This starts a new turn in the same Codex thread, under the launch's approval policy and sandbox.",
+		});
+	});
+
+	test("a taken-over session says 'this session's', because nothing launched it", () => {
+		const session = probe("codex_cli", "managed");
+		(session.managedSession as { hostAffinityReason: string | null }).hostAffinityReason =
+			"taken_over";
+		expect(composerMode(session, ALLOWED)).toMatchObject({
+			hint: "This starts a new turn in the same Codex thread, under this session's approval policy and sandbox.",
+		});
 	});
 });
