@@ -66,7 +66,7 @@ import {
 	SessionOwnershipError,
 	assertSupervisorCanWriteSession,
 } from "../services/session-ownership.js";
-import { getSession } from "../services/session-tracker.js";
+import { broadcastSweptSessions, getSession } from "../services/session-tracker.js";
 import { parseRegistrationShape } from "../services/supervisor-capabilities.js";
 import {
 	readHeartbeatBody,
@@ -256,10 +256,10 @@ async function closeRestartedHostApprovals(supervisorId: string): Promise<void> 
 async function degradeRestartedHostSessions(supervisorId: string): Promise<void> {
 	try {
 		const changed = await degradeCodexSessionsOfRestartedHost(supervisorId);
-		for (const sessionId of changed) {
-			const session = await getSession(sessionId);
-			if (session) notifySessionUpdated(session);
-		}
+		// Batched, and not awaited: the supervisor's registration has 15 s, and an announcement is not worth it.
+		void broadcastSweptSessions(changed).catch(() => {
+			console.error("[supervisors] could not announce a restarted host's Codex sessions");
+		});
 	} catch {
 		console.error("[supervisors] could not degrade a restarted host's Codex sessions");
 	}

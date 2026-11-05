@@ -117,11 +117,18 @@ function newEvidence(bundle: EvidenceBundle, after: number) {
 /** The note for a turn that failed to finish: whatever the model thought of the evidence, it didn't finish. */
 const FAILED_TURN_NOTE = "The last turn didn't finish. Open the session to see what happened.";
 
+const FAILED_TURN_EVENT_TYPES: ReadonlySet<string> = new Set([
+	"HeadlessPromptFailed",
+	"HeadlessTaskFailed",
+]);
+
 function failedTurnWording<T extends { verdict: string; why: string }>(
 	trigger: NotifyTrigger,
 	answer: T,
 ): T {
-	if (trigger.eventType !== "HeadlessPromptFailed" || answer.verdict !== "finished") return answer;
+	if (!FAILED_TURN_EVENT_TYPES.has(trigger.eventType ?? "") || answer.verdict !== "finished") {
+		return answer;
+	}
 	return { ...answer, verdict: "needs_you", why: FAILED_TURN_NOTE };
 }
 

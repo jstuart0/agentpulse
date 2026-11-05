@@ -750,6 +750,23 @@ describe("planEventInsert: content_window with keepEventTypes", () => {
 		expect(plan.drops.contentWindow ?? 0).toBe(0);
 	});
 
+	test("a kept ManagedAgentMessage still loses to a higher-authority copy of the same text", () => {
+		const message = (source: EventSource): NormalizedEvent => ({
+			...assistant(source, "Should I continue?"),
+			eventType: "ManagedAgentMessage",
+			source,
+		});
+		const rival = recentAssistant(9, "observed_transcript", "2026-01-01T00:09:59.000Z");
+		const plan = planEventInsert({
+			policy: { kind: "content_window", keepEventTypes: new Set(["ManagedAgentMessage"]) },
+			recent: [{ ...rival, content: "Should I continue?" }],
+			incoming: [message("launch_system")],
+			nowIso,
+		});
+		expect(plan.retained).toEqual([]);
+		expect(plan.drops.authority).toBe(1);
+	});
+
 	test("a type not in the set is still dropped, and no set at all is today's behaviour", () => {
 		const recent = [stored("ManagedWarning", "same"), stored("HeadlessPromptSubmitted", "same")];
 		const incoming = [event("ManagedWarning", "same"), event("HeadlessPromptSubmitted", "same")];

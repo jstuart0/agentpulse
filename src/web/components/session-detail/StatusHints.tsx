@@ -110,8 +110,11 @@ export function HostControlHint({
 export function ManagedCodexStatus({
 	managedSession,
 	showSyncState = true,
+	showSyncError = true,
 }: {
 	managedSession: NonNullable<Session["managedSession"]>;
+	/** False once the session has ended: a stored error is old news, not something to fix. */
+	showSyncError?: boolean;
 	/** False when the host isn't live: a "synced" pill would describe a connection that isn't there. */
 	showSyncState?: boolean;
 }) {
@@ -152,7 +155,7 @@ export function ManagedCodexStatus({
 							</span>
 						</p>
 					)}
-					{managedSession.providerSyncError && (
+					{showSyncError && managedSession.providerSyncError && (
 						<p className="mt-1 text-[11px] text-red-300">{managedSession.providerSyncError}</p>
 					)}
 				</div>

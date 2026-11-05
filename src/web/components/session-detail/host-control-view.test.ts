@@ -6,6 +6,7 @@ import {
 	hostCanControl,
 	hostControlHint,
 	hostRefusalMessage,
+	showProviderSyncError,
 	showProviderSyncState,
 } from "./host-control-view.js";
 
@@ -101,5 +102,17 @@ describe("hostRefusalMessage", () => {
 		expect(hostRefusalMessage(new ApiError(400, "x", { error: "host_gone" }), session)).toBeNull();
 		expect(hostRefusalMessage(new Error("host_gone"), session)).toBeNull();
 		expect(hostRefusalMessage(conflict("constructor"), session)).toBeNull();
+	});
+});
+
+describe("a stored sync error on a session that has ended", () => {
+	const open = { isArchived: false, endedAt: null, status: "active" } as const;
+	test("shown while the session is open, hidden once it has ended or been archived", () => {
+		expect(showProviderSyncError(open)).toBe(true);
+		expect(showProviderSyncError({ ...open, status: "idle" })).toBe(true);
+		expect(showProviderSyncError({ ...open, status: "completed" })).toBe(false);
+		expect(showProviderSyncError({ ...open, status: "failed" })).toBe(false);
+		expect(showProviderSyncError({ ...open, endedAt: "2026-01-01T00:00:00Z" })).toBe(false);
+		expect(showProviderSyncError({ ...open, isArchived: true })).toBe(false);
 	});
 });

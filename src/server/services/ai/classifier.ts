@@ -302,6 +302,8 @@ function countControlActionFailures(events: SessionEvent[]): number {
 	return events.filter(
 		(e) =>
 			e.source === "managed_control" &&
+			// A prompt is what was sent, not how it went: a fixed "retry the failed step" is not a failure.
+			e.category !== "prompt" &&
 			(e.content?.toLowerCase().includes("failed") || /failure/i.test(e.eventType ?? "")),
 	).length;
 }

@@ -56,4 +56,21 @@ describe("turnStoppedNotification", () => {
 			turnStoppedNotification({ sessionId: "s", displayName: "n", cwd: "C:\\work\\api" }).body,
 		).toBe("In api");
 	});
+
+	test("bidi, zero-width and control characters are stripped from the name and directory, and each is capped", () => {
+		const note = turnStoppedNotification({
+			sessionId: "s",
+			displayName: "ev\u202Eil\u200B\u0007name",
+			cwd: "/work/\u202Ex\u200Dy",
+		});
+		expect(note).toEqual({ title: "evilname stopped", body: "In xy" });
+		const long = "a".repeat(500);
+		const capped = turnStoppedNotification({
+			sessionId: "s",
+			displayName: long,
+			cwd: `/w/${long}`,
+		});
+		expect(capped.title.length).toBeLessThan(100);
+		expect((capped.body ?? "").length).toBeLessThan(100);
+	});
 });

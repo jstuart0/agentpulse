@@ -356,6 +356,29 @@ describe("a turn that failed is never reported as finished", () => {
 		});
 	});
 
+	test("a HeadlessTaskFailed trigger (a failed launch task) is treated the same way", async () => {
+		const w = await failedWorld("HeadlessPromptFailed");
+		await getDb()
+			.update(events)
+			.set({ eventType: "HeadlessTaskFailed" })
+			.where(eq(events.id, w.endId));
+		stub.script("openai", { text: answer([w.messageId]) });
+		expect(
+			await runNotify(
+				w.session,
+				{ channelId: null, maxDailyCents: null },
+				{ id: "run-t" },
+				{ id: w.endId, eventType: "HeadlessTaskFailed" },
+				provider(),
+				KEY,
+			),
+		).toEqual({ did: "report" });
+		expect((await rowsFor(w.sessionId))[0]).toMatchObject({
+			verdict: "needs_you",
+			why: FAILED_NOTE,
+		});
+	});
+
 	test("positive control: the same answer on a HeadlessPromptCompleted trigger stays finished with the model's note", async () => {
 		const w = await failedWorld("HeadlessPromptCompleted");
 		stub.script("openai", { text: answer([w.messageId]) });

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { isWithinWindow } from "../../shared/time-window.js";
 import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type {
@@ -153,6 +153,11 @@ export async function upsertManagedSessionState(
 	// runtime closed), whatever event did or didn't arrive. Folded into the update this function
 	// already makes, so it costs no statement. A repeat after a Completed event moves nothing:
 	// the completion is stamped only if the session was still working.
+	// A terminal report ends the session, so a turn can't still be running (the excluded closing report included).
+	if (isTerminalStateReport(input) && existingSession?.agentType === "codex_cli") {
+		sessionUpdates.isWorking = false;
+		sessionUpdates.currentTurnStartedAt = null;
+	}
 	if (input.status === "idle" && existingSession?.agentType === "codex_cli") {
 		sessionUpdates.isWorking = false;
 		sessionUpdates.currentTurnStartedAt = null;
@@ -251,6 +256,7 @@ export async function upsertManagedSessionState(
 	// rebind will bring the session back.
 	const heldDegraded =
 		options.replay === true &&
+		!isTerminalStateReport(input) &&
 		existingManaged?.managedState === "degraded" &&
 		existingManaged.providerSyncError === HOST_RESTARTED_SYNC_ERROR;
 	const providerSyncState =
@@ -456,10 +462,13 @@ export async function appendManagedSessionDelivery(
 		prepared,
 		{ senderId: supervisorId, ...delivery },
 		{
-			// Inside the receipt transaction, on the batch as sent: a row the window dropped still counts.
-			afterRows: (tx) =>
-				applyManagedTurnBoundaries(tx, sessionId, prepared, { late: options.late === true }),
 			...deps,
+			// Inside the receipt transaction, on the batch as sent: a row the window dropped still counts.
+			// The production update always runs first; a test's seam is added after it, never instead of it.
+			afterRows: async (tx) => {
+				await applyManagedTurnBoundaries(tx, sessionId, prepared, { late: options.late === true });
+				await deps?.afterRows?.(tx);
+			},
 		},
 	);
 }
@@ -496,9 +505,12 @@ function turnChangeOf(event: TurnBoundaryEvent, late: boolean): TurnChange | nul
  * The last relevant event in the batch wins. A late report (an outbox replay) can end a turn but
  * never start one. `db` is the receipt transaction's `tx` when there is one.
  *
- * Statements: none for a batch with no relevant event (every Claude event lacks the marker, so no
- * agent-type read is needed to decide that); one guarded UPDATE otherwise. The guard on
- * `agent_type` keeps a marker on another agent's row from changing anything.
+ * Statements: none for a batch with no relevant event (a Claude prompt or completion lacks the
+ * marker, so no agent-type read is needed to decide that); one guarded UPDATE otherwise. That
+ * includes ManagedSessionStopped, which carries no marker: on a Claude row it costs the one UPDATE
+ * and changes nothing. The guard keeps a marker on another agent's row from changing anything, and
+ * it reads the launch's agent type (what the host was asked to run) before the session row's, which
+ * a hook can create first with a type of its choosing.
  */
 export async function applyManagedTurnBoundaries(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
@@ -534,11 +546,24 @@ export async function applyManagedTurnBoundaries(
 	await db
 		.update(sessions)
 		.set(updates)
-		.where(and(eq(sessions.sessionId, sessionId), eq(sessions.agentType, "codex_cli")));
+		.where(
+			and(
+				eq(sessions.sessionId, sessionId),
+				sql`coalesce((select ${launchRequests.agentType} from ${launchRequests} where ${launchRequests.launchCorrelationId} = ${sessions.sessionId}), ${sessions.agentType}) = 'codex_cli'`,
+			),
+		);
 }
 
-const DEGRADE_CHUNK = 500;
+/** The launch's agent type outranks the session row's (a hook can create the row first, choosing its own). */
+const isCodexLaunch = sql`coalesce(${launchRequests.agentType}, ${sessions.agentType}) = 'codex_cli'`;
+
+let DEGRADE_CHUNK = 500;
+/** Test seam: a smaller chunk makes the chunk boundary reachable with a handful of rows. */
+export function _setDegradeChunkForTest(size: number): void {
+	DEGRADE_CHUNK = size;
+}
 const TERMINAL_MANAGED_STATES: readonly string[] = ["stopped", "completed", "failed"];
+const ENDED_SESSION_STATUSES: readonly string[] = ["completed", "failed", "archived"];
 export const HOST_RESTARTED_PROMPT_ERROR =
 	"The host's supervisor restarted before this prompt was confirmed.";
 
@@ -548,43 +573,77 @@ function inChunks<T>(items: readonly T[]): T[][] {
 	return out;
 }
 
+interface OwnedCodexRow {
+	sessionId: string;
+	isWorking: boolean;
+	endedAt: string | null;
+	status: string;
+	isArchived: boolean;
+}
+
+function hasEnded(row: OwnedCodexRow): boolean {
+	return row.endedAt !== null || row.isArchived || ENDED_SESSION_STATUSES.includes(row.status);
+}
+
 /**
  * A supervisor registered again, so the process (and every app-server) it ran before is gone
- * (AGEN-91 D8). In one transaction, for the sessions that host owns of record:
- *  - every nonterminal Codex session becomes `degraded` with HOST_RESTARTED_SYNC_ERROR, which a
- *    replayed report can't undo (a rename-failure row is stamped too: its runtime is just as dead);
- *  - `isWorking` clears on them and on any other working Codex session of the host;
+ * (AGEN-91 D8). In one transaction, for the Codex sessions that host owns of record:
+ *  - every nonterminal session not already stamped becomes `degraded` with
+ *    HOST_RESTARTED_SYNC_ERROR, which a replayed report can't undo (a rename-failure row is stamped
+ *    too: its runtime is just as dead). A row already stamped is left alone, so a second restart
+ *    writes nothing for it;
+ *  - `isWorking` clears on them and on any other working Codex session of the host. A session that
+ *    hasn't ended gets `lastActivityAt` = now, so the normal 5 and 30 minute windows apply instead of
+ *    one sweep completing it, and one that was working reads WAITING (its turn was cut short);
  *  - the host's Codex prompt actions still queued or running fail, and their locks are released.
- * Stop and Claude actions are not touched. Returns the sessions whose row changed, for the caller
- * to broadcast after the commit. The owner-of-record rule comes from session-ownership.
+ * Stop and Claude actions are not touched. "Codex" is the launch's agent type, the session row's
+ * only when there is no launch. Returns the sessions to announce: those changed that haven't ended.
  */
 export async function degradeCodexSessionsOfRestartedHost(
 	supervisorId: string,
 	deps: { afterWrites?: (tx: unknown) => Promise<void> } = {},
 ): Promise<string[]> {
 	return withTransaction(async (tx) => {
-		const owned = await tx
-			.select({
-				sessionId: managedSessions.sessionId,
-				managedState: managedSessions.managedState,
-				isWorking: sessions.isWorking,
-			})
+		const columns = {
+			sessionId: managedSessions.sessionId,
+			isWorking: sessions.isWorking,
+			endedAt: sessions.endedAt,
+			status: sessions.status,
+			isArchived: sessions.isArchived,
+		};
+		const ownedCodex = and(sessionOwnedBy(supervisorId), isCodexLaunch);
+		const needsDegrade: OwnedCodexRow[] = await tx
+			.select(columns)
 			.from(managedSessions)
 			.innerJoin(sessions, eq(sessions.sessionId, managedSessions.sessionId))
 			.leftJoin(launchRequests, ownerLaunchJoin)
-			.where(and(sessionOwnedBy(supervisorId), eq(sessions.agentType, "codex_cli")));
-		const allIds: string[] = owned.map((row: { sessionId: string }) => row.sessionId);
-		const toDegrade: string[] = owned
-			.filter(
-				(row: { managedState: string }) => !TERMINAL_MANAGED_STATES.includes(row.managedState),
-			)
-			.map((row: { sessionId: string }) => row.sessionId);
-		const toClear: string[] = owned
-			.filter((row: { isWorking: boolean }) => row.isWorking)
-			.map((row: { sessionId: string }) => row.sessionId);
-		const timestamp = nowIso();
+			.where(
+				and(
+					ownedCodex,
+					notInArray(managedSessions.managedState, [...TERMINAL_MANAGED_STATES]),
+					or(
+						isNull(managedSessions.providerSyncError),
+						ne(managedSessions.providerSyncError, HOST_RESTARTED_SYNC_ERROR),
+					),
+				),
+			);
+		const working: OwnedCodexRow[] = await tx
+			.select(columns)
+			.from(managedSessions)
+			.innerJoin(sessions, eq(sessions.sessionId, managedSessions.sessionId))
+			.leftJoin(launchRequests, ownerLaunchJoin)
+			.where(and(ownedCodex, eq(sessions.isWorking, true)));
 
-		for (const ids of inChunks(toDegrade)) {
+		const rows = new Map<string, OwnedCodexRow>();
+		for (const row of [...needsDegrade, ...working]) rows.set(row.sessionId, row);
+		const timestamp = nowIso();
+		const live = [...rows.values()].filter((row) => !hasEnded(row));
+		const workingLive = live.filter((row) => row.isWorking).map((row) => row.sessionId);
+		const workingEnded = [...rows.values()]
+			.filter((row) => hasEnded(row) && row.isWorking)
+			.map((row) => row.sessionId);
+
+		for (const ids of inChunks(needsDegrade.map((row) => row.sessionId))) {
 			await tx
 				.update(managedSessions)
 				.set({
@@ -595,26 +654,41 @@ export async function degradeCodexSessionsOfRestartedHost(
 				})
 				.where(inArray(managedSessions.sessionId, ids));
 		}
-		for (const ids of inChunks(toClear)) {
+		for (const ids of inChunks(live.map((row) => row.sessionId))) {
+			await tx
+				.update(sessions)
+				.set({ lastActivityAt: timestamp })
+				.where(inArray(sessions.sessionId, ids));
+		}
+		for (const ids of inChunks(workingLive)) {
+			await tx
+				.update(sessions)
+				.set({ isWorking: false, currentTurnStartedAt: null, lastAgentTurnCompletedAt: timestamp })
+				.where(inArray(sessions.sessionId, ids));
+		}
+		for (const ids of inChunks(workingEnded)) {
 			await tx
 				.update(sessions)
 				.set({ isWorking: false, currentTurnStartedAt: null })
 				.where(inArray(sessions.sessionId, ids));
 		}
 
-		for (const ids of inChunks(allIds)) {
-			const open: Array<{ id: string; status: string }> = await tx
-				.select({ id: controlActions.id, status: controlActions.status })
-				.from(controlActions)
-				.where(
-					and(
-						eq(controlActions.actionType, "prompt"),
-						inArray(controlActions.status, ["queued", "running"]),
-						inArray(controlActions.sessionId, ids),
-					),
-				);
-			if (open.length === 0) continue;
-			const actionIds = open.map((action) => action.id);
+		// Only sessions with an open prompt are read, whatever the host's history holds.
+		const open: Array<{ id: string; status: string }> = await tx
+			.select({ id: controlActions.id, status: controlActions.status })
+			.from(controlActions)
+			.innerJoin(managedSessions, eq(managedSessions.sessionId, controlActions.sessionId))
+			.innerJoin(sessions, eq(sessions.sessionId, managedSessions.sessionId))
+			.leftJoin(launchRequests, ownerLaunchJoin)
+			.where(
+				and(
+					ownedCodex,
+					eq(controlActions.actionType, "prompt"),
+					inArray(controlActions.status, ["queued", "running"]),
+				),
+			);
+		for (const chunk of inChunks(open)) {
+			const actionIds = chunk.map((action) => action.id);
 			await tx
 				.update(controlActions)
 				.set({
@@ -623,18 +697,23 @@ export async function degradeCodexSessionsOfRestartedHost(
 					finishedAt: timestamp,
 					updatedAt: timestamp,
 				})
-				.where(inArray(controlActions.id, actionIds));
+				.where(
+					and(
+						inArray(controlActions.id, actionIds),
+						inArray(controlActions.status, ["queued", "running"]),
+					),
+				);
 			await tx
 				.update(managedSessions)
 				.set({ activeControlActionId: null, controlLockExpiresAt: null, updatedAt: timestamp })
 				.where(inArray(managedSessions.activeControlActionId, actionIds));
-			for (const action of open) {
+			for (const action of chunk) {
 				if (action.status === "queued") await markAuditExpiredUnclaimed(tx, action.id);
 			}
 		}
 
 		await deps.afterWrites?.(tx);
-		return [...new Set([...toDegrade, ...toClear])];
+		return live.map((row) => row.sessionId);
 	});
 }
 

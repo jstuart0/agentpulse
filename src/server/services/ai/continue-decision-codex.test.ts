@@ -176,6 +176,35 @@ describe("a Codex session never gets an unattended send", () => {
 		expect(await actionsOf(w.sessionId)).toEqual([]);
 	});
 
+	test("the forged row, end to end: the session says Claude, the launch says Codex, and the run ends in a request", async () => {
+		const w = await autoWorld({ session: "claude_code", launch: "codex_cli" });
+		stub.script("openai", continueAnswer("Run the tests in src/foo", "run_tests"));
+
+		await runOnce(runner, w.sessionId, w.stopId);
+
+		expect(await actionsOf(w.sessionId)).toEqual([]);
+		expect(await hitlsOf(w.sessionId)).toHaveLength(1);
+		const refused = await auditOf(w.sessionId);
+		expect(refused.map((r) => r.refusalCode)).toEqual(["auto_send_blocked:codex_needs_person"]);
+	});
+
+	test("a person's approve on a Codex launch passes the new check (it only stops auto)", async () => {
+		const w = await autoWorld({ session: "codex_cli", launch: "codex_cli" });
+		const result = await dispatchPrompt(
+			w.sessionId,
+			{ kind: "human", text: "Run the tests in src/foo" },
+			{ userId: null, label: "user" },
+			{
+				actorKind: "user",
+				proposalId: crypto.randomUUID(),
+				triggerEventId: w.stopId,
+				turnKey: `p:${w.promptId}`,
+			},
+		);
+		expect(result).toMatchObject({ ok: true });
+		expect(await actionsOf(w.sessionId)).toHaveLength(1);
+	});
+
 	test("autoRefusalWhy has text for codex_needs_person, host_upgrade_required and launch_mismatch", () => {
 		const config = { continuationsUsed: 0, maxContinuations: 3 } as never;
 		for (const reason of ["codex_needs_person", "host_upgrade_required", "launch_mismatch"]) {

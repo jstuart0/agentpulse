@@ -87,3 +87,16 @@ export function hostRefusalMessage(
 export function showProviderSyncState(session: Pick<Session, "hostControl">): boolean {
 	return hostCanControl(session);
 }
+
+/**
+ * A stored sync error describes a connection that mattered while the session was live. On a session
+ * that has ended or been archived it is old news in red, so it isn't shown.
+ */
+export function showProviderSyncError(
+	session: Pick<Session, "isArchived" | "endedAt" | "status">,
+): boolean {
+	if (session.isArchived || session.endedAt) return false;
+	return (
+		session.status !== "completed" && session.status !== "failed" && session.status !== "archived"
+	);
+}

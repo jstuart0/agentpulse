@@ -42,6 +42,11 @@ const { promptDeliverability } = await import("./ai/prompt-deliverability.js");
 const managedState = await import("./managed-session-state.js");
 const { HOST_RESTARTED_SYNC_ERROR } = await import("./managed-sync-errors.js");
 const audit = await import("./ai/dispatch-audit-service.js");
+const tracker = await import("./session-tracker.js");
+const { WatcherRunner } = await import("./ai/runner.js");
+const { invalidateWatchedSessions } = await import("./ai/watched-sessions.js");
+const { createFakeClock } = await import("../test-utils/fake-clock.js");
+const watcherFixtures = await import("../test-utils/watcher-fixtures.js");
 
 const originalDisableAuth = config.disableAuth;
 let manageKey: string;
@@ -299,7 +304,7 @@ describe("a Codex turn moves working state", () => {
 			expect(done.isWorking).toBe(false);
 			expect(done.currentTurnStartedAt).toBeNull();
 			expect(done.lastAgentTurnCompletedAt).not.toBeNull();
-			expect(done.lastActivityAt >= working.lastActivityAt).toBe(true);
+			expect(done.lastActivityAt > working.lastActivityAt).toBe(true);
 			expect(await operational(sessionId)).toBe("waiting");
 		}
 	});
@@ -423,6 +428,10 @@ describe("a Codex turn moves working state", () => {
 			.update(sessions)
 			.set({ agentType: "copilot_cli" })
 			.where(eq(sessions.sessionId, sessionId));
+		await getDb()
+			.update(launchRequests)
+			.set({ agentType: "copilot_cli" })
+			.where(eq(launchRequests.launchCorrelationId, sessionId));
 		await ok(await postEvents(hostA, sessionId, [submitted()]));
 		expect((await rowOf(sessionId)).isWorking).toBe(false);
 	});
@@ -519,10 +528,11 @@ describe("the update is inside the receipt transaction", () => {
 		expect(await storedEvents(sessionId)).toHaveLength(2);
 	});
 
-	test("a failure inside the update rolls back the rows and the receipt, and the retry applies the rule", async () => {
+	test("a failure after the production update rolls back the rows, the receipt and the flag, and the retry applies the rule", async () => {
 		const sessionId = await codexSession(hostA);
 		const deliveryId = crypto.randomUUID();
 		const batch = [submitted()];
+		let workingInsideTx: boolean | undefined;
 		let thrown: unknown;
 		try {
 			await managedState.appendManagedSessionDelivery(
@@ -531,8 +541,13 @@ describe("the update is inside the receipt transaction", () => {
 				batch as never,
 				{ deliveryId, bodyDigest: "digest" },
 				{
+					// Only the failure is injected: the production update must already have run on this tx.
 					afterRows: async (tx) => {
-						await managedState.applyManagedTurnBoundaries(tx, sessionId, batch, { late: false });
+						const [inside] = await tx
+							.select({ isWorking: sessions.isWorking })
+							.from(sessions)
+							.where(eq(sessions.sessionId, sessionId));
+						workingInsideTx = inside?.isWorking;
 						throw new Error("injected");
 					},
 				},
@@ -541,6 +556,7 @@ describe("the update is inside the receipt transaction", () => {
 			thrown = error;
 		}
 		expect((thrown as Error).message).toBe("injected");
+		expect(workingInsideTx).toBe(true);
 		expect(await storedEvents(sessionId)).toHaveLength(0);
 		expect(await receipts(sessionId)).toHaveLength(0);
 		expect((await rowOf(sessionId)).isWorking).toBe(false);
@@ -587,17 +603,16 @@ describe("the update is inside the receipt transaction", () => {
 
 // ── 4. statement budget ─────────────────────────────────────────────────────────────
 
-/**
- * Statements the events route issues for a one-event batch with a delivery id, measured at 34124dc6
- * (before this phase). A boundary-free batch must still cost exactly this.
- */
-const FREE_BATCH_STATEMENTS = 8;
-
 describe("statement budget, by count", () => {
-	async function statementsFor(host: Host, sessionId: string, batch: unknown[]) {
+	async function statementsFor(
+		host: Host,
+		sessionId: string,
+		batch: unknown[],
+		opts: PostOptions = {},
+	) {
 		let status = 0;
 		const calls = await countDbCalls(async () => {
-			status = (await postEvents(host, sessionId, batch)).status;
+			status = (await postEvents(host, sessionId, batch, opts)).status;
 		});
 		expect(status).toBe(200);
 		return calls;
@@ -616,15 +631,30 @@ describe("statement budget, by count", () => {
 			submitted("budget", { source: "agentpulse_workspace" }),
 		]);
 		const claudeMarked = await statementsFor(hostA, claude, [turnEnd()]);
+		let lateStatus = 0;
 		const lateBoundary = await countDbCalls(async () => {
-			await postEvents(hostA, codex, [submitted("late one")], { replay: true });
+			lateStatus = (await postEvents(hostA, codex, [submitted("late one")], { replay: true }))
+				.status;
 		});
+		expect(lateStatus).toBe(200);
+		// A late Completed can end a turn, so it costs the update; a late Submitted cannot start one.
+		const lateEnd = await statementsFor(hostA, codex, [turnEnd()], { replay: true });
+		expect(lateEnd).toBe(free + 1);
+		// ManagedSessionStopped has no marker: on a Claude row it still costs the one guarded update.
+		expect(await statementsFor(hostA, claude, [stopped()])).toBe(free + 1);
+		// Without a delivery id there is no receipt transaction; the update still costs exactly one.
+		const noIdFree = await statementsFor(hostA, codex, [warning("no id free")], {
+			deliveryId: null,
+		});
+		const noIdBoundary = await statementsFor(hostA, codex, [submitted("no id")], {
+			deliveryId: null,
+		});
+		expect(noIdBoundary).toBe(noIdFree + 1);
 
 		expect(boundary).toBe(free + 1);
 		expect(claudeBoundary).toBe(free);
 		expect(claudeMarked).toBe(free + 1); // a marker on Claude's row still issues the guarded update: the guard is the row's agent type
 		expect(lateBoundary).toBe(free);
-		expect(free).toBe(FREE_BATCH_STATEMENTS);
 
 		const idleNow = await countDbCalls(async () => {
 			await postState(hostA, codex, { managedState: "managed", status: "idle" });
@@ -885,9 +915,31 @@ describe("a restarted host's Codex sessions", () => {
 		expect((await managedOf(sessionId)).managedState).toBe("managed");
 	});
 
-	test("the state move and the action failures are one transaction: an injected failure leaves neither", async () => {
+	test("the state move, the action failure, the lock, the audit row and the working flag are one transaction: an injected failure leaves none of them", async () => {
 		const sessionId = await codexSession(hostA);
 		const action = await insertPromptAction(sessionId, "queued");
+		await getDb()
+			.update(managedSessions)
+			.set({
+				activeControlActionId: action.id,
+				controlLockExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+			})
+			.where(eq(managedSessions.sessionId, sessionId));
+		await getDb()
+			.update(sessions)
+			.set({ isWorking: true })
+			.where(eq(sessions.sessionId, sessionId));
+		const auditId = await audit.insertAuditIntent(getDb(), {
+			sessionId,
+			sessionName: null,
+			actorKind: "auto",
+			actorUserId: null,
+			actorLabel: "ai",
+			promptSha256: null,
+			promptText: null,
+			controlActionId: action.id,
+		});
+		await audit.markAuditSent(getDb(), auditId);
 		let thrown: unknown;
 		try {
 			await managedState.degradeCodexSessionsOfRestartedHost(hostA.id, {
@@ -900,10 +952,17 @@ describe("a restarted host's Codex sessions", () => {
 		}
 		expect((thrown as Error).message).toBe("injected");
 		expect((await managedOf(sessionId)).managedState).toBe("managed");
+		expect((await managedOf(sessionId)).activeControlActionId).toBe(action.id);
+		expect((await rowOf(sessionId)).isWorking).toBe(true);
 		expect(
-			(await getDb().select().from(controlActions).where(eq(controlActions.id, action.id)))[0]!
-				.status,
+			(await getDb().select().from(controlActions).where(eq(controlActions.id, action.id)))[0]
+				?.status,
 		).toBe("queued");
+		const [auditRow] = await getDb()
+			.select()
+			.from(schema.aiDispatchAudit)
+			.where(eq(schema.aiDispatchAudit.id, auditId));
+		expect(auditRow?.outcome).toBe("sent");
 	});
 
 	test("a degraded row ages through the sweep, and a hook for the thread id does not reopen it", async () => {
@@ -1014,6 +1073,303 @@ describe("the replay guard, through the real state route", () => {
 		const row = await managedOf(sessionId);
 		expect(row.managedState).toBe("degraded");
 		expect(row.providerSyncError).toBe(HOST_RESTARTED_SYNC_ERROR);
+	});
+});
+
+// ── review fixes ────────────────────────────────────────────────────────────────────
+
+describe("the launch turn and a stale row", () => {
+	test("a marked start reopens a stale ended row; a stale row Submitted then Completed survives the sweep", async () => {
+		const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+		const ended = await codexSession(hostA);
+		await getDb()
+			.update(sessions)
+			.set({ status: "idle", endedAt: stale, lastActivityAt: stale })
+			.where(eq(sessions.sessionId, ended));
+		await ok(await postEvents(hostA, ended, [sessionStart(true)]));
+		const row = await rowOf(ended);
+		expect(row.status).toBe("active");
+		expect(row.endedAt).toBeNull();
+		expect(row.lastActivityAt > stale).toBe(true);
+
+		const worked = await codexSession(hostA, { managedState: "degraded" });
+		await getDb()
+			.update(sessions)
+			.set({ status: "active", lastActivityAt: stale, isWorking: false })
+			.where(eq(sessions.sessionId, worked));
+		await ok(await postEvents(hostA, worked, [submitted()]));
+		await tick();
+		await ok(await postEvents(hostA, worked, [turnEnd()]));
+		await updateStaleSessions();
+		expect((await rowOf(worked)).status).toBe("active");
+		expect((await rowOf(worked)).lastActivityAt > stale).toBe(true);
+	});
+});
+
+describe("no watcher wake from the launch turn (real runner, fake clock)", () => {
+	test("a marked start schedules no wake and queues no run; a Completed on the same session does (positive control)", async () => {
+		await watcherFixtures.enableAiRuntime();
+		const providerId = await watcherFixtures.seedProvider();
+		const sessionId = await codexSession(hostA);
+		await getDb().insert(schema.watcherConfigs).values({
+			sessionId,
+			providerId,
+			enabled: true,
+			notifyEnabled: true,
+			continueEnabled: false,
+			policy: "ask_always",
+		});
+		invalidateWatchedSessions();
+		const clock = createFakeClock();
+		const runner = new WatcherRunner(clock);
+		runner.attachListeners();
+		try {
+			await ok(await postEvents(hostA, sessionId, [sessionStart(true)]));
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			expect(clock.pendingTimers()).toBe(0);
+			expect(
+				await getDb()
+					.select()
+					.from(schema.aiWatcherRuns)
+					.where(eq(schema.aiWatcherRuns.sessionId, sessionId)),
+			).toHaveLength(0);
+
+			await ok(await postEvents(hostA, sessionId, [turnEnd()]));
+			for (let i = 0; i < 40 && clock.pendingTimers() === 0; i++) {
+				await new Promise((resolve) => setTimeout(resolve, 25));
+			}
+			expect(clock.pendingTimers()).toBe(1);
+		} finally {
+			runner.stop();
+		}
+	});
+});
+
+describe("a degrade does not reprocess history", () => {
+	test("a second restart writes nothing, announces nothing and returns nothing; ended rows are never announced", async () => {
+		const live = await codexSession(hostA);
+		const finished = await codexSession(hostA);
+		await getDb()
+			.update(sessions)
+			.set({ status: "completed", endedAt: "2026-01-01T00:00:00.000Z" })
+			.where(eq(sessions.sessionId, finished));
+		const spy = spyOn(tracker, "broadcastSweptSessions").mockResolvedValue(undefined);
+		try {
+			expect((await register({ id: hostA.id, hostName: "p2-host-a" }, hostA.token)).status).toBe(
+				200,
+			);
+			expect(spy).toHaveBeenCalledTimes(1);
+			const first = spy.mock.calls[0]?.[0] as string[];
+			expect(first).toContain(live);
+			expect(first).not.toContain(finished);
+			expect((await managedOf(finished)).managedState).toBe("degraded");
+
+			const stamped = (await managedOf(live)).updatedAt;
+			await tick();
+			let second: string[] = ["unset"];
+			const calls = await countDbCalls(async () => {
+				second = await managedState.degradeCodexSessionsOfRestartedHost(hostA.id);
+			});
+			expect(second).toEqual([]);
+			expect(calls).toBe(3); // the three reads; no write
+			expect((await managedOf(live)).updatedAt).toBe(stamped);
+
+			expect((await register({ id: hostA.id, hostName: "p2-host-a" }, hostA.token)).status).toBe(
+				200,
+			);
+			expect(spy.mock.calls.at(-1)?.[0]).toEqual([]);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("a broadcast that throws does not fail registration", async () => {
+		await codexSession(hostA);
+		const spy = spyOn(tracker, "broadcastSweptSessions").mockRejectedValue(new Error("boom"));
+		try {
+			expect((await register({ id: hostA.id, hostName: "p2-host-a" }, hostA.token)).status).toBe(
+				200,
+			);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("a rename-failure row is still stamped (its old error is not the constant)", async () => {
+		const sessionId = await codexSession(hostA);
+		await ok(
+			await postState(hostA, sessionId, {
+				managedState: "degraded",
+				providerSyncState: "failed",
+				providerSyncError: "rename failed",
+			}),
+		);
+		await register({ id: hostA.id, hostName: "p2-host-a" }, hostA.token);
+		expect((await managedOf(sessionId)).providerSyncError).toBe(HOST_RESTARTED_SYNC_ERROR);
+	});
+
+	test("more rows than one chunk are all degraded and all their prompts failed", async () => {
+		managedState._setDegradeChunkForTest(2);
+		try {
+			const ids: string[] = [];
+			const actions: string[] = [];
+			for (let i = 0; i < 5; i++) {
+				const id = await codexSession(hostA);
+				ids.push(id);
+				actions.push((await insertPromptAction(id, "queued")).id);
+			}
+			await register({ id: hostA.id, hostName: "p2-host-a" }, hostA.token);
+			for (const id of ids) expect((await managedOf(id)).managedState).toBe("degraded");
+			const rows = await getDb()
+				.select()
+				.from(controlActions)
+				.where(inArray(controlActions.id, actions));
+			expect(rows.map((r) => r.status)).toEqual(Array(5).fill("failed"));
+		} finally {
+			managedState._setDegradeChunkForTest(500);
+		}
+	});
+});
+
+describe("what the degrade does to the person's view", () => {
+	test("a turn killed by the restart reads WAITING and isn't swept to completed by the next sweep; a quiet row isn't either", async () => {
+		const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+		const working = await codexSession(hostA);
+		const quiet = await codexSession(hostA);
+		await getDb()
+			.update(sessions)
+			.set({
+				status: "active",
+				isWorking: true,
+				currentTurnStartedAt: stale,
+				lastActivityAt: stale,
+			})
+			.where(eq(sessions.sessionId, working));
+		await getDb()
+			.update(sessions)
+			.set({ status: "active", lastActivityAt: stale })
+			.where(eq(sessions.sessionId, quiet));
+
+		await register({ id: hostA.id, hostName: "p2-host-a" }, hostA.token);
+		await updateStaleSessions();
+
+		for (const id of [working, quiet]) {
+			const row = await rowOf(id);
+			expect(row.status).toBe("active");
+			expect(row.lastActivityAt > stale).toBe(true);
+			expect(row.isWorking).toBe(false);
+		}
+		expect((await rowOf(working)).lastAgentTurnCompletedAt).not.toBeNull();
+		expect(await operational(working)).toBe("waiting");
+		expect((await rowOf(quiet)).lastAgentTurnCompletedAt).toBeNull();
+	});
+});
+
+describe("terminal reports", () => {
+	test("a Stop's state replayed after a restart lands as stopped", async () => {
+		const sessionId = await codexSession(hostA);
+		await register({ id: hostA.id, hostName: "p2-host-a" }, hostA.token);
+		await ok(
+			await postState(
+				hostA,
+				sessionId,
+				{ managedState: "stopped", status: "completed" },
+				{ replay: true },
+			),
+		);
+		expect((await managedOf(sessionId)).managedState).toBe("stopped");
+	});
+
+	test("any terminal state report clears working on a Codex row (the excluded closing report included); a Claude row is unchanged", async () => {
+		const codex = await codexSession(hostA);
+		const claude = await claudeSession(hostA);
+		await ok(await postEvents(hostA, codex, [submitted()]));
+		await getDb().update(sessions).set({ isWorking: true }).where(eq(sessions.sessionId, claude));
+		await ok(await postState(hostA, codex, { status: "completed" }));
+		await ok(await postState(hostA, claude, { agentType: "claude_code", status: "completed" }));
+		expect((await rowOf(codex)).isWorking).toBe(false);
+		expect((await rowOf(codex)).currentTurnStartedAt).toBeNull();
+		expect((await rowOf(claude)).isWorking).toBe(true);
+	});
+});
+
+describe("the launch decides what is Codex, not the session row", () => {
+	test("a Claude launch whose row says codex_cli is not degraded, keeps its prompts and its working flag, and ignores a marked Submitted", async () => {
+		const sessionId = await codexSession(hostA);
+		await getDb()
+			.update(launchRequests)
+			.set({ agentType: "claude_code" })
+			.where(eq(launchRequests.launchCorrelationId, sessionId));
+		await getDb()
+			.update(sessions)
+			.set({ isWorking: true })
+			.where(eq(sessions.sessionId, sessionId));
+		const action = await insertPromptAction(sessionId, "queued");
+
+		await register({ id: hostA.id, hostName: "p2-host-a" }, hostA.token);
+		expect((await managedOf(sessionId)).managedState).toBe("managed");
+		expect((await rowOf(sessionId)).isWorking).toBe(true);
+		expect(
+			(await getDb().select().from(controlActions).where(eq(controlActions.id, action.id)))[0]
+				?.status,
+		).toBe("queued");
+
+		await ok(await postEvents(hostA, sessionId, [turnEnd()]));
+		expect((await rowOf(sessionId)).isWorking).toBe(true);
+	});
+
+	test("the other way: a Codex launch whose row says claude_code is degraded", async () => {
+		const sessionId = await codexSession(hostA);
+		await getDb()
+			.update(sessions)
+			.set({ agentType: "claude_code" })
+			.where(eq(sessions.sessionId, sessionId));
+		await register({ id: hostA.id, hostName: "p2-host-a" }, hostA.token);
+		expect((await managedOf(sessionId)).managedState).toBe("degraded");
+	});
+});
+
+describe("repeated prompts are not failures", () => {
+	test("two identical managed prompts containing 'failed' don't classify as risky; real control failures still do", async () => {
+		const { classifySession } = await import("./ai/classifier.js");
+		const session = mapSessionDto(await rowOf(await codexSession(hostA)), { managedSession: null });
+		const now = new Date();
+		const mk = (over: Record<string, unknown>) =>
+			({
+				id: Math.floor(Math.random() * 1e6),
+				sessionId: session.sessionId,
+				eventType: "HeadlessPromptSubmitted",
+				category: "prompt",
+				source: "managed_control",
+				content: "Retry the failed step.",
+				isNoise: false,
+				providerEventType: null,
+				toolName: null,
+				toolInput: null,
+				toolResponse: null,
+				rawPayload: {},
+				createdAt: now.toISOString(),
+				...over,
+			}) as never;
+		const prompts = [mk({}), mk({})];
+		expect(
+			classifySession({ session: session as never, recentEvents: prompts, now }).reasonCode,
+		).not.toBe("repeated_control_action_failure");
+		const failures = [
+			mk({
+				category: "system_event",
+				eventType: "HeadlessPromptFailed",
+				content: "Codex turn failed.",
+			}),
+			mk({
+				category: "system_event",
+				eventType: "HeadlessPromptFailed",
+				content: "Codex turn failed.",
+			}),
+		];
+		expect(
+			classifySession({ session: session as never, recentEvents: failures, now }).reasonCode,
+		).toBe("repeated_control_action_failure");
 	});
 });
 

@@ -31,6 +31,7 @@ import {
 } from "../components/session-detail/TimelineView.js";
 import {
 	hostRefusalMessage,
+	showProviderSyncError,
 	showProviderSyncState,
 } from "../components/session-detail/host-control-view.js";
 import { useDirectoryInitials } from "../hooks/useDirectoryInitials.js";
@@ -718,6 +719,7 @@ export function SessionDetailPage() {
 							<ManagedCodexStatus
 								managedSession={sel.managedSession}
 								showSyncState={showProviderSyncState(session)}
+								showSyncError={showProviderSyncError(session)}
 							/>
 						);
 					case "ManagedClaudeStatus":
