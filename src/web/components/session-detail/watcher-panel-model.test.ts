@@ -41,7 +41,7 @@ describe("promptDeliveryNotice", () => {
 		// Typed as the api.ts union, so the union has to carry the reason for this file to compile.
 		const reason: PromptNotDeliverableReason = "host_upgrade_required";
 		expect(promptDeliveryNotice(true, { deliverable: false, reason })).toBe(
-			"This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.",
+			"This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.",
 		);
 	});
 

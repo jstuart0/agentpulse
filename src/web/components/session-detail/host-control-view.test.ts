@@ -99,7 +99,7 @@ describe("hostRefusalMessage", () => {
 		expect(hostRefusalMessage(conflict("host_offline"), session)).toContain("studio is offline");
 		expect(hostRefusalMessage(conflict("host_gone"), session)).toContain("was removed");
 		expect(hostRefusalMessage(conflict("host_upgrade_required"), session)).toBe(
-			"This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.",
+			"This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.",
 		);
 		expect(hostRefusalMessage(conflict("managed_state_not_continuable"), session)).toBe(
 			"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.",

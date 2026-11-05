@@ -56,7 +56,7 @@ const { deleteAllSupervisors } = await import("./__test_supervisors.js");
 
 /** The sentence every reader of this refusal carries (the plan's copy, D7). */
 const UPGRADE_COPY =
-	"This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.";
+	"This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.";
 /** A Codex session whose process ended when its host restarted (registration degrades it). */
 const ENDED_COPY =
 	"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.";

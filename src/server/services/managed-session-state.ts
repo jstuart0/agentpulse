@@ -32,7 +32,7 @@ import {
 	insertNormalizedEvents,
 } from "./event-processor.js";
 import { cleanMachineName } from "./machine-name.js";
-import { HOST_RESTARTED_SYNC_ERROR } from "./managed-sync-errors.js";
+import { HOST_RESTARTED_SYNC_ERROR } from "../../shared/managed-messages.js";
 import { generateSessionName } from "./name-generator.js";
 import { ownerForNewSession } from "./session-attribution.js";
 import { mapSessionDto } from "./session-dto.js";

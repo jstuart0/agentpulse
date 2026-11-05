@@ -37,6 +37,10 @@ import {
 	resolveSessionOwner,
 	sessionOwnedBy,
 } from "./session-ownership.js";
+import {
+	CONTROL_TIMEOUT_ERROR,
+	HOST_UPGRADE_REQUIRED_MESSAGE,
+} from "../../shared/managed-messages.js";
 import { withCapabilityDefaults } from "./supervisor-capabilities.js";
 import { getSupervisor } from "./supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "./template-preview.js";
@@ -121,9 +125,6 @@ async function assertLaunchOwnedBySessionOwner(
 		throw new LaunchMismatchError();
 	}
 }
-
-/** The `error` an action carries when its lock ran out before the supervisor reported: its outcome is unknown. */
-export const CONTROL_TIMEOUT_ERROR = "Control action timed out waiting for supervisor completion.";
 
 /**
  * Fails a managed session's active control action once its lock has expired,
@@ -329,10 +330,6 @@ export class HostGoneError extends Error {
 		this.name = "HostGoneError";
 	}
 }
-
-/** The words every reader of this refusal shares: the 409 body, the AI path, the claim-time failure. */
-export const HOST_UPGRADE_REQUIRED_MESSAGE =
-	"This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.";
 
 /**
  * The host's supervisor predates `codex_follow_up_prompts`, so it would send a Codex prompt down the

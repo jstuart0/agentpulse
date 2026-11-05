@@ -80,7 +80,7 @@ const HOST_LOG_ERROR_CHARS = 300;
  * host log only.
  */
 const PROMPT_COPY = {
-	noRuntime: "This session's Codex process isn't running on its host any more.",
+	noRuntime: "This session's Codex process isn't running on its host any more. Start a new session for this work.",
 	busy: "Codex hasn't ended its current turn. Send this again when it ends.",
 	uncertain:
 		"The last prompt may still be running. Send this again after it ends, or stop the session.",

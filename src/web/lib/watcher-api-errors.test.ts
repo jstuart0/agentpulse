@@ -43,7 +43,7 @@ describe("registered watcher messages", () => {
 		const refusal = (reason: unknown) =>
 			new ApiError(409, "x", { error: "prompt_not_deliverable", reason });
 		expect(describeApiError(refusal("host_upgrade_required"), "FALLBACK")).toBe(
-			"This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.",
+			"This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.",
 		);
 		expect(describeApiError(refusal("managed_state"), "FALLBACK")).toBe(
 			"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.",

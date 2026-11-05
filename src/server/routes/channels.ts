@@ -378,7 +378,7 @@ function hitlOutcomeReply(
 	switch (result.code) {
 		case "prompt_not_deliverable":
 			if (result.reason === "host_upgrade_required") {
-				return "This session's host needs a supervisor update, which ends sessions already running there, so nothing was sent. Start a new session for this work.";
+				return "This session's host is running an older supervisor that can't send prompts to Codex, so nothing was sent. Update it, then start a new session for this work. Updating ends the sessions running there.";
 			}
 			if (result.reason === "managed_state") {
 				return "This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.";

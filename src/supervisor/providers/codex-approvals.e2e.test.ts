@@ -1450,7 +1450,7 @@ describe("a follow-up prompt goes through the same approval machinery (AGEN-91)"
 		expect(ran()).toEqual([]);
 		await expect(
 			promptManagedCodexSession({ sessionId, prompt: "again" }, callbacks),
-		).rejects.toThrow("This session's Codex process isn't running on its host any more.");
+		).rejects.toThrow("This session's Codex process isn't running on its host any more. Start a new session for this work.");
 	});
 
 	test("on an unsupported Codex the follow-up still runs, and its approval requests are declined locally", async () => {

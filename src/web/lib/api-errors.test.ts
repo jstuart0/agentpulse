@@ -319,7 +319,7 @@ describe("answering a HITL request", () => {
 		);
 		expect(describeDelivery({ state: "blocked" })).toContain("couldn't be sent");
 		expect(describeDelivery({ state: "blocked", reason: "host_upgrade_required" })).toBe(
-			"Approved, but nothing was sent: the agent's machine is running an older supervisor that can't send prompts to Codex, and updating it ends sessions already running there.",
+			"Approved, but nothing was sent: the agent's machine is running an older supervisor that can't send prompts to Codex (update it, then start a new session for this work; updating ends the sessions running there).",
 		);
 		expect(describeDelivery({ state: "blocked", reason: "managed_state" })).toBe(
 			"Approved, but nothing was sent: the session's process ended when its host restarted.",

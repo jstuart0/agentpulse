@@ -116,7 +116,7 @@ const ERROR_TABLE: ReadonlyArray<{
 				return "AgentPulse is busy: another action is already running on that session, so the prompt was NOT sent and the request is still open. Retryable: wait a few seconds and call decide_hitl again.";
 			}
 			if (reason === "host_upgrade_required") {
-				return "AgentPulse can't type into that session: its host is running an older supervisor that can't send prompts to Codex, and updating it ends sessions already running there, so the prompt was NOT sent and the request is still open. Decline it, or start a new session for this work.";
+				return "AgentPulse can't type into that session: its host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there. The prompt was NOT sent and the request is still open; decline it, or start a new session.";
 			}
 			if (reason === "managed_state") {
 				return "AgentPulse can't type into that session: its process ended when its host restarted, so the prompt was NOT sent and the request is still open. Decline it, or start a new session for this work.";
@@ -233,7 +233,7 @@ const ERROR_TABLE: ReadonlyArray<{
 		error: "host_upgrade_required",
 		message: (body) =>
 			bodyMessage(body) ??
-			"This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.",
+			"This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.",
 	},
 	{
 		status: 409,

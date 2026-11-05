@@ -43,7 +43,7 @@ const BLOCKED_REASONS: Record<string, string> = {
 	supervisor_offline: "the agent's machine is offline",
 	host_gone: "the agent's machine was removed from AgentPulse",
 	host_upgrade_required:
-		"the agent's machine is running an older supervisor that can't send prompts to Codex, and updating it ends sessions already running there",
+		"the agent's machine is running an older supervisor that can't send prompts to Codex (update it, then start a new session for this work; updating ends the sessions running there)",
 	managed_state: "the session's process ended when its host restarted",
 	launch_mismatch: "AgentPulse can't match this session to the launch that started it",
 	launch_not_found: "AgentPulse can't find the launch that started this session",

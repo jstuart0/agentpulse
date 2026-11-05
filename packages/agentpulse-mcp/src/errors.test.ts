@@ -250,7 +250,7 @@ describe("mapError — a session whose host isn't there (AGEN-66)", () => {
 
 	test("a Codex session on a host too old to send prompts says to start a new session, whichever route refused", () => {
 		const copy =
-			"This session's host is running an older supervisor that can't send prompts to Codex. Updating it ends sessions already running there, so start a new session for this work.";
+			"This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.";
 		const withMessage = mapError(
 			new ApiError(409, { error: "host_upgrade_required", message: copy }),
 			BASE_URL,
@@ -265,8 +265,10 @@ describe("mapError — a session whose host isn't there (AGEN-66)", () => {
 		).content[0].text;
 		expect(decided).toContain("NOT sent");
 		expect(decided).toContain("still open");
-		expect(decided).toContain("Decline it");
-		expect(decided).toContain("start a new session");
+		expect(decided).toContain(
+			"Update it, then start a new session for this work. Updating ends the sessions running there.",
+		);
+		expect(decided).toContain("decline it");
 		expect(decided).not.toContain("call decide_hitl again");
 		expect(decided).not.toContain("host_upgrade_required");
 	});

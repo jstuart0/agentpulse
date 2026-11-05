@@ -171,7 +171,7 @@ describe("approving from Telegram", () => {
 			.set({ agentType: "codex_cli", requestedLaunchMode: "managed_codex" });
 		const { answers } = await tap(w, "approve");
 		expect(answers).toEqual([
-			"This session's host needs a supervisor update, which ends sessions already running there, so nothing was sent. Start a new session for this work.",
+			"This session's host is running an older supervisor that can't send prompts to Codex, so nothing was sent. Update it, then start a new session for this work. Updating ends the sessions running there.",
 		]);
 		expect(answers[0]?.toLowerCase()).not.toContain("copy");
 		expect(await hitlStatus(w.hitlId)).toBe("awaiting_reply");
