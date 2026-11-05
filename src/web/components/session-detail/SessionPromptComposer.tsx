@@ -4,7 +4,7 @@ import type { Session } from "../../../shared/types.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../../hooks/useOwnershipUi.js";
 import { describeApiError } from "../../lib/api-errors.js";
 import { api } from "../../lib/api.js";
-import { sessionActionAccess } from "../../lib/ownership-ui.js";
+import { sessionActionAccess } from "../../lib/session-action-access.js";
 import { useUserStore } from "../../stores/user-store.js";
 import { controlBlockedReason, hostRefusalMessage } from "./host-control-view.js";
 import {

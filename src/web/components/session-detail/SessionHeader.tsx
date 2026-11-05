@@ -8,7 +8,7 @@ import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { useOwnershipUi } from "../../hooks/useOwnershipUi.js";
 import { useSummaryAvailability } from "../../hooks/useSummaryAvailable.js";
 import type { OwnerChipModel } from "../../lib/owner-chip.js";
-import { RENAME_BLOCKED_REASON, sessionActionAccess } from "../../lib/ownership-ui.js";
+import { RENAME_BLOCKED_REASON, sessionActionAccess } from "../../lib/session-action-access.js";
 import { sessionHostLabel } from "../../lib/session-host.js";
 import type { WorkspaceTabId } from "../../lib/session-summary-core.js";
 import { formatDuration } from "../../lib/utils.js";
