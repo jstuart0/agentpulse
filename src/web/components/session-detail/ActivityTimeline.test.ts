@@ -156,3 +156,22 @@ describe("ManagedEventsLost", () => {
 		expect(html).toContain("<strong>bold</strong>");
 	});
 });
+
+describe("ActivityTimeline plain-text rows", () => {
+	const IMAGE = "![x](https://evil.example/pixel.png)";
+
+	test("a failed-turn row is text whatever category the host gave it (no <img>)", () => {
+		for (const category of ["assistant_message", "prompt", "system_event"] as const) {
+			const html = render([
+				event({ eventType: "HeadlessPromptFailed", category, content: `failed ${IMAGE}` }),
+			]);
+			expect(html).toContain("failed ![x](https://evil.example/pixel.png)");
+			expect(html).not.toContain("<img");
+		}
+	});
+
+	test("positive control: an ordinary assistant message still renders Markdown", () => {
+		const html = render([event({ category: "assistant_message", content: IMAGE })]);
+		expect(html).toContain("<img");
+	});
+});

@@ -134,7 +134,10 @@ function renderBubbleEvent(
 	lateDetail?: string,
 	late?: boolean,
 ) {
-	if (event.category === "prompt" && event.content) {
+	// Judged by the event type before the host-supplied category: a host that labels a plain-text row
+	// "assistant_message" or "prompt" must not get it parsed as Markdown.
+	const plainText = eventRowIsPlainText(event);
+	if (!plainText && event.category === "prompt" && event.content) {
 		return (
 			<PromptBubble
 				text={event.content}
@@ -146,7 +149,7 @@ function renderBubbleEvent(
 			/>
 		);
 	}
-	if (event.category === "assistant_message" && event.content) {
+	if (!plainText && event.category === "assistant_message" && event.content) {
 		return (
 			<AssistantBubble
 				text={event.content}
@@ -184,7 +187,7 @@ function renderBubbleEvent(
 			late={late}
 			tone={eventRowTone(event)}
 			source={mode === "debug" ? event.source : undefined}
-			plainText={eventRowIsPlainText(event)}
+			plainText={plainText}
 		/>
 	);
 }

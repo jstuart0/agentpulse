@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { cleanHostText } from "../../../shared/clean-host-text.js";
 import type { ControlAction } from "../../../shared/types.js";
 
 /**
@@ -44,7 +45,7 @@ export function ControlHistory({ actions }: { actions: ControlAction[] }) {
 					<div key={action.id} className="flex items-center justify-between gap-3 text-[11px]">
 						<span className="text-muted-foreground">
 							{action.actionType}
-							{action.error ? `: ${action.error}` : ""}
+							{cleanHostText(action.error) ? `: ${cleanHostText(action.error)}` : ""}
 						</span>
 						<span className="font-mono text-foreground">{action.status}</span>
 					</div>
