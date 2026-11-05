@@ -48,12 +48,12 @@ describe("CodexApprovalCard (AGEN-87)", () => {
 		expect(row?.maxGzip).toBeGreaterThan(0);
 	});
 
-	test("the entry chunk grew at most 150 B over its base, and the session page at most 1,000 B", () => {
+	test("the entry chunk grew at most 150 B over its base; the session page's limit is the one AGEN-91 re-based (24,500)", () => {
 		const index = BUDGETS.find((b) => b.chunk === "index");
 		const page = BUDGETS.find((b) => b.chunk === "SessionDetailPage");
 		expect(index?.measured as number).toBeLessThanOrEqual(base.index + 150);
 		expect(index?.maxGzip as number).toBeLessThanOrEqual(118_400);
-		expect(page?.maxGzip as number).toBeLessThanOrEqual(23_500);
+		expect(page?.maxGzip as number).toBeLessThanOrEqual(24_500);
 	});
 
 	test("the card's own limit rose once, to 12,000, for the phase 6 review, and no further", () => {
