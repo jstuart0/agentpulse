@@ -587,6 +587,32 @@ describe("how a turn ends", () => {
 		}
 	});
 
+	test("a turn/completed whose status is inProgress ends nothing: no clears, no event, no idle report, one log line", async () => {
+		const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const world = await launch();
+			await prompt(world, "go");
+			const idleBefore = idleReports(world).length;
+			endTurn(world, "turn-2", "inProgress");
+			await settle(world);
+			expect(eventsOf(world, ...FOLLOW_UP_END)).toHaveLength(0);
+			expect(idleReports(world).length).toBe(idleBefore);
+			// Still busy: the turn is still running as far as we know.
+			await expectRejects(prompt(world, "again"), COPY.busy);
+			const logged = errorSpy.mock.calls
+				.map((call) => call.map(String).join(" "))
+				.filter((line) => line.includes("turn/completed") && line.includes("inProgress"));
+			expect(logged).toHaveLength(1);
+
+			// The real end afterwards still ends the turn once (positive control).
+			endTurn(world, "turn-2", "completed");
+			await waitFor("the idle report", () => idleReports(world).length > idleBefore);
+			expect(eventsOf(world, ...FOLLOW_UP_END)).toHaveLength(1);
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
 	test("a repeated turn/completed for a turn that already ended changes nothing", async () => {
 		const world = await launch();
 		await prompt(world, "go");

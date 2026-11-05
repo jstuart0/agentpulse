@@ -873,6 +873,14 @@ async function handleManagedCodexNotification(
 		// Another thread's turn (a subagent's, say) ends nothing of ours.
 		if (params?.threadId !== threadId) return;
 		const turn = params.turn;
+		// The schema allows `inProgress` here. Only a status known to be nonterminal is ignored; a missing or
+		// unrecognised one still ends the turn as a failure with no claim about what happened (endForStatus).
+		if (turn?.status === "inProgress") {
+			console.error(
+				`[codex-managed] ignored a turn/completed whose status is inProgress (session=${runtime.sessionId}); the turn is treated as still running`,
+			);
+			return;
+		}
 		const turnId = typeof turn?.id === "string" && turn.id ? turn.id : null;
 		if (turnId && runtime.activeTurnId && turnId !== runtime.activeTurnId) return;
 		// A turn already known to have ended ends nothing now.
