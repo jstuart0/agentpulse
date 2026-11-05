@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { AiProposal, AiWatcherReport, PromptDelivery } from "../../lib/api.js";
+import type {
+	AiProposal,
+	AiWatcherReport,
+	PromptDelivery,
+	PromptNotDeliverableReason,
+} from "../../lib/api.js";
 import {
 	NOT_APPROVABLE_NOTE,
 	autoConfirmationPoints,
@@ -29,6 +34,14 @@ describe("promptDeliveryNotice", () => {
 	test("an observed session is told AgentPulse didn't launch it and that prompts are for copying", () => {
 		expect(promptDeliveryNotice(true, no("observed"))).toBe(
 			"AgentPulse didn't launch this session, so it can't type into it. Continue will suggest prompts for you to copy.",
+		);
+	});
+
+	test("a host too old to send prompts to Codex says so in the one sentence every reader shares", () => {
+		// Typed as the api.ts union, so the union has to carry the reason for this file to compile.
+		const reason: PromptNotDeliverableReason = "host_upgrade_required";
+		expect(promptDeliveryNotice(true, { deliverable: false, reason })).toBe(
+			"This session's host is running an older supervisor that can't send prompts to Codex. Update the supervisor on that host.",
 		);
 	});
 

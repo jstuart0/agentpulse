@@ -163,6 +163,21 @@ describe("approving from Telegram", () => {
 		expect(await promptActions(w.sessionId)).toHaveLength(0);
 	});
 
+	test("a Codex session on a host too old to send it a prompt gets its own sentence, not the copy-it advice", async () => {
+		const w = await world();
+		await getDb().update(sessions).set({ agentType: "codex_cli" });
+		await getDb()
+			.update(launchRequests)
+			.set({ agentType: "codex_cli", requestedLaunchMode: "managed_codex" });
+		const { answers } = await tap(w, "approve");
+		expect(answers).toEqual([
+			"This session's host needs a supervisor update before it can take prompts, so nothing was sent.",
+		]);
+		expect(answers[0]?.toLowerCase()).not.toContain("copy");
+		expect(await hitlStatus(w.hitlId)).toBe("awaiting_reply");
+		expect(await promptActions(w.sessionId)).toHaveLength(0);
+	});
+
 	test("a host that is offline or was removed says the host isn't connected, leaves the request open and sends nothing", async () => {
 		const offline = await world();
 		await getDb()
