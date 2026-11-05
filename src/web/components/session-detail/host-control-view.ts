@@ -7,6 +7,7 @@
  * An absent `hostControl` (a list row, a push, an older server) means "can't
  * tell", and reads as controllable: the server still refuses if it isn't.
  */
+import { HOST_UPGRADE_REQUIRED_MESSAGE } from "../../../shared/managed-messages.js";
 import type { HostControl, Session } from "../../../shared/types.js";
 import { ApiError } from "../../lib/api.js";
 import { hasPendingCodexApproval } from "../../lib/codex-approval-wait.js";
@@ -18,6 +19,10 @@ export type HostRefusalCode =
 	| "host_upgrade_required"
 	| "managed_state_not_continuable";
 
+/** Why a Codex session can't take prompts after its host restarted (its process is gone). */
+export const HOST_RESTARTED_PROMPT_COPY =
+	"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.";
+
 const UNNAMED_HOST = "This session's host";
 
 const REFUSALS: Record<HostRefusalCode, (host: string) => string> = {
@@ -25,13 +30,11 @@ const REFUSALS: Record<HostRefusalCode, (host: string) => string> = {
 		`${host} is offline, so this session can't be controlled right now. Nothing was sent.`,
 	host_gone: () =>
 		"This session's host was removed from AgentPulse, so it can't be controlled. You can archive it.",
-	host_upgrade_required: () =>
-		"This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.",
-	managed_state_not_continuable: () =>
-		"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.",
+	host_upgrade_required: () => HOST_UPGRADE_REQUIRED_MESSAGE,
+	managed_state_not_continuable: () => HOST_RESTARTED_PROMPT_COPY,
 };
 
-function hostNameOf(session: Pick<Session, "managedSession">): string {
+export function hostNameOf(session: Pick<Session, "managedSession">): string {
 	return session.managedSession?.hostName?.trim() || UNNAMED_HOST;
 }
 

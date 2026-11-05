@@ -1,3 +1,5 @@
+import type { Session } from "../../../shared/types.js";
+import { hasPendingCodexApproval } from "../../lib/codex-approval-wait.js";
 import { type WorkspaceTabId, tabBadgeAccessibleName } from "../../lib/session-summary-core.js";
 import { WorkspaceTabButton } from "./SharedControls.js";
 
@@ -12,6 +14,14 @@ export interface WorkspaceTabBarProps {
 	summaryAvailable: boolean;
 	/** The word on the Summary tab while a summary is being made. */
 	summaryBadge: string | null;
+}
+
+/**
+ * Whether the Activity tab says "Working". While Codex waits on an approval the badge says it is waiting
+ * (a state is said once), so the tab doesn't claim the opposite.
+ */
+export function activityTabWorking(session: Pick<Session, "isWorking" | "metadata">): boolean {
+	return session.isWorking && !hasPendingCodexApproval(session);
 }
 
 export function workspaceTabButtonId(tab: WorkspaceTabId): string {

@@ -24,7 +24,7 @@ import { InlineRename } from "./InlineRename.js";
 import { SessionOverflowMenu } from "./SessionOverflowMenu.js";
 import { FilterToggle, ModeButton, ScrollJumpControls } from "./SharedControls.js";
 import type { TimelineMode } from "./TimelineView.js";
-import { WorkspaceTabBar } from "./WorkspaceTabBar.js";
+import { WorkspaceTabBar, activityTabWorking } from "./WorkspaceTabBar.js";
 import { buildExportMarkdown } from "./export-markdown.js";
 import { controlBlockedReason } from "./host-control-view.js";
 
@@ -353,7 +353,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 					instructionsLabel={
 						AGENT_METADATA[session.agentType as AgentType]?.instructionsFile ?? "CLAUDE.md"
 					}
-					isWorking={session.isWorking}
+					isWorking={activityTabWorking(session)}
 					hasLaunch={Boolean(session.managedSession?.launchRequestId)}
 					aiTabEnabled={aiTabEnabled}
 					summaryAvailable={summaryAvailable}
