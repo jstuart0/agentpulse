@@ -1,7 +1,7 @@
-import { cleanHostText } from "../../shared/clean-host-text.js";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { cleanHostText } from "../../shared/clean-host-text.js";
 import {
 	CODEX_APPROVALS_SERVER_FEATURE,
 	CODEX_APPROVAL_LIMITS,

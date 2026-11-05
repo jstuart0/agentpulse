@@ -22,13 +22,13 @@
  * control action carrying it, and the state a caller sees is that action's own status.
  */
 import { and, eq } from "drizzle-orm";
+import { CONTROL_TIMEOUT_ERROR } from "../../../shared/managed-messages.js";
 import type { HitlReplyKind } from "../../../shared/types.js";
 import type { Actor } from "../../auth/actor.js";
 import { scopesIncludeManage } from "../../auth/route-scope-policy.js";
 import { getDb } from "../../db/client.js";
 import { aiHitlDeliveries, aiHitlRequests, controlActions } from "../../db/schema/index.js";
 import { NOT_OWNER_MESSAGE, NotOwnerError, assertCanChangeSessions } from "../authorization.js";
-import { CONTROL_TIMEOUT_ERROR } from "../../../shared/managed-messages.js";
 import { expireStaleControlLock } from "../control-actions.js";
 import { notifyInboxChanged } from "../notifier.js";
 import { emitAiEvent } from "./ai-events.js";

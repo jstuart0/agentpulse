@@ -259,7 +259,6 @@ const limitBody = bodyLimit({
 	onError: (c) => c.json({ error: "invalid_decision" }, 400),
 });
 
-
 codexApprovalsRouter.post(
 	"/sessions/:sessionId/approvals/:approvalId/decision",
 	originGate,

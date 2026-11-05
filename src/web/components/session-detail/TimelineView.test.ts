@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { SessionEvent } from "../../../shared/types.js";
 import {
 	APPROVAL_RESOLVED_EVENT,
+	eventRowIsPlainText,
 	eventRowLabel,
 	eventRowTone,
 	getVisibleEvents,
@@ -104,6 +105,11 @@ describe("a failed prompt turn on the timeline (AGEN-91)", () => {
 	test("the show-system toggle still hides it", () => {
 		expect(getVisibleEvents([failed], "conversation", false, false, false)).toHaveLength(0);
 		expect(getVisibleEvents([failed], "progress", false, false, false)).toHaveLength(0);
+	});
+
+	test("it is shown as plain text, never Markdown (a remote image would leak the viewer's address)", () => {
+		expect(eventRowIsPlainText(failed)).toBe(true);
+		expect(eventRowIsPlainText(otherSystem)).toBe(false);
 	});
 
 	test("the row is drawn amber; an ordinary system row is not", () => {

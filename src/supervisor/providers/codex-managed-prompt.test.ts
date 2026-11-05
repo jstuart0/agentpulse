@@ -59,7 +59,8 @@ const COPY = {
 		"The last prompt may still be running. Send this again after it ends, or stop the session.",
 	timeout:
 		"Codex didn't answer in time. The prompt may have started, so check the timeline. Prompts stay blocked until this turn ends or the session is stopped.",
-	noRuntime: "This session's Codex process isn't running on its host any more. Start a new session for this work.",
+	noRuntime:
+		"This session's Codex process isn't running on its host any more. Start a new session for this work.",
 	tooLong: "This prompt is too long to send to Codex.",
 	notRecorded: "AgentPulse couldn't record this prompt, so it wasn't sent.",
 	completed: "Codex finished the turn.",

@@ -1,5 +1,9 @@
 import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
+import {
+	CONTROL_TIMEOUT_ERROR,
+	HOST_UPGRADE_REQUIRED_MESSAGE,
+} from "../../shared/managed-messages.js";
 import type {
 	ControlAction,
 	ControlActionStatus,
@@ -37,10 +41,6 @@ import {
 	resolveSessionOwner,
 	sessionOwnedBy,
 } from "./session-ownership.js";
-import {
-	CONTROL_TIMEOUT_ERROR,
-	HOST_UPGRADE_REQUIRED_MESSAGE,
-} from "../../shared/managed-messages.js";
 import { withCapabilityDefaults } from "./supervisor-capabilities.js";
 import { getSupervisor } from "./supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "./template-preview.js";

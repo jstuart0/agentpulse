@@ -8,13 +8,13 @@ import {
 	lateSuffix,
 } from "../../lib/event-time.js";
 import {
-	APPROVAL_RESOLVED_EVENT,
 	AssistantBubble,
 	PromptBubble,
 	TimelineCard,
 	type TimelineMode,
 	eventKey,
 	eventLabel,
+	eventRowIsPlainText,
 	eventRowLabel,
 	eventRowTone,
 } from "./TimelineView.js";
@@ -184,9 +184,7 @@ function renderBubbleEvent(
 			late={late}
 			tone={eventRowTone(event)}
 			source={mode === "debug" ? event.source : undefined}
-			plainText={
-				event.eventType === "ManagedEventsLost" || event.eventType === APPROVAL_RESOLVED_EVENT
-			}
+			plainText={eventRowIsPlainText(event)}
 		/>
 	);
 }

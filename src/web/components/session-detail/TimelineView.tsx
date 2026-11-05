@@ -243,6 +243,18 @@ export const APPROVAL_RESOLVED_EVENT = "ManagedApprovalResolved";
 /** A prompt turn that ended in failure: shown in every mode, so Conversation can say a turn went wrong. */
 const FAILED_TURN_EVENT = "HeadlessPromptFailed";
 
+/**
+ * Rows whose text comes from a host or a model and so is shown as plain text, never parsed as Markdown:
+ * a remote image in Markdown would make the viewer's browser fetch it.
+ */
+export function eventRowIsPlainText(event: Pick<SessionEvent, "eventType">): boolean {
+	return (
+		event.eventType === "ManagedEventsLost" ||
+		event.eventType === APPROVAL_RESOLVED_EVENT ||
+		event.eventType === FAILED_TURN_EVENT
+	);
+}
+
 export type RowTone = "default" | "amber" | "emerald";
 
 /** The colour of a plain event row. */
