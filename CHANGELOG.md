@@ -7,6 +7,98 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Added
+
+- **Take over a Codex session you started by hand, and resume one whose process ended (AGEN-115).** On a stopped, observed
+  Codex session the page offers **Take over**: pick the machine it ran on, and that machine's supervisor resumes the same
+  conversation under `untrusted` / `workspace-write`, so prompts, Stop and approvals work from the dashboard. A managed Codex
+  session whose process was lost (a supervisor restart) shows **Resume session**. Codex only; a signed-in person only (never
+  an API key); a takeover counts as a launch in the day's launch count; the session must have been quiet for 5 minutes. If a
+  TUI left Codex's background service holding the thread, the takeover says so and names `codex app-server daemon stop`.
+  `POST /sessions/:id/bind` is new and `POST /sessions/:id/resume` is real (it was a 501). A taken-over session can't be
+  retried (`409 retry_not_available`), and delete and archive are refused while a takeover is open (`takeover_in_progress`).
+  With `DISABLE_AUTH=true` the same posture applies as for approvals: anyone who can reach the server can do it.
+
+### Upgrade notes
+
+- **Take over and resume: server first, then supervisors.** A host that doesn't advertise `resumes_sessions` is refused
+  (`409 host_upgrade_required`) and a queued action that reaches one fails at claim. Sessions launched before the upgrade that
+  lost their process can be resumed only if the thread is one this supervisor started (its record is written from this
+  version on; before that the thread's `originator` is the proof).
+
+- **Upgrade the server first, then the supervisors.** Until a host's supervisor is updated, a prompt to one of its Codex sessions
+  is refused with `409 host_upgrade_required` and nothing is queued. A prompt queued before the update that a supervisor
+  without the feature would claim is failed at claim time instead of being handed over; its dispatch audit row reads
+  `expired_unclaimed`. A new supervisor on an old server still works, but a Codex session's working state doesn't flip until
+  the server is upgraded.
+- **Codex sessions already running when a supervisor updates can't take prompts afterwards.** Updating restarts the supervisor,
+  which ends its Codex processes, so those sessions become `degraded` and further prompts are refused
+  (`409 managed_state_not_continuable`). Start a new session for the work. Finish or stop managed sessions before updating.
+- A script that posts to `POST /sessions/:id/prompt` must send `Content-Type: application/json`, or it gets `415
+  unsupported_media_type`. A request with a foreign `Origin`, or (with `DISABLE_AUTH=true`) a `Host` that isn't loopback or
+  allowlisted, gets `403 bad_origin`. A client with an API key and no `Origin` is unaffected. A held control lock is still a
+  `400`, now with `reason: "control_busy"`.
+- Prompts are now routed by the launch's agent type, not the session row's. A session whose stored agent type disagrees with
+  its launch has its prompts refused as `launch_mismatch`, permanently; Retry launches a fresh session. To list such rows:
+
+  ```sql
+  SELECT s.session_id, s.agent_type, l.agent_type
+  FROM sessions s
+  JOIN managed_sessions m ON m.session_id = s.session_id
+  JOIN launch_requests l ON l.launch_correlation_id = s.session_id
+  WHERE s.agent_type <> l.agent_type;
+  ```
+
+- Run one supervisor per host credential. A second live supervisor on the same credential marks the first's Codex sessions
+  `degraded` and fails their open prompts.
+- The `@craze0/agentpulse-mcp` change (error messages for the new refusals) ships with the next `mcp-v*` release.
+
+### Fixed
+
+- **A follow-up prompt to a managed Codex session now runs on that session's Codex thread** (AGEN-91). It was sent down the
+  Claude path: a launch with an explicit approval policy failed with a misleading "policy isn't recognised" error, and one with
+  the agent's defaults ran `claude --resume` on the Codex session id in the launch directory. The prompt box, a watcher request's Approve,
+  Telegram's Approve, and `prompt_session` and `decide_hitl` over MCP all reach Codex now. The follow-up is a new turn under
+  the launch's approval policy and sandbox, goes through the same approval card, and sends no override of either.
+- A prompt for a Codex session that can't take it is refused instead of reported as sent: the host is too old
+  (`host_upgrade_required`), the session's process is gone (`managed_state_not_continuable`), the turn hasn't ended, or the
+  last prompt may still be running. The refusal leaves a watcher request open, so it can be retried.
+- A failed turn is no longer reported as finished. Notify's note says the turn didn't finish, and the browser notification for a
+  session that stops working now says "stopped".
+- `Headless*` event names are refused on the hook path (still `200`). A hook could forge a turn end that woke the watcher.
+
+### Added
+
+- **Prompt box for managed Codex sessions** on the session page, with the reason shown inline when a send is refused and the
+  text kept. A Codex send shows "Sending…" until the host accepts the turn. A restarted or too-old host shows why the box is
+  blocked and how to continue.
+- A managed Codex session now reads Working while a turn runs, including the launch turn, and Waiting when it ends. It was
+  Idle throughout. A prompt sent to it counts as seeing the session.
+- A failed Codex turn shows as an amber row in Activity and Conversation.
+- After a supervisor restarts, the host's Codex sessions are `degraded`, stop reading as working, and age out through the
+  inactivity sweep. A replayed report can't make them `managed` again.
+- Canary scenario `followup` in `scripts/codex-approvals-live.ts`; the Codex release checklist runs it
+  (`deploy/k8s/README.md`).
+
+### Changed
+
+- **Auto-send is off for Codex sessions.** A watcher set to `auto` opens a request for a person on a Codex session, and a send
+  that still reaches the backstop is refused as `auto_send_blocked` / `codex_needs_person`. Claude is unchanged. Re-opening it
+  is AGEN-112.
+- A repeated, identical managed prompt, completion or agent-message row is now stored (Claude too) when its batch has a
+  delivery id; the delivery receipt, not the content window, stops a retry.
+- `POST /sessions/:id/prompt` answers `409` `host_upgrade_required` and `managed_state_not_continuable`, `403 bad_origin` and
+  `415 unsupported_media_type` (see the upgrade notes). The text a supervisor reports as a control action's `error` is cleaned
+  and capped at 500 characters.
+
+### Known limits
+
+- Measured on Codex 0.163.0 on macOS only. The web checks that need a person were not done: the badge across a real turn, a
+  screen reader announcing the inline reason, team mode's owner message, and a supervisor restart mid-turn.
+- A follow-up turn doesn't survive a supervisor restart; nothing respawns or resumes the thread yet.
+- Phones: the iOS app doesn't offer or decode the new states and refusals yet (AGEN-111). All of it is additive.
+- Claude's `stop` still tries the Codex path first (AGEN-110).
+
 ## [0.10.0] — 2026-11-04
 
 ### Upgrade notes

@@ -52,6 +52,8 @@ export async function seedSupervisor(id: string, opts: SeedSupervisorOptions = {
 				launchModes: ["headless", "interactive_terminal"],
 				os: "linux",
 				terminalSupport: [],
+				// Deliberately no features: this is an older supervisor. owned-launch.ts seeds a current one
+				// (it advertises codex_follow_up_prompts), so the two fixtures differ on Codex prompts.
 				features: [],
 			},
 			trustedRoots: [],

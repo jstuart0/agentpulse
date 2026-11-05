@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import type { Session, SessionEvent } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { buildExportMarkdown } from "./export-markdown.js";
+import { launchLinkLabel } from "./session-takeover-view.js";
 
 interface SessionOverflowMenuProps {
 	session: Session;
@@ -102,7 +103,7 @@ export function SessionOverflowMenu({
 					<MenuItem label="Copy as Markdown" onClick={handleExport} />
 					{session.managedSession?.launchRequestId && (
 						<MenuItem
-							label="View launch"
+							label={launchLinkLabel(session.managedSession)}
 							onClick={() => {
 								navigate(`/launches/${session.managedSession?.launchRequestId}`);
 								setOpen(false);

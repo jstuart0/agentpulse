@@ -32,6 +32,7 @@ describe("checkBudget", () => {
 			"SessionDetailPage",
 			"SessionSummaryTab",
 			"CodexApprovalCard",
+			"SessionTakeoverCard",
 			"DashboardPage",
 			"index",
 		]);
@@ -48,12 +49,17 @@ describe("CodexApprovalCard (AGEN-87)", () => {
 		expect(row?.maxGzip).toBeGreaterThan(0);
 	});
 
-	test("the entry chunk grew at most 150 B over its base, and the session page at most 1,000 B", () => {
+	test("the entry chunk grew at most 200 B over its AGEN-87 base (the two take-over api methods and one error sentence, AGEN-115); the session page's limit is the one AGEN-115 re-based (25,900)", () => {
 		const index = BUDGETS.find((b) => b.chunk === "index");
 		const page = BUDGETS.find((b) => b.chunk === "SessionDetailPage");
-		expect(index?.measured as number).toBeLessThanOrEqual(base.index + 150);
-		expect(index?.maxGzip as number).toBeLessThanOrEqual(118_400);
-		expect(page?.maxGzip as number).toBeLessThanOrEqual(23_500);
+		expect(index?.measured as number).toBeLessThanOrEqual(base.index + 200);
+		expect(index?.maxGzip as number).toBeLessThanOrEqual(118_600);
+		expect(page?.maxGzip as number).toBeLessThanOrEqual(25_900);
+	});
+
+	test("the take-over card is a lazy chunk with a row of its own (AGEN-115), and the page's limit rose once for it", () => {
+		const takeover = BUDGETS.find((b) => b.chunk === "SessionTakeoverCard");
+		expect(takeover?.maxGzip).toBe(5_400);
 	});
 
 	test("the card's own limit rose once, to 12,000, for the phase 6 review, and no further", () => {

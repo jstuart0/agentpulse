@@ -21,17 +21,23 @@ export const BOTH_MODES_OFF = "Both modes are off, so the watcher does nothing f
 export function promptDeliveryNotice(
 	continueEnabled: boolean,
 	delivery: PromptDelivery | null,
+	agentType?: string,
 ): string | null {
 	if (!continueEnabled || delivery === null || delivery.deliverable) return null;
 	switch (delivery.reason) {
 		case "observed":
-			return "AgentPulse didn't launch this session, so it can't type into it. Continue will suggest prompts for you to copy.";
+			// Only a Codex session can be taken over, so only its notice points at that way in.
+			return agentType === "codex_cli"
+				? "AgentPulse didn't start this session, so it can't type into it. Continue will suggest prompts for you to copy. To send them from here, take the session over."
+				: "AgentPulse didn't launch this session, so it can't type into it. Continue will suggest prompts for you to copy.";
 		case "supervisor_offline":
 			return "The machine running this session isn't connected right now, so AgentPulse can't type into it. Continue will suggest prompts; reconnect the machine to send them.";
 		case "host_gone":
 			return "The machine that ran this session was removed from AgentPulse, so it can't be typed into. Continue will suggest prompts for you to copy.";
 		case "managed_state":
 			return "This session isn't in a state that can take a prompt right now. Continue will suggest prompts for you to copy.";
+		case "host_upgrade_required":
+			return "This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.";
 		case "control_busy":
 			return "AgentPulse is already sending something to this session. Try again in a moment.";
 	}

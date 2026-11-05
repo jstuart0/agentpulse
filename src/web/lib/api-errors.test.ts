@@ -318,6 +318,12 @@ describe("answering a HITL request", () => {
 			"offline",
 		);
 		expect(describeDelivery({ state: "blocked" })).toContain("couldn't be sent");
+		expect(describeDelivery({ state: "blocked", reason: "host_upgrade_required" })).toBe(
+			"Approved, but nothing was sent: the agent's machine is running an older supervisor that can't send prompts to Codex (update it, then start a new session for this work; updating ends the sessions running there).",
+		);
+		expect(describeDelivery({ state: "blocked", reason: "managed_state" })).toBe(
+			"Approved, but nothing was sent: the session's process ended when its host restarted.",
+		);
 		expect(describeDelivery(undefined)).toBeNull();
 		// a reason is looked up as data, never as a property of the table
 		for (const reason of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {

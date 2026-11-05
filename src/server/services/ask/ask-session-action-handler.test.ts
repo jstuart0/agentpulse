@@ -6,7 +6,7 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { managedSessions, sessions } = await import("../../db/schema/index.js");
+const { controlActions, managedSessions, sessions } = await import("../../db/schema/index.js");
 const { applyNativeName } = await import("../session-tracker.js");
 const { handleSessionAction } = await import("./ask-session-action-handler.js");
 
@@ -15,6 +15,7 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
+	await getDb().delete(controlActions).execute();
 	await getDb().delete(managedSessions).execute();
 	await getDb().delete(sessions).execute();
 });
@@ -121,4 +122,32 @@ describe("handleSessionAction rename", () => {
 		const row = await getSession("ask-rename-blank");
 		expect(row?.displayName).toBe("original");
 	});
+});
+
+describe("handleSessionAction while a takeover is open", () => {
+	test.each(["archive", "delete"] as const)(
+		"%s answers in words instead of throwing, and changes nothing",
+		async (action) => {
+			await insertSession("ask-takeover-1");
+			await getDb()
+				.insert(controlActions)
+				.values({
+					sessionId: "ask-takeover-1",
+					actionType: "resume",
+					status: "queued",
+					metadata: { resumeKind: "takeover" },
+				});
+
+			const result = await handleSessionAction(
+				{ action, sessionHint: null, noteText: null, newName: null },
+				baseArgs,
+			);
+
+			expect(result.replyText).toBe(
+				"This session is being taken over. Try again when that's finished.",
+			);
+			expect(result.actionRequestId).toBeNull();
+			expect((await getSession("ask-takeover-1"))?.isArchived).toBe(false);
+		},
+	);
 });

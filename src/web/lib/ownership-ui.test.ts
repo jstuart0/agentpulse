@@ -3,14 +3,9 @@ import { shouldShowFirstRun } from "../pages/dashboard-empty.js";
 import { viewKind } from "../pages/dashboard-scope.js";
 import { ownerChipVisible } from "./owner-chip.js";
 import { scopeQuery } from "./owner-scope.js";
-import {
-	ADMIN_ONLY_SETTINGS_NOTICE,
-	NOTES_BLOCKED_REASON,
-	RENAME_BLOCKED_REASON,
-	ownershipUi,
-	sessionActionAccess,
-	viewerIsAdmin,
-} from "./ownership-ui.js";
+import * as ownershipModule from "./ownership-ui.js";
+import { ADMIN_ONLY_SETTINGS_NOTICE, ownershipUi, viewerIsAdmin } from "./ownership-ui.js";
+import * as sessionAccessModule from "./session-action-access.js";
 
 const SOLO_ROW = {
 	showScope: false,
@@ -123,97 +118,6 @@ describe("ownershipUi in team mode", () => {
 	});
 });
 
-describe("notes and CLAUDE.md editing", () => {
-	test("the blocked reason names who can edit", () => {
-		expect(NOTES_BLOCKED_REASON).toBe(
-			"Only the owner or an admin can edit this session's notes and CLAUDE.md.",
-		);
-	});
-});
-
-describe("sessionActionAccess", () => {
-	const solo = ownershipUi("solo", { effectiveRole: "member" });
-	const teamMember = ownershipUi("team", { effectiveRole: "member" });
-	const teamAdmin = ownershipUi("team", { effectiveRole: "admin" });
-	const all = {
-		canRename: true,
-		canPin: true,
-		canArchive: true,
-		canDelete: true,
-		canEditNotes: true,
-	};
-	const none = {
-		canRename: false,
-		canPin: false,
-		canArchive: false,
-		canDelete: false,
-		canEditNotes: false,
-	};
-
-	test("solo: always allowed, whoever owns the session", () => {
-		expect(sessionActionAccess(solo, { ownerUserId: "alice" }, { userId: "bob" })).toEqual(all);
-	});
-
-	test("team: the owner may", () => {
-		expect(
-			sessionActionAccess(
-				teamMember,
-				{ ownerUserId: "alice" },
-				{ userId: "alice", effectiveRole: "member" },
-			),
-		).toEqual(all);
-	});
-
-	test("team: someone else's session is read-only for a member", () => {
-		expect(
-			sessionActionAccess(
-				teamMember,
-				{ ownerUserId: "alice" },
-				{ userId: "bob", effectiveRole: "member" },
-			),
-		).toEqual(none);
-	});
-
-	test("team: an admin may act on anyone's session", () => {
-		expect(
-			sessionActionAccess(
-				teamAdmin,
-				{ ownerUserId: "alice" },
-				{ userId: "carol", effectiveRole: "admin" },
-			),
-		).toEqual(all);
-	});
-
-	test("team: an unowned session is open to any member, as on the server", () => {
-		expect(
-			sessionActionAccess(
-				teamMember,
-				{ ownerUserId: null },
-				{ userId: "bob", effectiveRole: "member" },
-			),
-		).toEqual(all);
-		expect(sessionActionAccess(teamMember, {}, { userId: "bob", effectiveRole: "member" })).toEqual(
-			all,
-		);
-	});
-
-	test("team: a viewer with no user id can't claim to be the owner", () => {
-		expect(
-			sessionActionAccess(
-				teamMember,
-				{ ownerUserId: "alice" },
-				{ userId: null, effectiveRole: "member" },
-			),
-		).toEqual(none);
-	});
-});
-
-describe("RENAME_BLOCKED_REASON", () => {
-	test("the one owner-gated action the detail page explains is renaming", () => {
-		expect(RENAME_BLOCKED_REASON).toBe("Only the owner or an admin can rename this session.");
-	});
-});
-
 describe("ADMIN_ONLY_SETTINGS_NOTICE", () => {
 	test("the sentence a member reads above admin-only settings", () => {
 		expect(ADMIN_ONLY_SETTINGS_NOTICE).toBe("Only admins can change these settings.");
@@ -234,5 +138,16 @@ describe("the summary shared note (AGEN-69)", () => {
 		expect(ownershipUi("solo", { effectiveRole: "admin" }).showSummarySharedNote).toBe(false);
 		expect(ownershipUi("team", { effectiveRole: "member" }).showSummarySharedNote).toBe(true);
 		expect(ownershipUi("team", { effectiveRole: "admin" }).showSummarySharedNote).toBe(true);
+	});
+});
+
+describe("the iOS fixture generator still finds the session-action names here", () => {
+	test("ownership-ui re-exports exactly what session-action-access exports", () => {
+		for (const name of Object.keys(sessionAccessModule)) {
+			expect((ownershipModule as Record<string, unknown>)[name], name).toBe(
+				(sessionAccessModule as Record<string, unknown>)[name],
+			);
+		}
+		expect(Object.keys(sessionAccessModule)).toContain("sessionActionAccess");
 	});
 });

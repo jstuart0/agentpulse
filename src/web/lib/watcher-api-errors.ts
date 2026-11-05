@@ -1,4 +1,4 @@
-import { registerApiErrorMessages } from "./api-errors.js";
+import { registerApiErrorMessages, registerApiErrorReasonMessages } from "./api-errors.js";
 
 /**
  * The sentences for the watcher's refusals (approving, sending, configuring a
@@ -28,4 +28,13 @@ registerApiErrorMessages({
 	session_missing: "That session no longer exists.",
 	launch_missing: "AgentPulse can't find how this session was launched.",
 	dispatch_failed: "Something went wrong sending it. Nothing was sent.",
+});
+
+registerApiErrorReasonMessages({
+	prompt_not_deliverable: {
+		managed_state:
+			"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.",
+		host_upgrade_required:
+			"This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.",
+	},
 });

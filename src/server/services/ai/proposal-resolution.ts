@@ -42,7 +42,7 @@ import {
 import { enqueuePromptInTx } from "../control-actions.js";
 import { getMode } from "../instance-mode.js";
 import { notifyInboxChanged } from "../notifier.js";
-import { getSessionOwnerConnections } from "../session-ownership.js";
+import { findLaunchRowByCorrelationId, getSessionOwnerConnections } from "../session-ownership.js";
 import { emitAiEvent } from "./ai-events.js";
 import {
 	AUTO_CONTINUE_KINDS,
@@ -446,6 +446,12 @@ async function runDispatchChecksAndEnqueue(tx: Tx, input: DispatchChecks): Promi
 				.where(eq(watcherConfigs.sessionId, sessionId));
 			return refusal(409, "auto_send_blocked", "confirmer_lapsed");
 		}
+		// An unattended send never reaches a Codex session in this release (AGEN-91 D13). Keyed on the
+		// launch, not the session row: a hook can create the row first with an agent type of its choosing.
+		const launch = await findLaunchRowByCorrelationId(sessionId, tx);
+		if (launch?.agentType === "codex_cli") {
+			return refusal(409, "auto_send_blocked", "codex_needs_person");
+		}
 	}
 
 	// 3. Has the turn moved on? A proposal that can't be tied to a turn is stale by definition.
@@ -498,6 +504,10 @@ function refusalForEnqueue(reason: string): Refusal {
 			return refusal(409, "prompt_not_deliverable", "supervisor_offline");
 		case "host_gone":
 			return refusal(409, "prompt_not_deliverable", "host_gone");
+		case "managed_state":
+			return refusal(409, "prompt_not_deliverable", "managed_state");
+		case "host_upgrade_required":
+			return refusal(409, "prompt_not_deliverable", "host_upgrade_required");
 		default:
 			return refusal(409, "prompt_not_deliverable", "control_busy");
 	}

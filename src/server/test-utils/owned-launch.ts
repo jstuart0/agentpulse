@@ -8,6 +8,7 @@
  * inventory). One shared construction of "owned launch" instead of three
  * hand-rolled `launch_requests` inserts drifting on required columns.
  */
+import { CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
 import { getDb } from "../db/client.js";
 import { launchRequests, supervisors } from "../db/schema/index.js";
 
@@ -82,7 +83,9 @@ async function seedLiveHostIfAbsent(supervisorId: string): Promise<void> {
 				launchModes: ["headless", "interactive_terminal", "managed_codex"],
 				os: "linux",
 				terminalSupport: ["terminal"],
-				features: [],
+				// A fixture host takes Codex follow-ups; a test about an older supervisor seeds its own. (supervisor-fixture.ts's
+				// seedSupervisor differs on purpose: its default host is an older one, with no features.)
+				features: [CODEX_FOLLOW_UP_PROMPTS],
 				executables: {
 					claude: {
 						available: true,

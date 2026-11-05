@@ -12,7 +12,7 @@ import {
 	hasPendingCodexApproval,
 } from "../lib/codex-approval-wait.js";
 import type { OwnerChipModel } from "../lib/owner-chip.js";
-import { sessionActionAccess } from "../lib/ownership-ui.js";
+import { sessionActionAccess } from "../lib/session-action-access.js";
 import { sessionHostLabel } from "../lib/session-host.js";
 import {
 	canAcknowledgeSession,

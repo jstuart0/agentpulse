@@ -67,6 +67,7 @@ import {
 	requestHeading,
 	secondsLeft,
 	shouldRefetchOnSession,
+	showsAvailabilityHint,
 	signedDiffLines,
 	splitRows,
 	teamNotOwnerHeading,
@@ -981,5 +982,15 @@ describe("the new fixed words", () => {
 		expect(REVISION_CHANGED_LINE).toBe("Codex changed what it's asking. Read it again.");
 		expect(NEXT_REQUEST_LINE).toBe("Next request. The last one is shown below.");
 		expect(ARM_AFTER_MS).toBe(700);
+	});
+});
+
+describe("showsAvailabilityHint: no 'update the supervisor' while the slot owns the state", () => {
+	test("hidden while pending (a takeover or resume in flight) and degraded, shown otherwise", () => {
+		expect(showsAvailabilityHint({ managedState: "pending" })).toBe(false);
+		expect(showsAvailabilityHint({ managedState: "degraded" })).toBe(false);
+		expect(showsAvailabilityHint({ managedState: "managed" })).toBe(true);
+		expect(showsAvailabilityHint(null)).toBe(true);
+		expect(showsAvailabilityHint(undefined)).toBe(true);
 	});
 });

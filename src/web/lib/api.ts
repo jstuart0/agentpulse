@@ -486,8 +486,12 @@ export const api = {
 			),
 		),
 
-	getSessionControlActions: (sessionId: string) =>
-		request<{ controlActions: ControlAction[] }>(`/sessions/${sessionId}/control-actions`),
+	getSessionControlActions: (sessionId: string, opts?: { background?: boolean }) =>
+		request<{ controlActions: ControlAction[] }>(
+			`/sessions/${sessionId}/control-actions`,
+			undefined,
+			opts,
+		),
 
 	renameSession: (sessionId: string, name: string) =>
 		// source: "user" (F5 / Decision 6) — the dashboard is always a manual
@@ -563,10 +567,33 @@ export const api = {
 		}),
 
 	sendSessionPrompt: (sessionId: string, prompt: string) =>
-		request<unknown>(`/sessions/${sessionId}/prompt`, {
+		request<{ action: ControlAction }>(`/sessions/${sessionId}/prompt`, {
 			method: "POST",
 			body: JSON.stringify({ prompt }),
 		}),
+
+	/**
+	 * Takes an observed Codex session over on the chosen machine. The body is exactly these two keys: the
+	 * server refuses any other, and the confirmation is the person's own statement, so it is always true here.
+	 */
+	bindSession: (sessionId: string, body: { targetSupervisorId: string }) =>
+		request<{ action: ControlAction; launchRequestId: string }>(
+			`/sessions/${encodeURIComponent(sessionId)}/bind`,
+			{
+				method: "POST",
+				body: JSON.stringify({
+					targetSupervisorId: body.targetSupervisorId,
+					sameMachineConfirmed: true,
+				}),
+			},
+		),
+
+	/** Resumes a managed Codex session whose process is gone. No body: the host and settings are the launch's own. */
+	resumeSession: (sessionId: string) =>
+		request<{ action: ControlAction; launchRequestId: string }>(
+			`/sessions/${encodeURIComponent(sessionId)}/resume`,
+			{ method: "POST" },
+		),
 
 	retrySession: (sessionId: string) =>
 		request<unknown>(`/sessions/${sessionId}/retry`, {
@@ -1532,6 +1559,7 @@ export type PromptNotDeliverableReason =
 	| "supervisor_offline"
 	| "host_gone"
 	| "managed_state"
+	| "host_upgrade_required"
 	| "control_busy";
 
 export type PromptDelivery =

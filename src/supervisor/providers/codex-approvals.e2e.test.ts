@@ -52,7 +52,11 @@ import {
 	configureCodexApprovals,
 	createCodexApprovalTracker,
 } from "./codex-approvals.js";
-import { launchManagedCodexRequest, stopManagedCodexSession } from "./codex-managed.js";
+import {
+	launchManagedCodexRequest,
+	promptManagedCodexSession,
+	stopManagedCodexSession,
+} from "./codex-managed.js";
 
 const { config } = await import("../../server/config.js");
 const { initializeDatabase, getDb } = await import("../../server/db/client.js");
@@ -1396,4 +1400,87 @@ describe("the recorded Codex 0.163.0 approval requests, replayed by the fake", (
 			expect(await writes()).toEqual([`answer ${frame.id} accept`, `ran ${frame.id}`]);
 		});
 	}
+});
+
+describe("a follow-up prompt goes through the same approval machinery (AGEN-91)", () => {
+	const endTurn = (turnId: string) =>
+		control({
+			method: "turn/completed",
+			params: { threadId: "thr-1", turn: { id: turnId, status: "completed" } },
+		});
+
+	/** A launched session whose launch turn has ended, then a follow-up started on it. */
+	async function followUp(text = "now do the next thing") {
+		const session = await readySession();
+		endTurn("turn-1");
+		await until(() => world.reportedStates.some((state) => state.status === "idle"), {
+			what: "the launch turn's idle report",
+			tick: false,
+		});
+		const callbacks = (world.lastLaunch as NonNullable<World["lastLaunch"]>).callbacks;
+		const result = await promptManagedCodexSession(
+			{ sessionId: session.sessionId, prompt: text },
+			callbacks,
+		);
+		return { ...session, result, callbacks };
+	}
+
+	test("a request raised during the follow-up reaches the tracker, is answerable, and an accept is delivered once", async () => {
+		const { sessionId, result } = await followUp();
+		expect(result.metadata).toMatchObject({ mode: "managed_codex", turnId: "turn-2" });
+		control(commandRequest(0, { turnId: "turn-2" }));
+		const row = await theRow(sessionId);
+		expect(row.status).toBe("pending");
+		expect(row.approvable).toBe(true);
+
+		const { res } = await decide(sessionId, "accept");
+		expect(res.status).toBe(200);
+		await until(() => answers().length > 0, { what: "the fake to be answered" });
+		expect(await writes()).toEqual(["answer 0 accept", "ran 0"]);
+	});
+
+	test("after the session is stopped mid-follow-up the request is declined and the next prompt is refused", async () => {
+		const { sessionId, callbacks } = await followUp();
+		control(commandRequest(0, { turnId: "turn-2" }));
+		await theRow(sessionId);
+
+		await stopManagedCodexSession(sessionId, { interruptTimeoutMs: 100 });
+
+		expect(answers().map((a) => a.result.decision)).toEqual(["decline"]);
+		expect(ran()).toEqual([]);
+		await expect(
+			promptManagedCodexSession({ sessionId, prompt: "again" }, callbacks),
+		).rejects.toThrow(
+			"This session's Codex process isn't running on its host any more. Resume it from its page in the web dashboard, or start a new session for this work.",
+		);
+	});
+
+	test("on an unsupported Codex the follow-up still runs, and its approval requests are declined locally", async () => {
+		await afterEachNow();
+		world = newWorld({ version: "0.100.0" });
+		const session = await launch();
+		await until(
+			async () => {
+				const [managed] = await getDb()
+					.select()
+					.from(managedSessions)
+					.where(eq(managedSessions.sessionId, session.sessionId));
+				return (managed?.providerCapabilitySnapshot as Record<string, unknown> | null)
+					?.agentpulseApprovals;
+			},
+			{ tick: false },
+		);
+		endTurn("turn-1");
+		await until(() => world.reportedStates.some((state) => state.status === "idle"), {
+			tick: false,
+		});
+		const callbacks = (world.lastLaunch as NonNullable<World["lastLaunch"]>).callbacks;
+		await promptManagedCodexSession({ sessionId: session.sessionId, prompt: "go on" }, callbacks);
+		expect(readFakeLog(world.logPath).filter((e) => e.method === "turn/start")).toHaveLength(2);
+
+		control(commandRequest(0, { turnId: "turn-2" }));
+		await until(() => answers().length > 0, { tick: false });
+		expect(answers()).toEqual([{ id: 0, result: { decision: "decline" } }]);
+		expect(approvalCalls()).toEqual([]);
+	});
 });

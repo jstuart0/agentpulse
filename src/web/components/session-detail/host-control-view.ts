@@ -7,12 +7,21 @@
  * An absent `hostControl` (a list row, a push, an older server) means "can't
  * tell", and reads as controllable: the server still refuses if it isn't.
  */
+import { HOST_UPGRADE_REQUIRED_MESSAGE } from "../../../shared/managed-messages.js";
 import type { HostControl, Session } from "../../../shared/types.js";
 import { ApiError } from "../../lib/api.js";
 import { hasPendingCodexApproval } from "../../lib/codex-approval-wait.js";
 import { parseDate } from "../../lib/utils.js";
 
-export type HostRefusalCode = "host_offline" | "host_gone";
+export type HostRefusalCode =
+	| "host_offline"
+	| "host_gone"
+	| "host_upgrade_required"
+	| "managed_state_not_continuable";
+
+/** Why a Codex session can't take prompts after its host restarted (its process is gone). */
+export const HOST_RESTARTED_PROMPT_COPY =
+	"This session's process ended when its host restarted. Resume it to keep going, or start a new session for this work.";
 
 const UNNAMED_HOST = "This session's host";
 
@@ -21,9 +30,11 @@ const REFUSALS: Record<HostRefusalCode, (host: string) => string> = {
 		`${host} is offline, so this session can't be controlled right now. Nothing was sent.`,
 	host_gone: () =>
 		"This session's host was removed from AgentPulse, so it can't be controlled. You can archive it.",
+	host_upgrade_required: () => HOST_UPGRADE_REQUIRED_MESSAGE,
+	managed_state_not_continuable: () => HOST_RESTARTED_PROMPT_COPY,
 };
 
-function hostNameOf(session: Pick<Session, "managedSession">): string {
+export function hostNameOf(session: Pick<Session, "managedSession">): string {
 	return session.managedSession?.hostName?.trim() || UNNAMED_HOST;
 }
 
@@ -84,6 +95,24 @@ export function hostRefusalMessage(
 }
 
 /** The provider-sync pill describes a connection that isn't there when the host isn't live. */
-export function showProviderSyncState(session: Pick<Session, "hostControl">): boolean {
-	return hostCanControl(session);
+export function showProviderSyncState(
+	session: Pick<Session, "hostControl"> & Partial<Pick<Session, "managedSession">>,
+): boolean {
+	return hostCanControl(session) && session.managedSession?.managedState !== "degraded";
+}
+
+/**
+ * A stored sync error describes a connection that mattered while the session was live. On a session
+ * that has ended or been archived it is old news in red, so it isn't shown.
+ */
+export function showProviderSyncError(
+	session: Pick<Session, "isArchived" | "endedAt" | "status"> &
+		Partial<Pick<Session, "managedSession">>,
+): boolean {
+	// A degraded session's state is the Resume slot's to say; the stored error would say it again, in red.
+	if (session.managedSession?.managedState === "degraded") return false;
+	if (session.isArchived || session.endedAt) return false;
+	return (
+		session.status !== "completed" && session.status !== "failed" && session.status !== "archived"
+	);
 }

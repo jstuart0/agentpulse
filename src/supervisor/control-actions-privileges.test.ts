@@ -34,6 +34,7 @@ async function promptWith(metadata: Record<string, unknown>) {
 		log: () => {},
 	});
 	const providers = {
+		hasManagedCodexRuntime: () => false,
 		stopManagedCodexSession: async () => {},
 		promptClaudeHeadlessSession: async (a: Record<string, unknown>) => {
 			received.push(a);
@@ -56,7 +57,13 @@ async function promptWith(metadata: Record<string, unknown>) {
 		requestedBy: null,
 		status: "claimed",
 		error: null,
-		metadata: { prompt: "go", cwd: work, managedState: "headless", ...metadata },
+		metadata: {
+			agentType: "claude_code",
+			prompt: "go",
+			cwd: work,
+			managedState: "headless",
+			...metadata,
+		},
 	} as unknown as ControlAction);
 	return received;
 }

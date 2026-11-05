@@ -14,7 +14,7 @@ import {
 } from "../components/session-detail/Panels.js";
 import { SessionHeader } from "../components/session-detail/SessionHeader.js";
 import { SessionOwnerDialog } from "../components/session-detail/SessionOwnerDialog.js";
-import { SessionPromptComposer } from "../components/session-detail/SessionPromptComposer.js";
+import { SessionComposerSlot } from "../components/session-detail/SessionPromptComposer.js";
 import {
 	AgentObserveOnlyHint,
 	CodexStatusHint,
@@ -31,11 +31,19 @@ import {
 } from "../components/session-detail/TimelineView.js";
 import {
 	hostRefusalMessage,
+	showProviderSyncError,
 	showProviderSyncState,
 } from "../components/session-detail/host-control-view.js";
+import {
+	bottomSlot,
+	isTakenOver,
+	overviewOriginField,
+	showsStatusHint,
+} from "../components/session-detail/session-takeover-view.js";
 import { useDirectoryInitials } from "../hooks/useDirectoryInitials.js";
 import { useEventReveal } from "../hooks/useEventReveal.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
+import { useResumeAttempt } from "../hooks/useResumeAttempt.js";
 import { useSessionSummaryPage } from "../hooks/useSessionSummaryPage.js";
 import { describeApiError } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
@@ -48,8 +56,8 @@ import { EVENT_LOAD_FAILED_COPY } from "../lib/event-deep-link.js";
 import { applyManualRename } from "../lib/name-source.js";
 import { ownerChip } from "../lib/owner-chip.js";
 import { ownerLabel, sessionOwnerText } from "../lib/owner-label.js";
-import { NOTES_BLOCKED_REASON, sessionActionAccess } from "../lib/ownership-ui.js";
 import { assignablePeople, withCurrentOwner } from "../lib/people.js";
+import { NOTES_BLOCKED_REASON, sessionActionAccess } from "../lib/session-action-access.js";
 import { sessionHostLabel } from "../lib/session-host.js";
 import type { WorkspaceTabId } from "../lib/session-summary-core.js";
 import { canAcknowledgeSession, explicitAckAccess } from "../lib/utils.js";
@@ -77,6 +85,39 @@ const SessionSummaryTab = lazy(() =>
 // The AI tab (watcher modes, reports, approval cards) loads when the tab opens: most visits never use it.
 const AiPanel = lazy(() =>
 	import("../components/session-detail/AiPanel.js").then((m) => ({ default: m.AiPanel })),
+);
+
+// The take-over card and its dialog: a separate chunk, so a session nobody can take over never pays for it.
+// If the chunk can't load, say so: nothing else on the page offers the way in.
+function TakeoverChunkFailed() {
+	return (
+		<div
+			role="alert"
+			className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-3 md:px-6"
+		>
+			<p className="text-sm text-foreground">
+				This part of the page didn't load. Reload to take this session over.
+			</p>
+			<button
+				type="button"
+				onClick={() => window.location.reload()}
+				className="min-h-[44px] rounded-md border border-border px-4 text-sm font-medium text-foreground hover:bg-accent"
+			>
+				Reload
+			</button>
+		</div>
+	);
+}
+const takeoverChunk = () => import("../components/session-detail/SessionTakeoverCard.js");
+const SessionTakeoverCard = lazy(() =>
+	takeoverChunk()
+		.then((m) => ({ default: m.SessionTakeoverCard }))
+		.catch(() => ({ default: TakeoverChunkFailed })),
+);
+const SessionTakeoverProgress = lazy(() =>
+	takeoverChunk()
+		.then((m) => ({ default: m.SessionTakeoverProgress }))
+		.catch(() => ({ default: TakeoverChunkFailed })),
 );
 
 // The approval card for a managed Codex session: a separate chunk, so no other session pays for it.
@@ -193,6 +234,17 @@ export function SessionDetailPage() {
 		}
 	}, [sessionId]);
 
+	// Where a take-over or resume stands, derived from the session's control actions, so it survives a
+	// reload, a poll that lands mid-attempt and another tab. It also polls while one is in flight and
+	// speaks the outcome through the live region.
+	const { attempt, focusToken } = useResumeAttempt({
+		sessionId,
+		controlActions,
+		hostName: session?.managedSession?.hostName ?? null,
+		reload: loadSessionWorkspace,
+		announce: setLiveAnnouncement,
+	});
+
 	// Warm the header from the cached dashboard list so switching tabs feels instant.
 	useEffect(() => {
 		if (!sessionId) return;
@@ -256,15 +308,16 @@ export function SessionDetailPage() {
 	// Who launched it, for a session launched from the dashboard: the launch
 	// request knows; the session itself doesn't.
 	const launchRequestId = session?.managedSession?.launchRequestId ?? null;
-	const [launchedById, setLaunchedById] = useState<string | null>(null);
+	const takenOver = isTakenOver(session?.managedSession);
+	const [origin, setOrigin] = useState<ReturnType<typeof overviewOriginField>>(null);
 	useEffect(() => {
-		setLaunchedById(null);
+		setOrigin(null);
 		if (!showOwnerFields || !launchRequestId) return;
 		let cancelled = false;
 		api
 			.getLaunch(launchRequestId)
 			.then((res) => {
-				if (!cancelled) setLaunchedById(res.launchRequest.requestedByUserId ?? null);
+				if (!cancelled) setOrigin(overviewOriginField(takenOver, res.launchRequest));
 			})
 			.catch(() => {
 				// No launch details: the field simply isn't shown.
@@ -272,10 +325,11 @@ export function SessionDetailPage() {
 		return () => {
 			cancelled = true;
 		};
-	}, [showOwnerFields, launchRequestId]);
+	}, [showOwnerFields, launchRequestId, takenOver]);
+	const originUserId = origin?.userId ?? null;
 	useEffect(() => {
-		if (showOwnerFields) noteUnknownUser(launchedById);
-	}, [showOwnerFields, launchedById, noteUnknownUser]);
+		if (showOwnerFields) noteUnknownUser(originUserId);
+	}, [showOwnerFields, originUserId, noteUnknownUser]);
 
 	// AGEN: the auto-ack toast's Undo action. Deliberately does NOT clear
 	// ackedTurnKeyRef -- the auto-ack effect's alreadyAckedThisTurn guard
@@ -710,24 +764,27 @@ export function SessionDetailPage() {
 				}
 			/>
 
-			{(() => {
-				const sel = selectStatusHint(session, displayName);
-				switch (sel.component) {
-					case "ManagedCodexStatus":
-						return (
-							<ManagedCodexStatus
-								managedSession={sel.managedSession}
-								showSyncState={showProviderSyncState(session)}
-							/>
-						);
-					case "ManagedClaudeStatus":
-						return <ManagedClaudeStatus managedSession={sel.managedSession} />;
-					case "CodexStatusHint":
-						return <CodexStatusHint displayName={sel.displayName} />;
-					case "AgentObserveOnlyHint":
-						return <AgentObserveOnlyHint agentType={sel.agentType} />;
-				}
-			})()}
+			{showsStatusHint(attempt)
+				? (() => {
+						const sel = selectStatusHint(session, displayName);
+						switch (sel.component) {
+							case "ManagedCodexStatus":
+								return (
+									<ManagedCodexStatus
+										managedSession={sel.managedSession}
+										showSyncState={showProviderSyncState(session)}
+										showSyncError={showProviderSyncError(session)}
+									/>
+								);
+							case "ManagedClaudeStatus":
+								return <ManagedClaudeStatus managedSession={sel.managedSession} />;
+							case "CodexStatusHint":
+								return <CodexStatusHint displayName={sel.displayName} />;
+							case "AgentObserveOnlyHint":
+								return <AgentObserveOnlyHint agentType={sel.agentType} />;
+						}
+					})()
+				: null}
 
 			<HostControlHint session={session} />
 
@@ -793,10 +850,10 @@ export function SessionDetailPage() {
 								}
 							/>
 						)}
-						{showOwnerFields && launchedById && (
+						{showOwnerFields && origin && (
 							<SummaryField
-								label="Launched by"
-								value={ownerLabel(directory[launchedById], launchedById, {
+								label={origin.label}
+								value={ownerLabel(directory[origin.userId], origin.userId, {
 									selfId: viewerUserId,
 									style: "you",
 								})}
@@ -864,10 +921,13 @@ export function SessionDetailPage() {
 							</div>
 						}
 					>
-						<AiPanel sessionId={session.sessionId} />
+						<AiPanel sessionId={session.sessionId} agentType={session.agentType} />
 					</Suspense>
 				) : session.managedSession?.launchRequestId ? (
-					<EmbeddedLaunchPanel launchId={session.managedSession.launchRequestId} />
+					<EmbeddedLaunchPanel
+						launchId={session.managedSession.launchRequestId}
+						takenOver={takenOver}
+					/>
 				) : (
 					<div className="p-6 text-sm text-muted-foreground">
 						No linked launch for this session.
@@ -895,9 +955,37 @@ export function SessionDetailPage() {
 					}}
 				/>
 			)}
-			{session.agentType === "claude_code" && session.managedSession ? (
-				<SessionPromptComposer session={session} onSubmitted={loadSessionWorkspace} />
-			) : null}
+			{(() => {
+				switch (bottomSlot(session, attempt)) {
+					case "takeover_progress":
+						return attempt.state === "in_flight" ? (
+							<Suspense fallback={null}>
+								<SessionTakeoverProgress session={session} attempt={attempt} />
+							</Suspense>
+						) : null;
+					case "composer":
+						return (
+							<SessionComposerSlot
+								session={session}
+								attempt={attempt}
+								focusToken={focusToken}
+								onSubmitted={loadSessionWorkspace}
+							/>
+						);
+					case "takeover":
+						return session.agentType === "codex_cli" ? (
+							<Suspense fallback={null}>
+								<SessionTakeoverCard
+									key={session.sessionId}
+									session={session}
+									sessionName={displayName}
+									attempt={attempt}
+									onChanged={loadSessionWorkspace}
+								/>
+							</Suspense>
+						) : null;
+				}
+			})()}
 		</div>
 	);
 }

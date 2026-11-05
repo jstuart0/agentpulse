@@ -5,6 +5,12 @@
 // fail to compile until every consumer adds the new key.
 import type { AgentType, LaunchableAgentType, SemanticStatus, SessionStatus } from "./types.js";
 
+/**
+ * A supervisor feature: this process can start a new turn on a managed Codex session's live thread (AGEN-91).
+ * The server withholds Codex prompts from a host that doesn't advertise it.
+ */
+export const CODEX_FOLLOW_UP_PROMPTS = "codex_follow_up_prompts";
+
 export const SEMANTIC_STATUSES = [
 	"researching",
 	"implementing",

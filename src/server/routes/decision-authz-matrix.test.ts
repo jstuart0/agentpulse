@@ -1266,6 +1266,15 @@ describe("coverage", () => {
 			file: "routes/ask-thread-owner.test.ts",
 			marker: "archive (DELETE /ai/ask/threads/:id)",
 		},
+		// Taking a session over (AGEN-115) has its own rule (mayBindSession: strict, an unowned session is an admin's).
+		"POST /sessions/:sessionId/bind": {
+			file: "routes/session-bind-route.test.ts",
+			marker: "a member on another's session answers byte-for-byte",
+		},
+		"POST /sessions/:sessionId/resume": {
+			file: "services/session-resume-lifecycle.test.ts",
+			marker: "origin gate: a foreign Origin and a cookie with no Origin are 403 bad_origin",
+		},
 		// Codex approvals are not HITL: their own grid (owner state x caller, key vs person) is in this suite.
 		"POST /sessions/:sessionId/approvals/:approvalId/decision": {
 			file: "routes/codex-approvals.test.ts",

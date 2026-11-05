@@ -706,6 +706,84 @@ describe("parseOrigin", () => {
 	});
 });
 
+// ── keepEventTypes (AGEN-91 D6) ───────────────────────────────────────────────
+// The frozen oracle above is the default policy and stays untouched; this block is the one opt-in.
+
+describe("planEventInsert: content_window with keepEventTypes", () => {
+	const KEEP = new Set(["HeadlessPromptSubmitted"]);
+	const nowIso = "2026-01-01T00:10:00.000Z";
+	const event = (eventType: string, content: string): NormalizedEvent => ({
+		eventType,
+		category: eventType === "HeadlessPromptSubmitted" ? "prompt" : "system_event",
+		source: "managed_control",
+		content,
+		isNoise: false,
+		providerEventType: null,
+		toolName: null,
+		toolInput: null,
+		toolResponse: null,
+		rawPayload: {},
+	});
+	const stored = (eventType: string, content: string): RecentEventRow => ({
+		id: 7,
+		eventType,
+		category: eventType === "HeadlessPromptSubmitted" ? "prompt" : "system_event",
+		source: "managed_control",
+		content,
+		providerEventType: null,
+		createdAt: "2026-01-01T00:00:00.000Z",
+	});
+
+	test("a kept type is stored again even when an identical row is in the window, and twice in one batch", () => {
+		const recent = [stored("HeadlessPromptSubmitted", "continue")];
+		const incoming = [
+			event("HeadlessPromptSubmitted", "continue"),
+			event("HeadlessPromptSubmitted", "continue"),
+		];
+		const plan = planEventInsert({
+			policy: { kind: "content_window", keepEventTypes: KEEP },
+			recent,
+			incoming,
+			nowIso,
+		});
+		expect(plan.retained).toHaveLength(2);
+		expect(plan.drops.contentWindow ?? 0).toBe(0);
+	});
+
+	test("a kept ManagedAgentMessage still loses to a higher-authority copy of the same text", () => {
+		const message = (source: EventSource): NormalizedEvent => ({
+			...assistant(source, "Should I continue?"),
+			eventType: "ManagedAgentMessage",
+			source,
+		});
+		const rival = recentAssistant(9, "observed_transcript", "2026-01-01T00:09:59.000Z");
+		const plan = planEventInsert({
+			policy: { kind: "content_window", keepEventTypes: new Set(["ManagedAgentMessage"]) },
+			recent: [{ ...rival, content: "Should I continue?" }],
+			incoming: [message("launch_system")],
+			nowIso,
+		});
+		expect(plan.retained).toEqual([]);
+		expect(plan.drops.authority).toBe(1);
+	});
+
+	test("a type not in the set is still dropped, and no set at all is today's behaviour", () => {
+		const recent = [stored("ManagedWarning", "same"), stored("HeadlessPromptSubmitted", "same")];
+		const incoming = [event("ManagedWarning", "same"), event("HeadlessPromptSubmitted", "same")];
+		const withSet = planEventInsert({
+			policy: { kind: "content_window", keepEventTypes: KEEP },
+			recent,
+			incoming,
+			nowIso,
+		});
+		expect(withSet.retained.map((r) => r.eventType)).toEqual(["HeadlessPromptSubmitted"]);
+		expect(withSet.drops.contentWindow).toBe(1);
+		const without = planEventInsert({ policy: CONTENT_WINDOW, recent, incoming, nowIso });
+		expect(without.retained).toEqual([]);
+		expect(without.drops.contentWindow).toBe(2);
+	});
+});
+
 test("TZ sentinel: the file leaves TZ restored", () => {
 	// withTZ restores an unset TZ as "UTC", so unset and "UTC" are the same
 	// state here; without this the test also failed when it ran before any

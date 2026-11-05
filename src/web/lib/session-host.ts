@@ -17,6 +17,7 @@
  * server, where the card falls back to the reported host until the next poll.
  */
 import type { Session } from "../../shared/types.js";
+import { isTakenOver } from "../components/session-detail/session-takeover-view.js";
 
 export interface SessionHostLabel {
 	source: "supervisor" | "reported";
@@ -32,7 +33,7 @@ export interface SessionHostLabel {
 }
 
 type HostSource = Pick<Session, "reportedHost" | "machine"> & {
-	managedSession?: { hostName: string | null } | null;
+	managedSession?: { hostName: string | null; hostAffinityReason?: string | null } | null;
 };
 
 function present(value: string | null | undefined): string | null {
@@ -42,7 +43,9 @@ function present(value: string | null | undefined): string | null {
 
 export function sessionHostLabel(session: HostSource): SessionHostLabel | null {
 	const supervisorHost = present(session.managedSession?.hostName);
-	if (supervisorHost) return supervisorLabel(supervisorHost);
+	if (supervisorHost) {
+		return supervisorLabel(supervisorHost, isTakenOver(session.managedSession));
+	}
 	const reported = present(session.reportedHost);
 	// A row the server listed or pushed carries the machine it files the session
 	// under, which is what the Machine filter and grouping select on: the card
@@ -55,13 +58,16 @@ export function sessionHostLabel(session: HostSource): SessionHostLabel | null {
 	return reported ? reportedLabel(reported) : null;
 }
 
-function supervisorLabel(name: string): SessionHostLabel {
+function supervisorLabel(name: string, takenOver = false): SessionHostLabel {
 	return {
 		source: "supervisor",
 		name,
 		text: `on ${name}`,
 		fieldLabel: "Machine",
-		title: `Runs on ${name}, the machine whose AgentPulse supervisor launched it.`,
+		// A taken-over session was started outside AgentPulse; the supervisor runs it now, it didn't launch it.
+		title: takenOver
+			? `Runs on ${name}, through its AgentPulse supervisor.`
+			: `Runs on ${name}, the machine whose AgentPulse supervisor launched it.`,
 		srText: `Machine: ${name}`,
 	};
 }

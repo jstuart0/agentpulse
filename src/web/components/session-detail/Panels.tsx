@@ -9,6 +9,7 @@ import { api } from "../../lib/api.js";
 import { MarkdownContent } from "../MarkdownContent.js";
 import { ModeButton, ScrollJumpControls } from "./SharedControls.js";
 import { notesPanelState } from "./notes-panel-state.js";
+import { launchSummaryLine } from "./session-takeover-view.js";
 
 export function NotesPanel({
 	sessionId,
@@ -293,7 +294,14 @@ export function SummaryField({
 	);
 }
 
-export function EmbeddedLaunchPanel({ launchId }: { launchId: string }) {
+export function EmbeddedLaunchPanel({
+	launchId,
+	takenOver = false,
+}: {
+	launchId: string;
+	/** The session was taken over, not launched: its carrier row is not a finished launch. */
+	takenOver?: boolean;
+}) {
 	const [launch, setLaunch] = useState<LaunchRequest | null>(null);
 	const [loading, setLoading] = useState(true);
 
@@ -341,7 +349,7 @@ export function EmbeddedLaunchPanel({ launchId }: { launchId: string }) {
 				<div>
 					<div className="text-sm font-semibold text-foreground">Launch</div>
 					<div className="mt-1 text-xs text-muted-foreground">
-						{launch.status} · {modeLabel}
+						{launchSummaryLine(takenOver, launch.status, modeLabel)}
 					</div>
 				</div>
 				<Link

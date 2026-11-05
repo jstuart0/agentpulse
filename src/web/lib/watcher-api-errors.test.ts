@@ -39,6 +39,25 @@ describe("registered watcher messages", () => {
 		}
 	});
 
+	test("the card path: a prompt_not_deliverable carrying host_upgrade_required reads the upgrade copy, and any other reason keeps the copy-the-prompt sentence", () => {
+		const refusal = (reason: unknown) =>
+			new ApiError(409, "x", { error: "prompt_not_deliverable", reason });
+		expect(describeApiError(refusal("host_upgrade_required"), "FALLBACK")).toBe(
+			"This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.",
+		);
+		expect(describeApiError(refusal("managed_state"), "FALLBACK")).toBe(
+			"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.",
+		);
+		const generic =
+			"AgentPulse can't type into this session right now. Copy the prompt from the dashboard instead.";
+		for (const reason of ["control_busy", "constructor", 7, undefined, null]) {
+			expect(describeApiError(refusal(reason), "FALLBACK")).toBe(generic);
+		}
+		expect(
+			describeApiError(new ApiError(409, "x", { error: "prompt_not_deliverable" }), "FALLBACK"),
+		).toBe(generic);
+	});
+
 	test("an unknown code still gets the caller's fallback", () => {
 		expect(describeApiError(new ApiError(409, "x", { error: "no_such_code" }), "FALLBACK")).toBe(
 			"FALLBACK",

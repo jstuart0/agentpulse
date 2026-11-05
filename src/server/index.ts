@@ -37,7 +37,7 @@ import {
 	recoverInterruptedSummaries,
 	releaseOwnSummaryClaims,
 } from "./services/session-summary-service.js";
-import { updateStaleSessions } from "./services/session-tracker.js";
+import { runSessionSweepTick } from "./services/session-sweep-tick.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
 import { validateForwardauthProviderConfig } from "./services/user-identity.js";
@@ -271,16 +271,9 @@ setInterval(
 	60 * 60 * 1000,
 );
 
-// Periodically check for stale sessions (every 60 seconds)
-setInterval(async () => {
-	try {
-		const ended = await updateStaleSessions();
-		if (ended > 0) {
-			console.log(`[tracker] Marked ${ended} stale sessions as completed`);
-		}
-	} catch (err) {
-		console.error("[tracker] Error updating stale sessions:", err);
-	}
+// Every 60 seconds: settle resume actions whose lock ran out, then check for stale sessions.
+setInterval(() => {
+	void runSessionSweepTick();
 }, 60_000);
 
 // AGEN-87: Codex approvals. Not the AI-gated runner: expiry, delivery-window lapse, the

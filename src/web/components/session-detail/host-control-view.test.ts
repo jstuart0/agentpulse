@@ -6,6 +6,7 @@ import {
 	hostCanControl,
 	hostControlHint,
 	hostRefusalMessage,
+	showProviderSyncError,
 	showProviderSyncState,
 } from "./host-control-view.js";
 
@@ -93,13 +94,51 @@ describe("a host that was removed", () => {
 });
 
 describe("hostRefusalMessage", () => {
-	test("maps the two 409 codes and nothing else", () => {
+	test("maps the four 409 codes and nothing else", () => {
 		const session = probe("live");
 		expect(hostRefusalMessage(conflict("host_offline"), session)).toContain("studio is offline");
 		expect(hostRefusalMessage(conflict("host_gone"), session)).toContain("was removed");
+		expect(hostRefusalMessage(conflict("host_upgrade_required"), session)).toBe(
+			"This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.",
+		);
+		expect(hostRefusalMessage(conflict("managed_state_not_continuable"), session)).toBe(
+			"This session's process ended when its host restarted. Resume it to keep going, or start a new session for this work.",
+		);
 		expect(hostRefusalMessage(conflict("control_busy"), session)).toBeNull();
 		expect(hostRefusalMessage(new ApiError(400, "x", { error: "host_gone" }), session)).toBeNull();
 		expect(hostRefusalMessage(new Error("host_gone"), session)).toBeNull();
 		expect(hostRefusalMessage(conflict("constructor"), session)).toBeNull();
+	});
+});
+
+describe("a stored sync error on a session that has ended", () => {
+	const open = { isArchived: false, endedAt: null, status: "active" } as const;
+	test("shown while the session is open, hidden once it has ended or been archived", () => {
+		expect(showProviderSyncError(open)).toBe(true);
+		expect(showProviderSyncError({ ...open, status: "idle" })).toBe(true);
+		expect(showProviderSyncError({ ...open, status: "completed" })).toBe(false);
+		expect(showProviderSyncError({ ...open, status: "failed" })).toBe(false);
+		expect(showProviderSyncError({ ...open, endedAt: "2026-01-01T00:00:00Z" })).toBe(false);
+		expect(showProviderSyncError({ ...open, isArchived: true })).toBe(false);
+	});
+});
+
+describe("a degraded session's slot owns its state (AGEN-115)", () => {
+	const degraded = {
+		hostControl: { state: "live", lastSeenAt: null },
+		managedSession: { managedState: "degraded" },
+		isArchived: false,
+		endedAt: null,
+		status: "active",
+	} as never;
+	test("the sync pill and the stored error are hidden, and shown again once it is managed", () => {
+		expect(showProviderSyncState(degraded)).toBe(false);
+		expect(showProviderSyncError(degraded)).toBe(false);
+		const managed = {
+			...(degraded as object),
+			managedSession: { managedState: "managed" },
+		} as never;
+		expect(showProviderSyncState(managed)).toBe(true);
+		expect(showProviderSyncError(managed)).toBe(true);
 	});
 });

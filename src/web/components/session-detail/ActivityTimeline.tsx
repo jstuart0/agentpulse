@@ -8,14 +8,15 @@ import {
 	lateSuffix,
 } from "../../lib/event-time.js";
 import {
-	APPROVAL_RESOLVED_EVENT,
 	AssistantBubble,
 	PromptBubble,
 	TimelineCard,
 	type TimelineMode,
 	eventKey,
 	eventLabel,
+	eventRowIsPlainText,
 	eventRowLabel,
+	eventRowTone,
 } from "./TimelineView.js";
 import { ToolCallBlock } from "./ToolCallBlock.js";
 
@@ -133,7 +134,10 @@ function renderBubbleEvent(
 	lateDetail?: string,
 	late?: boolean,
 ) {
-	if (event.category === "prompt" && event.content) {
+	// Judged by the event type before the host-supplied category: a host that labels a plain-text row
+	// "assistant_message" or "prompt" must not get it parsed as Markdown.
+	const plainText = eventRowIsPlainText(event);
+	if (!plainText && event.category === "prompt" && event.content) {
 		return (
 			<PromptBubble
 				text={event.content}
@@ -145,7 +149,7 @@ function renderBubbleEvent(
 			/>
 		);
 	}
-	if (event.category === "assistant_message" && event.content) {
+	if (!plainText && event.category === "assistant_message" && event.content) {
 		return (
 			<AssistantBubble
 				text={event.content}
@@ -181,19 +185,9 @@ function renderBubbleEvent(
 			lateNote={lateNote}
 			lateDetail={lateDetail}
 			late={late}
-			tone={
-				event.eventType === "ManagedEventsLost"
-					? "amber"
-					: event.category === "status_update"
-						? "emerald"
-						: event.category === "permission_event"
-							? "amber"
-							: "default"
-			}
+			tone={eventRowTone(event)}
 			source={mode === "debug" ? event.source : undefined}
-			plainText={
-				event.eventType === "ManagedEventsLost" || event.eventType === APPROVAL_RESOLVED_EVENT
-			}
+			plainText={plainText}
 		/>
 	);
 }

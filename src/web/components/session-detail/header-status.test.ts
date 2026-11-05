@@ -23,9 +23,10 @@ describe("SessionHeader says the state once", () => {
 	});
 
 	test("no chip is driven by the raw isWorking flag; the only use is the Activity tab's badge", () => {
-		// The header only hands the flag to WorkspaceTabBar; the tab bar's Activity tab is the one place it is read.
-		expect([...code.matchAll(/session\.isWorking/g)].length).toBe(1);
-		expect(code).toMatch(/<WorkspaceTabBar[\s\S]*?isWorking=\{session\.isWorking\}/);
+		// The header reads no raw flag: it hands WorkspaceTabBar activityTabWorking(session), which drops the flag
+		// while Codex waits on an approval; the tab bar's Activity tab is the one place it is shown.
+		expect([...code.matchAll(/session\.isWorking/g)].length).toBe(0);
+		expect(code).toMatch(/<WorkspaceTabBar[\s\S]*?isWorking=\{activityTabWorking\(session\)\}/);
 		const tabBar = readFileSync(join(import.meta.dir, "WorkspaceTabBar.tsx"), "utf-8");
 		expect([...tabBar.matchAll(/props\.isWorking/g)].length).toBe(1);
 		expect(tabBar).toMatch(/tab\("activity", "Activity", props\.isWorking \? "Working" : null\)/);

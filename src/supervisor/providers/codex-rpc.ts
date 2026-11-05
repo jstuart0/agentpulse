@@ -2,6 +2,17 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { resolveCodex } from "./codex-protocol.js";
 
+/** A request got no answer in the time it was given. The request may still have been received. */
+export class RpcTimeoutError extends Error {
+	constructor(
+		readonly method: string,
+		readonly timeoutMs: number,
+	) {
+		super(`Timed out waiting for ${method} after ${timeoutMs} ms`);
+		this.name = "RpcTimeoutError";
+	}
+}
+
 /** JSON-RPC ids are numbers or strings; the server's and ours are separate id spaces. */
 export type JsonRpcId = number | string;
 
@@ -183,7 +194,7 @@ export class RpcClient {
 			if (options.timeoutMs !== undefined) {
 				timer = this.timers.set(() => {
 					if (!this.pending.delete(id)) return;
-					reject(new Error(`Timed out waiting for ${method} after ${options.timeoutMs} ms`));
+					reject(new RpcTimeoutError(method, options.timeoutMs as number));
 				}, options.timeoutMs);
 			}
 			this.link.write(JSON.stringify({ id, method, params }));
@@ -386,6 +397,8 @@ export type StartCodexAppServerOptions = {
 	/** Default: `["app-server"]`. No listener flag is passed: the child talks over stdin and stdout only. */
 	args?: string[];
 	env?: NodeJS.ProcessEnv;
+	/** The child's working directory. A resume starts in a fixed, empty one so no project config applies to the process. */
+	cwd?: string;
 	timings?: Partial<ShutdownTimings>;
 	maxFrameBytes?: number;
 	timers?: RpcTimers;
@@ -432,6 +445,7 @@ export async function startCodexAppServer(
 		// Own process group on POSIX, so an escalation reaches the wrapper's children too.
 		detached: posix,
 		env: options.env ?? process.env,
+		...(options.cwd ? { cwd: options.cwd } : {}),
 	});
 	child.stdin.on("error", () => {});
 	child.stdout.on("error", () => {});

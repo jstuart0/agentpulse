@@ -67,6 +67,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { sql } from "drizzle-orm";
 import { config } from "../config.js";
+import { withAfterCommit } from "./after-commit.js";
 import { getDb, getSqlite } from "./client.js";
 
 // 0xA9E1A925 — distinct from db/client.ts's migration-boot advisory lock
@@ -126,6 +127,18 @@ export function assertNotInsideAdminLock(): void {
 	}
 }
 
+/**
+ * True while the calling code runs inside an admin-lock body or a SQLite transaction slot. On SQLite a
+ * transaction's `tx` is the same handle as `getDb()`, so a function handed `getDb()` can't tell by identity
+ * whether it is already inside one; this can. (On Postgres a transaction handle is a distinct object, which
+ * callers compare themselves.)
+ */
+export function isInsideTransaction(): boolean {
+	return (
+		insideAdminLock.getStore() !== undefined || insideSqliteTransaction.getStore()?.open === true
+	);
+}
+
 export interface AdminLockOptions {
 	/** SQLite only: total time to keep retrying BEGIN IMMEDIATE (default 1000 ms). Tests shorten it. */
 	sqliteRetryBudgetMs?: number;
@@ -150,6 +163,14 @@ export async function withAdminLock<T>(
 	// biome-ignore lint/suspicious/noExplicitAny: tx type unified in a later schema-extraction pass (same posture as with-transaction.ts)
 	fn: (tx: any) => T | Promise<T>,
 	opts: AdminLockOptions = {},
+): Promise<T> {
+	return withAfterCommit(() => runAdminLock(fn, opts));
+}
+
+async function runAdminLock<T>(
+	// biome-ignore lint/suspicious/noExplicitAny: see withAdminLock
+	fn: (tx: any) => T | Promise<T>,
+	opts: AdminLockOptions,
 ): Promise<T> {
 	if (config.dialect === "postgres") {
 		const db = getDb();

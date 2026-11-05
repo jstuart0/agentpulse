@@ -115,6 +115,12 @@ const ERROR_TABLE: ReadonlyArray<{
 			if (reason === "control_busy") {
 				return "AgentPulse is busy: another action is already running on that session, so the prompt was NOT sent and the request is still open. Retryable: wait a few seconds and call decide_hitl again.";
 			}
+			if (reason === "host_upgrade_required") {
+				return "AgentPulse can't type into that session: its host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there. The prompt was NOT sent and the request is still open; decline it, or start a new session.";
+			}
+			if (reason === "managed_state") {
+				return "AgentPulse can't type into that session: its process ended when its host restarted, so the prompt was NOT sent and the request is still open. Decline it, or start a new session for this work.";
+			}
 			if (reason === "host_gone") {
 				return "AgentPulse can't type into that session: the host that ran it was removed, so the prompt was NOT sent and the request is still open. Decline it, or answer in the session.";
 			}
@@ -222,6 +228,20 @@ const ERROR_TABLE: ReadonlyArray<{
 		message: (body) =>
 			bodyMessage(body) ?? "The host that ran that session was removed, so nothing was sent.",
 	},
+	{
+		status: 409,
+		error: "host_upgrade_required",
+		message: (body) =>
+			bodyMessage(body) ??
+			"This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.",
+	},
+	{
+		status: 409,
+		error: "managed_state_not_continuable",
+		message: (body) =>
+			bodyMessage(body) ??
+			"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.",
+	},
 	// Ownership and role refusals (team mode). The bare codes are opaque to a
 	// model or a script; each says what is needed instead.
 	{
@@ -250,7 +270,13 @@ const ERROR_TABLE: ReadonlyArray<{
 		status: 403,
 		error: "bad_origin",
 		message:
-			"AgentPulse refused: the request carried a browser Origin that isn't this instance's. Send it from the AgentPulse dashboard, or without an Origin header.",
+			"AgentPulse refused: the request isn't from a place this instance trusts. Either it carried a browser Origin that isn't this instance's, or, with authentication off, its Host isn't a loopback address or an allowed name. Send it from the AgentPulse dashboard, or from a client on the same machine without an Origin header.",
+	},
+	{
+		status: 415,
+		error: "unsupported_media_type",
+		message:
+			"AgentPulse refused: the request body must be declared as JSON (Content-Type: application/json).",
 	},
 	// requireAiBuild → 404 (AI not compiled in). requireAiActive → 409
 	// (compiled in but runtime-disabled) — a DIFFERENT message from both the

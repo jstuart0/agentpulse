@@ -13,7 +13,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { Session } from "../../../shared/types.js";
-import { resolveObserveOnlyHint, selectStatusHint } from "./StatusHints.js";
+import { managedCodexHeading, resolveObserveOnlyHint, selectStatusHint } from "./StatusHints.js";
 
 describe("resolveObserveOnlyHint (D35/F24)", () => {
 	test("copilot_cli returns its observe-only caveat text", () => {
@@ -74,5 +74,18 @@ describe("selectStatusHint (F239)", () => {
 	test("copilot_cli + unmanaged -> AgentObserveOnlyHint", () => {
 		const sel = selectStatusHint({ agentType: "copilot_cli", managedSession: null }, "quiet-otter");
 		expect(sel).toEqual({ component: "AgentObserveOnlyHint", agentType: "copilot_cli" });
+	});
+});
+
+describe("managedCodexHeading", () => {
+	test("a taken-over session says it was taken over, because nothing launched it", () => {
+		expect(managedCodexHeading({ hostAffinityReason: "taken_over" })).toBe(
+			"Managed Codex · taken over",
+		);
+	});
+
+	test("negative control: a launched or recovered session keeps its heading", () => {
+		expect(managedCodexHeading({ hostAffinityReason: "launched" })).toBe("Managed Codex");
+		expect(managedCodexHeading({ hostAffinityReason: null })).toBe("Managed Codex");
 	});
 });

@@ -53,7 +53,7 @@ export interface ContinueRoutingInput {
 	responseText: string;
 	completion: Completion;
 	watchConfig: WatcherConfigRecord;
-	session: { displayName: string | null; cwd: string | null };
+	session: { displayName: string | null; cwd: string | null; agentType: string | null };
 	/** The boundary event the run was woken for, and the key of the turn it ended. */
 	trigger: SessionEvent;
 	turnKey: string;
@@ -87,9 +87,16 @@ export function autoRefusalWhy(
 			return "Auto-send needs a new confirmation.";
 		case "host_gone":
 			return "This session's host was removed from AgentPulse, so it can't receive prompts.";
+		case "codex_needs_person":
+			return "Automatic sending isn't available for Codex sessions yet, so this waits for you.";
+		case "host_upgrade_required":
+			return "This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.";
+		case "launch_mismatch":
+			return "This session's records don't match how it was launched, so nothing was sent.";
+		case "managed_state":
+			return "This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.";
 		case "supervisor_offline":
 		case "observed":
-		case "managed_state":
 		case "control_busy":
 			return `This session can't receive prompts (${refused.reason}).`;
 		default:
@@ -145,6 +152,9 @@ export async function routeContinueOrAsk(input: ContinueRoutingInput): Promise<v
 		stored !== null &&
 		nextPrompt !== null &&
 		watchConfig.policy === "auto" &&
+		// Codex goes to a person for now: the human gate reads hook-shaped evidence a managed Codex
+		// session doesn't produce, and auto ignores the launch's approval policy (AGEN-91 D13).
+		input.session.agentType !== "codex_cli" &&
 		isAutoKind(decision.continueKind)
 	) {
 		const riskConfig = await getRiskClasses();

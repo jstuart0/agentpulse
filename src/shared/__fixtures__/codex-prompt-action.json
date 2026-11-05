@@ -1,0 +1,7 @@
+{
+	"prompt": "hello",
+	"agentType": "codex_cli",
+	"cwd": "<cwd>",
+	"managedState": "managed",
+	"launchMode": "managed_codex"
+}

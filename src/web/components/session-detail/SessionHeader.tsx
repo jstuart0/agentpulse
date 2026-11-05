@@ -8,7 +8,7 @@ import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { useOwnershipUi } from "../../hooks/useOwnershipUi.js";
 import { useSummaryAvailability } from "../../hooks/useSummaryAvailable.js";
 import type { OwnerChipModel } from "../../lib/owner-chip.js";
-import { RENAME_BLOCKED_REASON, sessionActionAccess } from "../../lib/ownership-ui.js";
+import { RENAME_BLOCKED_REASON, sessionActionAccess } from "../../lib/session-action-access.js";
 import { sessionHostLabel } from "../../lib/session-host.js";
 import type { WorkspaceTabId } from "../../lib/session-summary-core.js";
 import { formatDuration } from "../../lib/utils.js";
@@ -24,9 +24,10 @@ import { InlineRename } from "./InlineRename.js";
 import { SessionOverflowMenu } from "./SessionOverflowMenu.js";
 import { FilterToggle, ModeButton, ScrollJumpControls } from "./SharedControls.js";
 import type { TimelineMode } from "./TimelineView.js";
-import { WorkspaceTabBar } from "./WorkspaceTabBar.js";
+import { WorkspaceTabBar, activityTabWorking } from "./WorkspaceTabBar.js";
 import { buildExportMarkdown } from "./export-markdown.js";
 import { controlBlockedReason } from "./host-control-view.js";
+import { launchLinkLabel } from "./session-takeover-view.js";
 
 interface SessionHeaderProps {
 	session: Session;
@@ -251,7 +252,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 								onClick={() => navigate(`/launches/${session.managedSession?.launchRequestId}`)}
 								className="rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-accent transition-colors"
 							>
-								View launch
+								{launchLinkLabel(session.managedSession)}
 							</button>
 						)}
 						{canStop && (
@@ -353,7 +354,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 					instructionsLabel={
 						AGENT_METADATA[session.agentType as AgentType]?.instructionsFile ?? "CLAUDE.md"
 					}
-					isWorking={session.isWorking}
+					isWorking={activityTabWorking(session)}
 					hasLaunch={Boolean(session.managedSession?.launchRequestId)}
 					aiTabEnabled={aiTabEnabled}
 					summaryAvailable={summaryAvailable}

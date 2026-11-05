@@ -11,6 +11,8 @@ import {
 interface WatcherModeSwitchesProps {
 	config: AiWatcherConfig;
 	delivery: PromptDelivery | null;
+	/** Which agent the session is: only a Codex session can be taken over to send prompts from here. */
+	agentType?: string;
 	onToggle: (key: "notifyEnabled" | "continueEnabled", value: boolean) => void;
 	onReset: () => void;
 }
@@ -44,10 +46,11 @@ function Switch({
 export function WatcherModeSwitches({
 	config,
 	delivery,
+	agentType,
 	onToggle,
 	onReset,
 }: WatcherModeSwitchesProps) {
-	const notice = promptDeliveryNotice(config.continueEnabled, delivery);
+	const notice = promptDeliveryNotice(config.continueEnabled, delivery, agentType);
 	const counter = autoCounter(config);
 	const bothOff = !config.notifyEnabled && !config.continueEnabled;
 	return (

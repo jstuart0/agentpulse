@@ -46,7 +46,16 @@ export interface HookDeliveryContext {
 }
 
 export type DedupPolicy =
-	| { kind: "content_window" }
+	| {
+			kind: "content_window";
+			/**
+			 * Event types the content window never drops: each stands for a distinct occurrence even
+			 * when its text repeats (a prompt sent twice, a turn that ends the same way). Only a
+			 * caller that has durable identity for the delivery passes it (insertManagedEvents, whose
+			 * receipt already stops a retry). Authority dedup of assistant text still applies.
+			 */
+			keepEventTypes?: ReadonlySet<string>;
+	  }
 	| { kind: "hook_delivery"; ctx: HookDeliveryContext; rawPayload: unknown };
 
 /** A stored event as loaded for dedup: the session's most recent rows. */
@@ -150,6 +159,7 @@ function planContentWindow(
 	recent: RecentEventRow[],
 	incoming: NormalizedEvent[],
 	nowIso: string,
+	keepEventTypes?: ReadonlySet<string>,
 ): InsertPlan {
 	// Stored rows are keyed without rawPayload (it isn't loaded), so the
 	// transcript id only distinguishes rows within one batch.
@@ -165,7 +175,8 @@ function planContentWindow(
 
 	for (const event of incoming) {
 		const key = contentWindowKey(event);
-		if (seen.has(key)) {
+		const kept = keepEventTypes?.has(event.eventType) === true;
+		if (!kept && seen.has(key)) {
 			countDrop(plan.drops, "contentWindow");
 			continue;
 		}
@@ -188,7 +199,7 @@ function planContentWindow(
 			if (rival.id) deletesIfStored.push(rival.id);
 		}
 
-		seen.add(key);
+		if (!kept) seen.add(key);
 		plan.retained.push({ ...event, createdAt: nowIso, dedupKey: null, deletesIfStored });
 		pool.push(candidate);
 	}
@@ -395,7 +406,7 @@ export function planEventInsert(args: {
 }): InsertPlan {
 	switch (args.policy.kind) {
 		case "content_window":
-			return planContentWindow(args.recent, args.incoming, args.nowIso);
+			return planContentWindow(args.recent, args.incoming, args.nowIso, args.policy.keepEventTypes);
 		case "hook_delivery":
 			return planHookDelivery(
 				args.recent,

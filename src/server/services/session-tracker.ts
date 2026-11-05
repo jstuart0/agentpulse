@@ -1971,7 +1971,7 @@ async function computeStatsByHost(options?: {
 // crashed without sending Stop, the working flag can stay latched
 // forever. After this many ms with no activity we clear the flag so
 // the regular active → idle → completed flow can resume.
-const STUCK_WORKING_RECOVERY_MS = 2 * SESSION_END_TIMEOUT_MS;
+export const STUCK_WORKING_RECOVERY_MS = 2 * SESSION_END_TIMEOUT_MS;
 
 /**
  * Whether a managed session under a live supervisor is still inside the
@@ -2086,7 +2086,7 @@ const SWEEP_BROADCAST_BATCH = 500;
  * 500 sessions, not two per session) and the loop yields to I/O between
  * batches so a large sweep doesn't hold the event loop.
  */
-async function broadcastSweptSessions(changedIds: string[]): Promise<void> {
+export async function broadcastSweptSessions(changedIds: string[]): Promise<void> {
 	const ids = [...new Set(changedIds)];
 	for (let start = 0; start < ids.length; start += SWEEP_BROADCAST_BATCH) {
 		if (start > 0) await new Promise<void>((resolve) => setImmediate(resolve));

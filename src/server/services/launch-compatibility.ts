@@ -21,7 +21,7 @@ export const PROVIDER_COMMAND: Record<LaunchableAgentType, string> = {
 	codex_cli: "codex",
 };
 
-function isWithinTrustedRoot(cwd: string, roots: string[]) {
+export function isWithinTrustedRoot(cwd: string, roots: string[]) {
 	// `resolve` folds `..` away lexically, but the operating system follows a symlink first.
 	if (cwd.split(/[\\/]/).includes("..")) return false;
 	const resolvedCwd = resolve(cwd);

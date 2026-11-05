@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { cleanHostText } from "../../../shared/clean-host-text.js";
 import type { ControlAction } from "../../../shared/types.js";
+import { controlActionLabel } from "./session-takeover-view.js";
 
 /**
  * Control-history card. On mobile, the list is collapsed by default
@@ -26,7 +28,7 @@ export function ControlHistory({ actions }: { actions: ControlAction[] }) {
 				</span>
 				<span className="flex items-center gap-2 text-[10px] text-muted-foreground">
 					<span className="truncate max-w-[10rem]">
-						{latest.actionType} · {latest.status}
+						{controlActionLabel(latest)} · {latest.status}
 					</span>
 					<svg
 						className={`w-3.5 h-3.5 transition-transform ${expanded ? "rotate-180" : ""}`}
@@ -43,8 +45,8 @@ export function ControlHistory({ actions }: { actions: ControlAction[] }) {
 				{recent.map((action) => (
 					<div key={action.id} className="flex items-center justify-between gap-3 text-[11px]">
 						<span className="text-muted-foreground">
-							{action.actionType}
-							{action.error ? `: ${action.error}` : ""}
+							{controlActionLabel(action)}
+							{cleanHostText(action.error) ? `: ${cleanHostText(action.error)}` : ""}
 						</span>
 						<span className="font-mono text-foreground">{action.status}</span>
 					</div>

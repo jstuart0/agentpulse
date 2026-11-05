@@ -1,4 +1,16 @@
 import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
+import {
+	CONTROL_TIMEOUT_ERROR,
+	HOST_UPGRADE_REQUIRED_MESSAGE,
+} from "../../shared/managed-messages.js";
+import {
+	RESUMES_SESSIONS,
+	type ResumeKind,
+	SESSION_RESUMED_CONTENT,
+	SESSION_RESUMED_EVENT_TYPE,
+	resumeFailureMessage,
+} from "../../shared/session-resume.js";
 import type {
 	ControlAction,
 	ControlActionStatus,
@@ -6,10 +18,14 @@ import type {
 	LaunchMode,
 	LaunchRequest,
 	LaunchableAgentType,
+	ManagedState,
 	SessionTemplateInput,
 } from "../../shared/types.js";
 import type { Actor } from "../auth/actor.js";
-import { withAdminLock } from "../db/admin-lock.js";
+import { OwnerDisabledError, OwnerNotFoundError } from "../auth/owner-state.js";
+import { config } from "../config.js";
+import { isInsideTransaction, withAdminLock } from "../db/admin-lock.js";
+import { afterCommit } from "../db/after-commit.js";
 import { getDb } from "../db/client.js";
 import {
 	events,
@@ -18,21 +34,29 @@ import {
 	managedSessions,
 	projects,
 	sessions,
+	supervisors,
 } from "../db/schema/index.js";
 import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
+import { requestWsRevalidation } from "../ws/revalidation.js";
+import { CONTINUABLE_MANAGED_STATES } from "./ai/continuability.js";
 import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
+import { BindRefusal } from "./bind-refusal.js";
 import { fenceApprovalsForStop } from "./codex-approvals-fence.js";
 import { type ClosedApproval, runApprovalClosedEffects } from "./codex-approvals.js";
 import { buildStoredCliArgs, validateAgainstSupervisor } from "./launch-compatibility.js";
 import { mapLaunchRequest } from "./launch-validator.js";
+import { notifySessionUpdated } from "./notifier.js";
 import { bumpVersionAndReload } from "./projects/cache.js";
+import { assignTakeoverOwner } from "./session-owner-admin.js";
 import {
 	getSessionOwnerHostStates,
 	ownerLaunchJoin,
+	releaseObservedBinding,
 	resolveSessionOwner,
 	sessionOwnedBy,
 } from "./session-ownership.js";
+import { withCapabilityDefaults } from "./supervisor-capabilities.js";
 import { getSupervisor } from "./supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "./template-preview.js";
 import { parseDbTimestamp } from "./util/db-time.js";
@@ -61,7 +85,7 @@ function lockExpiryIso(clock: Clock = Date.now) {
  * id, fall back to resolving by launchCorrelationId = sessionId instead —
  * the same launch the fallback shape is standing in for.
  */
-async function resolveManagedLaunch(
+export async function resolveManagedLaunch(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	db: any,
 	sessionId: string,
@@ -94,7 +118,7 @@ async function resolveManagedLaunch(
  * supervisor, pre-claim) matches the session's actual owner of record
  * before trusting launch.env or routing a new control action to it.
  */
-async function launchOwnedBySessionOwner(
+export async function launchOwnedBySessionOwner(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	db: any,
 	sessionId: string,
@@ -116,9 +140,6 @@ async function assertLaunchOwnedBySessionOwner(
 		throw new LaunchMismatchError();
 	}
 }
-
-/** The `error` an action carries when its lock ran out before the supervisor reported: its outcome is unknown. */
-export const CONTROL_TIMEOUT_ERROR = "Control action timed out waiting for supervisor completion.";
 
 /**
  * Fails a managed session's active control action once its lock has expired,
@@ -146,6 +167,21 @@ export async function expireStaleControlLock(
 		.from(controlActions)
 		.where(eq(controlActions.id, managed.activeControlActionId))
 		.limit(1);
+
+	// A resume that timed out isn't just failed: its rows are settled with it, in one transaction with
+	// the action's status, wherever the expiry was reached from.
+	if (
+		action?.actionType === "resume" &&
+		(action.status === "queued" || action.status === "running")
+	) {
+		const settle = (handle: unknown) => settleExpiredResume(handle, managed, action);
+		if (isInsideTransaction() || db !== getDb()) {
+			await settle(db);
+		} else {
+			await withTransaction(settle);
+		}
+		return;
+	}
 
 	const timestamp = nowIso(clock);
 	await db
@@ -185,6 +221,357 @@ export async function expireStaleControlLock(
 		);
 }
 
+// ── resume actions: how they end (AGEN-115, D10, D14) ───────────────────────
+
+/** What `failResumeAction` and `completeResumeAction` report: nothing changed, or the session whose rows moved. */
+export type ResumeSettle =
+	| { settled: false }
+	| { settled: true; sessionId: string; outcome: "failed" | "succeeded" };
+
+interface ResumeActionRef {
+	id: string;
+	sessionId: string | null;
+	launchRequestId: string | null;
+	metadata?: unknown;
+}
+
+/** Test seam: runs after the settle's writes, inside its transaction. */
+interface ResumeSettleDeps {
+	afterWrites?: (tx: unknown) => Promise<void>;
+}
+
+function resumeKindOf(action: ResumeActionRef): ResumeKind {
+	return (action.metadata as { resumeKind?: unknown } | null)?.resumeKind === "recovery"
+		? "recovery"
+		: "takeover";
+}
+
+/**
+ * Tells everyone a resume action's rows moved: one `session_updated` and one socket revalidation. A failure
+ * to announce is logged and never undoes the settle.
+ */
+async function announceResumeSettled(sessionId: string): Promise<void> {
+	try {
+		const [row] = await getDb()
+			.select()
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+		if (row) notifySessionUpdated(row);
+		await requestWsRevalidation();
+	} catch (error) {
+		console.error(
+			JSON.stringify({
+				kind: "resume_announce_failed",
+				level: "error",
+				error: error instanceof Error ? error.message.slice(0, 300) : "unknown",
+			}),
+		);
+	}
+}
+
+async function inTransactionOf<T>(handle: unknown | null, fn: (tx: any) => Promise<T>): Promise<T> {
+	return handle ? fn(handle) : withTransaction(fn);
+}
+
+/**
+ * Ends a `resume` action as failed, and settles its rows: a takeover releases the carrier launch and the
+ * managed row (the session and its events are untouched); a recovery leaves the degraded row as it was.
+ * Every ending of a resume goes through here or `completeResumeAction`. It begins with a guarded update of
+ * the action (still queued or running), so racing paths produce one outcome: the loser changes nothing.
+ * `handle` is the caller's transaction, or null to open one; the signals are sent once the transaction
+ * has committed (when the caller owns it, after the caller's own commit, by the next flush).
+ */
+export async function failResumeAction(
+	handle: unknown | null,
+	action: ResumeActionRef,
+	reason: string,
+	deps: ResumeSettleDeps = {},
+): Promise<ResumeSettle> {
+	const outcome = await inTransactionOf(handle, async (tx): Promise<ResumeSettle> => {
+		const timestamp = nowIso();
+		const flipped = await tx
+			.update(controlActions)
+			.set({ status: "failed", error: reason, finishedAt: timestamp, updatedAt: timestamp })
+			.where(
+				and(
+					eq(controlActions.id, action.id),
+					inArray(controlActions.status, ["queued", "running"]),
+				),
+			)
+			.returning({ id: controlActions.id });
+		if (flipped.length === 0) return { settled: false };
+		const sessionId = action.sessionId;
+		if (!sessionId) return { settled: false };
+		if (resumeKindOf(action) === "takeover" && action.launchRequestId) {
+			await releaseObservedBinding(tx, {
+				sessionId,
+				launchRequestId: action.launchRequestId,
+				reason,
+			});
+		}
+		// Frees the lock if the row survives (a recovery, or a takeover whose row names another launch).
+		await tx
+			.update(managedSessions)
+			.set({ activeControlActionId: null, controlLockExpiresAt: null, updatedAt: timestamp })
+			.where(
+				and(
+					eq(managedSessions.sessionId, sessionId),
+					eq(managedSessions.activeControlActionId, action.id),
+				),
+			);
+		await deps.afterWrites?.(tx);
+		return { settled: true, sessionId, outcome: "failed" };
+	});
+	await announceAfterSettle(handle, outcome);
+	return outcome;
+}
+
+/**
+ * The signals for a settle go out once the transaction it ran in has committed: at once when this call
+ * opened (and so already committed) it, else after the caller's own commit, and never if that rolls back.
+ */
+async function announceAfterSettle(handle: unknown | null, outcome: ResumeSettle): Promise<void> {
+	if (!outcome.settled) return;
+	const announce = () => announceResumeSettled(outcome.sessionId);
+	if (handle === null || !afterCommit(announce)) await announce();
+}
+
+/** The fixed words of the permission wait that survive a resume: approval ids are rows of ours, native ids died with the process. */
+function waitAfterResume(metadata: Record<string, unknown>): Record<string, unknown> | undefined {
+	const wait = metadata.permissionWait as { ids?: unknown } | undefined;
+	if (!wait || typeof wait !== "object") return undefined;
+	const ids = (Array.isArray(wait.ids) ? wait.ids : []).filter(
+		(id): id is string => typeof id === "string" && id.startsWith("approval:"),
+	);
+	return ids.length > 0 ? { ...wait, ids, anon: 0 } : undefined;
+}
+
+/**
+ * Ends a `resume` action as succeeded and brings the session back, in one transaction: only if the managed
+ * row names this launch and the action is still open (else nothing changes). The ended state is cleared
+ * (`endedAt`, `status`, the working flag, the turn start, `endedByEvent`), `managedResumeAt` fences later
+ * `SessionEnd` hooks, a native permission wait left by the dead process is dropped (approval waits are
+ * ours and stay), an unowned session gets its owner (a takeover with `assignOwner`; never overwriting one,
+ * and a disabled assignee leaves it unowned and is logged), and a fixed-words `ManagedSessionResumed` event
+ * is written. A write that matches no row throws and rolls the whole settle back.
+ */
+export async function completeResumeAction(
+	handle: unknown | null,
+	action: ResumeActionRef,
+	deps: ResumeSettleDeps = {},
+): Promise<ResumeSettle> {
+	const outcome = await inTransactionOf(handle, async (tx): Promise<ResumeSettle> => {
+		const sessionId = action.sessionId;
+		if (!sessionId) return { settled: false };
+		const [managed] = await tx
+			.select()
+			.from(managedSessions)
+			.where(eq(managedSessions.sessionId, sessionId))
+			.limit(1);
+		// A takeover's launch row always matches the managed row's, so the state is what says the host did
+		// its part: only a row the host reported `managed` has worked.
+		if (
+			!managed ||
+			managed.launchRequestId !== action.launchRequestId ||
+			managed.managedState !== "managed"
+		) {
+			return { settled: false };
+		}
+
+		const timestamp = nowIso();
+		const flipped = await tx
+			.update(controlActions)
+			.set({ status: "succeeded", error: null, finishedAt: timestamp, updatedAt: timestamp })
+			.where(
+				and(
+					eq(controlActions.id, action.id),
+					inArray(controlActions.status, ["queued", "running"]),
+				),
+			)
+			.returning({ id: controlActions.id });
+		if (flipped.length === 0) return { settled: false };
+
+		const read = tx
+			.select({
+				metadata: sessions.metadata,
+				semanticStatus: sessions.semanticStatus,
+				ownerUserId: sessions.ownerUserId,
+			})
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+		const [session] = await (config.dialect === "postgres" ? read.for("update") : read);
+		if (!session) throw new Error("A resume settled for a session whose row is gone.");
+
+		const {
+			endedByEvent: _ended,
+			permissionWait: _wait,
+			...kept
+		} = (session.metadata ?? {}) as Record<string, unknown>;
+		const wait = waitAfterResume({ permissionWait: (session.metadata as any)?.permissionWait });
+		const metadata = {
+			...kept,
+			managedResumeAt: timestamp,
+			...(wait ? { permissionWait: wait } : {}),
+		};
+		const updated = await tx
+			.update(sessions)
+			.set({
+				endedAt: null,
+				status: "idle",
+				isWorking: false,
+				currentTurnStartedAt: null,
+				lastActivityAt: timestamp,
+				metadata,
+				...(session.semanticStatus === "waiting" ? { semanticStatus: null } : {}),
+			})
+			.where(eq(sessions.sessionId, sessionId))
+			.returning({ id: sessions.id });
+		if (updated.length === 0) throw new Error("A resume settled for a session whose row is gone.");
+
+		await assignOwnerIfAsked(tx, action, sessionId, session.ownerUserId ?? null);
+
+		const kind = resumeKindOf(action);
+		await tx.insert(events).values({
+			sessionId,
+			eventType: SESSION_RESUMED_EVENT_TYPE,
+			category: "system_event",
+			source: "managed_control",
+			content: SESSION_RESUMED_CONTENT[kind],
+			isNoise: false,
+			rawPayload: { resume_kind: kind },
+			createdAt: timestamp,
+		});
+		await tx
+			.update(managedSessions)
+			.set({ activeControlActionId: null, controlLockExpiresAt: null, updatedAt: timestamp })
+			.where(
+				and(
+					eq(managedSessions.sessionId, sessionId),
+					eq(managedSessions.activeControlActionId, action.id),
+				),
+			);
+		await deps.afterWrites?.(tx);
+		return { settled: true, sessionId, outcome: "succeeded" };
+	});
+	await announceAfterSettle(handle, outcome);
+	return outcome;
+}
+
+/** D6: an unowned session taken over by an admin gets its intended owner only now that the takeover has worked. */
+async function assignOwnerIfAsked(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	action: ResumeActionRef,
+	sessionId: string,
+	currentOwner: string | null,
+): Promise<void> {
+	const metadata = (action.metadata ?? {}) as { assignOwner?: unknown; boundByUserId?: unknown };
+	if (metadata.assignOwner !== true || currentOwner !== null || !action.launchRequestId) return;
+	const [launch] = await tx
+		.select({ requestedByUserId: launchRequests.requestedByUserId })
+		.from(launchRequests)
+		.where(eq(launchRequests.id, action.launchRequestId))
+		.limit(1);
+	const intended = launch?.requestedByUserId ?? null;
+	if (intended === null) return;
+	try {
+		await assignTakeoverOwner(tx, sessionId, intended);
+	} catch (error) {
+		if (!(error instanceof OwnerDisabledError || error instanceof OwnerNotFoundError)) throw error;
+		console.log(
+			JSON.stringify({
+				kind: "takeover_owner_unassignable",
+				level: "warn",
+				sessionId,
+				launchRequestId: action.launchRequestId,
+				boundByUserId: typeof metadata.boundByUserId === "string" ? metadata.boundByUserId : null,
+			}),
+		);
+	}
+}
+
+/** A lapsed lock on a resume: if the host's state report landed (managed, this launch) it worked; otherwise it didn't. */
+async function settleExpiredResume(
+	handle: unknown,
+	managed: typeof managedSessions.$inferSelect,
+	action: typeof controlActions.$inferSelect,
+): Promise<ResumeSettle> {
+	if (managed.managedState === "managed" && managed.launchRequestId === action.launchRequestId) {
+		return completeResumeAction(handle, action);
+	}
+	return failResumeAction(
+		handle,
+		action,
+		resumeFailureMessage("timeout", managed.hostName ?? "The host", resumeKindOf(action)),
+	);
+}
+
+export const RESUME_SWEEP_BATCH = 100;
+
+/**
+ * Settles the resume actions whose lock has run out, oldest first, at most `RESUME_SWEEP_BATCH` a pass. The
+ * lazy expiry only runs from the owning host's own polls and the enqueue paths, so an offline, removed or
+ * revoked host would otherwise hold a session in `pending` for ever. One failing action doesn't stop the rest.
+ */
+export async function sweepExpiredResumeActions(nowMs: number = Date.now()): Promise<number> {
+	const candidates: Array<{ sessionId: string; lockExpiresAt: string | null }> = await getDb()
+		.select({
+			sessionId: managedSessions.sessionId,
+			lockExpiresAt: managedSessions.controlLockExpiresAt,
+		})
+		.from(controlActions)
+		.innerJoin(managedSessions, eq(managedSessions.activeControlActionId, controlActions.id))
+		.where(
+			and(
+				eq(controlActions.actionType, "resume"),
+				inArray(controlActions.status, ["queued", "running"]),
+			),
+		)
+		.orderBy(asc(controlActions.createdAt))
+		.limit(RESUME_SWEEP_BATCH * 5);
+	const lapsed = candidates
+		.filter((row) => row.lockExpiresAt !== null && new Date(row.lockExpiresAt).getTime() <= nowMs)
+		.slice(0, RESUME_SWEEP_BATCH);
+	let settled = 0;
+	for (const row of lapsed) {
+		try {
+			await expireStaleControlLock(getDb(), row.sessionId, () => nowMs);
+			settled += 1;
+		} catch (error) {
+			console.error(
+				JSON.stringify({
+					kind: "resume_sweep_failed",
+					level: "error",
+					sessionId: row.sessionId,
+					error: error instanceof Error ? error.message.slice(0, 300) : "unknown",
+				}),
+			);
+		}
+	}
+	return settled;
+}
+
+/** A host that lost `resumes_sessions` (rolled back, replaced) is told so at claim time, not left to the lock. */
+async function refuseResumeForOldHost(
+	action: typeof controlActions.$inferSelect,
+	supervisorId: string,
+): Promise<boolean> {
+	const host = await getSupervisor(supervisorId);
+	if ((host?.capabilities.features ?? []).includes(RESUMES_SESSIONS)) return false;
+	await failResumeAction(
+		null,
+		action,
+		resumeFailureMessage(
+			"host_upgrade_required",
+			host?.hostName ?? "The host",
+			resumeKindOf(action),
+		),
+	);
+	return true;
+}
+
 function isUnclaimedAiPrompt(action: typeof controlActions.$inferSelect): boolean {
 	return (
 		action.actionType === "prompt" && action.requestedBy === "ai" && action.status === "queued"
@@ -211,7 +598,7 @@ async function expireStaleControlLocksForSupervisor(supervisorId: string) {
 	}
 }
 
-function mapControlAction(row: typeof controlActions.$inferSelect): ControlAction {
+export function mapControlAction(row: typeof controlActions.$inferSelect): ControlAction {
 	return {
 		id: row.id,
 		sessionId: row.sessionId ?? null,
@@ -325,6 +712,34 @@ export class HostGoneError extends Error {
 	}
 }
 
+/**
+ * The host's supervisor predates `codex_follow_up_prompts`, so it would send a Codex prompt down the
+ * Claude path. Nothing is queued: the host has to be upgraded first.
+ */
+export class HostUpgradeRequiredError extends Error {
+	readonly code = "host_upgrade_required";
+	constructor() {
+		super(HOST_UPGRADE_REQUIRED_MESSAGE);
+		this.name = "HostUpgradeRequiredError";
+	}
+}
+
+/** What a person is told when a Codex session's process is gone (its host restarted): nothing can be sent to it. */
+export const MANAGED_STATE_NOT_CONTINUABLE_MESSAGE =
+	"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.";
+
+/**
+ * A Codex session whose managed state can no longer take a prompt: registration moves the host's Codex
+ * sessions to `degraded` because their app-servers died with the previous supervisor process.
+ */
+export class ManagedStateNotContinuableError extends Error {
+	readonly code = "managed_state_not_continuable";
+	constructor() {
+		super(MANAGED_STATE_NOT_CONTINUABLE_MESSAGE);
+		this.name = "ManagedStateNotContinuableError";
+	}
+}
+
 export type EnqueueRefusal =
 	| "not_managed"
 	| "session_missing"
@@ -332,7 +747,9 @@ export type EnqueueRefusal =
 	| "launch_mismatch"
 	| "control_busy"
 	| "host_offline"
-	| "host_gone";
+	| "host_gone"
+	| "host_upgrade_required"
+	| "managed_state";
 
 function refusalToError(reason: EnqueueRefusal): Error {
 	switch (reason) {
@@ -350,7 +767,44 @@ function refusalToError(reason: EnqueueRefusal): Error {
 			return new HostOfflineError();
 		case "host_gone":
 			return new HostGoneError();
+		case "host_upgrade_required":
+			return new HostUpgradeRequiredError();
+		case "managed_state":
+			return new ManagedStateNotContinuableError();
 	}
+}
+
+/**
+ * Does this supervisor take a Codex follow-up prompt? Capabilities are the host's own report, so they're
+ * read through the same cleaner as everywhere else: a missing, malformed or misspelt list means no.
+ */
+async function supervisorTakesCodexPrompts(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	supervisorId: string,
+): Promise<boolean> {
+	const [row] = await db
+		.select({ capabilities: supervisors.capabilities })
+		.from(supervisors)
+		.where(eq(supervisors.id, supervisorId))
+		.limit(1);
+	if (!row) return false;
+	return (withCapabilityDefaults(row.capabilities).features ?? []).includes(
+		CODEX_FOLLOW_UP_PROMPTS,
+	);
+}
+
+/**
+ * Whether the host that owns the session takes Codex prompts. Read on the caller's transaction (a
+ * `getDb()` inside `withAdminLock` is forbidden); a session with no owner of record can't.
+ */
+export async function hostTakesCodexPrompts(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	sessionId: string,
+): Promise<boolean> {
+	const owner = await resolveSessionOwner(tx, sessionId);
+	return owner !== null && (await supervisorTakesCodexPrompts(tx, owner));
 }
 
 /**
@@ -368,6 +822,26 @@ async function hostRefusal(
 	const host = (await getSessionOwnerHostStates([sessionId], clock(), tx)).get(sessionId);
 	if (!host || host.state === "live") return null;
 	return host.state === "offline" ? "host_offline" : "host_gone";
+}
+
+/**
+ * Would a prompt to this managed session be refused because its host can't take Codex prompts? The
+ * advisory form of the enqueue-time check, for deliverability: false for a Claude launch (no host read).
+ */
+export async function promptNeedsHostUpgrade(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	sessionId: string,
+): Promise<boolean> {
+	const [managed] = await db
+		.select({ launchRequestId: managedSessions.launchRequestId })
+		.from(managedSessions)
+		.where(eq(managedSessions.sessionId, sessionId))
+		.limit(1);
+	if (!managed) return false;
+	const launch = await resolveManagedLaunch(db, sessionId, managed.launchRequestId);
+	if (launch?.agentType !== "codex_cli") return false;
+	return !(await hostTakesCodexPrompts(db, sessionId));
 }
 
 /**
@@ -496,7 +970,6 @@ export async function enqueuePromptInTx(
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
 	if (!managed) return { ok: false, reason: "not_managed" };
-	if (managed.activeControlActionId) return { ok: false, reason: "control_busy" };
 
 	const [session] = await tx
 		.select()
@@ -515,8 +988,31 @@ export async function enqueuePromptInTx(
 	if (!(await launchOwnedBySessionOwner(tx, sessionId, launch))) {
 		return { ok: false, reason: "launch_mismatch" };
 	}
+	// The action is routed by the launch's agent type, which only a launch request sets. A session row can be
+	// created by anyone with an ingest key, under a launch's id, with an agent type of their choosing; one that
+	// disagrees with its launch is refused, so it can't send a Codex launch's prompt down the Claude path.
+	if (session.agentType !== launch.agentType) return { ok: false, reason: "launch_mismatch" };
 	const promptHostRefusal = await hostRefusal(tx, sessionId);
 	if (promptHostRefusal) return { ok: false, reason: promptHostRefusal };
+	const isCodex = launch.agentType === "codex_cli";
+	// Only a Codex launch asks the host anything: Claude prompts cost no extra statement.
+	if (isCodex && !(await hostTakesCodexPrompts(tx, sessionId))) {
+		return { ok: false, reason: "host_upgrade_required" };
+	}
+	// A row still `pending` with an action holding its lock is being taken over or resumed: it can't take a
+	// prompt yet, and "not continuable" would send the person off to start again. Narrow on purpose: a
+	// pending row with no active action keeps the answer below.
+	if (isCodex && managed.managedState === "pending" && managed.activeControlActionId) {
+		return { ok: false, reason: "control_busy" };
+	}
+	// A Codex session's process dies with its host's supervisor, and registration then marks it degraded: a
+	// prompt queued for it would only be refused by the host after the person was told it was sent.
+	if (isCodex && !CONTINUABLE_MANAGED_STATES.has(managed.managedState as ManagedState)) {
+		return { ok: false, reason: "managed_state" };
+	}
+	// Judged after the refusals above, so a held lock doesn't hide why the session can't take a prompt;
+	// the conditional lock below still decides a race.
+	if (managed.activeControlActionId) return { ok: false, reason: "control_busy" };
 
 	const timestamp = nowIso();
 	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp))) {
@@ -537,19 +1033,24 @@ export async function enqueuePromptInTx(
 			status: "queued",
 			metadata: {
 				prompt,
-				agentType: session.agentType,
+				agentType: launch.agentType,
 				// The launch's directory (judged against the host's trusted roots when it was
 				// requested), never the agent-reported session.cwd, which the agent can change.
 				cwd: launch.cwd,
-				// The launch's model, not the agent-reported session.model.
-				model: launch.model ?? null,
-				// A resume starts a new agent process, so it must carry the launch's recorded
-				// privileges for the supervisor to re-apply them (null = the agent's default).
-				approvalPolicy: launch.approvalPolicy ?? null,
-				sandboxMode: launch.sandboxMode ?? null,
 				managedState: managed.managedState,
 				launchMode: launch.requestedLaunchMode,
-				env: launch.env ?? {},
+				// A Claude resume starts a new agent process, so it carries the launch's model, recorded
+				// privileges (null = the agent's default) and env for the supervisor to re-apply. A Codex
+				// follow-up starts a turn on a thread whose settings were set and verified at launch and are
+				// sticky: it sends nothing that could widen them, so none of this is ever in the row.
+				...(isCodex
+					? {}
+					: {
+							model: launch.model ?? null,
+							approvalPolicy: launch.approvalPolicy ?? null,
+							sandboxMode: launch.sandboxMode ?? null,
+							env: launch.env ?? {},
+						}),
 				// The terminal owner and the interactive bridge are the supervisor's own records,
 				// found by session id on the host; nothing the agent reported is passed on.
 			},
@@ -587,6 +1088,11 @@ export async function retryLaunchForSession(sessionId: string, actor: Actor) {
 
 	const original = await resolveManagedLaunch(getDb(), sessionId, managed.launchRequestId);
 	if (!original) throw new Error("Original launch request not found.");
+	// A taken-over session's launch row is a record of the takeover, not a recipe: its host, directory and
+	// privileges describe a thread that already existed. Refused before anything is cloned.
+	if ((original.metadata as Record<string, unknown> | null)?.boundObservedSession === true) {
+		throw new BindRefusal("retry_not_available");
+	}
 	// F47/D12: same cross-host guard queuePromptAction applies — refuse to
 	// clone another host's launch.env into a fresh launch_requests row when
 	// the managed row's launchRequestId points at a launch for a
@@ -784,14 +1290,46 @@ function isExpiredAiPrompt(action: typeof controlActions.$inferSelect): boolean 
 	return createdMs !== null && Date.now() - createdMs > AI_PROMPT_CLAIM_TTL_MS;
 }
 
-/** Fail an unclaimed AI prompt that outlived its TTL, release its lock and close its audit row. */
-async function expireUnclaimedAiPrompt(action: typeof controlActions.$inferSelect) {
+const LAUNCH_MISMATCH_CLAIM_MESSAGE =
+	"This session's records don't match how it was launched, so nothing was sent.";
+
+/**
+ * Why a queued prompt must not be handed to this supervisor, or null. An action queued by an older
+ * server, or before the host re-registered without the feature, never passed the enqueue-time check, so
+ * the claim re-judges it: by the launch's agent type, else (no launch row) the action's own record.
+ */
+async function claimRefusalForPrompt(
+	action: typeof controlActions.$inferSelect,
+	launchAgentType: string | null,
+	supervisorId: string,
+): Promise<string | null> {
+	const recorded = (action.metadata as Record<string, unknown> | null)?.agentType;
+	const recordedType = typeof recorded === "string" ? recorded : null;
+	if (launchAgentType !== null && recordedType !== null && recordedType !== launchAgentType) {
+		return LAUNCH_MISMATCH_CLAIM_MESSAGE;
+	}
+	const effective = launchAgentType ?? recordedType;
+	// With no launch row there is nothing to check a record against: only an explicit Claude record passes.
+	if (launchAgentType === null && effective !== "claude_code" && effective !== "codex_cli") {
+		console.warn(
+			`[control-actions] prompt ${action.id} has no launch row and no usable agent type; failing it`,
+		);
+		return LAUNCH_MISMATCH_CLAIM_MESSAGE;
+	}
+	if (effective !== "codex_cli") return null;
+	return (await supervisorTakesCodexPrompts(getDb(), supervisorId))
+		? null
+		: HOST_UPGRADE_REQUIRED_MESSAGE;
+}
+
+/** Fail an unclaimed prompt (an AI prompt past its TTL, or one this host must not take), release its lock and close its audit row. */
+async function failUnclaimedPrompt(action: typeof controlActions.$inferSelect, error: string) {
 	const timestamp = nowIso();
 	await getDb()
 		.update(controlActions)
 		.set({
 			status: "failed",
-			error: "Expired before a supervisor claimed it.",
+			error,
 			finishedAt: timestamp,
 			updatedAt: timestamp,
 		})
@@ -821,7 +1359,7 @@ export async function claimNextControlAction(supervisorId: string) {
 		//    storing supervisorId in metadata.targetSupervisorId at queue time.
 		// Pick the oldest queued action across both channels.
 		const sessionRow = await getDb()
-			.select({ action: controlActions })
+			.select({ action: controlActions, launchAgentType: launchRequests.agentType })
 			.from(controlActions)
 			.innerJoin(managedSessions, eq(managedSessions.sessionId, controlActions.sessionId))
 			.leftJoin(launchRequests, ownerLaunchJoin)
@@ -843,6 +1381,7 @@ export async function claimNextControlAction(supervisorId: string) {
 			.limit(1);
 
 		const sessionAction = sessionRow[0]?.action ?? null;
+		const launchAgentType = sessionRow[0]?.launchAgentType ?? null;
 		const sessionlessAction = sessionlessRow[0] ?? null;
 
 		let candidate = null;
@@ -855,8 +1394,19 @@ export async function claimNextControlAction(supervisorId: string) {
 		if (!candidate) return null;
 
 		if (isExpiredAiPrompt(candidate)) {
-			await expireUnclaimedAiPrompt(candidate);
+			await failUnclaimedPrompt(candidate, "Expired before a supervisor claimed it.");
 			continue;
+		}
+		if (candidate.actionType === "prompt" && candidate.sessionId) {
+			const refusal = await claimRefusalForPrompt(candidate, launchAgentType, supervisorId);
+			if (refusal) {
+				await failUnclaimedPrompt(candidate, refusal);
+				continue;
+			}
+		}
+
+		if (candidate.actionType === "resume" && candidate.sessionId) {
+			if (await refuseResumeForOldHost(candidate, supervisorId)) continue;
 		}
 
 		const timestamp = nowIso();
@@ -867,9 +1417,11 @@ export async function claimNextControlAction(supervisorId: string) {
 				claimedBySupervisorId: supervisorId,
 				updatedAt: timestamp,
 			})
-			.where(eq(controlActions.id, candidate.id))
+			// Only a still-queued action: another claim may have taken it since it was read.
+			.where(and(eq(controlActions.id, candidate.id), eq(controlActions.status, "queued")))
 			.returning();
-		return updated ? mapControlAction(updated) : null;
+		if (!updated) continue;
+		return mapControlAction(updated);
 	}
 	return null;
 }
@@ -887,6 +1439,46 @@ export async function updateControlAction(input: {
 		.where(eq(controlActions.id, input.actionId))
 		.limit(1);
 	if (!current || current.claimedBySupervisorId !== input.supervisorId) return null;
+
+	// A resume ends through the one settle, which also moves the rows (D10).
+	if (current.actionType === "resume" && input.status !== "running") {
+		if (input.status === "failed") {
+			await failResumeAction(
+				null,
+				current,
+				input.error ?? resumeFailureMessage("rejected", "The host", resumeKindOf(current)),
+			);
+		} else {
+			// The host says it worked. If the row never became `managed`, it didn't: that's a failure.
+			const [managed] = await getDb()
+				.select({
+					managedState: managedSessions.managedState,
+					launchRequestId: managedSessions.launchRequestId,
+				})
+				.from(managedSessions)
+				.where(eq(managedSessions.sessionId, current.sessionId ?? ""))
+				.limit(1);
+			if (
+				managed &&
+				managed.launchRequestId === current.launchRequestId &&
+				managed.managedState !== "managed"
+			) {
+				await failResumeAction(
+					null,
+					current,
+					resumeFailureMessage("rejected", "The host", resumeKindOf(current)),
+				);
+			} else {
+				await completeResumeAction(null, current);
+			}
+		}
+		const [fresh] = await getDb()
+			.select()
+			.from(controlActions)
+			.where(eq(controlActions.id, input.actionId))
+			.limit(1);
+		return fresh ? mapControlAction(fresh) : null;
+	}
 
 	const timestamp = nowIso();
 	const [updated] = await getDb()

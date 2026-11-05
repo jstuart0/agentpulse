@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { DELIVERY_ID_HEADER, REPLAY_HEADER } from "../shared/hook-headers.js";
 import type { ControlAction, LaunchRequest, ManagedSession } from "../shared/types.js";
 import {
@@ -17,9 +18,13 @@ import {
 } from "./providers/claude.js";
 import { wireCodexApprovals } from "./providers/codex-approvals-wiring.js";
 import {
+	hasManagedCodexRuntime,
 	launchManagedCodexRequest,
 	managedCodexRuntimeCount,
+	managedCodexRuntimeHolds,
+	promptManagedCodexSession,
 	reconcileManagedCodexTitles,
+	resumeManagedCodexSession,
 	stopManagedCodexSession,
 } from "./providers/codex-managed.js";
 import { warmCodexProtocolVerdict } from "./providers/codex-protocol.js";
@@ -38,6 +43,7 @@ import {
 	shouldExitOnStaleHeartbeat,
 } from "./services/keep-alive.js";
 import { parseErrorBodyField, sanitizeForLog } from "./services/log-sanitize.js";
+import { createManagedThreadRecord } from "./services/managed-thread-record.js";
 import { executePrelaunchActions } from "./services/prelaunch-actions.js";
 import { retryWithBackoff } from "./services/registration-retry.js";
 import { createReportGate, heartbeatBody, heartbeatOutbox } from "./services/report-gate.js";
@@ -51,6 +57,11 @@ import {
 	parseRetryAfterMs,
 	setSharedCredentialTripwire,
 } from "./services/report-resilience.js";
+import {
+	createSessionResumer,
+	isObserverHeld,
+	resolveNeutralCwd,
+} from "./services/session-resume.js";
 import { assertTrustedRootsExcludeAgentpulseDir } from "./services/spawn-cwd.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -191,12 +202,19 @@ async function main() {
 	// AGENTPULSE_CODEX_OBSERVER=off is an operator-only escape hatch — no
 	// installer sets it (Decision 19 supersedes the installer-disables-it
 	// approach: it fails closed whenever native hooks are untrusted).
+	// Sessions this host is resuming (D16): the observer reads their lines and posts nothing, so a resumed
+	// turn can't also arrive as a second UserPromptSubmit and Stop beside the managed one.
+	const resumingSessions = new Set<string>();
+	const threadRecord = createManagedThreadRecord({
+		path: join(home, ".agentpulse", "managed-threads.json"),
+	});
 	if (isCodexObserverEnabled(process.env)) {
 		void startCodexObserver({
 			serverUrl: config.serverUrl,
 			apiKey: config.apiKey ?? null,
 			rules,
 			hostName: config.hostName,
+			isHeld: (id) => isObserverHeld(resumingSessions, hasManagedCodexRuntime, id),
 		}).catch((error) => {
 			console.error("[codex-observer] failed to start:", error);
 		});
@@ -309,12 +327,25 @@ async function main() {
 			launchClaudeInteractive: launchClaudeInteractiveRequest,
 		},
 		executePrelaunchActions,
+		recordThread: (launchRequestId, threadId) => threadRecord.write(launchRequestId, threadId),
+	});
+	const resumeSession = createSessionResumer({
+		gate,
+		hostName: config.hostName,
+		trustedRoots: config.trustedRoots,
+		record: threadRecord,
+		hold: resumingSessions,
+		neutralCwd: () => resolveNeutralCwd(home),
+		providers: { managedCodexRuntimeHolds, resumeManagedCodexSession },
 	});
 	const handleControlAction = createControlActionHandler({
+		resumeSession,
 		gate,
 		trustedRoots: config.trustedRoots,
 		providers: {
 			stopManagedCodexSession,
+			promptManagedCodexSession,
+			hasManagedCodexRuntime,
 			promptClaudeHeadlessSession,
 			promptClaudeInteractiveSession,
 		},

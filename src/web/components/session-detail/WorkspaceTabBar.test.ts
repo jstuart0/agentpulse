@@ -9,6 +9,7 @@ import type { Availability } from "../../lib/session-summary-view.js";
 import {
 	WorkspaceTabBar,
 	type WorkspaceTabBarProps,
+	activityTabWorking,
 	workspaceTabButtonId,
 } from "./WorkspaceTabBar.js";
 
@@ -88,5 +89,17 @@ describe("WorkspaceTabBar", () => {
 		expect(render({ summaryBadge: "Summarizing" })).toMatch(
 			/Summary<\/span><span[^>]*>Summarizing</,
 		);
+	});
+});
+
+describe("activityTabWorking", () => {
+	test("Working on the Activity tab, except while Codex waits on an approval (the badge says waiting)", () => {
+		const approval = { permissionWait: { ids: ["approval:a1"] } };
+		expect(activityTabWorking({ isWorking: true, metadata: {} })).toBe(true);
+		expect(activityTabWorking({ isWorking: false, metadata: {} })).toBe(false);
+		expect(activityTabWorking({ isWorking: true, metadata: approval })).toBe(false);
+		expect(
+			activityTabWorking({ isWorking: true, metadata: { permissionWait: { ids: ["toolu_1"] } } }),
+		).toBe(true);
 	});
 });

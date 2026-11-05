@@ -163,6 +163,48 @@ describe("approving from Telegram", () => {
 		expect(await promptActions(w.sessionId)).toHaveLength(0);
 	});
 
+	test("a Codex session on a host too old to send it a prompt gets its own sentence, not the copy-it advice", async () => {
+		const w = await world();
+		await getDb().update(sessions).set({ agentType: "codex_cli" });
+		await getDb()
+			.update(launchRequests)
+			.set({ agentType: "codex_cli", requestedLaunchMode: "managed_codex" });
+		const { answers } = await tap(w, "approve");
+		expect(answers).toEqual([
+			"This session's host is running an older supervisor that can't send prompts to Codex, so nothing was sent. Update it, then start a new session for this work. Updating ends the sessions running there.",
+		]);
+		expect(answers[0]?.toLowerCase()).not.toContain("copy");
+		expect(await hitlStatus(w.hitlId)).toBe("awaiting_reply");
+		expect(await promptActions(w.sessionId)).toHaveLength(0);
+	});
+
+	test("a Codex session whose process ended with its host's restart says so", async () => {
+		const w = await world();
+		await getDb().update(sessions).set({ agentType: "codex_cli" });
+		await getDb()
+			.update(launchRequests)
+			.set({ agentType: "codex_cli", requestedLaunchMode: "managed_codex" });
+		await getDb().update(managedSessions).set({ managedState: "degraded" });
+		await getDb()
+			.update(supervisors)
+			.set({
+				capabilities: {
+					version: 1,
+					agentTypes: ["codex_cli"],
+					launchModes: ["managed_codex"],
+					os: "linux",
+					terminalSupport: [],
+					features: ["codex_follow_up_prompts"],
+				},
+			});
+		const { answers } = await tap(w, "approve");
+		expect(answers).toEqual([
+			"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.",
+		]);
+		expect(await hitlStatus(w.hitlId)).toBe("awaiting_reply");
+		expect(await promptActions(w.sessionId)).toHaveLength(0);
+	});
+
 	test("a host that is offline or was removed says the host isn't connected, leaves the request open and sends nothing", async () => {
 		const offline = await world();
 		await getDb()

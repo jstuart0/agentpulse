@@ -1,5 +1,6 @@
 import { APPROVAL_RESOLVED_EVENT_TYPE } from "../../shared/codex-approvals.js";
 import { AGENT_METADATA } from "../../shared/constants.js";
+import { SESSION_RESUMED_EVENT_TYPE } from "../../shared/session-resume.js";
 import type {
 	AgentType,
 	EventCategory,
@@ -311,7 +312,19 @@ const RESERVED_EVENT_NAME_RE = /^ai/i;
  */
 export function isServerOnlyEventName(name: unknown): boolean {
 	if (typeof name !== "string") return false;
-	return RESERVED_EVENT_NAME_RE.test(name.trim()) || isApprovalResolvedEventName(name);
+	return (
+		RESERVED_EVENT_NAME_RE.test(name.trim()) ||
+		isApprovalResolvedEventName(name) ||
+		isSessionResumedEventName(name)
+	);
+}
+
+/** The name of the event recording a resume (AGEN-115), however a sender spells its case. */
+export function isSessionResumedEventName(name: unknown): boolean {
+	return (
+		typeof name === "string" &&
+		name.trim().toLowerCase() === SESSION_RESUMED_EVENT_TYPE.toLowerCase()
+	);
 }
 
 /** The name of the event recording a Codex approval closing, however a sender spells its case. */
@@ -320,6 +333,18 @@ export function isApprovalResolvedEventName(name: unknown): boolean {
 		typeof name === "string" &&
 		name.trim().toLowerCase() === APPROVAL_RESOLVED_EVENT_TYPE.toLowerCase()
 	);
+}
+
+/**
+ * Names only a supervisor writes: its managed sessions' turn starts and ends (HeadlessPromptFailed,
+ * HeadlessTaskCompleted, ...). A hook can choose its name, and a forged turn end wakes the watcher, whose
+ * Notify then reports a turn that never ran. The supervisor route keeps writing them, so this is not part of
+ * `isServerOnlyEventName`, which both paths share.
+ */
+const SUPERVISOR_ONLY_EVENT_NAME_RE = /^headless/i;
+
+export function isSupervisorOnlyEventName(name: unknown): boolean {
+	return typeof name === "string" && SUPERVISOR_ONLY_EVENT_NAME_RE.test(name.trim());
 }
 
 export function normalizeHookEvent(
@@ -332,7 +357,7 @@ export function normalizeHookEvent(
 	// forged AiContinueSent would read as proof that a prompt was sent.
 	for (const claimed of [payload.hook_event_name, payload.provider_event_name]) {
 		const name = typeof claimed === "string" ? claimed.trim() : "";
-		if (isServerOnlyEventName(name)) {
+		if (isServerOnlyEventName(name) || isSupervisorOnlyEventName(name)) {
 			console.warn(
 				JSON.stringify({
 					kind: "ingest_reserved_event_type",

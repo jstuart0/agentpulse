@@ -55,6 +55,20 @@ describe("mapError — ownership and role refusals (403)", () => {
 		expect(new Set(texts).size).toBe(texts.length);
 	});
 
+	test("bad_origin names both causes: a foreign Origin, and an untrusted Host with authentication off", () => {
+		const text = mapError(new ApiError(403, { error: "bad_origin" }), BASE_URL).content[0].text;
+		expect(text).toContain("Origin");
+		expect(text).toContain("Host");
+	});
+
+	test("415 unsupported_media_type tells the caller to declare JSON", () => {
+		const text = mapError(new ApiError(415, { error: "unsupported_media_type" }), BASE_URL)
+			.content[0].text;
+		expect(text).toContain("application/json");
+		expect(text.startsWith("AgentPulse")).toBe(true);
+		expect(text).not.toContain("unsupported_media_type");
+	});
+
 	test("a 403 with an unrecognised code still falls through to the generic message", () => {
 		const text = mapError(new ApiError(403, { error: "something_else" }), BASE_URL).content[0].text;
 		expect(text).toContain("something_else");
@@ -246,5 +260,46 @@ describe("mapError — a session whose host isn't there (AGEN-66)", () => {
 		expect(text).toContain("still open");
 		expect(text).toContain("removed");
 		expect(text).not.toContain("host_gone");
+	});
+
+	test("a Codex session on a host too old to send prompts says to start a new session, whichever route refused", () => {
+		const copy =
+			"This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.";
+		const withMessage = mapError(
+			new ApiError(409, { error: "host_upgrade_required", message: copy }),
+			BASE_URL,
+		).content[0].text;
+		expect(withMessage).toBe(copy);
+		const bare = mapError(new ApiError(409, { error: "host_upgrade_required" }), BASE_URL)
+			.content[0].text;
+		expect(bare).toBe(copy);
+		const decided = mapError(
+			new ApiError(409, { error: "prompt_not_deliverable", reason: "host_upgrade_required" }),
+			BASE_URL,
+		).content[0].text;
+		expect(decided).toContain("NOT sent");
+		expect(decided).toContain("still open");
+		expect(decided).toContain(
+			"Update it, then start a new session for this work. Updating ends the sessions running there.",
+		);
+		expect(decided).toContain("decline it");
+		expect(decided).not.toContain("call decide_hitl again");
+		expect(decided).not.toContain("host_upgrade_required");
+	});
+
+	test("a Codex session whose process ended with its host's restart says so, whichever route refused", () => {
+		const copy =
+			"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.";
+		expect(
+			mapError(new ApiError(409, { error: "managed_state_not_continuable" }), BASE_URL).content[0]
+				.text,
+		).toBe(copy);
+		const decided = mapError(
+			new ApiError(409, { error: "prompt_not_deliverable", reason: "managed_state" }),
+			BASE_URL,
+		).content[0].text;
+		expect(decided).toContain("process ended when its host restarted");
+		expect(decided).toContain("NOT sent");
+		expect(decided).not.toContain("managed_state");
 	});
 });

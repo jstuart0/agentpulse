@@ -275,6 +275,25 @@ export interface ReportGate {
 	 * left out; with nothing left, nothing is sent. Never queued; a 10 s limit.
 	 */
 	syncApprovals(entries: ApprovalSyncEntries): Promise<ApprovalSyncResult>;
+	/**
+	 * A resume's state report (AGEN-115): live only. It is never queued, never behind a backlog and never a
+	 * replay, because the server refuses a report whose resume action has closed and a queued one would
+	 * reach it after the process it describes was gone. The session is marked reported, so a rule added later
+	 * still closes it. Throws what the server's refusal or the network threw; a network failure also latches
+	 * the gate offline. "excluded" and "blocked" send nothing.
+	 */
+	reportResumeState(body: ManagedSessionStateInput): Promise<ReportOutcome>;
+	/**
+	 * Fails a resume control action with `error`, once, without judging the session: the gate may not know it
+	 * (a resume is refused before the host has noted anything), and `refuseControlAction` would post the
+	 * launch sentence. The caller picks the words (one fixed sentence per resume kind while rules exist).
+	 * Nothing is posted while the rules are invalid.
+	 */
+	refuseResume(actionId: string, error: string): Promise<void>;
+	/** Drops what `noteLaunch` remembered for a launch that failed before the server heard of it. Never un-marks an excluded session, and keeps one already reported. */
+	forgetLaunch(launchId: string, sessionId: string): void;
+	/** What the offline outbox holds for this session: nothing, queued entries (also while the outbox hasn't finished listing), or a head it can't trust. */
+	queuedState(id: string): "none" | "pending" | "held";
 	/** Whether the local rules exclude this absolute path. Invalid rules exclude everything. */
 	excludesPath(path: string): boolean;
 	reportLaunchStatus(launchId: string, body: LaunchStatusBody): Promise<void>;
@@ -1265,6 +1284,43 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 				}
 				return "blocked";
 			});
+		},
+
+		async reportResumeState(body) {
+			const id = body.sessionId;
+			return serialize(id, async () => {
+				const verdict = decide(id);
+				if (verdict === "excluded") {
+					await closeIfNeeded(id);
+					return "excluded";
+				}
+				if (verdict !== "send") return "blocked";
+				await sendApproval("/managed-session-state", JSON.stringify(body));
+				markReported(id, isTerminalReport(body));
+				return "sent";
+			});
+		},
+
+		async refuseResume(actionId, error) {
+			if (currentRules().state === "invalid") return;
+			await post(`/control-actions/${actionId}/status`, { status: "failed", error });
+		},
+
+		forgetLaunch(launchId, sessionId) {
+			let changed = false;
+			for (const key of [launchId, sessionId]) {
+				const rec = sessions.get(key);
+				if (!rec || rec.excluded || rec.reported) continue;
+				sessions.delete(key);
+				changed = true;
+			}
+			if (changed) persist();
+		},
+
+		queuedState(id) {
+			if (!outbox?.enabled) return "none";
+			if (!(outbox.listed() ? outbox.hasPending(id) : true)) return "none";
+			return outbox.head(id) === "held" ? "held" : "pending";
 		},
 
 		async reportApproval(sessionId, body) {

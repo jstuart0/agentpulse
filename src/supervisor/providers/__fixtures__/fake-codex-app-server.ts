@@ -15,6 +15,29 @@
  *   FAKE_CODEX_REQUESTS=<json array>   server requests to send after turn/start: [{method, params, id?}]
  *   FAKE_CODEX_IGNORE_INTERRUPT=1      never answer turn/interrupt
  *   FAKE_CODEX_FORCE_APPROVAL / FORCE_SANDBOX / SANDBOX_EXTRAS   as thread/start's answer
+ *   FAKE_CODEX_REQUESTS_ON_TURN=<n>    which turn/start sends FAKE_CODEX_REQUESTS (default 1, the first)
+ *   FAKE_CODEX_TURN_START_ERROR=<n>    the nth turn/start is answered with a JSON-RPC error
+ *   FAKE_CODEX_TURN_START_SILENT=<n>   the nth turn/start is logged and never answered
+ *   FAKE_CODEX_TURN_COMPLETE_BEFORE_REPLY=<n>   the nth turn/start writes turn/started and turn/completed
+ *                                      for its own turn before its response
+ * Turn ids count up: turn-1, turn-2, ...
+ *
+ * Resume (AGEN-115), shaped by answers recorded from Codex 0.163.0 (thread/read and thread/resume):
+ *   FAKE_CODEX_THREAD_ID=<id>          the one thread this fake knows (default thr-1); another id is "thread not loaded" / "no rollout found"
+ *   FAKE_CODEX_THREAD_CWD=<dir>        the thread's CURRENT directory, as thread/read and thread/resume answer it
+ *   FAKE_CODEX_RESUME_CWD=<dir>        a different directory in thread/resume's answer than thread/read gave
+ *   FAKE_CODEX_THREAD_ORIGINATOR=<n>   `thread.originator` (default codex_exec)
+ *   FAKE_CODEX_READ_ERROR=<json>       {code,message}: thread/read fails like this
+ *   FAKE_CODEX_RESUME_ERROR=<json>     {code,message}: thread/resume fails like this
+ *   FAKE_CODEX_READ_SILENT=1 / FAKE_CODEX_RESUME_SILENT=1   never answered
+ *   FAKE_CODEX_RESUME_FORCE_APPROVAL / FAKE_CODEX_RESUME_FORCE_SANDBOX   thread/resume's answer, whatever was asked
+ *   FAKE_CODEX_SANDBOX_EXTRAS=<json>   merged into the answered sandbox (what a hostile project config produces)
+ *   FAKE_CODEX_LOCK_FILE=<path>        the first thread/resume takes this "writer lock"; a second answers "already has an active writer"
+ *   FAKE_CODEX_REQUESTS_ON_READ=<json> server requests [{method, params, id?}] sent just before thread/read's answer
+ *   FAKE_CODEX_REQUESTS_ON_RESUME=<json>  the same, sent just after thread/resume's answer
+ *   FAKE_CODEX_SANDBOX_OMIT=<key>      removes this key from the answered sandbox (a missing key)
+ * With no override asked for, thread/resume answers the thread's recorded policy, which is deliberately a
+ * third value: never + dangerFullAccess, so echoing the request or a default can't pass for the override.
  *
  * Behaviour recorded from a real Codex 0.163.0 (src/supervisor/providers/__fixtures__/codex-0.163), on when
  * FAKE_CODEX_REALISTIC=1: the first answer to a server request is final (a second is logged as
@@ -33,7 +56,15 @@
  *                                      `fileChange` item that the request names
  */
 import { spawn } from "node:child_process";
-import { appendFileSync, cpSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	cpSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 
 const env = process.env;
@@ -70,7 +101,8 @@ const logFile = env.FAKE_CODEX_LOG;
 const log = (entry: unknown) => {
 	if (logFile) appendFileSync(logFile, `${JSON.stringify(entry)}\n`);
 };
-log({ argv: process.argv.slice(2), pid: process.pid });
+log({ argv: process.argv.slice(2), pid: process.pid, cwd: process.cwd() });
+log({ envNames: Object.keys(process.env) });
 
 if (env.FAKE_CODEX_EARLY_EXIT) process.exit(Number(env.FAKE_CODEX_EARLY_EXIT));
 
@@ -106,6 +138,7 @@ const beforeFirstAnswer = () => {
 	}
 };
 
+let turnStarts = 0;
 const REALISTIC = env.FAKE_CODEX_REALISTIC === "1";
 const sentRequests = new Map<string, { threadId: string }>();
 const answeredRequests = new Set<string>();
@@ -114,6 +147,142 @@ const resolve = (id: string | number) => {
 	if (!entry || env.FAKE_CODEX_NO_RESOLVE) return;
 	send({ method: "serverRequest/resolved", params: { threadId: entry.threadId, requestId: id } });
 };
+
+const KNOWN_THREAD = env.FAKE_CODEX_THREAD_ID || "thr-1";
+const threadCwd = () => env.FAKE_CODEX_THREAD_CWD || process.cwd();
+// The key set of a real Codex 0.163.0 `thread` (thread/read and thread/resume), so a fake answer and a real
+// one can be compared key for key (codex-resume.real.test.ts). Values are placeholders except the ones used.
+const threadBody = (cwd: string, status: string, withEnvironments = true) => ({
+	id: KNOWN_THREAD,
+	// A real thread/read answers `environments: null`; thread/resume answers the list.
+	environments: withEnvironments
+		? [{ environmentId: "local", cwd, runtimeWorkspaceRoots: [cwd] }]
+		: null,
+	extra: null,
+	sessionId: KNOWN_THREAD,
+	forkedFromId: null,
+	parentThreadId: null,
+	preview: "",
+	ephemeral: false,
+	section: null,
+	sectionEnteredAt: null,
+	projectId: null,
+	historyMode: "paginated",
+	modelProvider: "openai",
+	model: "fake-model",
+	reasoningEffort: null,
+	createdAt: 0,
+	updatedAt: 0,
+	recencyAt: 0,
+	status: { type: status },
+	path: `/fake/sessions/rollout-${KNOWN_THREAD}.jsonl`,
+	cwd,
+	cliVersion: VERSION,
+	originator: env.FAKE_CODEX_THREAD_ORIGINATOR || "codex_exec",
+	source: "exec",
+	canAcceptDirectInput: null,
+	threadSource: "user",
+	agentNickname: null,
+	agentRole: null,
+	gitInfo: null,
+	name: null,
+	daybreakEnabled: null,
+	turns: [],
+});
+let resumedHere = false;
+
+function sendServerRequests(json: string | undefined) {
+	const requests = JSON.parse(json || "[]") as Array<{
+		method: string;
+		params?: unknown;
+		id?: number | string;
+	}>;
+	requests.forEach((entry, index) => {
+		const id = entry.id ?? 100 + index;
+		sentRequests.set(JSON.stringify(id), { threadId: KNOWN_THREAD });
+		send({ id, method: entry.method, params: entry.params ?? {} });
+	});
+}
+
+function handleThreadCall(m: any, reply: (result: unknown) => void) {
+	const isRead = m.method === "thread/read";
+	if (isRead ? env.FAKE_CODEX_READ_SILENT : env.FAKE_CODEX_RESUME_SILENT) return;
+	const forced = isRead ? env.FAKE_CODEX_READ_ERROR : env.FAKE_CODEX_RESUME_ERROR;
+	if (forced) {
+		send({ id: m.id, error: JSON.parse(forced) });
+		return;
+	}
+	if (m.params?.threadId !== KNOWN_THREAD) {
+		send({
+			id: m.id,
+			error: {
+				code: -32600,
+				message: isRead
+					? `thread not loaded: ${m.params?.threadId}`
+					: `no rollout found for thread id ${m.params?.threadId}`,
+			},
+		});
+		return;
+	}
+	if (isRead) {
+		sendServerRequests(env.FAKE_CODEX_REQUESTS_ON_READ);
+		reply({
+			thread: threadBody(threadCwd(), "notLoaded", false),
+			readState: { firstUnread: null, revision: "r" },
+		});
+		return;
+	}
+	const lock = env.FAKE_CODEX_LOCK_FILE;
+	if (lock && !resumedHere) {
+		if (existsSync(lock)) {
+			send({
+				id: m.id,
+				error: { code: -32600, message: `thread ${KNOWN_THREAD} already has an active writer` },
+			});
+			return;
+		}
+		writeFileSync(lock, String(process.pid));
+	}
+	resumedHere = true;
+	const approval = env.FAKE_CODEX_RESUME_FORCE_APPROVAL || m.params.approvalPolicy || "never";
+	const sandbox = env.FAKE_CODEX_RESUME_FORCE_SANDBOX || m.params.sandbox || "danger-full-access";
+	const cwd = env.FAKE_CODEX_RESUME_CWD || threadCwd();
+	const sandboxAnswer: Record<string, unknown> = {
+		type: SANDBOX_TYPE[sandbox],
+		...(sandbox === "read-only" ? { networkAccess: false } : {}),
+		...(sandbox === "workspace-write"
+			? {
+					writableRoots: [],
+					networkAccess: false,
+					excludeTmpdirEnvVar: false,
+					excludeSlashTmp: false,
+				}
+			: {}),
+		...JSON.parse(env.FAKE_CODEX_SANDBOX_EXTRAS || "{}"),
+	};
+	if (env.FAKE_CODEX_SANDBOX_OMIT) delete sandboxAnswer[env.FAKE_CODEX_SANDBOX_OMIT];
+	reply({
+		thread: threadBody(cwd, "idle"),
+		model: "fake-model",
+		modelProvider: "openai",
+		serviceTier: null,
+		disabledPluginIds: [],
+		cwd,
+		runtimeWorkspaceRoots: [cwd],
+		instructionSources: [],
+		approvalPolicy: approval,
+		approvalsReviewer: "user",
+		activePermissionProfile: null,
+		reasoningEffort: null,
+		collaborationMode: null,
+		multiAgentMode: null,
+		initialTurnsPage: null,
+		turnsBackwardsCursor: null,
+		itemsBackwardsCursor: null,
+		sandbox: sandboxAnswer,
+	});
+	sendServerRequests(env.FAKE_CODEX_REQUESTS_ON_RESUME);
+}
 
 function handle(m: any) {
 	if (typeof m.method !== "string") {
@@ -164,6 +333,8 @@ function handle(m: any) {
 				...JSON.parse(env.FAKE_CODEX_SANDBOX_EXTRAS || "{}"),
 			},
 		});
+	} else if (m.method === "thread/read" || m.method === "thread/resume") {
+		handleThreadCall(m, reply);
 	} else if (m.method === "thread/name/set") {
 		reply({});
 		send({
@@ -171,7 +342,23 @@ function handle(m: any) {
 			params: { threadId: m.params.threadId, threadName: m.params.name },
 		});
 	} else if (m.method === "turn/start") {
-		reply({ turn: { id: "turn-1" } });
+		turnStarts += 1;
+		const nth = turnStarts;
+		const turnId = `turn-${nth}`;
+		if (Number(env.FAKE_CODEX_TURN_START_SILENT) === nth) return;
+		if (Number(env.FAKE_CODEX_TURN_START_ERROR) === nth) {
+			send({ id: m.id, error: { code: -32000, message: "turn refused" } });
+			return;
+		}
+		if (Number(env.FAKE_CODEX_TURN_COMPLETE_BEFORE_REPLY) === nth) {
+			send({ method: "turn/started", params: { threadId: "thr-1", turn: { id: turnId } } });
+			send({
+				method: "turn/completed",
+				params: { threadId: "thr-1", turn: { id: turnId, status: "completed" } },
+			});
+		}
+		reply({ turn: { id: turnId } });
+		if (nth !== Number(env.FAKE_CODEX_REQUESTS_ON_TURN || 1)) return;
 		const requests = JSON.parse(env.FAKE_CODEX_REQUESTS || "[]") as Array<{
 			method: string;
 			params?: unknown;

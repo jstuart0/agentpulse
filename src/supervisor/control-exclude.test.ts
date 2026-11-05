@@ -78,6 +78,7 @@ function harness(
 		log: () => {},
 	});
 	const providers = {
+		hasManagedCodexRuntime: () => false,
 		stopManagedCodexSession: async (id: string) => {
 			ran.push(`stop:${id}`);
 			if (over.stopFails) throw new Error("runtime gone");
@@ -138,7 +139,12 @@ describe("an action for an excluded session is not executed", () => {
 			await h.handle(
 				action({
 					actionType: "prompt",
-					metadata: { prompt: "do the secret thing", cwd: work, managedState },
+					metadata: {
+						agentType: "claude_code",
+						prompt: "do the secret thing",
+						cwd: work,
+						managedState,
+					},
 				}),
 			);
 			expect(h.ran, managedState).toEqual([]);
@@ -171,7 +177,11 @@ describe("an action for an excluded session is not executed", () => {
 		writeRules(["relative/path"]);
 		await h.handle(action({ actionType: "stop" }));
 		await h.handle(
-			action({ id: "act-2", actionType: "prompt", metadata: { prompt: "p", cwd: open } }),
+			action({
+				id: "act-2",
+				actionType: "prompt",
+				metadata: { agentType: "claude_code", prompt: "p", cwd: open },
+			}),
 		);
 		expect(h.ran).toEqual([]);
 		expect(h.calls).toEqual([]);
@@ -186,7 +196,7 @@ describe("an action for an excluded session is not executed", () => {
 		await h.handle(
 			action({
 				actionType: "prompt",
-				metadata: { prompt: "p", cwd: work, managedState: "headless" },
+				metadata: { agentType: "claude_code", prompt: "p", cwd: work, managedState: "headless" },
 			}),
 		);
 		expect(h.ran).toEqual(["prompt-headless"]);
@@ -209,7 +219,12 @@ describe("the supervisor's own knowledge of a session wins over the server's", (
 		await h.handle(
 			action({
 				actionType: "prompt",
-				metadata: { prompt: SECRET_PROMPT, cwd: other, managedState: "interactive_terminal" },
+				metadata: {
+					agentType: "claude_code",
+					prompt: SECRET_PROMPT,
+					cwd: other,
+					managedState: "interactive_terminal",
+				},
 			}),
 		);
 		expect(h.ran).toEqual([]);
@@ -225,7 +240,12 @@ describe("the supervisor's own knowledge of a session wins over the server's", (
 		await h.handle(
 			action({
 				actionType: "prompt",
-				metadata: { prompt: SECRET_PROMPT, cwd: open, managedState: "headless" },
+				metadata: {
+					agentType: "claude_code",
+					prompt: SECRET_PROMPT,
+					cwd: open,
+					managedState: "headless",
+				},
 			}),
 		);
 		expect(h.ran).toEqual([]);
@@ -240,7 +260,10 @@ describe("the supervisor's own knowledge of a session wins over the server's", (
 		h.gate.noteCwd("sess-1", open);
 		writeRules([work]);
 		await h.handle(
-			action({ actionType: "prompt", metadata: { prompt: SECRET_PROMPT, cwd: work } }),
+			action({
+				actionType: "prompt",
+				metadata: { agentType: "claude_code", prompt: SECRET_PROMPT, cwd: work },
+			}),
 		);
 		expect(h.ran).toEqual([]);
 		expect(h.calls).toEqual([{ path: statusPath(), body: GENERIC }]);
@@ -253,7 +276,12 @@ describe("the supervisor's own knowledge of a session wins over the server's", (
 			action({
 				actionType: "prompt",
 				sessionId: "adopted-1",
-				metadata: { prompt: SECRET_PROMPT, cwd: open, managedState: "interactive_terminal" },
+				metadata: {
+					agentType: "claude_code",
+					prompt: SECRET_PROMPT,
+					cwd: open,
+					managedState: "interactive_terminal",
+				},
 			}),
 		);
 		await h.handle(action({ id: "act-2", actionType: "stop", sessionId: "adopted-1" }));
@@ -270,7 +298,12 @@ describe("the supervisor's own knowledge of a session wins over the server's", (
 			action({
 				actionType: "prompt",
 				sessionId: "adopted-1",
-				metadata: { prompt: "hello", cwd: open, managedState: "interactive_terminal" },
+				metadata: {
+					agentType: "claude_code",
+					prompt: "hello",
+					cwd: open,
+					managedState: "interactive_terminal",
+				},
 			}),
 		);
 		await h.handle(action({ id: "act-2", actionType: "stop", sessionId: "adopted-1" }));
@@ -475,7 +508,12 @@ describe("an action that is allowed runs as before", () => {
 		await h.handle(
 			action({
 				actionType: "prompt",
-				metadata: { prompt: "hello", cwd: open, managedState: "headless" },
+				metadata: {
+					agentType: "claude_code",
+					prompt: "hello",
+					cwd: open,
+					managedState: "headless",
+				},
 			}),
 		);
 		await new Promise((r) => setTimeout(r, 20));
@@ -499,7 +537,9 @@ describe("an action that is allowed runs as before", () => {
 
 	test("a prompt without a prompt or a directory, and an unknown action type, fail with their own messages", async () => {
 		const h = harness();
-		await h.handle(action({ actionType: "prompt", metadata: { prompt: "", cwd: "" } }));
+		await h.handle(
+			action({ actionType: "prompt", metadata: { agentType: "claude_code", prompt: "", cwd: "" } }),
+		);
 		await h.handle(action({ id: "act-2", actionType: "fork" }));
 		expect(h.calls).toEqual([
 			{

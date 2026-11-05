@@ -8,6 +8,7 @@ import type {
 	SemanticStatusUpdate,
 	SessionEvent,
 } from "../../shared/types.js";
+import { config } from "../config.js";
 import { getDb } from "../db/client.js";
 import { events, managedDeliveryReceipts, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
@@ -20,6 +21,7 @@ import {
 } from "../routes/ingest-counters.js";
 import { requestWsRevalidation } from "../ws/revalidation.js";
 import { evaluateAlertRules } from "./ai/alert-rule-evaluator.js";
+import { TURN_END_EVENT_TYPES, TURN_START_EVENT_TYPES } from "./ai/turn-identity.js";
 import {
 	type ForeignKeyVerdict,
 	commitForeignKeyVerdict,
@@ -318,6 +320,12 @@ export interface ManagedInsertDeps {
 		receiptKey: string,
 		createdAt: string,
 	) => Promise<boolean>;
+	/**
+	 * Runs on the same `tx` after the rows are written, before the commit: whatever else must
+	 * change with the batch (a managed turn's working state). A throw rolls back the rows and the
+	 * receipt together, so the supervisor's retry applies everything. Never reached on a replay.
+	 */
+	afterRows?: (tx: DbHandle) => Promise<void>;
 }
 
 /** Writes the receipt; false when the same delivery already has one (a replay). */
@@ -334,6 +342,19 @@ async function insertDeliveryReceipt(
 		.returning({ id: managedDeliveryReceipts.id });
 	return written.length > 0;
 }
+
+/**
+ * What a managed delivery's content window never drops: turn starts and ends (a prompt sent twice,
+ * a turn that ends the same way twice are two occurrences, and a fixed-template prompt like
+ * "continue" repeats by design) and Codex's agent message (a repeated "Should I continue?" must
+ * still be the newest assistant text the human gate reads). A retry is stopped by the receipt, not
+ * by this window.
+ */
+const MANAGED_KEEP_EVENT_TYPES: ReadonlySet<string> = new Set([
+	...TURN_START_EVENT_TYPES,
+	...TURN_END_EVENT_TYPES,
+	"ManagedAgentMessage",
+]);
 
 const DEFAULT_MANAGED_INSERT_DEPS: ManagedInsertDeps = {
 	persist: persistEvents,
@@ -367,12 +388,14 @@ export async function insertManagedEvents(
 			return { events: [], replay: true };
 		}
 		const plan = planEventInsert({
-			policy: { kind: "content_window" },
+			policy: { kind: "content_window", keepEventTypes: MANAGED_KEEP_EVENT_TYPES },
 			recent: await loadRecentRows(sessionId, tx),
 			incoming: normalizedEvents,
 			nowIso: now.toISOString(),
 		});
-		return { events: await deps.persist(sessionId, plan, tx), replay: false };
+		const stored = await deps.persist(sessionId, plan, tx);
+		await deps.afterRows?.(tx);
+		return { events: stored, replay: false };
 	});
 }
 
@@ -449,6 +472,13 @@ const BOUNDARY_EVENT_TYPES = new Set([
 // See the plan's Decision 21 for the full rationale and the exact
 // boundary semantics (29.999s latched, 30.000s/30.001s not).
 const TERMINAL_LATCH_WINDOW_MS = 30_000;
+
+// Test seam (AGEN-115): runs after an event that changes metadata has read its snapshot and before its
+// update, so a test can land a resume in that window.
+let sessionEndSnapshotHook: (() => Promise<void>) | null = null;
+export function _setSessionEndSnapshotHookForTest(hook: (() => Promise<void>) | null): void {
+	sessionEndSnapshotHook = hook;
+}
 const CLOSED_TURN_ID_LIMIT = 20;
 
 interface EndedByEventState {
@@ -1368,7 +1398,47 @@ export async function processHookEvent(
 		}
 	}
 
-	await getDb().update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
+	let sessionEndFenced = false;
+	if (metadataUpdate) {
+		// An event that changes metadata (SessionEnd's endedByEvent, a turn-scoped Stop/Interrupt's closed
+		// turn ids) merges against the row as it is NOW, in a late read-modify-write (FOR UPDATE on
+		// Postgres), applying only the keys it changes. Writing back the snapshot read at the top of this
+		// call would erase what a resume that settled in between wrote (managedResumeAt, a trimmed
+		// permission wait) and bring back endedByEvent. Events with no metadata change keep their single
+		// statement.
+		await sessionEndSnapshotHook?.();
+		sessionEndFenced = await withTransaction(async (tx) => {
+			const read = tx
+				.select({ metadata: sessions.metadata })
+				.from(sessions)
+				.where(eq(sessions.sessionId, sessionId))
+				.limit(1);
+			const [fresh] = await (config.dialect === "postgres" ? read.for("update") : read);
+			const freshMetadata = (fresh?.metadata ?? {}) as Record<string, unknown>;
+			// A resumed session is not ended by a hook (D14): the real end of a taken-over session comes from
+			// the host's reports. Stored, with no lifecycle effect and no latch.
+			if (eventType === "SessionEnd" && freshMetadata.managedResumeAt) {
+				const {
+					status: _s,
+					endedAt: _e,
+					isWorking: _w,
+					currentTurnStartedAt: _t,
+					metadata: _m,
+					...kept
+				} = updates;
+				await tx.update(sessions).set(kept).where(eq(sessions.sessionId, sessionId));
+				return true;
+			}
+			const merged = computeD21MetadataUpdate(freshMetadata, payload, now);
+			await tx
+				.update(sessions)
+				.set(merged ? { ...updates, metadata: merged } : updates)
+				.where(eq(sessions.sessionId, sessionId));
+			return false;
+		});
+	} else {
+		await getDb().update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
+	}
 	// The turn is committed; tell the phones. Fire and forget: dispatch yields before reading anything.
 	if (eventType === "Stop" && !d21.latched)
 		void dispatchEvent({ type: "turn_completed", sessionId }, pushOrigin);
@@ -1419,7 +1489,7 @@ export async function processHookEvent(
 
 	// Evaluate project alert rules for status_completed on SessionEnd.
 	// Best-effort: rule evaluation failure must not block event ingestion.
-	if (eventType === "SessionEnd") {
+	if (eventType === "SessionEnd" && !sessionEndFenced) {
 		void dispatchEvent({ type: "session_completed", sessionId }, pushOrigin);
 		void evaluateAlertRules(sessionId, "completed").catch((err) => {
 			console.error("[alert-rule] evaluateAlertRules(completed) threw:", err);

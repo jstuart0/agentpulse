@@ -5,15 +5,33 @@ import type {
 	ManagedSessionStateInput,
 	Session,
 } from "../../shared/types.js";
+import type { ReportOutcome } from "../services/report-gate.js";
 import type { RpcClient } from "./codex-rpc.js";
+
+/** A follow-up prompt's turn, from the moment it is reported until its one end event is written. */
+export type FollowUp = { turnId: string | null };
 
 export type ManagedCodexRuntime = {
 	sessionId: string;
+	/** The launch the session was started by; state reports from this runtime name it. */
+	launchRequestId: string;
 	threadId: string;
 	client: RpcClient | null;
 	currentThreadTitle: string | null;
 	protocolVersion: string | null;
 	activeTurnId: string | null;
+	/** True from construction until the launch's `turn/start` settles, and around a follow-up's `turn/start`. */
+	turnStarting: boolean;
+	/** A `turn/start` got no usable answer: the turn may exist, so nothing else is sent until Codex says so or the session stops. */
+	turnUncertain: boolean;
+	/** Moves each time a follow-up begins; an idle report from an earlier turn checks it hasn't. */
+	turnGeneration: number;
+	/** Set when a stop begins, before its interrupt; nothing new is sent after it. */
+	stopping: boolean;
+	/** The running follow-up, if any. Whoever takes it (reads and nulls it) writes its one end event. */
+	followUp: FollowUp | null;
+	/** The last turn Codex told us ended, so a late `turn/start` reply for it doesn't mark it active. */
+	lastCompletedTurnId: string | null;
 	intentionalClose: boolean;
 	syncTitle: (title: string) => Promise<void>;
 	/** Declines what is held, closes stdin, and escalates to the child's process group. Idempotent. */
@@ -27,8 +45,19 @@ export type LaunchCallbacks = {
 		/** What became of the report; "queued" means the server hasn't seen it yet and `session` is empty. */
 		outcome?: "sent" | "queued" | "excluded" | "blocked";
 	}>;
-	reportEvents: (events: ManagedSessionEventInput[]) => Promise<unknown>;
+	/** Resolves to the report gate's outcome ("sent", "queued", "excluded", "blocked") when it came from the gate. */
+	reportEvents: (events: ManagedSessionEventInput[]) => Promise<ReportOutcome>;
+	/** Records the thread this supervisor started for a launch, before the launch's first state report (recovery's proof). Optional; a failure never fails the launch. */
+	recordThread?: (launchRequestId: string, threadId: string) => void;
 };
+
+/** The report gate would not let the prompt's event out (an exclude rule covers the session), so nothing was sent. */
+export class CodexPromptWithheld extends Error {
+	constructor() {
+		super("The prompt was withheld by the report gate.");
+		this.name = "CodexPromptWithheld";
+	}
+}
 
 export function buildPrompt(launch: LaunchRequest) {
 	const sections = [];
@@ -56,4 +85,29 @@ export function extractText(value: unknown): string {
 	if (record.item) return extractText(record.item);
 	if (record.review) return typeof record.review === "string" ? record.review : "";
 	return "";
+}
+
+/** Why a resume did not happen. The kind picks the fixed words the server's action carries; Codex's own text goes only to the host log. */
+export type CodexResumeKind =
+	| "missing"
+	| "running"
+	| "cwd_mismatch"
+	| "privileges"
+	| "project_config"
+	| "unsupported_codex"
+	| "reports_pending"
+	| "reports_held"
+	| "thread_unverified"
+	| "timeout"
+	| "rejected";
+
+export class CodexResumeError extends Error {
+	constructor(
+		readonly kind: CodexResumeKind,
+		/** For the host's own log only. */
+		readonly detail?: string,
+	) {
+		super(kind);
+		this.name = "CodexResumeError";
+	}
 }

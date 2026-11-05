@@ -8,6 +8,7 @@ import type {
 	ManagedState,
 	Session,
 } from "../../shared/types.js";
+import type { ReportOutcome } from "../services/report-gate.js";
 
 export type LaunchMetadata = {
 	mode: "headless" | "interactive_terminal";
@@ -31,12 +32,14 @@ export type LaunchCallbacks = {
 		/** What became of the report; "queued" means the server hasn't seen it yet and `session` is empty. */
 		outcome?: "sent" | "queued" | "excluded" | "blocked";
 	}>;
-	reportEvents: (events: ManagedSessionEventInput[]) => Promise<unknown>;
+	reportEvents: (events: ManagedSessionEventInput[]) => Promise<ReportOutcome>;
 	/**
 	 * An interactive launch tells the bridge-spool drain which directory its terminal bridge will write
 	 * reports into, once the bridge's config is on disk. Optional: only the dispatcher supplies it.
 	 */
 	admitBridgeSpool?: (sessionId: string) => void;
+	/** Codex only: records the thread a launch started, for recovery's proof. */
+	recordThread?: (launchRequestId: string, threadId: string) => void;
 };
 
 export type ClaudePromptAction = {

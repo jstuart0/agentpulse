@@ -541,6 +541,11 @@ export async function processRolloutFile(
 	homeDir: string = homedir(),
 	rules?: ObserverRules,
 	hostName?: string | null,
+	/**
+	 * A session being resumed by this host: its lines advance the offset and post nothing (AGEN-115, D16).
+	 * Throwing fails open, because a duplicate beats a loss.
+	 */
+	isHeld?: (sessionId: string) => boolean,
 ): Promise<FileState> {
 	const stat = statSync(filePath);
 	const startOffset = stateEntry?.offset ?? 0;
@@ -570,6 +575,7 @@ export async function processRolloutFile(
 			homeDir,
 			rules,
 			hostName,
+			isHeld,
 		);
 	}
 
@@ -591,6 +597,14 @@ export async function processRolloutFile(
 	// Decision 19: checked once per call (not per line) — negative results
 	// are re-evaluated on the next call; a positive result caches.
 	let covered = sessionId ? isNativeCovered(sessionId, homeDir) : false;
+	const heldNow = (id: string): boolean => {
+		try {
+			return isHeld?.(id) ?? false;
+		} catch {
+			return false;
+		}
+	};
+	let held = sessionId ? heldNow(sessionId) : false;
 	/** Posts only while posting is allowed; while the rules are invalid the line is read and its offset advances, nothing more. */
 	const post = async (payload: HookPayload, deliveryId: string) => {
 		if (posting === "post") {
@@ -629,6 +643,7 @@ export async function processRolloutFile(
 			const p = entry.payload ?? {};
 			sessionId = typeof p.id === "string" ? p.id : sessionId;
 			covered = sessionId ? isNativeCovered(sessionId, homeDir) : covered;
+			held = sessionId ? heldNow(sessionId) : held;
 			const startedIn = typeof p.cwd === "string" ? p.cwd : undefined;
 			// Every session_meta is judged by its own directory: a file can hold more than one session.
 			cwd = startedIn ?? null;
@@ -636,7 +651,7 @@ export async function processRolloutFile(
 			if (posting === "excluded") {
 				return { offset: newOffset, sessionId, excluded: true };
 			}
-			if (covered) continue;
+			if (covered || held) continue;
 			const model = typeof p.model === "string" ? p.model : undefined;
 			if (sessionId) {
 				await post(
@@ -647,7 +662,7 @@ export async function processRolloutFile(
 			continue;
 		}
 
-		if (!sessionId || covered) continue;
+		if (!sessionId || covered || held) continue;
 
 		if (entry.type === "response_item") {
 			const p = entry.payload ?? {};
@@ -755,6 +770,8 @@ export interface ScanContext {
 	now?: () => number;
 	/** This machine's name, reported on every hook posted (display only). */
 	hostName?: string | null;
+	/** Sessions being resumed by this host, which are not posted for. */
+	isHeld?: (sessionId: string) => boolean;
 	/** Called only when an entry was added or changed. */
 	save: (state: ObserverState) => void;
 }
@@ -790,6 +807,7 @@ export async function scanRolloutFiles(files: string[], ctx: ScanContext): Promi
 				ctx.homeDir,
 				rulesView,
 				ctx.hostName,
+				ctx.isHeld,
 			);
 			ctx.state.files[file] = next;
 			if (!previous || JSON.stringify(previous) !== JSON.stringify(next)) ctx.save(ctx.state);
@@ -809,6 +827,8 @@ export async function startCodexObserver(options: {
 	rules?: ObserverRules;
 	/** This machine's name, reported on every hook posted so the dashboard can show where a Codex session ran. */
 	hostName?: string | null;
+	/** Sessions being resumed by this host, which are not posted for. */
+	isHeld?: (sessionId: string) => boolean;
 }) {
 	if (!existsSync(CODEX_SESSIONS_ROOT)) {
 		console.log("[codex-observer] no ~/.codex/sessions directory; observer idle");
@@ -834,6 +854,7 @@ export async function startCodexObserver(options: {
 			apiKey: options.apiKey,
 			rules: options.rules,
 			hostName: options.hostName,
+			isHeld: options.isHeld,
 			save: (saved) => saveState(saved),
 		});
 

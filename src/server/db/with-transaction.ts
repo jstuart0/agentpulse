@@ -31,10 +31,16 @@
  */
 import { config } from "../config.js";
 import { assertNotInsideAdminLock, runInSqliteTransactionSlot } from "./admin-lock.js";
+import { withAfterCommit } from "./after-commit.js";
 import { getDb, getSqlite } from "./client.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: tx type unified in Phase 2a
 export async function withTransaction<T>(fn: (tx: any) => T | Promise<T>): Promise<T> {
+	return withAfterCommit(() => runTransaction(fn));
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: tx type unified in Phase 2a
+async function runTransaction<T>(fn: (tx: any) => T | Promise<T>): Promise<T> {
 	assertNotInsideAdminLock();
 	const db = getDb();
 

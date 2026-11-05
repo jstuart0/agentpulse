@@ -79,3 +79,25 @@ async function keyBelongsTo(tx: any, keyId: string, userId: string): Promise<boo
 		.limit(1);
 	return key?.ownerUserId === userId;
 }
+
+/**
+ * Gives a session nobody owns its owner, when a takeover of it has succeeded. Conditional on the owner still
+ * being empty, so an admin's change made after the takeover was requested is never overwritten, and it runs
+ * on the caller's transaction (the settle of the takeover's action). The user must exist and be active:
+ * `assertOwnerAssignable` throws otherwise, and the caller leaves the session unowned. Returns whether it
+ * assigned. The recorded ingest key is left alone, so the relay's key keeps reporting.
+ */
+export async function assignTakeoverOwner(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	sessionId: string,
+	ownerUserId: string,
+): Promise<boolean> {
+	await assertOwnerAssignable(tx, ownerUserId);
+	const assigned = await tx
+		.update(sessions)
+		.set({ ownerUserId })
+		.where(and(eq(sessions.sessionId, sessionId), isNull(sessions.ownerUserId)))
+		.returning({ id: sessions.id });
+	return assigned.length > 0;
+}
