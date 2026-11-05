@@ -42,6 +42,8 @@ export function isStaleItemError(err: unknown): boolean {
 const BLOCKED_REASONS: Record<string, string> = {
 	supervisor_offline: "the agent's machine is offline",
 	host_gone: "the agent's machine was removed from AgentPulse",
+	host_upgrade_required:
+		"the agent's machine is running an older supervisor that can't send prompts to Codex",
 	launch_mismatch: "AgentPulse can't match this session to the launch that started it",
 	launch_not_found: "AgentPulse can't find the launch that started this session",
 	filter: "the safety filter blocked the prompt",

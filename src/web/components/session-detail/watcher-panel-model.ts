@@ -32,6 +32,8 @@ export function promptDeliveryNotice(
 			return "The machine that ran this session was removed from AgentPulse, so it can't be typed into. Continue will suggest prompts for you to copy.";
 		case "managed_state":
 			return "This session isn't in a state that can take a prompt right now. Continue will suggest prompts for you to copy.";
+		case "host_upgrade_required":
+			return "This session's host is running an older supervisor that can't send prompts to Codex. Update the supervisor on that host.";
 		case "control_busy":
 			return "AgentPulse is already sending something to this session. Try again in a moment.";
 	}

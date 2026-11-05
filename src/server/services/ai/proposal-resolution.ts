@@ -504,6 +504,8 @@ function refusalForEnqueue(reason: string): Refusal {
 			return refusal(409, "prompt_not_deliverable", "supervisor_offline");
 		case "host_gone":
 			return refusal(409, "prompt_not_deliverable", "host_gone");
+		case "host_upgrade_required":
+			return refusal(409, "prompt_not_deliverable", "host_upgrade_required");
 		default:
 			return refusal(409, "prompt_not_deliverable", "control_busy");
 	}

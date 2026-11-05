@@ -972,6 +972,12 @@ describe("drift guards", () => {
 			],
 			["services/control-actions.ts", "export async function takeControlLock(", "\n}\n"],
 			[
+				"services/control-actions.ts",
+				"async function supervisorTakesCodexPrompts(",
+				"/**\n * Whether the host that owns",
+			],
+			["services/control-actions.ts", "export async function hostTakesCodexPrompts(", "\n}\n"],
+			[
 				"services/ai/watcher-config-service.ts",
 				"export async function incrementContinuations(",
 				"export async function deleteWatcherConfig(",

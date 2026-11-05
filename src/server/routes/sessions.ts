@@ -51,6 +51,7 @@ import {
 import {
 	HostGoneError,
 	HostOfflineError,
+	HostUpgradeRequiredError,
 	listControlActionsForSession,
 	queuePromptAction,
 	queueStopAction,
@@ -900,9 +901,13 @@ sessionsRouter.get("/sessions/:sessionId/control-actions", async (c) => {
 	return c.json({ controlActions: actions });
 });
 
-/** A control request refused because the session's host isn't there: 409 with a code a client can branch on. */
+/** A control request refused because the session's host can't take it: 409 with a code a client can branch on. */
 function hostRefusalResponse(c: Context, error: unknown) {
-	if (error instanceof HostOfflineError || error instanceof HostGoneError) {
+	if (
+		error instanceof HostOfflineError ||
+		error instanceof HostGoneError ||
+		error instanceof HostUpgradeRequiredError
+	) {
 		return c.json({ error: error.code, message: error.message }, 409);
 	}
 	return null;

@@ -14,7 +14,7 @@ import { eq } from "drizzle-orm";
 import type { ManagedState } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
 import { managedSessions } from "../../db/schema/index.js";
-import { expireStaleControlLock } from "../control-actions.js";
+import { expireStaleControlLock, promptNeedsHostUpgrade } from "../control-actions.js";
 import { getSessionOwnerConnections } from "../session-ownership.js";
 import { CONTINUABLE_MANAGED_STATES } from "./continuability.js";
 
@@ -23,6 +23,7 @@ export type PromptNotDeliverableReason =
 	| "supervisor_offline"
 	| "host_gone"
 	| "managed_state"
+	| "host_upgrade_required"
 	| "control_busy";
 
 export type PromptDeliverability =
@@ -59,6 +60,9 @@ export async function promptDeliverability(sessionId: string): Promise<PromptDel
 	if (!managed.supervisorConnected) return { deliverable: false, reason: "supervisor_offline" };
 	if (!CONTINUABLE_MANAGED_STATES.has(managed.managedSession.managedState)) {
 		return { deliverable: false, reason: "managed_state" };
+	}
+	if (await promptNeedsHostUpgrade(getDb(), sessionId)) {
+		return { deliverable: false, reason: "host_upgrade_required" };
 	}
 
 	const [row] = await getDb()

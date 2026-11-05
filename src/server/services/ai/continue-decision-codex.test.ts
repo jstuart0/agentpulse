@@ -113,6 +113,19 @@ async function autoWorld(types: { session: string; launch: string }) {
 		.update(launchRequests)
 		.set({ agentType: types.launch })
 		.where(eq(launchRequests.launchCorrelationId, sessionId));
+	// The host takes Codex follow-ups (a host that doesn't is control-actions-codex-host-gate.test.ts's case).
+	await getDb()
+		.update(supervisors)
+		.set({
+			capabilities: {
+				version: 1,
+				agentTypes: ["claude_code", "codex_cli"],
+				launchModes: ["headless", "managed_codex"],
+				os: "linux",
+				terminalSupport: [],
+				features: ["codex_follow_up_prompts"],
+			},
+		});
 	return { sessionId, ...(await seedTurn(sessionId)) };
 }
 

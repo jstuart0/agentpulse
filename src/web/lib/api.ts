@@ -1532,6 +1532,7 @@ export type PromptNotDeliverableReason =
 	| "supervisor_offline"
 	| "host_gone"
 	| "managed_state"
+	| "host_upgrade_required"
 	| "control_busy";
 
 export type PromptDelivery =

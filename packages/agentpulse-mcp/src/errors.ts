@@ -115,6 +115,9 @@ const ERROR_TABLE: ReadonlyArray<{
 			if (reason === "control_busy") {
 				return "AgentPulse is busy: another action is already running on that session, so the prompt was NOT sent and the request is still open. Retryable: wait a few seconds and call decide_hitl again.";
 			}
+			if (reason === "host_upgrade_required") {
+				return "AgentPulse can't type into that session: its host is running an older supervisor that can't send prompts to Codex, so the prompt was NOT sent and the request is still open. Update the supervisor on that host, then call decide_hitl again, or decline it.";
+			}
 			if (reason === "host_gone") {
 				return "AgentPulse can't type into that session: the host that ran it was removed, so the prompt was NOT sent and the request is still open. Decline it, or answer in the session.";
 			}
@@ -221,6 +224,13 @@ const ERROR_TABLE: ReadonlyArray<{
 		error: "host_gone",
 		message: (body) =>
 			bodyMessage(body) ?? "The host that ran that session was removed, so nothing was sent.",
+	},
+	{
+		status: 409,
+		error: "host_upgrade_required",
+		message: (body) =>
+			bodyMessage(body) ??
+			"This session's host is running an older supervisor that can't send prompts to Codex. Update the supervisor on that host.",
 	},
 	// Ownership and role refusals (team mode). The bare codes are opaque to a
 	// model or a script; each says what is needed instead.

@@ -12,7 +12,7 @@ import { ApiError } from "../../lib/api.js";
 import { hasPendingCodexApproval } from "../../lib/codex-approval-wait.js";
 import { parseDate } from "../../lib/utils.js";
 
-export type HostRefusalCode = "host_offline" | "host_gone";
+export type HostRefusalCode = "host_offline" | "host_gone" | "host_upgrade_required";
 
 const UNNAMED_HOST = "This session's host";
 
@@ -21,6 +21,8 @@ const REFUSALS: Record<HostRefusalCode, (host: string) => string> = {
 		`${host} is offline, so this session can't be controlled right now. Nothing was sent.`,
 	host_gone: () =>
 		"This session's host was removed from AgentPulse, so it can't be controlled. You can archive it.",
+	host_upgrade_required: () =>
+		"This session's host is running an older supervisor that can't send prompts to Codex. Update the supervisor on that host.",
 };
 
 function hostNameOf(session: Pick<Session, "managedSession">): string {

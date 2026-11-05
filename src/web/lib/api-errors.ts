@@ -37,6 +37,19 @@ export function registerApiErrorMessages(messages: Record<string, string>): void
 	Object.assign(registered, messages);
 }
 
+/**
+ * Sentences for one reason of a code that has several (`prompt_not_deliverable` is a dozen refusals), registered
+ * beside the code-keyed ones. A reason with no entry falls through to the code's own sentence.
+ */
+const registeredByReason: Record<string, Record<string, string>> = {};
+export function registerApiErrorReasonMessages(
+	messages: Record<string, Record<string, string>>,
+): void {
+	for (const [code, byReason] of Object.entries(messages)) {
+		registeredByReason[code] = { ...registeredByReason[code], ...byReason };
+	}
+}
+
 const RATE_LIMITED = "Too many requests. Wait a moment and try again.";
 const PASSWORD_REFUSED = "password_complexity_failed";
 
@@ -58,6 +71,12 @@ export function describeApiError(err: unknown, fallback: string): string {
 	if (err.code === PASSWORD_REFUSED) {
 		const reason = (err.body as { reason?: unknown } | null)?.reason;
 		if (typeof reason === "string" && reason) return reason;
+	}
+	if (err.code && Object.hasOwn(registeredByReason, err.code)) {
+		const reason = (err.body as { reason?: unknown } | null)?.reason;
+		const byReason = registeredByReason[err.code] as Record<string, string>;
+		if (typeof reason === "string" && Object.hasOwn(byReason, reason))
+			return byReason[reason] as string;
 	}
 	if (err.code && Object.hasOwn(MESSAGES, err.code)) return MESSAGES[err.code];
 	if (err.code && Object.hasOwn(registered, err.code)) return registered[err.code];

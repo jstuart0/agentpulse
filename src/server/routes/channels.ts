@@ -377,6 +377,9 @@ function hitlOutcomeReply(
 	if (result.ok) return action === "approve" ? "Sent to the session." : "Declined ✗";
 	switch (result.code) {
 		case "prompt_not_deliverable":
+			if (result.reason === "host_upgrade_required") {
+				return "This session's host needs a supervisor update before it can take prompts, so nothing was sent.";
+			}
 			return result.reason === "supervisor_offline" || result.reason === "host_gone"
 				? "This session's host isn't connected, so nothing was sent."
 				: "This session can't receive prompts; copy it from the dashboard.";

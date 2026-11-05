@@ -45,7 +45,7 @@ const {
 	queuePromptAction,
 } = await import("./control-actions.js");
 const { promptDeliverability } = await import("./ai/prompt-deliverability.js");
-const { AI_ACTOR, dispatchPrompt, resolveProposal } = await import("./ai/proposal-resolution.js");
+const { dispatchPrompt, resolveProposal } = await import("./ai/proposal-resolution.js");
 const feature = await import("./ai/feature.js");
 const { withAdminLock } = await import("../db/admin-lock.js");
 const { deleteAllSupervisors } = await import("./__test_supervisors.js");
@@ -124,7 +124,10 @@ async function setCaps(supervisorId: string, caps: unknown) {
 }
 async function setAgent(sessionId: string, agent: string, which: "both" | "launch" = "both") {
 	if (which === "both") {
-		await getDb().update(sessions).set({ agentType: agent }).where(eq(sessions.sessionId, sessionId));
+		await getDb()
+			.update(sessions)
+			.set({ agentType: agent })
+			.where(eq(sessions.sessionId, sessionId));
 	}
 	await getDb()
 		.update(launchRequests)
@@ -175,7 +178,10 @@ describe("POST /sessions/:id/prompt", () => {
 
 	test("two concurrent prompts to the old host are both refused and leave no lock row", async () => {
 		const w = await world("codex_cli", WITHOUT_FEATURE);
-		const [a, b] = await Promise.all([postPrompt(w.sessionId, "one"), postPrompt(w.sessionId, "two")]);
+		const [a, b] = await Promise.all([
+			postPrompt(w.sessionId, "one"),
+			postPrompt(w.sessionId, "two"),
+		]);
 		expect([a.status, b.status]).toEqual([409, 409]);
 		expect(await promptRows(w.sessionId)).toEqual([]);
 		expect(await lockOf(w.sessionId)).toEqual({ id: null, expires: null });
@@ -250,10 +256,14 @@ describe("statements", () => {
 				await queuePromptAction(sessionId, "measure", ACTOR);
 			});
 		await count(newClaude.sessionId); // warm
-		await getDb().update(managedSessions).set({ activeControlActionId: null, controlLockExpiresAt: null });
+		await getDb()
+			.update(managedSessions)
+			.set({ activeControlActionId: null, controlLockExpiresAt: null });
 		await getDb().delete(controlActions);
 		const onOld = await count(oldClaude.sessionId);
-		await getDb().update(managedSessions).set({ activeControlActionId: null, controlLockExpiresAt: null });
+		await getDb()
+			.update(managedSessions)
+			.set({ activeControlActionId: null, controlLockExpiresAt: null });
 		await getDb().delete(controlActions);
 		const onNew = await count(newClaude.sessionId);
 		const forCodex = await count(codex.sessionId);
@@ -400,7 +410,7 @@ async function enrollHost(name: string, features: string[]) {
 async function registerHost(
 	name: string,
 	features: string[],
-	auth: { enrollmentToken?: string; credential?: string },
+	auth: { enrollmentToken?: string; credential?: string; id?: string },
 ) {
 	const res = await app.request("/api/v1/supervisors/register", {
 		method: "POST",
@@ -414,6 +424,7 @@ async function registerHost(
 			arch: "x64",
 			version: "1.0.0",
 			...(auth.enrollmentToken ? { enrollmentToken: auth.enrollmentToken } : {}),
+			...(auth.id ? { id: auth.id } : {}),
 			capabilities: { ...WITHOUT_FEATURE, features },
 			trustedRoots: ["/tmp"],
 		}),
@@ -437,7 +448,8 @@ const oldFormMetadata = (agentType: string) => ({
 
 describe("claimNextControlAction", () => {
 	async function hostWorld(agent: "codex_cli" | "claude_code", features: string[]) {
-		const host = await enrollHost(`claim-${++counter}`, features);
+		const hostName = `claim-${++counter}`;
+		const host = { ...(await enrollHost(hostName, features)), hostName };
 		const sessionId = `cl-${counter}-${crypto.randomUUID().slice(0, 6)}`;
 		await getDb()
 			.insert(sessions)
@@ -498,9 +510,14 @@ describe("claimNextControlAction", () => {
 
 	test("an old-form Codex prompt on a host that re-registered without the feature is failed, not handed over, and the lock is freed", async () => {
 		const w = await hostWorld("codex_cli", [CODEX_FOLLOW_UP_PROMPTS]);
+		// The supervisor restarts as an older build; registration already fails what was waiting for it.
+		const again = await registerHost(w.host.hostName, [], {
+			credential: w.host.token,
+			id: w.host.id,
+		});
+		expect(again.supervisor.id).toBe(w.host.id);
+		// A prompt in the old server's form arrives after that (an old server still running, or a late write).
 		const id = await queueOldForm(w.sessionId, w.launchId, oldFormMetadata("codex_cli"));
-		// The supervisor restarts as an older build.
-		await registerHost(`claim-reregistered`, [], { credential: w.host.token });
 
 		expect(await claimNextControlAction(w.host.id)).toBeNull();
 		const row = await actionById(id);
@@ -525,6 +542,8 @@ describe("claimNextControlAction", () => {
 				requestedBy: "user",
 				status: "queued",
 				metadata: {},
+				// The same ISO form queueOldForm writes, so the two sort by time and not by their separators.
+				createdAt: new Date(Date.now() + 1_000).toISOString(),
 			});
 		// The stop belongs to another host; give this host its own, later than the Codex prompt.
 		await getDb()
@@ -575,7 +594,11 @@ describe("claimNextControlAction", () => {
 	test("a Claude prompt on the old host is claimed, with no capability read", async () => {
 		const oldHost = await hostWorld("claude_code", []);
 		const newHost = await hostWorld("claude_code", [CODEX_FOLLOW_UP_PROMPTS]);
-		const oldId = await queueOldForm(oldHost.sessionId, oldHost.launchId, oldFormMetadata("claude_code"));
+		const oldId = await queueOldForm(
+			oldHost.sessionId,
+			oldHost.launchId,
+			oldFormMetadata("claude_code"),
+		);
 		await queueOldForm(newHost.sessionId, newHost.launchId, oldFormMetadata("claude_code"));
 		const measure = (hostId: string) =>
 			countDbCalls(async () => {
@@ -608,7 +631,9 @@ describe("claimNextControlAction", () => {
 		const ids: string[] = [];
 		for (let i = 0; i < 14; i += 1) {
 			const createdAt = new Date(Date.now() - 20_000 + i).toISOString();
-			ids.push(await queueOldForm(w.sessionId, w.launchId, oldFormMetadata("codex_cli"), createdAt));
+			ids.push(
+				await queueOldForm(w.sessionId, w.launchId, oldFormMetadata("codex_cli"), createdAt),
+			);
 		}
 		expect(await claimNextControlAction(w.host.id)).toBeNull();
 		const rows = await Promise.all(ids.map(actionById));
@@ -616,7 +641,9 @@ describe("claimNextControlAction", () => {
 		expect(failed).toBeGreaterThanOrEqual(10);
 		expect(failed).toBeLessThan(14);
 		expect(await claimNextControlAction(w.host.id)).toBeNull();
-		expect((await Promise.all(ids.map(actionById))).every((r) => r?.status === "failed")).toBe(true);
+		expect((await Promise.all(ids.map(actionById))).every((r) => r?.status === "failed")).toBe(
+			true,
+		);
 	});
 
 	test("a stop for a Codex session is never refused by the gate", async () => {

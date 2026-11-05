@@ -1,4 +1,5 @@
 import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
 import type {
 	ControlAction,
 	ControlActionStatus,
@@ -18,6 +19,7 @@ import {
 	managedSessions,
 	projects,
 	sessions,
+	supervisors,
 } from "../db/schema/index.js";
 import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
@@ -33,6 +35,7 @@ import {
 	resolveSessionOwner,
 	sessionOwnedBy,
 } from "./session-ownership.js";
+import { withCapabilityDefaults } from "./supervisor-capabilities.js";
 import { getSupervisor } from "./supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "./template-preview.js";
 import { parseDbTimestamp } from "./util/db-time.js";
@@ -325,6 +328,22 @@ export class HostGoneError extends Error {
 	}
 }
 
+/** The words every reader of this refusal shares: the 409 body, the AI path, the claim-time failure. */
+export const HOST_UPGRADE_REQUIRED_MESSAGE =
+	"This session's host is running an older supervisor that can't send prompts to Codex. Update the supervisor on that host.";
+
+/**
+ * The host's supervisor predates `codex_follow_up_prompts`, so it would send a Codex prompt down the
+ * Claude path. Nothing is queued: the host has to be upgraded first.
+ */
+export class HostUpgradeRequiredError extends Error {
+	readonly code = "host_upgrade_required";
+	constructor() {
+		super(HOST_UPGRADE_REQUIRED_MESSAGE);
+		this.name = "HostUpgradeRequiredError";
+	}
+}
+
 export type EnqueueRefusal =
 	| "not_managed"
 	| "session_missing"
@@ -332,7 +351,8 @@ export type EnqueueRefusal =
 	| "launch_mismatch"
 	| "control_busy"
 	| "host_offline"
-	| "host_gone";
+	| "host_gone"
+	| "host_upgrade_required";
 
 function refusalToError(reason: EnqueueRefusal): Error {
 	switch (reason) {
@@ -350,7 +370,42 @@ function refusalToError(reason: EnqueueRefusal): Error {
 			return new HostOfflineError();
 		case "host_gone":
 			return new HostGoneError();
+		case "host_upgrade_required":
+			return new HostUpgradeRequiredError();
 	}
+}
+
+/**
+ * Does this supervisor take a Codex follow-up prompt? Capabilities are the host's own report, so they're
+ * read through the same cleaner as everywhere else: a missing, malformed or misspelt list means no.
+ */
+async function supervisorTakesCodexPrompts(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	supervisorId: string,
+): Promise<boolean> {
+	const [row] = await db
+		.select({ capabilities: supervisors.capabilities })
+		.from(supervisors)
+		.where(eq(supervisors.id, supervisorId))
+		.limit(1);
+	if (!row) return false;
+	return (withCapabilityDefaults(row.capabilities).features ?? []).includes(
+		CODEX_FOLLOW_UP_PROMPTS,
+	);
+}
+
+/**
+ * Whether the host that owns the session takes Codex prompts. Read on the caller's transaction (a
+ * `getDb()` inside `withAdminLock` is forbidden); a session with no owner of record can't.
+ */
+export async function hostTakesCodexPrompts(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	sessionId: string,
+): Promise<boolean> {
+	const owner = await resolveSessionOwner(tx, sessionId);
+	return owner !== null && (await supervisorTakesCodexPrompts(tx, owner));
 }
 
 /**
@@ -368,6 +423,26 @@ async function hostRefusal(
 	const host = (await getSessionOwnerHostStates([sessionId], clock(), tx)).get(sessionId);
 	if (!host || host.state === "live") return null;
 	return host.state === "offline" ? "host_offline" : "host_gone";
+}
+
+/**
+ * Would a prompt to this managed session be refused because its host can't take Codex prompts? The
+ * advisory form of the enqueue-time check, for deliverability: false for a Claude launch (no host read).
+ */
+export async function promptNeedsHostUpgrade(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	sessionId: string,
+): Promise<boolean> {
+	const [managed] = await db
+		.select({ launchRequestId: managedSessions.launchRequestId })
+		.from(managedSessions)
+		.where(eq(managedSessions.sessionId, sessionId))
+		.limit(1);
+	if (!managed) return false;
+	const launch = await resolveManagedLaunch(db, sessionId, managed.launchRequestId);
+	if (launch?.agentType !== "codex_cli") return false;
+	return !(await hostTakesCodexPrompts(db, sessionId));
 }
 
 /**
@@ -521,12 +596,16 @@ export async function enqueuePromptInTx(
 	if (session.agentType !== launch.agentType) return { ok: false, reason: "launch_mismatch" };
 	const promptHostRefusal = await hostRefusal(tx, sessionId);
 	if (promptHostRefusal) return { ok: false, reason: promptHostRefusal };
+	const isCodex = launch.agentType === "codex_cli";
+	// Only a Codex launch asks the host anything: Claude prompts cost no extra statement.
+	if (isCodex && !(await hostTakesCodexPrompts(tx, sessionId))) {
+		return { ok: false, reason: "host_upgrade_required" };
+	}
 
 	const timestamp = nowIso();
 	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp))) {
 		return { ok: false, reason: "control_busy" };
 	}
-	const isCodex = launch.agentType === "codex_cli";
 	const [action] = await tx
 		.insert(controlActions)
 		.values({
@@ -794,14 +873,38 @@ function isExpiredAiPrompt(action: typeof controlActions.$inferSelect): boolean 
 	return createdMs !== null && Date.now() - createdMs > AI_PROMPT_CLAIM_TTL_MS;
 }
 
-/** Fail an unclaimed AI prompt that outlived its TTL, release its lock and close its audit row. */
-async function expireUnclaimedAiPrompt(action: typeof controlActions.$inferSelect) {
+const LAUNCH_MISMATCH_CLAIM_MESSAGE =
+	"This session's records don't match how it was launched, so nothing was sent.";
+
+/**
+ * Why a queued prompt must not be handed to this supervisor, or null. An action queued by an older
+ * server, or before the host re-registered without the feature, never passed the enqueue-time check, so
+ * the claim re-judges it: by the launch's agent type, else (no launch row) the action's own record.
+ */
+async function claimRefusalForPrompt(
+	action: typeof controlActions.$inferSelect,
+	launchAgentType: string | null,
+	supervisorId: string,
+): Promise<string | null> {
+	const recorded = (action.metadata as Record<string, unknown> | null)?.agentType;
+	const recordedType = typeof recorded === "string" ? recorded : null;
+	if (launchAgentType !== null && recordedType !== null && recordedType !== launchAgentType) {
+		return LAUNCH_MISMATCH_CLAIM_MESSAGE;
+	}
+	if ((launchAgentType ?? recordedType) !== "codex_cli") return null;
+	return (await supervisorTakesCodexPrompts(getDb(), supervisorId))
+		? null
+		: HOST_UPGRADE_REQUIRED_MESSAGE;
+}
+
+/** Fail an unclaimed prompt (an AI prompt past its TTL, or one this host must not take), release its lock and close its audit row. */
+async function failUnclaimedPrompt(action: typeof controlActions.$inferSelect, error: string) {
 	const timestamp = nowIso();
 	await getDb()
 		.update(controlActions)
 		.set({
 			status: "failed",
-			error: "Expired before a supervisor claimed it.",
+			error,
 			finishedAt: timestamp,
 			updatedAt: timestamp,
 		})
@@ -831,7 +934,7 @@ export async function claimNextControlAction(supervisorId: string) {
 		//    storing supervisorId in metadata.targetSupervisorId at queue time.
 		// Pick the oldest queued action across both channels.
 		const sessionRow = await getDb()
-			.select({ action: controlActions })
+			.select({ action: controlActions, launchAgentType: launchRequests.agentType })
 			.from(controlActions)
 			.innerJoin(managedSessions, eq(managedSessions.sessionId, controlActions.sessionId))
 			.leftJoin(launchRequests, ownerLaunchJoin)
@@ -853,6 +956,7 @@ export async function claimNextControlAction(supervisorId: string) {
 			.limit(1);
 
 		const sessionAction = sessionRow[0]?.action ?? null;
+		const launchAgentType = sessionRow[0]?.launchAgentType ?? null;
 		const sessionlessAction = sessionlessRow[0] ?? null;
 
 		let candidate = null;
@@ -865,8 +969,15 @@ export async function claimNextControlAction(supervisorId: string) {
 		if (!candidate) return null;
 
 		if (isExpiredAiPrompt(candidate)) {
-			await expireUnclaimedAiPrompt(candidate);
+			await failUnclaimedPrompt(candidate, "Expired before a supervisor claimed it.");
 			continue;
+		}
+		if (candidate.actionType === "prompt" && candidate.sessionId) {
+			const refusal = await claimRefusalForPrompt(candidate, launchAgentType, supervisorId);
+			if (refusal) {
+				await failUnclaimedPrompt(candidate, refusal);
+				continue;
+			}
 		}
 
 		const timestamp = nowIso();
