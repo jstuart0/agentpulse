@@ -93,3 +93,11 @@ export const ADMIN_ONLY_SETTINGS_NOTICE = "Only admins can change these settings
 export function viewerIsAdmin(viewer: OwnershipViewer): boolean {
 	return viewer.effectiveRole === "admin";
 }
+
+// Kept for the iOS repo's fixture generator (harness/gen-domain-cases.ts), which reads these names from this module.
+export {
+	NOTES_BLOCKED_REASON,
+	RENAME_BLOCKED_REASON,
+	sessionActionAccess,
+} from "./session-action-access.js";
+export type { SessionActionAccess } from "./session-action-access.js";

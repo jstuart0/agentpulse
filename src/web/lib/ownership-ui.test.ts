@@ -3,7 +3,9 @@ import { shouldShowFirstRun } from "../pages/dashboard-empty.js";
 import { viewKind } from "../pages/dashboard-scope.js";
 import { ownerChipVisible } from "./owner-chip.js";
 import { scopeQuery } from "./owner-scope.js";
+import * as ownershipModule from "./ownership-ui.js";
 import { ADMIN_ONLY_SETTINGS_NOTICE, ownershipUi, viewerIsAdmin } from "./ownership-ui.js";
+import * as sessionAccessModule from "./session-action-access.js";
 
 const SOLO_ROW = {
 	showScope: false,
@@ -136,5 +138,16 @@ describe("the summary shared note (AGEN-69)", () => {
 		expect(ownershipUi("solo", { effectiveRole: "admin" }).showSummarySharedNote).toBe(false);
 		expect(ownershipUi("team", { effectiveRole: "member" }).showSummarySharedNote).toBe(true);
 		expect(ownershipUi("team", { effectiveRole: "admin" }).showSummarySharedNote).toBe(true);
+	});
+});
+
+describe("the iOS fixture generator still finds the session-action names here", () => {
+	test("ownership-ui re-exports exactly what session-action-access exports", () => {
+		for (const name of Object.keys(sessionAccessModule)) {
+			expect((ownershipModule as Record<string, unknown>)[name], name).toBe(
+				(sessionAccessModule as Record<string, unknown>)[name],
+			);
+		}
+		expect(Object.keys(sessionAccessModule)).toContain("sessionActionAccess");
 	});
 });
