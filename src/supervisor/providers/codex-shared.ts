@@ -84,3 +84,28 @@ export function extractText(value: unknown): string {
 	if (record.review) return typeof record.review === "string" ? record.review : "";
 	return "";
 }
+
+/** Why a resume did not happen. The kind picks the fixed words the server's action carries; Codex's own text goes only to the host log. */
+export type CodexResumeKind =
+	| "missing"
+	| "running"
+	| "cwd_mismatch"
+	| "privileges"
+	| "project_config"
+	| "unsupported_codex"
+	| "reports_pending"
+	| "reports_held"
+	| "thread_unverified"
+	| "timeout"
+	| "rejected";
+
+export class CodexResumeError extends Error {
+	constructor(
+		readonly kind: CodexResumeKind,
+		/** For the host's own log only. */
+		readonly detail?: string,
+	) {
+		super(kind);
+		this.name = "CodexResumeError";
+	}
+}

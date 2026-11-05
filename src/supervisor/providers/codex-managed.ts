@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import {
 	CODEX_SANDBOX_RESPONSE_TYPE,
 	LaunchPrivilegeError,
@@ -16,6 +19,7 @@ import type {
 import { disposeRuntimesAndExit } from "../services/fatal-exit.js";
 import type { ReportOutcome } from "../services/report-gate.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
+import { canonicalSpawnCwd } from "../services/spawn-cwd.js";
 import { type ApprovalLaunch, sharedCodexApprovals } from "./codex-approvals.js";
 import {
 	type Verdict,
@@ -33,6 +37,7 @@ import {
 } from "./codex-rpc.js";
 import {
 	CodexPromptWithheld,
+	CodexResumeError,
 	type FollowUp,
 	type LaunchCallbacks,
 	type ManagedCodexRuntime,
@@ -1011,4 +1016,318 @@ export async function reconcileManagedCodexTitles(
 			});
 		}
 	}
+}
+
+// ── resume (AGEN-115) ───────────────────────────────────────────────────────
+
+/** What a takeover's answer must say about the sandbox, key for key: Codex reports a project config's extras here. */
+const WORKSPACE_WRITE_SANDBOX = {
+	type: "workspaceWrite",
+	writableRoots: [] as string[],
+	networkAccess: false,
+	excludeTmpdirEnvVar: false,
+	excludeSlashTmp: false,
+};
+
+/** The whole answered sandbox object equals the one measured shape: an extra key, root or flag is a refusal. */
+function assertExactWorkspaceWriteSandbox(sandbox: unknown): void {
+	const answered = (sandbox ?? {}) as Record<string, unknown>;
+	const keys = Object.keys(answered).sort();
+	const wanted = Object.keys(WORKSPACE_WRITE_SANDBOX).sort();
+	const same =
+		keys.length === wanted.length &&
+		keys.every((key, i) => key === wanted[i]) &&
+		answered.type === WORKSPACE_WRITE_SANDBOX.type &&
+		Array.isArray(answered.writableRoots) &&
+		answered.writableRoots.length === 0 &&
+		answered.networkAccess === false &&
+		answered.excludeTmpdirEnvVar === false &&
+		answered.excludeSlashTmp === false;
+	if (!same)
+		throw new CodexResumeError("privileges", "the answered sandbox is not the one asked for");
+}
+
+/**
+ * Whether the user's own Codex config marks this directory (or a parent) trusted. Codex applies a project's
+ * `.codex/config.toml` only then, and it applies it at `thread/resume`: its MCP servers start and its sandbox
+ * extras show in the answer (measured on 0.163.0, see codex-resume.real.test.ts).
+ */
+function userTrustsDirectory(directory: string, codexHome: string): boolean {
+	let projects: Record<string, { trust_level?: unknown }> | undefined;
+	try {
+		const parsed = Bun.TOML.parse(readFileSync(join(codexHome, "config.toml"), "utf8")) as {
+			projects?: Record<string, { trust_level?: unknown }>;
+		};
+		projects = parsed.projects;
+	} catch {
+		return false;
+	}
+	if (!projects) return false;
+	for (let dir = directory; ; dir = dirname(dir)) {
+		if (projects[dir]?.trust_level === "trusted") return true;
+		if (dirname(dir) === dir) return false;
+	}
+}
+
+/**
+ * Codex's refusal because another process holds the thread. This is the one place a Codex error's wording
+ * picks a kind, and it only picks words: either way no resume happened and the process is disposed.
+ */
+function isActiveWriterRefusal(error: unknown): boolean {
+	const text = error instanceof Error ? error.message : "";
+	return /active writer/.test(text) && /\(-32600\)\s*$/.test(text);
+}
+
+export interface ResumeInput {
+	sessionId: string;
+	launchRequestId: string;
+	threadId: string;
+	/** The server's validated guess, already canonical. Never authority: the thread's own directory is read first. */
+	candidateCwd: string;
+	privileges: ResolvedLaunchPrivileges;
+	resumeKind: "takeover" | "recovery";
+	resumeActionId: string;
+	/** The session's name as the person sees it; the runtime's title, so nothing renames their thread. */
+	sessionName: string;
+}
+
+export interface ResumeCallbacks extends LaunchCallbacks {
+	/** The verified-empty fixed directory the app-server runs in. Throws a CodexResumeError("rejected") when it can't be used. */
+	neutralCwd(): Promise<string>;
+	noteLaunch(launchId: string, sessionId: string, cwd: string): boolean;
+	verdict(sessionId: string, cwd: string): string;
+	verdictForDirectory(cwd: string): string;
+	forgetLaunch(launchId: string, sessionId: string): void;
+	reportResumeState(body: ManagedSessionStateInput): Promise<ReportOutcome>;
+	recordThread(launchId: string, threadId: string): void;
+	trustedRoots: string[];
+}
+
+type ThreadAnswer = { thread?: { id?: unknown; cwd?: unknown }; cwd?: unknown };
+
+/**
+ * Resumes a Codex thread this host holds a rollout for, under fixed privileges, in a process that nothing
+ * else can talk to (D11 steps 6 to 14). Order, and why:
+ * 6 the protocol verdict (a takeover on a Codex whose approvals can't be answered is refused, before any
+ *   process); 7 spawn in the fixed empty directory with NO approval tracker, and `thread/read` (which opens
+ *   nothing in the thread's directory) learns the real directory; 8 judge it (it must exist, be inside the
+ *   trusted roots, not be excluded and equal the candidate; a takeover also refuses a project config the user
+ *   hasn't trusted); 9 note the launch with the gate; 10 only now attach the tracker; 11 `thread/resume` with
+ *   the privileges and NEVER a `cwd` (a `cwd` rewrites the thread's directory for good); 12 check the whole
+ *   answer; 13 report, live only; 14 register the runtime, then record the thread.
+ * Every failure after the spawn shuts the process down through the one shutdown, and after step 9 forgets the
+ * launch. Nothing is reported before the runtime is certain, and the runtime joins the map only after the
+ * report was sent.
+ */
+export async function resumeManagedCodexSession(
+	input: ResumeInput,
+	callbacks: ResumeCallbacks,
+	deps: { timeoutMs?: number; codexHome?: string } = {},
+): Promise<{ pid: number; metadata: Record<string, unknown> }> {
+	const { sessionId, launchRequestId, threadId, privileges } = input;
+	const takeover = input.resumeKind === "takeover";
+	const timeoutMs = deps.timeoutMs ?? 15_000;
+
+	const { binary, serverUrl } = await resolveCodex();
+	const early = await codexProtocolVerdict(binary, serverUrl);
+	if (takeover && early.verdict !== "supported") throw new CodexResumeError("unsupported_codex");
+
+	const neutral = await callbacks.neutralCwd();
+	const server = await startCodexAppServer({ executable: binary.path, cwd: neutral });
+	const { client } = server;
+	const tracker = sharedCodexApprovals();
+	let approvals: ReturnType<typeof tracker.attachClient> | null = null;
+	let noted = false;
+
+	try {
+		const initResult = await initializeCodexClient<Record<string, unknown>>(client, {
+			clientInfo: {
+				name: "agentpulse-supervisor",
+				title: "AgentPulse Supervisor",
+				version: "0.1.0",
+			},
+			capabilities: { experimentalApi: true },
+		});
+		const bound = await bindVerdictToUserAgent(early, binary, serverUrl, initResult.userAgent);
+		if (takeover && bound.verdict !== "supported") throw new CodexResumeError("unsupported_codex");
+
+		// 7: what the thread's directory really is. Any failure is "missing", but a timeout is not.
+		let read: ThreadAnswer;
+		try {
+			read = await client.request<ThreadAnswer>(
+				"thread/read",
+				{ threadId, includeTurns: false },
+				{ timeoutMs },
+			);
+		} catch (error) {
+			console.error(
+				`[codex-resume] thread/read failed (session=${sessionId}): ${forHostLog(error)}`,
+			);
+			throw new CodexResumeError(isRequestTimeout(error) ? "timeout" : "missing");
+		}
+		if (read?.thread?.id !== threadId || typeof read.thread.cwd !== "string") {
+			throw new CodexResumeError("missing", "thread/read answered something else");
+		}
+
+		// 8: the real directory, judged before anything acts in it.
+		let real: string;
+		try {
+			real = await canonicalSpawnCwd(read.thread.cwd, callbacks.trustedRoots);
+		} catch (error) {
+			throw new CodexResumeError("cwd_mismatch", forHostLog(error));
+		}
+		if (callbacks.verdictForDirectory(real) !== "send") {
+			throw new CodexResumeError(
+				"cwd_mismatch",
+				"the real directory is excluded or unreadable by the rules",
+			);
+		}
+		if (real !== input.candidateCwd) {
+			throw new CodexResumeError("cwd_mismatch", "the thread's directory is not the candidate");
+		}
+		const codexHome = deps.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
+		if (
+			takeover &&
+			existsSync(join(real, ".codex", "config.toml")) &&
+			!userTrustsDirectory(real, codexHome)
+		) {
+			throw new CodexResumeError("project_config");
+		}
+
+		// 9
+		if (!callbacks.noteLaunch(launchRequestId, sessionId, real)) {
+			throw new CodexResumeError("rejected", "the gate would not note the launch");
+		}
+		noted = true;
+		if (callbacks.verdict(sessionId, real) !== "send") {
+			throw new CodexResumeError("rejected", "the gate would not let this session report");
+		}
+
+		// 10: the tracker, only now, so nothing could be approved while the directory was still being judged.
+		const warn: ApprovalLaunch["warn"] = (content, detail) =>
+			reportInSessionSafely(
+				"codex-managed",
+				sessionId,
+				"approval-warning",
+				() =>
+					callbacks.reportEvents([
+						{
+							eventType: "ManagedWarning",
+							category: "system_event",
+							content,
+							rawPayload: { source: "approval_tracker", ...detail },
+						},
+					]),
+				disposeRuntimesAndExit,
+			);
+		approvals = tracker.attachClient(client, { sessionId, cwd: real, warn });
+		tracker.setVerdict(approvals, bound);
+		if (bound.verdict !== "supported") {
+			void warn(
+				"AgentPulse can't answer this Codex version's approval requests, so they are declined automatically.",
+				{ method: "protocol", reason: bound.reason },
+			);
+		}
+
+		// 11
+		let resumed: ThreadAnswer & { approvalPolicy?: unknown; sandbox?: { type?: unknown } | null };
+		try {
+			resumed = await client.request(
+				"thread/resume",
+				{ threadId, excludeTurns: true, ...privileges.codexThread },
+				{ timeoutMs },
+			);
+		} catch (error) {
+			console.error(
+				`[codex-resume] thread/resume failed (session=${sessionId}): ${forHostLog(error)}`,
+			);
+			if (isRequestTimeout(error)) throw new CodexResumeError("timeout");
+			throw new CodexResumeError(isActiveWriterRefusal(error) ? "running" : "rejected");
+		}
+
+		// 12
+		try {
+			assertCodexThreadPrivileges(resumed, privileges);
+			if (privileges.codexThread?.sandbox === "workspace-write") {
+				assertExactWorkspaceWriteSandbox(resumed.sandbox);
+			}
+		} catch (error) {
+			if (error instanceof CodexResumeError) throw error;
+			throw new CodexResumeError("privileges", forHostLog(error));
+		}
+		const answeredCwd = typeof resumed.cwd === "string" ? resumed.cwd : resumed.thread?.cwd;
+		let answeredReal: string | null = null;
+		try {
+			answeredReal =
+				typeof answeredCwd === "string"
+					? await canonicalSpawnCwd(answeredCwd, callbacks.trustedRoots)
+					: null;
+		} catch {
+			answeredReal = null;
+		}
+		if (answeredReal !== real)
+			throw new CodexResumeError("cwd_mismatch", "the answered directory changed");
+
+		// 13: live only. Anything but "sent" means the server doesn't know this session is running.
+		const outcome = await callbacks.reportResumeState({
+			sessionId,
+			launchRequestId,
+			managedState: "managed",
+			status: "idle",
+			providerSessionId: threadId,
+			providerThreadId: threadId,
+			correlationSource: "session_id",
+			providerProtocolVersion: resolveProviderProtocolVersion(initResult),
+			providerCapabilitySnapshot: { ...initResult, agentpulseApprovals: bound.verdict },
+			providerSyncState: "synced",
+			lastProviderSyncAt: new Date().toISOString(),
+			clearProviderSyncError: true,
+			resumeActionId: input.resumeActionId,
+		});
+		if (outcome !== "sent") {
+			throw new CodexResumeError("rejected", `the state report was ${outcome}`);
+		}
+
+		// 14: the runtime joins now. Its title is the session's own name, so the first reconcile renames nothing.
+		buildManagedRuntime({
+			launch: { id: launchRequestId, launchCorrelationId: sessionId },
+			client,
+			server,
+			tracker,
+			approvals,
+			threadId,
+			initResult,
+			currentThreadTitle: input.sessionName,
+			turnStarting: false,
+			syncTitle: makeSyncTitle(
+				{ id: launchRequestId, launchCorrelationId: sessionId },
+				client,
+				threadId,
+				callbacks,
+			),
+			callbacks,
+		});
+		try {
+			callbacks.recordThread(launchRequestId, threadId);
+		} catch (error) {
+			console.error(
+				`[codex-resume] couldn't record the thread (session=${sessionId}): ${forHostLog(error)}`,
+			);
+		}
+		return { pid: server.pid, metadata: { mode: "managed_codex", threadId, resumed: true } };
+	} catch (error) {
+		runtimes.delete(sessionId);
+		if (approvals) tracker.dispose(approvals);
+		await server.shutdown();
+		if (noted) callbacks.forgetLaunch(launchRequestId, sessionId);
+		throw error;
+	}
+}
+
+/** The runtime holding this id as its session id or its thread id, if this host has one: a takeover of it would be a second writer. */
+export function managedCodexRuntimeHolds(id: string): boolean {
+	for (const runtime of runtimes.values()) {
+		if (runtime.sessionId === id || runtime.threadId === id) return true;
+	}
+	return false;
 }

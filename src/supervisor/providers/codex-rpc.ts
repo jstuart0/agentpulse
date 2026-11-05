@@ -397,6 +397,8 @@ export type StartCodexAppServerOptions = {
 	/** Default: `["app-server"]`. No listener flag is passed: the child talks over stdin and stdout only. */
 	args?: string[];
 	env?: NodeJS.ProcessEnv;
+	/** The child's working directory. A resume starts in a fixed, empty one so no project config applies to the process. */
+	cwd?: string;
 	timings?: Partial<ShutdownTimings>;
 	maxFrameBytes?: number;
 	timers?: RpcTimers;
@@ -443,6 +445,7 @@ export async function startCodexAppServer(
 		// Own process group on POSIX, so an escalation reaches the wrapper's children too.
 		detached: posix,
 		env: options.env ?? process.env,
+		...(options.cwd ? { cwd: options.cwd } : {}),
 	});
 	child.stdin.on("error", () => {});
 	child.stdout.on("error", () => {});

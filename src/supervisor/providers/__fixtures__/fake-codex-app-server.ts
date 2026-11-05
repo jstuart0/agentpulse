@@ -22,6 +22,20 @@
  *                                      for its own turn before its response
  * Turn ids count up: turn-1, turn-2, ...
  *
+ * Resume (AGEN-115), shaped by answers recorded from Codex 0.163.0 (thread/read and thread/resume):
+ *   FAKE_CODEX_THREAD_ID=<id>          the one thread this fake knows (default thr-1); another id is "thread not loaded" / "no rollout found"
+ *   FAKE_CODEX_THREAD_CWD=<dir>        the thread's CURRENT directory, as thread/read and thread/resume answer it
+ *   FAKE_CODEX_RESUME_CWD=<dir>        a different directory in thread/resume's answer than thread/read gave
+ *   FAKE_CODEX_THREAD_ORIGINATOR=<n>   `thread.originator` (default codex_exec)
+ *   FAKE_CODEX_READ_ERROR=<json>       {code,message}: thread/read fails like this
+ *   FAKE_CODEX_RESUME_ERROR=<json>     {code,message}: thread/resume fails like this
+ *   FAKE_CODEX_READ_SILENT=1 / FAKE_CODEX_RESUME_SILENT=1   never answered
+ *   FAKE_CODEX_RESUME_FORCE_APPROVAL / FAKE_CODEX_RESUME_FORCE_SANDBOX   thread/resume's answer, whatever was asked
+ *   FAKE_CODEX_SANDBOX_EXTRAS=<json>   merged into the answered sandbox (what a hostile project config produces)
+ *   FAKE_CODEX_LOCK_FILE=<path>        the first thread/resume takes this "writer lock"; a second answers "already has an active writer"
+ * With no override asked for, thread/resume answers the thread's recorded policy, which is deliberately a
+ * third value: never + dangerFullAccess, so echoing the request or a default can't pass for the override.
+ *
  * Behaviour recorded from a real Codex 0.163.0 (src/supervisor/providers/__fixtures__/codex-0.163), on when
  * FAKE_CODEX_REALISTIC=1: the first answer to a server request is final (a second is logged as
  * `ignoredAnswer` and does nothing), an `accept` runs the thing (a `ran` log entry), any answer is followed
@@ -39,7 +53,15 @@
  *                                      `fileChange` item that the request names
  */
 import { spawn } from "node:child_process";
-import { appendFileSync, cpSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	cpSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 
 const env = process.env;
@@ -76,7 +98,7 @@ const logFile = env.FAKE_CODEX_LOG;
 const log = (entry: unknown) => {
 	if (logFile) appendFileSync(logFile, `${JSON.stringify(entry)}\n`);
 };
-log({ argv: process.argv.slice(2), pid: process.pid });
+log({ argv: process.argv.slice(2), pid: process.pid, cwd: process.cwd() });
 
 if (env.FAKE_CODEX_EARLY_EXIT) process.exit(Number(env.FAKE_CODEX_EARLY_EXIT));
 
@@ -121,6 +143,85 @@ const resolve = (id: string | number) => {
 	if (!entry || env.FAKE_CODEX_NO_RESOLVE) return;
 	send({ method: "serverRequest/resolved", params: { threadId: entry.threadId, requestId: id } });
 };
+
+const KNOWN_THREAD = env.FAKE_CODEX_THREAD_ID || "thr-1";
+const threadCwd = () => env.FAKE_CODEX_THREAD_CWD || process.cwd();
+const threadBody = (cwd: string, status: string) => ({
+	id: KNOWN_THREAD,
+	sessionId: KNOWN_THREAD,
+	cwd,
+	status: { type: status },
+	path: `/fake/sessions/rollout-${KNOWN_THREAD}.jsonl`,
+	cliVersion: VERSION,
+	originator: env.FAKE_CODEX_THREAD_ORIGINATOR || "codex_exec",
+	source: "exec",
+	name: null,
+	turns: [],
+});
+let resumedHere = false;
+
+function handleThreadCall(m: any, reply: (result: unknown) => void) {
+	const isRead = m.method === "thread/read";
+	if (isRead ? env.FAKE_CODEX_READ_SILENT : env.FAKE_CODEX_RESUME_SILENT) return;
+	const forced = isRead ? env.FAKE_CODEX_READ_ERROR : env.FAKE_CODEX_RESUME_ERROR;
+	if (forced) {
+		send({ id: m.id, error: JSON.parse(forced) });
+		return;
+	}
+	if (m.params?.threadId !== KNOWN_THREAD) {
+		send({
+			id: m.id,
+			error: {
+				code: -32600,
+				message: isRead
+					? `thread not loaded: ${m.params?.threadId}`
+					: `no rollout found for thread id ${m.params?.threadId}`,
+			},
+		});
+		return;
+	}
+	if (isRead) {
+		reply({
+			thread: threadBody(threadCwd(), "notLoaded"),
+			readState: { firstUnread: null, revision: "r" },
+		});
+		return;
+	}
+	const lock = env.FAKE_CODEX_LOCK_FILE;
+	if (lock && !resumedHere) {
+		if (existsSync(lock)) {
+			send({
+				id: m.id,
+				error: { code: -32600, message: `thread ${KNOWN_THREAD} already has an active writer` },
+			});
+			return;
+		}
+		writeFileSync(lock, String(process.pid));
+	}
+	resumedHere = true;
+	const approval = env.FAKE_CODEX_RESUME_FORCE_APPROVAL || m.params.approvalPolicy || "never";
+	const sandbox = env.FAKE_CODEX_RESUME_FORCE_SANDBOX || m.params.sandbox || "danger-full-access";
+	const cwd = env.FAKE_CODEX_RESUME_CWD || threadCwd();
+	reply({
+		thread: threadBody(cwd, "idle"),
+		model: "fake-model",
+		cwd,
+		approvalPolicy: approval,
+		sandbox: {
+			type: SANDBOX_TYPE[sandbox],
+			...(sandbox === "read-only" ? { networkAccess: false } : {}),
+			...(sandbox === "workspace-write"
+				? {
+						writableRoots: [],
+						networkAccess: false,
+						excludeTmpdirEnvVar: false,
+						excludeSlashTmp: false,
+					}
+				: {}),
+			...JSON.parse(env.FAKE_CODEX_SANDBOX_EXTRAS || "{}"),
+		},
+	});
+}
 
 function handle(m: any) {
 	if (typeof m.method !== "string") {
@@ -171,6 +272,8 @@ function handle(m: any) {
 				...JSON.parse(env.FAKE_CODEX_SANDBOX_EXTRAS || "{}"),
 			},
 		});
+	} else if (m.method === "thread/read" || m.method === "thread/resume") {
+		handleThreadCall(m, reply);
 	} else if (m.method === "thread/name/set") {
 		reply({});
 		send({
