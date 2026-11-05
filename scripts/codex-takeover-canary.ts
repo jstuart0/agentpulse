@@ -41,6 +41,8 @@ export const MUTATIONS = {
 	"fresh-thread": "bind-codex: thread/resume is replaced by thread/start (a new conversation)",
 	"takeover-values":
 		"recover-codex: thread/resume carries the takeover's privileges, not the launch's",
+	"observer-not-held":
+		"bind-codex: the observer is told nothing is held, so it must post for the thread",
 	"no-daemon": "bind-codex-daemon: the daemon is never started, so nothing holds the thread",
 	"no-comparison":
 		"bind-codex-directory: the host's directory comparison is skipped (the candidate is trusted)",
@@ -123,6 +125,7 @@ function makeThread(
 	dir: string,
 	prompt: string,
 	bypass: boolean,
+	extraArgs: string[] = [],
 ): { threadId: string | null; why?: string; rollout: string | null } {
 	mkdirSync(dir, { recursive: true });
 	if (!existsSync(join(dir, ".git"))) spawnSync("git", ["init", "-q"], { cwd: dir });
@@ -132,6 +135,7 @@ function makeThread(
 			"--json",
 			"--skip-git-repo-check",
 			...(bypass ? ["--dangerously-bypass-approvals-and-sandbox"] : []),
+			...extraArgs,
 			prompt,
 		],
 		codexOptions(ctx, dir),
@@ -606,12 +610,41 @@ async function bindCodex(ctx: CanaryCtx, tap: { wire: Wire }): Promise<Record<st
 	const out: Record<string, Any> = {};
 	const dir = join(ctx.root, "project-bind-codex");
 	const sentinel = `SENT${randomBytes(3).toString("hex")}`;
+	// An observation, not a condition: do native Codex hooks fire from a resumed app-server? The throwaway home's
+	// hooks.json appends a line per event to a marker file. The first turn runs with hook trust bypassed, which
+	// is the control: it must write lines, or the instrument can't see a hook at all.
+	const hookMarker = join(ctx.root, "native-hook-marker.txt");
+	writeFileSync(
+		join(ctx.codexHome, "hooks.json"),
+		`${JSON.stringify({
+			hooks: Object.fromEntries(
+				["UserPromptSubmit", "Stop"].map((event) => [
+					event,
+					[
+						{
+							hooks: [
+								{
+									type: "command",
+									command: `echo ${event} >> "${hookMarker}"`,
+									async: false,
+									timeout: 10,
+								},
+							],
+						},
+					],
+				]),
+			),
+		})}\n`,
+	);
+	const markerLines = () => (existsSync(hookMarker) ? lines(hookMarker).length : 0);
 	const made = makeThread(
 		ctx,
 		dir,
 		`Remember the code word ${sentinel}. First run exactly this one shell command: touch pre-touch.txt   Then reply with only the word ready.`,
 		true,
+		["--dangerously-bypass-hook-trust"],
 	);
+	const hookLinesAfterFirstTurn = markerLines();
 	if (!made.threadId || !made.rollout)
 		return { instrumentInvalid: `no thread: ${made.why ?? "no rollout"}` };
 	const threadId = made.threadId;
@@ -711,6 +744,69 @@ async function bindCodex(ctx: CanaryCtx, tap: { wire: Wire }): Promise<Record<st
 		"bind-codex: a prompt recalls the first turn's sentinel (same conversation)",
 		recalled,
 	);
+	// The Codex observer must post nothing for the held id (a condition), and must be able to post at all (the
+	// controls). It is driven through scanRolloutFiles in this process with an in-memory state, the throwaway home
+	// and a fetch that only counts: the whole observer would read the person's real ~/.codex/sessions.
+	{
+		const observer = await import("../src/supervisor/services/codex-observer.js");
+		const { isObserverHeld } = await import("../src/supervisor/services/session-resume.js");
+		// Rules from the throwaway home, as the supervisor's observer is given them: with none given nothing posts.
+		const { createRulesWatch } = await import("../src/supervisor/services/exclude-rules-watch.js");
+		const rules = createRulesWatch({ home: ctx.home });
+		const posts = async (isHeld: (id: string) => boolean) => {
+			const seen: string[] = [];
+			await observer.scanRolloutFiles([made.rollout as string], {
+				state: { files: {} },
+				callMapsByFile: new Map(),
+				serverUrl: ctx.base,
+				apiKey: "canary-observer",
+				homeDir: ctx.home,
+				rules,
+				hostName: ctx.hostName,
+				isHeld,
+				save: () => {},
+				fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+					seen.push(String(init?.body ?? "").slice(0, 200));
+					return new Response("{}", { status: 200 });
+				}) as never,
+			});
+			return seen.length;
+		};
+		const held = (id: string) =>
+			isObserverHeld(new Set<string>(), ctx.managed.hasManagedCodexRuntime, id);
+		const notHeld = ctx.mutate === "observer-not-held" ? () => false : held;
+		out.observer = {
+			rolloutLines: lines(made.rollout).length,
+			postsWhileHeld: await posts(notHeld),
+			postsIfNotHeld: await posts(() => false),
+			runtimeHeld: ctx.managed.hasManagedCodexRuntime(threadId),
+		};
+		ctx.expect(
+			"bind-codex: the observer would post for this thread's lines (the control)",
+			out.observer.postsIfNotHeld > 0,
+			out.observer,
+		);
+		ctx.expect(
+			"bind-codex: the runtime is held under the session id",
+			out.observer.runtimeHeld === true,
+			out.observer,
+		);
+		ctx.expect(
+			"bind-codex: the observer posts nothing for the held session",
+			out.observer.postsWhileHeld === 0,
+			out.observer,
+		);
+		out.nativeHooks = {
+			controlFirstTurnLines: hookLinesAfterFirstTurn,
+			linesAfterResumedTurns: markerLines(),
+			firedFromResumedAppServer: markerLines() > hookLinesAfterFirstTurn,
+		};
+		ctx.expect(
+			"bind-codex: the native-hook instrument saw the first turn's hooks (the control)",
+			hookLinesAfterFirstTurn > 0,
+			out.nativeHooks,
+		);
+	}
 	const turn = tap.wire.turnStarts[tap.wire.turnStarts.length - 1];
 	out.turnStartThreadId = turn?.threadId;
 	ctx.expect(
