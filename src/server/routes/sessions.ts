@@ -27,12 +27,15 @@ import type { SessionStatus } from "../../shared/types.js";
 import { actorFromAuthUser } from "../auth/actor.js";
 import { type AuthUser, requireAuth } from "../auth/middleware.js";
 import { OwnerDisabledError, OwnerNotFoundError } from "../auth/owner-state.js";
+import { isJsonContentType, isTrustedHostWhenAuthOff } from "../auth/request-origin.js";
 import {
 	callerHasManageScope,
 	getRequestActor,
 	getRequestMode,
+	refuseBadOrigin,
 	requireOperatorScope,
 } from "../auth/route-scope-policy.js";
+import { config } from "../config.js";
 import { getDb } from "../db/client.js";
 import { events, sessions, users } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
@@ -49,6 +52,7 @@ import {
 	judgeForeignKeyWrite,
 } from "../services/authorization.js";
 import {
+	ControlBusyError,
 	HostGoneError,
 	HostOfflineError,
 	HostUpgradeRequiredError,
@@ -929,7 +933,29 @@ sessionsRouter.post("/sessions/:sessionId/stop", async (c: Context) => {
 	}
 });
 
+/**
+ * A prompt types into a running agent, so the request has to be the dashboard's own or a script's: a
+ * foreign Origin is refused, with authentication off the Host must be a loopback address or an allowlisted
+ * name (a page reached by DNS rebinding has Origin equal to Host; a browser always sends a Host, so only a
+ * request without one, which no page can make, is let through), and the body must be declared JSON
+ * (a form post or `text/plain` from another page can't be). A client with a key and no Origin passes.
+ */
+function refuseUnsafePromptRequest(c: Context): Response | null {
+	const foreign = refuseBadOrigin(c);
+	if (foreign) return foreign;
+	const host = c.req.header("Host");
+	if (config.disableAuth && host !== undefined && !isTrustedHostWhenAuthOff(host)) {
+		return c.json({ error: "bad_origin" }, 403);
+	}
+	if (!isJsonContentType(c.req.header("Content-Type"))) {
+		return c.json({ error: "unsupported_media_type" }, 415);
+	}
+	return null;
+}
+
 sessionsRouter.post("/sessions/:sessionId/prompt", async (c: Context) => {
+	const unsafe = refuseUnsafePromptRequest(c);
+	if (unsafe) return unsafe;
 	const refusal = await refuseUnlessMayChange(c, c.req.param("sessionId") ?? "");
 	if (refusal) return refusal;
 	try {
@@ -944,6 +970,9 @@ sessionsRouter.post("/sessions/:sessionId/prompt", async (c: Context) => {
 	} catch (error) {
 		const hostRefusal = hostRefusalResponse(c, error);
 		if (hostRefusal) return hostRefusal;
+		if (error instanceof ControlBusyError) {
+			return c.json({ error: error.message, reason: "control_busy" }, 400);
+		}
 		return c.json(
 			{ error: error instanceof Error ? error.message : "Unable to queue prompt" },
 			400,

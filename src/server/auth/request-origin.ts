@@ -77,6 +77,11 @@ export function isTrustedHostWhenAuthOff(hostHeader: string | undefined): boolea
 	return isLoopbackHost(hostHeader) || isAllowlistedHost(hostHeader);
 }
 
+/** Is this Content-Type `application/json` (parameters allowed)? A cross-site form post can't send it. */
+export function isJsonContentType(value: string | undefined): boolean {
+	return value !== undefined && /^application\/json\s*(;|$)/i.test(value.trim());
+}
+
 /** Is the Host a loopback address (a client on this machine)? */
 export function isLoopbackHostHeader(hostHeader: string | undefined): boolean {
 	return !!hostHeader && isLoopbackHost(hostHeader);

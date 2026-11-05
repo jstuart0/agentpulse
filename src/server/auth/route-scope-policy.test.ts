@@ -790,7 +790,7 @@ const BASELINE_STATUS: Record<string, number> = {
 	"GET /sessions/stats": 200,
 	"GET /sessions/nope": 404,
 	"GET /sessions/nope/timeline": 200,
-	"POST /sessions/nope/prompt": 400,
+	"POST /sessions/nope/prompt": 415, // was 400 before a prompt had to declare a JSON body (AGEN-91)
 	"POST /sessions/nope/stop": 400,
 	"PUT /sessions/nope/rename": 400, // was 500 before malformed bodies were refused with invalid_body
 	"DELETE /sessions/nope": 200,

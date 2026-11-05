@@ -25,7 +25,11 @@ import type {
 } from "../../shared/codex-approvals.js";
 import type { AuthUser } from "../auth/middleware.js";
 import { requireAuth } from "../auth/middleware.js";
-import { isLoopbackHostHeader, isTrustedHostWhenAuthOff } from "../auth/request-origin.js";
+import {
+	isJsonContentType,
+	isLoopbackHostHeader,
+	isTrustedHostWhenAuthOff,
+} from "../auth/request-origin.js";
 import {
 	getRequestActor,
 	isHumanCaller,
@@ -255,9 +259,6 @@ const limitBody = bodyLimit({
 	onError: (c) => c.json({ error: "invalid_decision" }, 400),
 });
 
-function isJsonContentType(value: string | undefined): boolean {
-	return value !== undefined && /^application\/json\s*(;|$)/i.test(value.trim());
-}
 
 codexApprovalsRouter.post(
 	"/sessions/:sessionId/approvals/:approvalId/decision",

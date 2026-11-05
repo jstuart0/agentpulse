@@ -1031,3 +1031,115 @@ describe("C4/C5/T-series: the claim", () => {
 		expect(claimed?.status).toBe("running");
 	});
 });
+
+describe("POST /prompt: the request has to be the page's own or a script's (review S1)", () => {
+	const send = (sessionId: string, headers: Record<string, string>, body = '{"prompt":"go"}') =>
+		app.request(`/api/v1/sessions/${sessionId}/prompt`, { method: "POST", headers, body });
+	const JSON_TYPE = { "Content-Type": "application/json" };
+
+	test("a foreign Origin is refused and nothing is queued", async () => {
+		const w = await world("codex_cli", WITH_FEATURE);
+		const res = await send(w.sessionId, { ...JSON_TYPE, Origin: "https://evil.example" });
+		expect(res.status).toBe(403);
+		expect(await res.json()).toEqual({ error: "bad_origin" });
+		expect(await promptRows(w.sessionId)).toEqual([]);
+	});
+
+	test("with auth off, a rebound page (Origin equal to a Host that isn't loopback) is refused, and so is that Host with no Origin", async () => {
+		const w = await world("codex_cli", WITH_FEATURE);
+		const rebound = await send(w.sessionId, {
+			...JSON_TYPE,
+			Host: "rebind.example:3000",
+			Origin: "http://rebind.example:3000",
+		});
+		expect(rebound.status).toBe(403);
+		const noOrigin = await send(w.sessionId, { ...JSON_TYPE, Host: "rebind.example:3000" });
+		expect(noOrigin.status).toBe(403);
+		expect(await promptRows(w.sessionId)).toEqual([]);
+		const loopback = await send(w.sessionId, { ...JSON_TYPE, Host: "127.0.0.1:3000" });
+		expect(loopback.status).toBe(202);
+	});
+
+	test("a body that isn't declared JSON is refused, whatever its text", async () => {
+		const w = await world("codex_cli", WITH_FEATURE);
+		for (const type of ["text/plain", "application/x-www-form-urlencoded", "multipart/form-data"]) {
+			const res = await send(w.sessionId, { "Content-Type": type });
+			expect(res.status, type).toBe(415);
+		}
+		const none = await send(w.sessionId, {});
+		expect(none.status).toBe(415);
+		expect(await promptRows(w.sessionId)).toEqual([]);
+		const withCharset = await send(w.sessionId, {
+			"Content-Type": "application/json; charset=utf-8",
+		});
+		expect(withCharset.status).toBe(202);
+	});
+
+	test("it holds for a Claude session too", async () => {
+		const w = await world("claude_code", WITH_FEATURE);
+		expect((await send(w.sessionId, { "Content-Type": "text/plain" })).status).toBe(415);
+		expect((await send(w.sessionId, { ...JSON_TYPE, Origin: "https://evil.example" })).status).toBe(
+			403,
+		);
+	});
+
+	test("with auth on, a native client holding a key and sending no Origin still gets through", async () => {
+		const { createApiKey } = await import("../auth/api-key.js");
+		(config as Record<string, unknown>).disableAuth = false;
+		const w = await world("codex_cli", WITH_FEATURE);
+		const { key } = await createApiKey(`prompt-safety-${crypto.randomUUID()}`, ["manage"]);
+		const res = await send(w.sessionId, { ...JSON_TYPE, Authorization: `Bearer ${key}` });
+		expect(res.status).toBe(202);
+		const foreign = await send(w.sessionId, {
+			...JSON_TYPE,
+			Authorization: `Bearer ${key}`,
+			Origin: "https://evil.example",
+		});
+		expect(foreign.status).toBe(403);
+	});
+});
+
+describe("POST /prompt while another action holds the lock (review M5)", () => {
+	test("it is still a 400, now with a stable reason the page can read", async () => {
+		const w = await world("codex_cli", WITH_FEATURE);
+		expect((await postPrompt(w.sessionId, "one")).status).toBe(202);
+		const second = await postPrompt(w.sessionId, "two");
+		expect(second.status).toBe(400);
+		expect(await second.json()).toEqual({
+			error: "Another control action is already in progress for this session.",
+			reason: "control_busy",
+		});
+	});
+});
+
+describe("a host's failure text is bounded and cleaned where it is stored (review S3)", () => {
+	test("controls and bidi characters are stripped, the length is capped, and a non-string is dropped", async () => {
+		const w = await hostWorld("codex_cli", [CODEX_FOLLOW_UP_PROMPTS]);
+		const status = async (actionId: string, error: unknown) => {
+			const res = await app.request(
+				`/api/v1/supervisors/${w.host.id}/control-actions/${actionId}/status`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-AgentPulse-Supervisor-Token": w.host.token,
+					},
+					body: JSON.stringify({ status: "failed", error }),
+				},
+			);
+			expect(res.status).toBe(200);
+		};
+		const first = await queuePromptAction(w.sessionId, "one", ACTOR);
+		await claimNextControlAction(w.host.id);
+		const hostile = `bad${String.fromCharCode(27)}[31m${String.fromCharCode(0x202e)}gnp.exe ${"x".repeat(900)}`;
+		await status(first.id, hostile);
+		const stored = (await actionById(first.id))?.error ?? "";
+		expect(stored).toStartWith("bad [31mgnp.exe x");
+		expect(stored).not.toMatch(/[\u0000-\u001f‮]/);
+		expect(Array.from(stored).length).toBeLessThanOrEqual(501);
+		const second = await queuePromptAction(w.sessionId, "two", ACTOR);
+		await claimNextControlAction(w.host.id);
+		await status(second.id, { not: "a string" });
+		expect((await actionById(second.id))?.error).toBeNull();
+	});
+});

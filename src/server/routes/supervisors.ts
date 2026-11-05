@@ -1,3 +1,4 @@
+import { cleanHostText } from "../../shared/clean-host-text.js";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -723,7 +724,7 @@ supervisorsAgentRouter.post(
 			actionId,
 			supervisorId,
 			status: body.status,
-			error: body.error,
+			error: cleanHostText(body.error),
 			metadata: body.metadata ?? null,
 		});
 		if (!action) return c.json({ error: "Control action not found" }, 404);
