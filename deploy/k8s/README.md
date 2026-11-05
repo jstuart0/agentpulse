@@ -1149,7 +1149,12 @@ approval code:
    `~/.codex` is not touched). It must exit 0. It checks the verdict is `supported`, an approved
    command ran with the arguments it showed, a declined one did nothing, file changes (an add, and one
    patch that updates, moves and deletes) land as shown or not at all, and no process in Codex's tree is
-   listening while a request is pending or left after stop.
+   listening while a request is pending or left after stop. It also runs the `followup` scenario (AGEN-91):
+   a prompt sent through `POST /sessions/:id/prompt` starts a second turn on the same Codex process and
+   thread, with only `threadId` and `input` on the wire, and still asks for approval because the scenario
+   launches `untrusted` / `workspace-write` (a follow-up that lost the thread's policy would run unasked and
+   fail). `--only followup` runs just that scenario; an unknown `--only` id exits 2. Run both before
+   releasing a change to prompt routing or to the supervisor's Codex turn handling.
 2. A new approval shape that passes: add its hash to `SUPPORTED_CODEX_SHAPES` in
    `src/supervisor/providers/codex-protocol.ts` (`--schema-hash <generated schema directory>` in the same script prints it, from the output of `codex app-server generate-json-schema --experimental --out <dir>`), and
    record the new frames under `src/supervisor/providers/__fixtures__/`.

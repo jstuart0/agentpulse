@@ -25,12 +25,17 @@
  *     control-action handler starts a second turn on the same Codex process and thread, still asks for
  *     approval in the launch directory, is refused while that turn is pending, and ends cleanly when
  *     declined. The follow-up's `turn/start` and the `turn/completed` Codex sends are compared with the
- *     recorded 0.163 fixture.
+ *     recorded 0.163 fixture. It launches `untrusted` / `workspace-write` (an explicit policy that differs
+ *     from this CODEX_HOME's on-request default) and asks for a plain `touch` inside the launch directory,
+ *     which on-request would run unasked: a follow-up that lost the thread's policy shows no approval and
+ *     fails. It also checks the thread's reported policy, that the follow-up's `turn/start` carries only
+ *     `threadId` and `input`, and that the launch turn wrote no watcher-waking boundary event.
  * An `--only` id that names no scenario exits 2 before anything starts.
  * Codex is asked in a way that cannot be answered without an approval (escalated command, exact patch
  * text); if it asks nothing anyway, that scenario fails, because a canary that passes without asking
  * proves nothing. It uses a throwaway CODEX_HOME holding only a copy of `auth.json`, which is deleted at
- * the end; `~/.codex` is never written and the running supervisor is never touched. It spends real model
+ * the end and also on exit and on SIGINT, SIGTERM and SIGHUP (`codex-canary-guard.ts`, which then kills the
+ * Codex children's process groups); `~/.codex` is never written and the running supervisor is never touched. It spends real model
  * usage, and a kill timer (`--minutes`, default 12) ends everything whatever else happens.
  *
  * `--work` must sit under a scratch location (path containing /scratchpad/ or
