@@ -94,6 +94,8 @@ export interface SessionActionAccess {
 	canDelete: boolean;
 	/** The session's notes and its stored CLAUDE.md. */
 	canEditNotes: boolean;
+	/** Sending a prompt to the session (POST /prompt is owner-checked). */
+	canPrompt: boolean;
 }
 
 const ALL_ALLOWED: SessionActionAccess = {
@@ -102,6 +104,7 @@ const ALL_ALLOWED: SessionActionAccess = {
 	canArchive: true,
 	canDelete: true,
 	canEditNotes: true,
+	canPrompt: true,
 };
 const NONE_ALLOWED: SessionActionAccess = {
 	canRename: false,
@@ -109,13 +112,14 @@ const NONE_ALLOWED: SessionActionAccess = {
 	canArchive: false,
 	canDelete: false,
 	canEditNotes: false,
+	canPrompt: false,
 };
 
 /**
  * Mirrors the server's owner-or-admin rule for changing a session: solo never
  * refuses; in team mode the owner, an admin, or anyone when the session has
- * no owner. Prompts, stop and retry are open to everyone and aren't asked
- * about here.
+ * no owner. Prompting follows the same rule (POST /prompt is owner-checked);
+ * stop and retry aren't asked about here.
  */
 export function sessionActionAccess(
 	ui: OwnershipUi,

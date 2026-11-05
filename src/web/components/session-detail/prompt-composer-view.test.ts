@@ -32,9 +32,14 @@ function probe(
 			? ({ managedState, hostName: "studio" } as Probe["managedSession"])
 			: null,
 		isWorking: false,
-		metadata: null,
+		metadata: {},
 		...extra,
 	};
+}
+function settled(result: Parameters<typeof settleFollow>[0]) {
+	const out = settleFollow(result);
+	if (out === null) throw new Error("expected a settled follow");
+	return out;
 }
 const ALLOWED = { canPrompt: true };
 const DENIED = { canPrompt: false };
@@ -208,9 +213,9 @@ describe("the box across a send", () => {
 	});
 
 	test("failed makes the box editable with the reason in an alert", () => {
-		const settled = settleFollow({ outcome: "failed", error: "Host said no." });
-		expect(settled.clearDraft).toBe(false);
-		const box = boxState(codex, settled.phase, { posting: false });
+		const result = settled({ outcome: "failed", error: "Host said no." });
+		expect(result.clearDraft).toBe(false);
+		const box = boxState(codex, result.phase, { posting: false });
 		expect(box).toMatchObject({
 			readOnly: false,
 			sendDisabled: false,
@@ -220,14 +225,14 @@ describe("the box across a send", () => {
 	});
 
 	test("a failure with no text falls back to a sentence", () => {
-		const settled = settleFollow({ outcome: "failed", error: null });
-		expect(boxState(codex, settled.phase, { posting: false }).alert).toBe(COMPOSER_FAILED_FALLBACK);
+		const result = settled({ outcome: "failed", error: null });
+		expect(boxState(codex, result.phase, { posting: false }).alert).toBe(COMPOSER_FAILED_FALLBACK);
 	});
 
 	test("unknown gives the text back with the literal warning", () => {
-		const settled = settleFollow({ outcome: "unknown" });
-		expect(settled.clearDraft).toBe(false);
-		expect(boxState(codex, settled.phase, { posting: false })).toMatchObject({
+		const result = settled({ outcome: "unknown" });
+		expect(result.clearDraft).toBe(false);
+		expect(boxState(codex, result.phase, { posting: false })).toMatchObject({
 			readOnly: false,
 			alert:
 				"No answer from the host yet, so it may still run. Your text is back here. Check Control history before sending again.",
@@ -250,8 +255,8 @@ describe("the box across a send", () => {
 	test("a refusal that comes back on the POST reads through the host table, not a copy of it", () => {
 		const error = new ApiError(409, "x", { error: "managed_state_not_continuable" });
 		const text = hostRefusalMessage(error, { managedSession: { hostName: "studio" } } as never);
-		const settled = { step: "failed", reason: text ?? "" } as const;
-		expect(boxState(codex, settled, { posting: false }).alert).toBe(text);
+		const phase = { step: "failed", reason: text ?? "" } as const;
+		expect(boxState(codex, phase, { posting: false }).alert).toBe(text);
 		expect(text).toStartWith("This session's process ended when its host restarted");
 	});
 });

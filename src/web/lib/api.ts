@@ -486,8 +486,12 @@ export const api = {
 			),
 		),
 
-	getSessionControlActions: (sessionId: string) =>
-		request<{ controlActions: ControlAction[] }>(`/sessions/${sessionId}/control-actions`),
+	getSessionControlActions: (sessionId: string, opts?: { background?: boolean }) =>
+		request<{ controlActions: ControlAction[] }>(
+			`/sessions/${sessionId}/control-actions`,
+			undefined,
+			opts,
+		),
 
 	renameSession: (sessionId: string, name: string) =>
 		// source: "user" (F5 / Decision 6) — the dashboard is always a manual
@@ -563,7 +567,7 @@ export const api = {
 		}),
 
 	sendSessionPrompt: (sessionId: string, prompt: string) =>
-		request<unknown>(`/sessions/${sessionId}/prompt`, {
+		request<{ action: ControlAction }>(`/sessions/${sessionId}/prompt`, {
 			method: "POST",
 			body: JSON.stringify({ prompt }),
 		}),

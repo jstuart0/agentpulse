@@ -14,7 +14,7 @@ import {
 } from "../components/session-detail/Panels.js";
 import { SessionHeader } from "../components/session-detail/SessionHeader.js";
 import { SessionOwnerDialog } from "../components/session-detail/SessionOwnerDialog.js";
-import { SessionPromptComposer } from "../components/session-detail/SessionPromptComposer.js";
+import { SessionComposerSlot } from "../components/session-detail/SessionPromptComposer.js";
 import {
 	AgentObserveOnlyHint,
 	CodexStatusHint,
@@ -897,8 +897,8 @@ export function SessionDetailPage() {
 					}}
 				/>
 			)}
-			{session.agentType === "claude_code" && session.managedSession ? (
-				<SessionPromptComposer session={session} onSubmitted={loadSessionWorkspace} />
+			{session.managedSession ? (
+				<SessionComposerSlot session={session} onSubmitted={loadSessionWorkspace} />
 			) : null}
 		</div>
 	);

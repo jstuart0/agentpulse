@@ -16,6 +16,7 @@ import {
 	eventKey,
 	eventLabel,
 	eventRowLabel,
+	eventRowTone,
 } from "./TimelineView.js";
 import { ToolCallBlock } from "./ToolCallBlock.js";
 
@@ -181,15 +182,7 @@ function renderBubbleEvent(
 			lateNote={lateNote}
 			lateDetail={lateDetail}
 			late={late}
-			tone={
-				event.eventType === "ManagedEventsLost"
-					? "amber"
-					: event.category === "status_update"
-						? "emerald"
-						: event.category === "permission_event"
-							? "amber"
-							: "default"
-			}
+			tone={eventRowTone(event)}
 			source={mode === "debug" ? event.source : undefined}
 			plainText={
 				event.eventType === "ManagedEventsLost" || event.eventType === APPROVAL_RESOLVED_EVENT
