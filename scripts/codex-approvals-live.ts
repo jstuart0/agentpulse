@@ -45,11 +45,11 @@ import {
 	readFileSync,
 	readdirSync,
 	realpathSync,
-	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir, hostname, tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
+import { guardAuthCopy, removeAuthCopy } from "./codex-canary-guard.js";
 
 type Frame = { t: number; dir: "in" | "out"; frame: any };
 type Obs = Record<string, unknown>;
@@ -60,6 +60,9 @@ const opt = (name: string) => {
 	const i = args.indexOf(name);
 	return i >= 0 ? args[i + 1] : undefined;
 };
+
+/** How long cleanup waits for the managed Codex runtimes to shut down before killing their process groups. */
+const DISPOSE_TIMEOUT_MS = 20_000;
 
 /** The scenarios `--real` knows, in the order a default run takes them. */
 const REAL_SCENARIO_IDS = ["argv", "decline", "fc-accept", "fc-decline", "fc-patch", "followup"];
@@ -1204,8 +1207,23 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 	const realAuth = join(homedir(), ".codex", "auth.json");
 	if (!existsSync(realAuth))
 		throw new Error("no ~/.codex/auth.json to copy; sign in to Codex first");
-	copyFileSync(realAuth, join(codexHome, "auth.json"));
-	chmodSync(join(codexHome, "auth.json"), 0o600);
+	// The guard goes in first: from the moment the copy exists, any way this process ends removes it.
+	const authCopy = join(codexHome, "auth.json");
+	const childGroups = new Set<number>();
+	/** Codex processes whose environment names this run's CODEX_HOME: also those a launch still in flight hasn't returned yet. */
+	const ownCodexPids = (): number[] =>
+		spawnSync("pgrep", ["-x", "codex"], { encoding: "utf8" })
+			.stdout.split("\n")
+			.filter(Boolean)
+			.filter((pid) =>
+				spawnSync("ps", ["-Eww", "-p", pid, "-o", "command="], {
+					encoding: "utf8",
+				}).stdout.includes(`CODEX_HOME=${codexHome}`),
+			)
+			.map(Number);
+	guardAuthCopy(authCopy, () => [...childGroups, ...ownCodexPids()]);
+	copyFileSync(realAuth, authCopy);
+	chmodSync(authCopy, 0o600);
 
 	process.env.HOME = home;
 	process.env.CODEX_HOME = codexHome;
@@ -1234,29 +1252,35 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 		cleaned = true;
 		clearTimeout(killTimer);
 		for (const timer of intervals) clearInterval(timer);
+		// The credential copy goes first: nothing below may keep it alive.
+		removeAuthCopy(authCopy);
 		try {
-			await dispose?.();
+			await Promise.race([dispose?.(), sleep(DISPOSE_TIMEOUT_MS)]);
 		} catch {}
+		for (const group of [...childGroups, ...ownCodexPids()]) {
+			try {
+				process.kill(-group, "SIGKILL");
+			} catch {
+				try {
+					process.kill(group, "SIGKILL");
+				} catch {}
+			}
+		}
 		server?.stop(true);
-		rmSync(join(codexHome, "auth.json"), { force: true });
 		const left = spawnSync("pgrep", ["-f", `${codexHome}|${root}`], { encoding: "utf8" })
 			.stdout.split("\n")
 			.filter(Boolean)
 			.filter((pid) => Number(pid) !== process.pid);
 		// Only this run's own Codex processes count: another campaign's `codex exec` may be running on
-		// this machine, so a machine-wide check would fail for the wrong reason. Ours are the ones whose
-		// environment names our throwaway CODEX_HOME. Nothing is signalled here; this only looks.
-		const codexLeft = spawnSync("pgrep", ["-x", "codex"], { encoding: "utf8" })
-			.stdout.split("\n")
-			.filter(Boolean)
-			.filter((pid) =>
-				spawnSync("ps", ["-Eww", "-p", pid, "-o", "command="], {
-					encoding: "utf8",
-				}).stdout.includes(`CODEX_HOME=${codexHome}`),
-			);
+		// this machine, so a machine-wide check would fail for the wrong reason.
+		let codexLeft = ownCodexPids().map(String);
+		for (let i = 0; i < 20 && codexLeft.length > 0; i++) {
+			await sleep(150);
+			codexLeft = ownCodexPids().map(String);
+		}
 		console.log(
 			JSON.stringify({
-				authCopyRemoved: !existsSync(join(codexHome, "auth.json")),
+				authCopyRemoved: !existsSync(authCopy),
 				leftover: left,
 				ownCodexLeft: codexLeft,
 			}),
@@ -1453,6 +1477,7 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 				reportState: (body: any) => gate.reportState(body),
 				reportEvents: (events: any) => gate.reportEvents(sessionId, events),
 			});
+			childGroups.add(started.pid);
 			const out: Record<string, unknown> = { sessionId };
 			const verdict = await until("the protocol verdict", 30_000, async () => {
 				const [row] = await getDb()
@@ -1585,7 +1610,11 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 			const deadline = Date.now() + 15_000;
 			for (;;) {
 				const left = groupPids(pgid).filter(pidAlive);
-				if (left.length === 0) return "none";
+				if (left.length === 0) {
+					// Verified gone: forget it, so a recycled pid is never signalled by the cleanup.
+					childGroups.delete(pgid);
+					return "none";
+				}
 				if (Date.now() > deadline) return `still running: ${left.join(",")}`;
 				await sleepMs(300);
 			}
@@ -1747,6 +1776,7 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 				reportState: (body: any) => gate.reportState(body),
 				reportEvents: (batch: any) => gate.reportEvents(sessionId, batch),
 			});
+			childGroups.add(started.pid);
 			const managedRow = async () =>
 				(
 					await getDb()
