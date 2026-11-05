@@ -27,13 +27,20 @@ import type {
 	promptClaudeHeadlessSession,
 	promptClaudeInteractiveSession,
 } from "./providers/claude.js";
-import type { stopManagedCodexSession } from "./providers/codex-managed.js";
+import type {
+	hasManagedCodexRuntime,
+	promptManagedCodexSession,
+	stopManagedCodexSession,
+} from "./providers/codex-managed.js";
+import { CodexPromptWithheld } from "./providers/codex-shared.js";
 import { CleanupError, type executeCleanupWorkArea } from "./services/cleanup-workarea.js";
 import { type ReportGate, controlRefusalBody } from "./services/report-gate.js";
 import { canonicalSpawnCwd } from "./services/spawn-cwd.js";
 
 export type ControlProviders = {
 	stopManagedCodexSession: typeof stopManagedCodexSession;
+	promptManagedCodexSession: typeof promptManagedCodexSession;
+	hasManagedCodexRuntime: typeof hasManagedCodexRuntime;
 	promptClaudeHeadlessSession: typeof promptClaudeHeadlessSession;
 	promptClaudeInteractiveSession: typeof promptClaudeInteractiveSession;
 };
@@ -57,6 +64,25 @@ function namedDirectory(action: ControlAction): string | undefined {
 	if (action.actionType !== "prompt" && action.actionType !== "cleanup_workarea") return undefined;
 	const cwd = asRecord(action.metadata)?.cwd;
 	return typeof cwd === "string" && cwd ? cwd : undefined;
+}
+
+const PROMPT_WORDS = {
+	missingPrompt: "Prompt action is missing its prompt text.",
+	unknownAgent: "This host can't send prompts to this kind of session.",
+	mismatch: "This session's records don't match how it was launched, so nothing was sent.",
+} as const;
+
+/** The plain words for why a Codex session in this state can't take a prompt. The raw value is never echoed. */
+function wrongStateMessage(state: ManagedState | null): string {
+	const words =
+		state === "degraded"
+			? "having trouble reaching Codex"
+			: state === "pending" || state === "linked"
+				? "still starting up"
+				: state === "stopped" || state === "completed" || state === "failed"
+					? "already finished"
+					: "not ready";
+	return `This session can't take a prompt because it's ${words}.`;
 }
 
 export function createControlActionHandler(
@@ -94,14 +120,59 @@ export function createControlActionHandler(
 		}
 	}
 
+	/** A Codex session's prompt starts a turn on its live thread, or is refused with fixed words. Never the Claude path. */
+	async function promptCodex(
+		action: ControlAction,
+		sessionId: string,
+		text: string,
+		managedState: ManagedState | null,
+		callbacks: LaunchCallbacks,
+	) {
+		let metadata: Record<string, unknown>;
+		try {
+			if (!text) throw new Error(PROMPT_WORDS.missingPrompt);
+			if (managedState !== "managed") throw new Error(wrongStateMessage(managedState));
+			({ metadata } = await providers.promptManagedCodexSession(
+				{ sessionId, prompt: text },
+				callbacks,
+			));
+		} catch (error) {
+			if (error instanceof CodexPromptWithheld) {
+				log(`[supervisor] control action ${action.id} (prompt) withheld`);
+				await gate.refuseControlAction(action.id);
+				return;
+			}
+			// Replaces the stored metadata, which still holds the prompt text.
+			await report(action, {
+				status: "failed",
+				error: error instanceof Error ? error.message : "Failed to send the prompt",
+				metadata: { mode: "managed_codex" },
+			});
+			return;
+		}
+		// Codex has the prompt. A report that fails here must not turn into a failed action.
+		try {
+			await report(action, { status: "succeeded", metadata });
+		} catch (error) {
+			log(
+				`[supervisor] prompt action ${action.id} was delivered but its status wasn't reported: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+		}
+	}
+
 	async function prompt(action: ControlAction, sessionId: string) {
 		const metadata = (action.metadata ?? {}) as Record<string, unknown>;
 		const text = typeof metadata.prompt === "string" ? metadata.prompt : "";
 		const cwd = typeof metadata.cwd === "string" ? metadata.cwd : "";
 		const model = typeof metadata.model === "string" ? metadata.model : null;
-		// Coerce metadata.managedState (cross-process JSON, untyped) into the
-		// canonical ManagedState union; unknown values fall through as null
-		// so the prompt routing below treats them as the default headless path.
+		// The agent type is the launch's, stamped by the server. It decides the provider before the mode does:
+		// a mode names a Claude process shape, and sending a Codex session down that path would start
+		// `claude --resume` in the launch directory.
+		const agentType = typeof metadata.agentType === "string" ? metadata.agentType : null;
+		// Coerce metadata.managedState (cross-process JSON, untyped) into the canonical ManagedState union;
+		// an unknown value is null. For Claude that is the default headless path; for Codex it is "not ready".
 		const managedState: ManagedState | null =
 			typeof metadata.managedState === "string" &&
 			(MANAGED_STATES as readonly string[]).includes(metadata.managedState)
@@ -117,9 +188,24 @@ export function createControlActionHandler(
 			reportEvents: (events) => gate.reportEvents(sessionId, events),
 		};
 
+		if (agentType === "codex_cli") {
+			await promptCodex(action, sessionId, text, managedState, callbacks);
+			return;
+		}
+
 		try {
+			if (agentType !== "claude_code") {
+				log(
+					`[supervisor] prompt action ${action.id} refused: unsupported agent type ${JSON.stringify(String(agentType)).slice(0, 80)}`,
+				);
+				throw new Error(PROMPT_WORDS.unknownAgent);
+			}
 			if (!text || !cwd) {
 				throw new Error("Prompt action is missing prompt or working directory.");
+			}
+			if (providers.hasManagedCodexRuntime(sessionId)) {
+				// This host holds a Codex process for the session, so the record the server sent is wrong.
+				throw new Error(PROMPT_WORDS.mismatch);
 			}
 
 			if (managedState === "interactive_terminal") {

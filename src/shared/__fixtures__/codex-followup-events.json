@@ -1,0 +1,40 @@
+[
+	{
+		"eventType": "HeadlessPromptSubmitted",
+		"category": "prompt",
+		"content": "run the tests",
+		"rawPayload": {
+			"source": "agentpulse_workspace",
+			"codexRuntime": true
+		}
+	},
+	{
+		"eventType": "ManagedAgentMessage",
+		"category": "assistant_message",
+		"content": "All tests passed.",
+		"rawPayload": {
+			"notification": {
+				"method": "item/completed",
+				"params": {
+					"threadId": "<thread>",
+					"turnId": "<turn>",
+					"item": {
+						"type": "agentMessage",
+						"id": "item-1",
+						"text": "All tests passed."
+					}
+				}
+			}
+		}
+	},
+	{
+		"eventType": "HeadlessPromptCompleted",
+		"category": "system_event",
+		"content": "Codex finished the turn.",
+		"rawPayload": {
+			"codexTurnId": "<turn>",
+			"status": "completed",
+			"codexRuntime": true
+		}
+	}
+]

@@ -2,6 +2,7 @@ import { constants, accessSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { arch, homedir, hostname, platform } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
+import { CODEX_FOLLOW_UP_PROMPTS } from "../shared/constants.js";
 import {
 	tightenPrivateFilePermissionsSync,
 	writePrivateFileSyncNoFollow,
@@ -54,7 +55,7 @@ function currentOs() {
 				: "unknown";
 }
 
-function buildDefaultConfig(): SupervisorConfig {
+export function buildDefaultConfig(): SupervisorConfig {
 	return {
 		serverUrl: process.env.AGENTPULSE_SERVER_URL || "http://localhost:3000",
 		apiKey: process.env.AGENTPULSE_API_KEY,
@@ -83,6 +84,7 @@ function buildDefaultConfig(): SupervisorConfig {
 				"can_clone_repo",
 				"can_cleanup_workarea",
 				"managed_codex",
+				CODEX_FOLLOW_UP_PROMPTS,
 				"headless_claude",
 				"enforces_launch_privileges",
 				"offline_outbox",
@@ -252,7 +254,7 @@ export async function withExecutableCapabilities(
 				...(git.resolvedPath ? ["can_scaffold_workarea", "can_clone_repo"] : []),
 				...(terminalSupport.length > 0 ? ["interactive_terminal"] : []),
 				...(interactiveTerminalControl.available ? ["interactive_terminal_control"] : []),
-				...(codex.resolvedPath ? ["managed_codex"] : []),
+				...(codex.resolvedPath ? ["managed_codex", CODEX_FOLLOW_UP_PROMPTS] : []),
 			],
 			interactiveTerminalControl,
 			executables: {

@@ -17,8 +17,10 @@ import {
 } from "./providers/claude.js";
 import { wireCodexApprovals } from "./providers/codex-approvals-wiring.js";
 import {
+	hasManagedCodexRuntime,
 	launchManagedCodexRequest,
 	managedCodexRuntimeCount,
+	promptManagedCodexSession,
 	reconcileManagedCodexTitles,
 	stopManagedCodexSession,
 } from "./providers/codex-managed.js";
@@ -315,6 +317,8 @@ async function main() {
 		trustedRoots: config.trustedRoots,
 		providers: {
 			stopManagedCodexSession,
+			promptManagedCodexSession,
+			hasManagedCodexRuntime,
 			promptClaudeHeadlessSession,
 			promptClaudeInteractiveSession,
 		},

@@ -96,7 +96,12 @@ async function launchedOn(sessionId: string, host: Credential): Promise<string> 
 	const report = await app.request(`/api/v1/supervisors/${host.id}/managed-session-state`, {
 		method: "POST",
 		headers: agent(host),
-		body: JSON.stringify({ sessionId, launchRequestId: launchRequest?.id }),
+		// The row names the launch's agent type, as a real supervisor's first report does.
+		body: JSON.stringify({
+			sessionId,
+			launchRequestId: launchRequest?.id,
+			agentType: "claude_code",
+		}),
 	});
 	expect(report.status).toBe(200);
 	return launchRequest?.id as string;

@@ -7,7 +7,12 @@ import {
 	requireLaunchPrivileges,
 	sanitizeReportedByAgent,
 } from "../../shared/launch-privileges.js";
-import type { LaunchRequest, ManagedSession } from "../../shared/types.js";
+import { MAX_EVENT_CONTENT_CHARS } from "../../shared/managed-report-limits.js";
+import type {
+	LaunchRequest,
+	ManagedSession,
+	ManagedSessionStateInput,
+} from "../../shared/types.js";
 import { disposeRuntimesAndExit } from "../services/fatal-exit.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
 import { type ApprovalLaunch, sharedCodexApprovals } from "./codex-approvals.js";
@@ -23,6 +28,8 @@ import {
 	startCodexAppServer,
 } from "./codex-rpc.js";
 import {
+	CodexPromptWithheld,
+	type FollowUp,
 	type LaunchCallbacks,
 	type ManagedCodexRuntime,
 	buildPrompt,
@@ -30,6 +37,11 @@ import {
 } from "./codex-shared.js";
 
 const runtimes = new Map<string, ManagedCodexRuntime>();
+
+/** True when this supervisor holds a live Codex runtime for the session (a Claude action for one is a mismatch). */
+export function hasManagedCodexRuntime(sessionId: string): boolean {
+	return runtimes.has(sessionId);
+}
 
 /** How many managed Codex agents this supervisor is running; the keep-alive rule reads it. */
 export function managedCodexRuntimeCount(): number {
@@ -52,6 +64,138 @@ export async function disposeAllManagedCodexRuntimes(): Promise<void> {
 				console.error("[codex-managed] runtime dispose failed during fatal shutdown:", err);
 			}
 		}),
+	);
+}
+
+/** How long a follow-up's `turn/start` gets to answer before the turn is treated as possibly started. */
+export const CODEX_TURN_START_TIMEOUT_MS = 15_000;
+/** How much of a turn's own error text the host log keeps. */
+const HOST_LOG_ERROR_CHARS = 300;
+
+/**
+ * Every sentence a follow-up can put in front of a person. Fixed words: the timeline row feeds the watcher's
+ * evidence and Telegram, and fixed words can't be read as instructions. Codex's own error text goes to the
+ * host log only.
+ */
+const PROMPT_COPY = {
+	noRuntime: "This session's Codex process isn't running on its host any more.",
+	busy: "Codex hasn't ended its current turn. Send this again when it ends.",
+	uncertain:
+		"The last prompt may still be running. Send this again after it ends, or stop the session.",
+	timeout:
+		"Codex didn't answer in time. The prompt may have started, so check the timeline. Prompts stay blocked until this turn ends or the session is stopped.",
+	tooLong: "This prompt is too long to send to Codex.",
+	notRecorded: "AgentPulse couldn't record this prompt, so it wasn't sent.",
+	completed: "Codex finished the turn.",
+	failed: "Codex turn failed.",
+	interrupted: "Codex turn was interrupted.",
+	unknownResult: "Codex turn ended with an unknown result.",
+	closed: "The connection to Codex closed during this turn.",
+	rejected: "Codex refused this prompt.",
+	stopped: "This prompt wasn't sent because the session stopped.",
+} as const;
+
+type TurnEnd = { failed: boolean; content: string; status: string; turnId?: string | null };
+
+/** The one place a turn's status becomes words. Anything unrecognised is a failure with no claim about what happened. */
+function endForStatus(status: unknown): Pick<TurnEnd, "failed" | "content" | "status"> {
+	const shown = typeof status === "string" && status.length <= 64 ? status : "unknown";
+	switch (status) {
+		case "completed":
+			return { failed: false, content: PROMPT_COPY.completed, status: shown };
+		case "failed":
+			return { failed: true, content: PROMPT_COPY.failed, status: shown };
+		case "interrupted":
+			return { failed: true, content: PROMPT_COPY.interrupted, status: shown };
+		default:
+			return { failed: true, content: PROMPT_COPY.unknownResult, status: shown };
+	}
+}
+
+/** Reads and clears the running follow-up. Whoever gets it writes its one end event. */
+function takeFollowUp(runtime: ManagedCodexRuntime): FollowUp | null {
+	const followUp = runtime.followUp;
+	runtime.followUp = null;
+	return followUp;
+}
+
+function emitFollowUpEnd(
+	followUp: FollowUp,
+	callbacks: LaunchCallbacks,
+	end: TurnEnd,
+): Promise<unknown> {
+	const turnId = end.turnId ?? followUp.turnId;
+	return callbacks.reportEvents([
+		{
+			eventType: end.failed ? "HeadlessPromptFailed" : "HeadlessPromptCompleted",
+			category: "system_event",
+			content: end.content,
+			rawPayload: {
+				...(turnId ? { codexTurnId: turnId } : {}),
+				status: end.status,
+				codexRuntime: true,
+			},
+		},
+	]);
+}
+
+/**
+ * Reports the session idle, unless something has moved on since the turn this report is about: a stop began
+ * (it reports `stopped` itself, and an idle report would overwrite that) or a newer turn started (its flag
+ * would be cleared by the older turn's report). The generation, not `turnStarting`, is the test: a launch
+ * turn that completes before its reply's continuation still has `turnStarting` set, and this report is the
+ * only thing that clears its working state.
+ */
+async function reportIdle(
+	runtime: ManagedCodexRuntime,
+	callbacks: LaunchCallbacks,
+	generation: number,
+	over: Partial<ManagedSessionStateInput> = {},
+): Promise<void> {
+	if (runtime.stopping || runtime.intentionalClose || runtime.turnGeneration !== generation) return;
+	await reportInSessionSafely(
+		"codex-managed",
+		runtime.sessionId,
+		"idle",
+		() =>
+			callbacks.reportState({
+				sessionId: runtime.sessionId,
+				launchRequestId: runtime.launchRequestId,
+				managedState: "managed",
+				status: "idle",
+				...over,
+			}),
+		disposeRuntimesAndExit,
+	);
+}
+
+/** Text for the host log: no control characters, bounded. */
+function forHostLog(value: unknown): string {
+	const text = typeof value === "string" ? value : value instanceof Error ? value.message : "";
+	let out = "";
+	for (const char of text) {
+		const code = char.codePointAt(0) ?? 0;
+		if (code >= 0x20 && code !== 0x7f && !(code >= 0x80 && code <= 0x9f)) out += char;
+		if (out.length >= HOST_LOG_ERROR_CHARS) break;
+	}
+	return out.slice(0, HOST_LOG_ERROR_CHARS);
+}
+
+const isRequestTimeout = (error: unknown) =>
+	error instanceof Error && error.message.startsWith("Timed out waiting for turn/start");
+
+async function emitEndSafely(
+	runtime: ManagedCodexRuntime,
+	followUp: FollowUp,
+	callbacks: LaunchCallbacks,
+	end: TurnEnd,
+) {
+	await reportInSessionSafely(
+		"codex-managed",
+		runtime.sessionId,
+		"turn-end",
+		() => emitFollowUpEnd(followUp, callbacks, end),
+		disposeRuntimesAndExit,
 	);
 }
 
@@ -204,11 +348,18 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 			metadata: { mode: "dry-run", threadId, privileges: privilegeMetadata(privileges) },
 			runtime: {
 				sessionId: launch.launchCorrelationId,
+				launchRequestId: launch.id,
 				threadId,
 				client: null,
 				currentThreadTitle: desiredState.session.displayName,
 				protocolVersion: "dry-run",
 				activeTurnId: null,
+				turnStarting: false,
+				turnUncertain: false,
+				turnGeneration: 0,
+				stopping: false,
+				followUp: null,
+				lastCompletedTurnId: null,
 				intentionalClose: false,
 				syncTitle: async () => {},
 				dispose: async () => {},
@@ -245,6 +396,7 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		warn: reportApprovalWarning,
 	});
 	let runtimeRef: ManagedCodexRuntime | undefined;
+	let startEventSent = false;
 
 	try {
 		const initResult = await initializeCodexClient<Record<string, unknown>>(client, {
@@ -368,6 +520,7 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 
 		const runtime: ManagedCodexRuntime = {
 			sessionId: launch.launchCorrelationId,
+			launchRequestId: launch.id,
 			threadId,
 			client,
 			currentThreadTitle: shouldPushBootstrapTitle(bootstrap.outcome)
@@ -375,6 +528,13 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 				: "",
 			protocolVersion: resolveProviderProtocolVersion(initResult),
 			activeTurnId: null,
+			// The launch's own turn/start is still to come: nothing may start a turn before it settles.
+			turnStarting: true,
+			turnUncertain: false,
+			turnGeneration: 0,
+			stopping: false,
+			followUp: null,
+			lastCompletedTurnId: null,
 			intentionalClose: false,
 			syncTitle: async (title: string) => {
 				await syncTitle(title);
@@ -411,24 +571,26 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 				runtimes.delete(launch.launchCorrelationId);
 				return;
 			}
+			// A follow-up in flight ends with this close: take it now, before anything awaits, so a rejected
+			// turn/start sees it gone and writes nothing of its own.
+			const followUp = takeFollowUp(runtime);
+			const generation = runtime.turnGeneration;
 			// F25/D6: same in-session-reporting hazard as the notification
 			// handler above — the control channel is already gone, so there's
 			// nothing more useful to do than log (or, for a 401, exit) and
 			// finish tearing the runtime down.
-			await reportInSessionSafely(
-				"codex-managed",
-				launch.launchCorrelationId,
-				"degraded-state",
-				() =>
-					callbacks.reportState({
-						sessionId: launch.launchCorrelationId,
-						launchRequestId: launch.id,
-						managedState: "degraded",
-						providerSyncState: "failed",
-						providerSyncError: error?.message ?? "Codex control channel closed",
-					}),
-				disposeRuntimesAndExit,
-			);
+			await reportIdle(runtime, callbacks, generation, {
+				managedState: "degraded",
+				providerSyncState: "failed",
+				providerSyncError: error?.message ?? "Codex control channel closed",
+			});
+			if (followUp) {
+				await emitEndSafely(runtime, followUp, callbacks, {
+					failed: true,
+					content: PROMPT_COPY.closed,
+					status: "closed",
+				});
+			}
 			runtimes.delete(launch.launchCorrelationId);
 		});
 
@@ -439,9 +601,11 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 				eventType: "ManagedSessionStart",
 				category: "system_event",
 				content: "Managed Codex session started.",
-				rawPayload: { threadId },
+				// The marker is what lets the server read this as the start of a real turn (a dry run has none).
+				rawPayload: { threadId, codexRuntime: true },
 			},
 		]);
+		startEventSent = true;
 
 		const prompt = buildPrompt(launch);
 		const turn = await client.request<{ turn: { id: string } }>("turn/start", {
@@ -450,7 +614,9 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 			cwd: launch.cwd,
 			model: launch.model ?? undefined,
 		});
-		runtime.activeTurnId = turn.turn.id;
+		// A turn that already ended (its completion came before this reply) must not be left marked active.
+		if (runtime.lastCompletedTurnId !== turn.turn.id) runtime.activeTurnId = turn.turn.id;
+		runtime.turnStarting = false;
 
 		return {
 			pid: server.pid,
@@ -466,6 +632,24 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 			runtime,
 		};
 	} catch (error) {
+		// A launch that failed after its start event left the server believing a turn is running.
+		if (startEventSent) {
+			await reportInSessionSafely(
+				"codex-managed",
+				launch.launchCorrelationId,
+				"launch-failed",
+				() =>
+					callbacks.reportState({
+						sessionId: launch.launchCorrelationId,
+						launchRequestId: launch.id,
+						managedState: "degraded",
+						providerSyncState: "failed",
+						providerSyncError: error instanceof Error ? error.message : "Codex launch failed",
+						status: "idle",
+					}),
+				disposeRuntimesAndExit,
+			);
+		}
 		// Whatever failed, the child goes through the same shutdown as every other path.
 		if (runtimeRef) runtimeRef.intentionalClose = true;
 		runtimes.delete(launch.launchCorrelationId);
@@ -473,6 +657,122 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		await server.shutdown();
 		throw error;
 	}
+}
+
+/**
+ * Starts a new turn on a managed Codex session's live thread (AGEN-91). The wire shape is exactly
+ * `{threadId, input}`: the thread's approval policy, sandbox, directory and model were set and verified when
+ * it started and are sticky, so a follow-up carries no override that could widen them.
+ *
+ * It refuses, with fixed words and nothing sent, whenever it can't be sure a turn isn't running: Codex may
+ * steer an active turn rather than fail a second `turn/start`, so "busy" is judged here, in the one process
+ * that holds the thread. At most one `turn/start` is in flight per runtime.
+ *
+ * Order: refuse or claim the runtime (synchronously), report the prompt (so agent messages can't land ahead
+ * of it), check nothing changed meanwhile, then `turn/start`. Whoever takes `followUp` writes the turn's one
+ * end event.
+ */
+export async function promptManagedCodexSession(
+	input: { sessionId: string; prompt: string },
+	callbacks: LaunchCallbacks,
+	options: { turnStartTimeoutMs?: number } = {},
+): Promise<{ metadata: Record<string, unknown> }> {
+	const { sessionId, prompt } = input;
+	const runtime = runtimes.get(sessionId);
+	const client = runtime?.client;
+	if (!runtime || !client || client.isClosed || runtime.intentionalClose || runtime.stopping) {
+		throw new Error(PROMPT_COPY.noRuntime);
+	}
+	if (runtime.turnUncertain) throw new Error(PROMPT_COPY.uncertain);
+	if (runtime.activeTurnId || runtime.turnStarting) throw new Error(PROMPT_COPY.busy);
+	if (prompt.length > MAX_EVENT_CONTENT_CHARS) throw new Error(PROMPT_COPY.tooLong);
+
+	// No await between the checks above and these writes: two prompts can't both pass.
+	const followUp: FollowUp = { turnId: null };
+	runtime.turnStarting = true;
+	runtime.followUp = followUp;
+	runtime.turnGeneration += 1;
+	const generation = runtime.turnGeneration;
+	const stillMine = () => runtime.followUp === followUp;
+	const undo = () => {
+		runtime.turnStarting = false;
+		if (stillMine()) runtime.followUp = null;
+	};
+	const writeEnd = (end: TurnEnd) => emitEndSafely(runtime, followUp, callbacks, end);
+
+	let outcome: unknown;
+	try {
+		outcome = await callbacks.reportEvents([
+			{
+				eventType: "HeadlessPromptSubmitted",
+				category: "prompt",
+				content: prompt,
+				rawPayload: { source: "agentpulse_workspace", codexRuntime: true },
+			},
+		]);
+	} catch (error) {
+		// The server may or may not have the event, so nothing was sent and the working flag it may have set is cleared.
+		undo();
+		console.error(
+			`[codex-managed] couldn't record a follow-up prompt (session=${sessionId}): ${forHostLog(error)}`,
+		);
+		await reportIdle(runtime, callbacks, generation);
+		throw new Error(PROMPT_COPY.notRecorded);
+	}
+	if (outcome === "excluded" || outcome === "blocked") {
+		undo();
+		throw new CodexPromptWithheld();
+	}
+
+	if (
+		runtimes.get(sessionId) !== runtime ||
+		client.isClosed ||
+		runtime.stopping ||
+		runtime.intentionalClose
+	) {
+		const taken = stillMine();
+		undo();
+		if (taken) await writeEnd({ failed: true, content: PROMPT_COPY.stopped, status: "not_sent" });
+		throw new Error(PROMPT_COPY.noRuntime);
+	}
+
+	const markUncertain = (): never => {
+		// The turn may exist and a second turn/start could steer it: nothing more is sent until Codex says
+		// so (turn/started or turn/completed), the channel closes, or the session is stopped.
+		runtime.turnUncertain = true;
+		runtime.turnStarting = false;
+		throw new Error(PROMPT_COPY.timeout);
+	};
+
+	let started: { turn?: { id?: unknown } } | undefined;
+	try {
+		started = await client.request<{ turn?: { id?: unknown } }>(
+			"turn/start",
+			{ threadId: runtime.threadId, input: [{ type: "text", text: prompt }] },
+			{ timeoutMs: options.turnStartTimeoutMs ?? CODEX_TURN_START_TIMEOUT_MS },
+		);
+	} catch (error) {
+		if (isRequestTimeout(error)) return markUncertain();
+		console.error(`[codex-managed] turn/start failed (session=${sessionId}): ${forHostLog(error)}`);
+		const taken = stillMine();
+		undo();
+		if (client.isClosed) {
+			// An unplanned close took the follow-up and wrote its end; a planned one leaves it to us.
+			if (taken) await writeEnd({ failed: true, content: PROMPT_COPY.stopped, status: "not_sent" });
+			throw new Error(PROMPT_COPY.noRuntime);
+		}
+		if (taken) await writeEnd({ failed: true, content: PROMPT_COPY.rejected, status: "rejected" });
+		throw new Error(PROMPT_COPY.rejected);
+	}
+
+	const turnId = started?.turn?.id;
+	if (typeof turnId !== "string" || !turnId) return markUncertain();
+
+	if (stillMine()) followUp.turnId = turnId;
+	// The turn may already have ended (its completion came before this reply).
+	if (runtime.lastCompletedTurnId !== turnId) runtime.activeTurnId = turnId;
+	runtime.turnStarting = false;
+	return { metadata: { mode: "managed_codex", threadId: runtime.threadId, turnId } };
 }
 
 /**
@@ -540,14 +840,47 @@ async function handleManagedCodexNotification(
 		return;
 	}
 
+	if (notification.method === "turn/started") {
+		const params = notification.params as
+			| { threadId?: unknown; turn?: { id?: unknown } }
+			| undefined;
+		const turnId = params?.turn?.id;
+		if (params?.threadId !== threadId || typeof turnId !== "string" || !turnId) return;
+		if (turnId === runtime.lastCompletedTurnId) return;
+		// Codex has said the turn exists: no longer uncertain, and now known to be running.
+		runtime.turnUncertain = false;
+		if (!runtime.activeTurnId) runtime.activeTurnId = turnId;
+		if (runtime.followUp && !runtime.followUp.turnId) runtime.followUp.turnId = turnId;
+		return;
+	}
+
 	if (notification.method === "turn/completed") {
+		const params = notification.params as
+			| { threadId?: unknown; turn?: { id?: unknown; status?: unknown; error?: unknown } }
+			| undefined;
+		// Another thread's turn (a subagent's, say) ends nothing of ours.
+		if (params?.threadId !== threadId) return;
+		const turn = params.turn;
+		const turnId = typeof turn?.id === "string" && turn.id ? turn.id : null;
+		if (turnId && runtime.activeTurnId && turnId !== runtime.activeTurnId) return;
+
+		// All of this is synchronous: nothing else may observe the runtime between the clears and the take.
+		if (turnId) runtime.lastCompletedTurnId = turnId;
 		runtime.activeTurnId = null;
-		await callbacks.reportState({
-			sessionId: launch.launchCorrelationId,
-			launchRequestId: launch.id,
-			managedState: "managed",
-			status: "idle",
-		});
+		runtime.turnUncertain = false;
+		const followUp = takeFollowUp(runtime);
+		const generation = runtime.turnGeneration;
+
+		if (followUp) {
+			const error = (turn?.error ?? null) as { message?: unknown } | null;
+			if (error?.message) {
+				console.error(
+					`[codex-managed] turn ended with an error (session=${runtime.sessionId}): ${forHostLog(error.message)}`,
+				);
+			}
+			await emitFollowUpEnd(followUp, callbacks, { ...endForStatus(turn?.status), turnId });
+		}
+		await reportIdle(runtime, callbacks, generation);
 	}
 }
 
@@ -563,6 +896,9 @@ export async function stopManagedCodexSession(
 	if (!runtime) {
 		throw new Error("Managed Codex runtime is not available on this supervisor.");
 	}
+	// Before the interrupt, which can take seconds: nothing new may be sent, and no idle report may overwrite
+	// the state the stop is about to write.
+	runtime.stopping = true;
 
 	if (runtime.client && runtime.activeTurnId) {
 		try {

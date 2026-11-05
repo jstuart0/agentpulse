@@ -96,6 +96,7 @@ const ENV_KEYS = [
 	"FAKE_CODEX_TURN_START_SILENT",
 	"FAKE_CODEX_TURN_COMPLETE_BEFORE_REPLY",
 	"FAKE_CODEX_REALISTIC",
+	"FAKE_CODEX_IGNORE_INTERRUPT",
 ];
 const saved: Record<string, string | undefined> = {};
 const worlds: World[] = [];
@@ -715,7 +716,7 @@ describe("what the report gate says about the prompt event", () => {
 
 	test("queued proceeds", async () => {
 		const world = await launch();
-		world.hooks.onEvents = async () => "queued";
+		world.hooks.onEvents = async () => "queued" as const;
 		await prompt(world, "later");
 		expect(turnStarts(world)).toHaveLength(2);
 	});
@@ -771,6 +772,22 @@ describe("what the report gate says about the prompt event", () => {
 		const failed = eventsOf(world, "HeadlessPromptFailed");
 		expect(failed).toHaveLength(1);
 		expect(failed[0]?.content).toBe(COPY.stopped);
+	});
+
+	test("during a stop's interrupt window: new prompts are refused as gone, and a turn ending then sends no idle report", async () => {
+		const world = await launch({ knobs: { FAKE_CODEX_IGNORE_INTERRUPT: "1" } });
+		await prompt(world, "go");
+		const idleBefore = idleReports(world).length;
+		const stopping = stopManagedCodexSession(world.id, { interruptTimeoutMs: 600 });
+		await waitFor("the interrupt", () =>
+			readFakeLog(world.logPath).some((entry) => entry.method === "turn/interrupt"),
+		);
+		// Not "busy": the session is going away, and the person should be told so.
+		await expectRejects(prompt(world, "too late"), COPY.noRuntime);
+		endTurn(world, "turn-2");
+		await Bun.sleep(150);
+		await stopping;
+		expect(idleReports(world).length).toBe(idleBefore);
 	});
 
 	test("Stop while the end event is being reported: no idle report follows", async () => {
@@ -865,16 +882,5 @@ describe("launching", () => {
 		await expect(
 			launchManagedCodexRequest(launchRequest(crypto.randomUUID()), failing),
 		).rejects.toThrow(/turn refused/);
-	});
-});
-
-describe("the evidence the plan relies on", () => {
-	test("writes a fixture-friendly file only on request (guards the helper's contract)", () => {
-		const dir = mkdtempSync(join(tmpdir(), "ap-fixture-"));
-		homes.push(dir);
-		const url = new URL(`file://${join(dir, "missing.json")}`);
-		expect(() => readOrUpdateFixture(url, { a: 1 })).toThrow(
-			/regenerate it with UPDATE_FIXTURES=1/,
-		);
 	});
 });

@@ -515,6 +515,10 @@ export async function enqueuePromptInTx(
 	if (!(await launchOwnedBySessionOwner(tx, sessionId, launch))) {
 		return { ok: false, reason: "launch_mismatch" };
 	}
+	// The action is routed by the launch's agent type, which only a launch request sets. A session row can be
+	// created by anyone with an ingest key, under a launch's id, with an agent type of their choosing; one that
+	// disagrees with its launch is refused, so it can't send a Codex launch's prompt down the Claude path.
+	if (session.agentType !== launch.agentType) return { ok: false, reason: "launch_mismatch" };
 	const promptHostRefusal = await hostRefusal(tx, sessionId);
 	if (promptHostRefusal) return { ok: false, reason: promptHostRefusal };
 
@@ -522,6 +526,7 @@ export async function enqueuePromptInTx(
 	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp))) {
 		return { ok: false, reason: "control_busy" };
 	}
+	const isCodex = launch.agentType === "codex_cli";
 	const [action] = await tx
 		.insert(controlActions)
 		.values({
@@ -537,19 +542,24 @@ export async function enqueuePromptInTx(
 			status: "queued",
 			metadata: {
 				prompt,
-				agentType: session.agentType,
+				agentType: launch.agentType,
 				// The launch's directory (judged against the host's trusted roots when it was
 				// requested), never the agent-reported session.cwd, which the agent can change.
 				cwd: launch.cwd,
-				// The launch's model, not the agent-reported session.model.
-				model: launch.model ?? null,
-				// A resume starts a new agent process, so it must carry the launch's recorded
-				// privileges for the supervisor to re-apply them (null = the agent's default).
-				approvalPolicy: launch.approvalPolicy ?? null,
-				sandboxMode: launch.sandboxMode ?? null,
 				managedState: managed.managedState,
 				launchMode: launch.requestedLaunchMode,
-				env: launch.env ?? {},
+				// A Claude resume starts a new agent process, so it carries the launch's model, recorded
+				// privileges (null = the agent's default) and env for the supervisor to re-apply. A Codex
+				// follow-up starts a turn on a thread whose settings were set and verified at launch and are
+				// sticky: it sends nothing that could widen them, so none of this is ever in the row.
+				...(isCodex
+					? {}
+					: {
+							model: launch.model ?? null,
+							approvalPolicy: launch.approvalPolicy ?? null,
+							sandboxMode: launch.sandboxMode ?? null,
+							env: launch.env ?? {},
+						}),
 				// The terminal owner and the interactive bridge are the supervisor's own records,
 				// found by session id on the host; nothing the agent reported is passed on.
 			},
