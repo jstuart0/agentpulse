@@ -290,6 +290,18 @@ describe("the wire sequence and the success path", () => {
 		expect(w.states[0].providerThreadTitle).toBeUndefined();
 	});
 
+	test("a 900-character name, with spaces at its ends, is the runtime's title as sent: reconcile with the same desired title sends no thread/name/set", async () => {
+		const w = world();
+		const long = ` ${"long name! ".repeat(90)}`;
+		expect(long.length).toBeGreaterThanOrEqual(900);
+		await resumeManagedCodexSession(input({ sessionName: long }), w.callbacks);
+		await reconcileManagedCodexTitles(
+			[{ sessionId: SESSION, launchRequestId: LAUNCH, desiredThreadTitle: long } as never],
+			(async () => ({})) as never,
+		);
+		expect(methods()).not.toContain("thread/name/set");
+	});
+
 	test("afterwards a prompt starts a turn with exactly {threadId, input}, and Stop disposes the process", async () => {
 		const w = world();
 		const { pid } = await resumeManagedCodexSession(input(), w.callbacks);

@@ -97,8 +97,6 @@ export interface ResumeActionMetadata {
 	sessionName?: string;
 }
 
-const SESSION_NAME_MAX_CHARS = 200;
-
 /**
  * The one place the server builds what the host reads from a `resume` action, so a field the host needs
  * can't be left out of one of the two literals (the name was).
@@ -110,8 +108,9 @@ export function buildResumeActionMetadata(
 	},
 ): ResumeActionMetadata {
 	const { sessionName, assignOwner, ...rest } = input;
-	const name =
-		typeof sessionName === "string" ? sessionName.trim().slice(0, SESSION_NAME_MAX_CHARS) : "";
+	// Unchanged: the server's desired title is the stored name as it is, and the host compares the two, so a
+	// trimmed or cut name would read as a rename. Only a blank one is left out.
+	const name = typeof sessionName === "string" && sessionName.trim() !== "" ? sessionName : "";
 	return {
 		...rest,
 		agentType: "codex_cli",

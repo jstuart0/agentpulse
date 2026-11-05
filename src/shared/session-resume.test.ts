@@ -217,9 +217,9 @@ describe("buildResumeActionMetadata: the one place the server writes what the ho
 		expectedEnforcedArgs: ["--sandbox", "workspace-write", "--ask-for-approval", "untrusted"],
 		boundByUserId: null,
 	};
-	test("carries the session's name, trimmed, so the host's runtime starts with the title the thread already has", () => {
+	test("carries the session's name, so the host's runtime starts with the title the thread already has", () => {
 		expect(
-			buildResumeActionMetadata({ ...base, sessionName: "  refactor the parser " }).sessionName,
+			buildResumeActionMetadata({ ...base, sessionName: "refactor the parser" }).sessionName,
 		).toBe("refactor the parser");
 	});
 	test("no name, a blank one or a non-string leaves the key out, never an empty title", () => {
@@ -229,10 +229,14 @@ describe("buildResumeActionMetadata: the one place the server writes what the ho
 			).toBe(false);
 		}
 	});
-	test("a very long name is cut, and the owner flag is only present when set", () => {
+	test("a name is sent exactly as stored, however long, with its spaces: the server's title is compared with it", () => {
+		const long = `  ${"x".repeat(900)} `;
+		expect(buildResumeActionMetadata({ ...base, sessionName: long }).sessionName).toBe(long);
 		expect(
-			buildResumeActionMetadata({ ...base, sessionName: "x".repeat(900) }).sessionName?.length,
-		).toBeLessThanOrEqual(200);
+			buildResumeActionMetadata({ ...base, sessionName: "  refactor the parser " }).sessionName,
+		).toBe("  refactor the parser ");
+	});
+	test("the owner flag is only present when set", () => {
 		expect(Object.hasOwn(buildResumeActionMetadata(base), "assignOwner")).toBe(false);
 		expect(buildResumeActionMetadata({ ...base, assignOwner: true }).assignOwner).toBe(true);
 	});

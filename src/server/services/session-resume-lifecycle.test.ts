@@ -1244,6 +1244,28 @@ describe("queueSessionResume", () => {
 		expect(typeof metadata.sessionName).toBe("string");
 	});
 
+	test("a recovery sends a long managed title, and a long session name, unchanged", async () => {
+		const long = ` ${"long title! ".repeat(80)}`;
+		const host = await seedTakeoverHost();
+		const withTitle = await seedDegradedLaunched(host);
+		await getDb()
+			.update(managedSessions)
+			.set({ desiredThreadTitle: long })
+			.where(eq(managedSessions.sessionId, withTitle.sessionId));
+		await queueSessionResume(withTitle.sessionId, SOLO);
+		const [a] = (await rows(withTitle.sessionId)).actions;
+		expect((a.metadata as Record<string, unknown>).sessionName).toBe(long);
+
+		const named = await seedDegradedLaunched(host);
+		await getDb()
+			.update(sessions)
+			.set({ displayName: long })
+			.where(eq(sessions.sessionId, named.sessionId));
+		await queueSessionResume(named.sessionId, SOLO);
+		const [b] = (await rows(named.sessionId)).actions;
+		expect((b.metadata as Record<string, unknown>).sessionName).toBe(long);
+	});
+
 	test("it uses the session rule (assertCanBindSession) and no host-owner check", async () => {
 		const t = await team();
 		const host = await seedTakeoverHost({ ownerUserId: null });

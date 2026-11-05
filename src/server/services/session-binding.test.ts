@@ -1611,6 +1611,14 @@ describe("what the host is told: the session's name (D11 step 14)", () => {
 		);
 	});
 
+	test("a 900-character name arrives intact, so it equals the title the server will hold", async () => {
+		const host = await seedHost();
+		const long = ` ${"long name! ".repeat(90)}`;
+		const id = await seedObserved({ displayName: long });
+		const result = await bind(id, host, SOLO, deps);
+		expect((result.action.metadata as Record<string, unknown>).sessionName).toBe(long);
+	});
+
 	test("a session with no name sends none, so the host's runtime and the server's title agree on nothing to rename", async () => {
 		const host = await seedHost();
 		const id = await seedObserved({ displayName: null });
