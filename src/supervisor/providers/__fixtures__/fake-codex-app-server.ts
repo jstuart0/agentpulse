@@ -33,6 +33,9 @@
  *   FAKE_CODEX_RESUME_FORCE_APPROVAL / FAKE_CODEX_RESUME_FORCE_SANDBOX   thread/resume's answer, whatever was asked
  *   FAKE_CODEX_SANDBOX_EXTRAS=<json>   merged into the answered sandbox (what a hostile project config produces)
  *   FAKE_CODEX_LOCK_FILE=<path>        the first thread/resume takes this "writer lock"; a second answers "already has an active writer"
+ *   FAKE_CODEX_REQUESTS_ON_READ=<json> server requests [{method, params, id?}] sent just before thread/read's answer
+ *   FAKE_CODEX_REQUESTS_ON_RESUME=<json>  the same, sent just after thread/resume's answer
+ *   FAKE_CODEX_SANDBOX_OMIT=<key>      removes this key from the answered sandbox (a missing key)
  * With no override asked for, thread/resume answers the thread's recorded policy, which is deliberately a
  * third value: never + dangerFullAccess, so echoing the request or a default can't pass for the override.
  *
@@ -149,9 +152,12 @@ const KNOWN_THREAD = env.FAKE_CODEX_THREAD_ID || "thr-1";
 const threadCwd = () => env.FAKE_CODEX_THREAD_CWD || process.cwd();
 // The key set of a real Codex 0.163.0 `thread` (thread/read and thread/resume), so a fake answer and a real
 // one can be compared key for key (codex-resume.real.test.ts). Values are placeholders except the ones used.
-const threadBody = (cwd: string, status: string) => ({
+const threadBody = (cwd: string, status: string, withEnvironments = true) => ({
 	id: KNOWN_THREAD,
-	environments: [{ environmentId: "local", cwd, runtimeWorkspaceRoots: [cwd] }],
+	// A real thread/read answers `environments: null`; thread/resume answers the list.
+	environments: withEnvironments
+		? [{ environmentId: "local", cwd, runtimeWorkspaceRoots: [cwd] }]
+		: null,
 	extra: null,
 	sessionId: KNOWN_THREAD,
 	forkedFromId: null,
@@ -185,6 +191,19 @@ const threadBody = (cwd: string, status: string) => ({
 });
 let resumedHere = false;
 
+function sendServerRequests(json: string | undefined) {
+	const requests = JSON.parse(json || "[]") as Array<{
+		method: string;
+		params?: unknown;
+		id?: number | string;
+	}>;
+	requests.forEach((entry, index) => {
+		const id = entry.id ?? 100 + index;
+		sentRequests.set(JSON.stringify(id), { threadId: KNOWN_THREAD });
+		send({ id, method: entry.method, params: entry.params ?? {} });
+	});
+}
+
 function handleThreadCall(m: any, reply: (result: unknown) => void) {
 	const isRead = m.method === "thread/read";
 	if (isRead ? env.FAKE_CODEX_READ_SILENT : env.FAKE_CODEX_RESUME_SILENT) return;
@@ -206,8 +225,9 @@ function handleThreadCall(m: any, reply: (result: unknown) => void) {
 		return;
 	}
 	if (isRead) {
+		sendServerRequests(env.FAKE_CODEX_REQUESTS_ON_READ);
 		reply({
-			thread: threadBody(threadCwd(), "notLoaded"),
+			thread: threadBody(threadCwd(), "notLoaded", false),
 			readState: { firstUnread: null, revision: "r" },
 		});
 		return;
@@ -227,6 +247,20 @@ function handleThreadCall(m: any, reply: (result: unknown) => void) {
 	const approval = env.FAKE_CODEX_RESUME_FORCE_APPROVAL || m.params.approvalPolicy || "never";
 	const sandbox = env.FAKE_CODEX_RESUME_FORCE_SANDBOX || m.params.sandbox || "danger-full-access";
 	const cwd = env.FAKE_CODEX_RESUME_CWD || threadCwd();
+	const sandboxAnswer: Record<string, unknown> = {
+		type: SANDBOX_TYPE[sandbox],
+		...(sandbox === "read-only" ? { networkAccess: false } : {}),
+		...(sandbox === "workspace-write"
+			? {
+					writableRoots: [],
+					networkAccess: false,
+					excludeTmpdirEnvVar: false,
+					excludeSlashTmp: false,
+				}
+			: {}),
+		...JSON.parse(env.FAKE_CODEX_SANDBOX_EXTRAS || "{}"),
+	};
+	if (env.FAKE_CODEX_SANDBOX_OMIT) delete sandboxAnswer[env.FAKE_CODEX_SANDBOX_OMIT];
 	reply({
 		thread: threadBody(cwd, "idle"),
 		model: "fake-model",
@@ -245,20 +279,9 @@ function handleThreadCall(m: any, reply: (result: unknown) => void) {
 		initialTurnsPage: null,
 		turnsBackwardsCursor: null,
 		itemsBackwardsCursor: null,
-		sandbox: {
-			type: SANDBOX_TYPE[sandbox],
-			...(sandbox === "read-only" ? { networkAccess: false } : {}),
-			...(sandbox === "workspace-write"
-				? {
-						writableRoots: [],
-						networkAccess: false,
-						excludeTmpdirEnvVar: false,
-						excludeSlashTmp: false,
-					}
-				: {}),
-			...JSON.parse(env.FAKE_CODEX_SANDBOX_EXTRAS || "{}"),
-		},
+		sandbox: sandboxAnswer,
 	});
+	sendServerRequests(env.FAKE_CODEX_REQUESTS_ON_RESUME);
 }
 
 function handle(m: any) {

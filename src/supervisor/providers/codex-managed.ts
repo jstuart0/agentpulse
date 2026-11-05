@@ -1322,12 +1322,6 @@ async function runResume(
 			);
 		approvals = tracker.attachClient(client, { sessionId, cwd: real, warn });
 		tracker.setVerdict(approvals, bound);
-		if (bound.verdict !== "supported") {
-			void warn(
-				"AgentPulse can't answer this Codex version's approval requests, so they are declined automatically.",
-				{ method: "protocol", reason: bound.reason },
-			);
-		}
 
 		// 11
 		let resumed: ThreadAnswer & { approvalPolicy?: unknown; sandbox?: { type?: unknown } | null };

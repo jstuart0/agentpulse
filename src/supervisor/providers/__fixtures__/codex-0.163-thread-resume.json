@@ -1,0 +1,141 @@
+{
+	"codexVersion": "0.163.0",
+	"note": "Key sets and value types recorded from a real Codex 0.163.0 app-server in a throwaway home (no model call), scrubbed of ids and paths. The fake app-server is asserted against this file by a test that needs no binary; codex-resume.real.test.ts asserts this file against a real binary.",
+	"read": {
+		"keys": ["readState", "thread"],
+		"threadKeys": [
+			"agentNickname",
+			"agentRole",
+			"canAcceptDirectInput",
+			"cliVersion",
+			"createdAt",
+			"cwd",
+			"daybreakEnabled",
+			"environments",
+			"ephemeral",
+			"extra",
+			"forkedFromId",
+			"gitInfo",
+			"historyMode",
+			"id",
+			"model",
+			"modelProvider",
+			"name",
+			"originator",
+			"parentThreadId",
+			"path",
+			"preview",
+			"projectId",
+			"reasoningEffort",
+			"recencyAt",
+			"section",
+			"sectionEnteredAt",
+			"sessionId",
+			"source",
+			"status",
+			"threadSource",
+			"turns",
+			"updatedAt"
+		],
+		"statusKeys": ["type"],
+		"environmentKeys": []
+	},
+	"resume": {
+		"keys": [
+			"activePermissionProfile",
+			"approvalPolicy",
+			"approvalsReviewer",
+			"collaborationMode",
+			"cwd",
+			"disabledPluginIds",
+			"initialTurnsPage",
+			"instructionSources",
+			"itemsBackwardsCursor",
+			"model",
+			"modelProvider",
+			"multiAgentMode",
+			"reasoningEffort",
+			"runtimeWorkspaceRoots",
+			"sandbox",
+			"serviceTier",
+			"thread",
+			"turnsBackwardsCursor"
+		],
+		"threadKeys": [
+			"agentNickname",
+			"agentRole",
+			"canAcceptDirectInput",
+			"cliVersion",
+			"createdAt",
+			"cwd",
+			"daybreakEnabled",
+			"environments",
+			"ephemeral",
+			"extra",
+			"forkedFromId",
+			"gitInfo",
+			"historyMode",
+			"id",
+			"model",
+			"modelProvider",
+			"name",
+			"originator",
+			"parentThreadId",
+			"path",
+			"preview",
+			"projectId",
+			"reasoningEffort",
+			"recencyAt",
+			"section",
+			"sectionEnteredAt",
+			"sessionId",
+			"source",
+			"status",
+			"threadSource",
+			"turns",
+			"updatedAt"
+		],
+		"statusKeys": ["type"],
+		"environmentKeys": ["cwd", "environmentId", "runtimeWorkspaceRoots"]
+	},
+	"sandbox": {
+		"workspaceWrite": {
+			"type": "workspaceWrite",
+			"writableRoots": [],
+			"networkAccess": false,
+			"excludeTmpdirEnvVar": false,
+			"excludeSlashTmp": false
+		},
+		"readOnly": {
+			"type": "readOnly",
+			"networkAccess": false
+		}
+	},
+	"types": {
+		"thread.id": "string",
+		"thread.cwd": "string",
+		"thread.originator": "string",
+		"thread.status.type": "string",
+		"result.approvalPolicy": "string",
+		"result.sandbox": "object",
+		"result.sandbox.type": "string",
+		"result.cwd": "string"
+	},
+	"errors": {
+		"notLoaded": {
+			"keys": ["code", "message"],
+			"code": -32600,
+			"messagePrefix": "thread not loaded"
+		},
+		"noRollout": {
+			"keys": ["code", "message"],
+			"code": -32600,
+			"messagePrefix": "no rollout found"
+		},
+		"activeWriter": {
+			"keys": ["code", "message"],
+			"code": -32600,
+			"messageContains": "active writer"
+		}
+	}
+}

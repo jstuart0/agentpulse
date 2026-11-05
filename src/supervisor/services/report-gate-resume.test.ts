@@ -14,11 +14,12 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ManagedSessionEventInput, ManagedSessionStateInput } from "../../shared/types.js";
 import { type CredentialDeps, createReportGate } from "./report-gate.js";
-import { createReportOutbox } from "./report-outbox.js";
+import { createReportOutbox, outboxDirName } from "./report-outbox.js";
 import {
 	SupervisorNetworkError,
 	SupervisorRequestError,
@@ -310,5 +311,33 @@ describe("forgetLaunch and queuedState", () => {
 		await w.gate.reportEvents("s1", probe("x"));
 		expect(w.gate.queuedState("s1")).toBe("pending");
 		expect(w.gate.queuedState("s2")).toBe("none");
+	});
+
+	test("held: a real outbox whose head can't be trusted (its directory is writable by others), and pending before the outbox has listed", async () => {
+		const w = await world();
+		w.setScript(() => new SupervisorNetworkError(new Error("down")));
+		await w.gate.reportEvents("s1", probe("kept offline"));
+		expect(w.gate.queuedState("s1")).toBe("pending");
+		const sessionDir = join(outboxRoot(), outboxDirName("s1"));
+		chmodSync(sessionDir, 0o777);
+
+		expect(w.gate.queuedState("s1")).toBe("held");
+		// The held head is not read or deleted, and one held session doesn't make another look held.
+		expect(existsSync(sessionDir)).toBe(true);
+		expect(w.gate.queuedState("s2")).toBe("none");
+
+		// A fresh gate over the same directory, before its outbox has listed: it can't tell held from pending
+		// yet, and must not say "none". (An untrusted DIRECTORY can't be attributed to a session after a
+		// restart at all, since its session.json is unreadable; an untrusted head FILE can.)
+		chmodSync(sessionDir, 0o700);
+		const { readdirSync } = await import("node:fs");
+		const head = readdirSync(sessionDir).find((name) => name !== "session.json");
+		chmodSync(join(sessionDir, head as string), 0o644);
+		const restarted = buildWorld();
+		expect(restarted.outbox.listed()).toBe(false);
+		expect(restarted.gate.queuedState("s1")).toBe("pending");
+		await restarted.outbox.ready();
+		expect(restarted.gate.queuedState("s1")).toBe("held");
+		chmodSync(sessionDir, 0o700);
 	});
 });

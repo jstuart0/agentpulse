@@ -87,6 +87,7 @@ async function build(
 		record?: ReturnType<typeof createManagedThreadRecord>;
 		queued?: "none" | "pending" | "held";
 		failStatusOnce?: boolean;
+		logs?: string[];
 	} = {},
 ) {
 	const outbox = createReportOutbox({ home, supervisorId: "sup-1", log: () => {} });
@@ -136,7 +137,7 @@ async function build(
 					return { pid: 4242, metadata: { mode: "managed_codex" } };
 				}),
 		},
-		log: () => {},
+		log: (line) => opts.logs?.push(line),
 	});
 	const handler = createControlActionHandler({
 		gate,
@@ -523,5 +524,38 @@ describe("the fixed neutral directory", () => {
 		const error = await resolveNeutralCwd(home).catch((e) => e);
 		expect(error).toBeInstanceOf(CodexResumeError);
 		expect((error as CodexResumeError).kind).toBe("rejected");
+	});
+});
+
+describe("the success report fails both times (D10's double failure)", () => {
+	test("the handler resolves, tries twice, posts no failure, leaves the runtime up and logs it", async () => {
+		const logs: string[] = [];
+		const registered = new Set<string>();
+		const disposed = 0;
+		const w = await build({
+			logs,
+			resume: async (input) => {
+				registered.add(input.sessionId);
+				return { pid: 1, metadata: {} };
+			},
+		});
+		let attempts = 0;
+		(w.gate as { reportControlStatus: (...a: unknown[]) => Promise<void> }).reportControlStatus =
+			async () => {
+				attempts += 1;
+				throw new Error("network down");
+			};
+
+		await w.handler(action());
+
+		expect(attempts).toBe(2);
+		expect(statuses().filter((body) => body.status === "failed")).toEqual([]);
+		expect(registered.has(SESSION)).toBe(true);
+		expect(disposed).toBe(0);
+		expect(
+			logs.filter((line) => line.includes("worked but its status wasn't reported")),
+		).toHaveLength(2);
+		// The hold still drops: the observer resumes posting for a session the runtime now holds itself.
+		expect(holds.at(-1)).toBe(`-${SESSION}`);
 	});
 });

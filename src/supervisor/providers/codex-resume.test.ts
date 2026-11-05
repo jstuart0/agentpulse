@@ -17,6 +17,7 @@ import { requireLaunchPrivileges } from "../../shared/launch-privileges.js";
 import type { ReportOutcome } from "../services/report-gate.js";
 import { isObserverHeld } from "../services/session-resume.js";
 import { installFakeCodex, readFakeLog } from "./__fixtures__/fake-codex.js";
+import { assertCodexThreadPrivileges } from "./codex-managed.js";
 import {
 	hasManagedCodexRuntime,
 	launchManagedCodexRequest,
@@ -56,6 +57,12 @@ const ENV_KEYS = [
 	"FAKE_CODEX_RESUME_FORCE_SANDBOX",
 	"FAKE_CODEX_SANDBOX_EXTRAS",
 	"FAKE_CODEX_LOCK_FILE",
+	"FAKE_CODEX_REQUESTS_ON_READ",
+	"FAKE_CODEX_REQUESTS_ON_RESUME",
+	"FAKE_CODEX_SANDBOX_OMIT",
+	"FAKE_CODEX_EARLY_EXIT",
+	"FAKE_CODEX_IGNORE_STDIN_CLOSE",
+	"FAKE_CODEX_IGNORE_TERM",
 ];
 
 beforeAll(() => {
@@ -96,6 +103,8 @@ afterEach(async () => {
 
 interface World {
 	calls: string[];
+	/** The fake's received methods, snapshotted as each callback ran. */
+	seen: Record<string, string[]>;
 	states: Array<Record<string, unknown>>;
 	runtimeAtReport: boolean[];
 	callbacks: Parameters<typeof resumeManagedCodexSession>[1];
@@ -105,6 +114,10 @@ function world(over: Partial<Record<string, unknown>> = {}): World {
 	const calls: string[] = [];
 	const states: Array<Record<string, unknown>> = [];
 	const runtimeAtReport: boolean[] = [];
+	const seen: Record<string, string[]> = {};
+	const snap = (name: string) => {
+		seen[name] = methods();
+	};
 	const callbacks = {
 		reportState: async () => ({ session: { displayName: "n" }, managedSession: {} }),
 		reportEvents: async () => "sent",
@@ -114,6 +127,7 @@ function world(over: Partial<Record<string, unknown>> = {}): World {
 		},
 		noteLaunch: (_l: string, _s: string, _c: string) => {
 			calls.push("noteLaunch");
+			snap("noteLaunch");
 			return true;
 		},
 		verdict: () => {
@@ -129,17 +143,19 @@ function world(over: Partial<Record<string, unknown>> = {}): World {
 		},
 		reportResumeState: async (body: Record<string, unknown>): Promise<ReportOutcome> => {
 			calls.push("reportResumeState");
+			snap("reportResumeState");
 			states.push(body);
 			runtimeAtReport.push(hasManagedCodexRuntime(SESSION));
 			return "sent";
 		},
 		recordThread: () => {
 			calls.push("recordThread");
+			snap("recordThread");
 		},
 		trustedRoots: [root],
 		...over,
 	};
-	return { calls, states, runtimeAtReport, callbacks: callbacks as never };
+	return { calls, seen, states, runtimeAtReport, callbacks: callbacks as never };
 }
 
 function input(over: Partial<Parameters<typeof resumeManagedCodexSession>[0]> = {}) {
@@ -823,4 +839,250 @@ describe("what the observer holds (D16)", () => {
 		expect(isObserverHeld(resuming, () => false, THREAD)).toBe(true);
 		expect(isObserverHeld(resuming, () => false, "another")).toBe(false);
 	});
+});
+
+describe("the order of the steps (D11), observed from inside the callbacks", () => {
+	test("at noteLaunch thread/read has been sent and thread/resume has not; at the report thread/resume has", async () => {
+		const w = world();
+		await resumeManagedCodexSession(input(), w.callbacks);
+		expect(w.seen.noteLaunch).toContain("thread/read");
+		expect(w.seen.noteLaunch).not.toContain("thread/resume");
+		expect(w.seen.reportResumeState).toContain("thread/resume");
+		expect(w.seen.recordThread).toContain("thread/resume");
+	});
+
+	// Each row: what makes the sequence stop there, and everything that must NOT have happened as a result.
+	const STEPS: Array<{
+		name: string;
+		arrange: (w: World) => World | undefined;
+		env?: Record<string, string>;
+		kind: CodexResumeKind;
+		calls: string[];
+		methods: string[];
+	}> = [
+		{
+			name: "the neutral directory",
+			arrange: () =>
+				world({
+					neutralCwd: async () => {
+						throw new CodexResumeError("rejected");
+					},
+				}),
+			kind: "rejected",
+			calls: [],
+			methods: [],
+		},
+		{
+			name: "the protocol check",
+			arrange: () => undefined,
+			env: { FAKE_CODEX_VERSION: "0.1.0" },
+			kind: "unsupported_codex",
+			calls: ["neutralCwd"].slice(1),
+			methods: [],
+		},
+		{
+			name: "thread/read",
+			arrange: () => undefined,
+			env: {
+				FAKE_CODEX_READ_ERROR: JSON.stringify({ code: -32600, message: "thread not loaded: x" }),
+			},
+			kind: "missing",
+			calls: ["neutralCwd"],
+			methods: ["initialize", "thread/read"],
+		},
+		{
+			name: "the real directory",
+			arrange: () => world({ verdictForDirectory: () => "excluded" }),
+			kind: "cwd_mismatch",
+			calls: ["neutralCwd", "verdictForDirectory"],
+			methods: ["initialize", "thread/read"],
+		},
+		{
+			name: "noting the launch",
+			arrange: () => world({ noteLaunch: () => false }),
+			kind: "rejected",
+			calls: ["neutralCwd", "verdictForDirectory"],
+			methods: ["initialize", "thread/read"],
+		},
+		{
+			name: "the gate's verdict",
+			arrange: () => world({ verdict: () => "excluded" }),
+			kind: "rejected",
+			calls: ["neutralCwd", "verdictForDirectory", "noteLaunch", "forgetLaunch"],
+			methods: ["initialize", "thread/read"],
+		},
+		{
+			name: "thread/resume",
+			arrange: () => undefined,
+			env: {
+				FAKE_CODEX_RESUME_ERROR: JSON.stringify({ code: -32600, message: "no rollout found" }),
+			},
+			kind: "rejected",
+			calls: ["neutralCwd", "verdictForDirectory", "noteLaunch", "verdict", "forgetLaunch"],
+			methods: ["initialize", "thread/read", "thread/resume"],
+		},
+		{
+			name: "the answer's privileges",
+			arrange: () => undefined,
+			env: { FAKE_CODEX_RESUME_FORCE_APPROVAL: "never" },
+			kind: "privileges",
+			calls: ["neutralCwd", "verdictForDirectory", "noteLaunch", "verdict", "forgetLaunch"],
+			methods: ["initialize", "thread/read", "thread/resume"],
+		},
+		{
+			name: "the state report",
+			arrange: () => world({ reportResumeState: async () => "blocked" }),
+			kind: "rejected",
+			calls: ["neutralCwd", "verdictForDirectory", "noteLaunch", "verdict", "forgetLaunch"],
+			methods: ["initialize", "thread/read", "thread/resume"],
+		},
+	];
+
+	test.each(STEPS.map((step) => [step.name, step] as const))(
+		"a failure at %s leaves nothing later observed",
+		async (_name, step) => {
+			Object.assign(process.env, step.env ?? {});
+			const w = step.arrange(world()) ?? world();
+			expect(await kindOf(resumeManagedCodexSession(input(), w.callbacks))).toBe(step.kind);
+			const wanted = step.calls.filter((c) => c !== "verdictForDirectory");
+			const seenCalls = w.calls.filter((c) => c !== "verdictForDirectory");
+			expect(seenCalls).toEqual(wanted);
+			expect(
+				readFakeLog(logPath)
+					.filter((e) => e.method)
+					.map((e) => e.method),
+			).toEqual(step.methods);
+			expect(w.states).toEqual([]);
+			expect(w.calls).not.toContain("recordThread");
+			expect(hasManagedCodexRuntime(SESSION)).toBe(false);
+		},
+	);
+});
+
+describe("requests Codex raises", () => {
+	const REQUEST = [
+		{
+			method: "item/commandExecution/requestApproval",
+			params: { command: "touch x", cwd: "/tmp" },
+			id: 77,
+		},
+	];
+	const answerOf = (id: number) => readFakeLog(logPath).find((e) => e.answer?.id === id)?.answer;
+
+	test("one raised during thread/read is default-denied: nothing has claimed it yet", async () => {
+		process.env.FAKE_CODEX_REQUESTS_ON_READ = JSON.stringify(REQUEST);
+		await resumeManagedCodexSession(input(), world().callbacks);
+		for (let i = 0; i < 100 && !answerOf(77); i++) await Bun.sleep(20);
+		const answer = answerOf(77);
+		expect(answer?.error?.code).toBe(-32601);
+		expect(answer?.result).toBeUndefined();
+	});
+
+	test("one raised after the resume reaches the tracker, which answers it as a decline (not the default-deny)", async () => {
+		process.env.FAKE_CODEX_REQUESTS_ON_RESUME = JSON.stringify(REQUEST);
+		await resumeManagedCodexSession(input(), world().callbacks);
+		for (let i = 0; i < 100 && !answerOf(77); i++) await Bun.sleep(20);
+		const answer = answerOf(77);
+		expect(answer?.result?.decision).toBe("decline");
+		expect(answer?.error).toBeUndefined();
+	});
+
+	test("a recovery on a Codex it can't answer approvals for declines locally, with exactly one warning", async () => {
+		process.env.FAKE_CODEX_VERSION = "0.1.0";
+		process.env.FAKE_CODEX_REQUESTS_ON_RESUME = JSON.stringify(REQUEST);
+		const warnings: unknown[] = [];
+		const w = world({
+			reportEvents: async (events: Array<{ eventType: string }>) => {
+				for (const e of events) if (e.eventType === "ManagedWarning") warnings.push(e);
+				return "sent";
+			},
+		});
+		await resumeManagedCodexSession(input({ resumeKind: "recovery" }), w.callbacks);
+		for (let i = 0; i < 100 && !answerOf(77); i++) await Bun.sleep(20);
+		expect(answerOf(77)?.result?.decision).toBe("decline");
+		await Bun.sleep(150);
+		expect(warnings).toHaveLength(1);
+	});
+});
+
+describe("privileges, more", () => {
+	test("a missing sandbox key is refused", async () => {
+		process.env.FAKE_CODEX_SANDBOX_OMIT = "excludeSlashTmp";
+		const w = world();
+		expect(await kindOf(resumeManagedCodexSession(input(), w.callbacks))).toBe("privileges");
+		expect(w.states).toEqual([]);
+	});
+
+	test("non-empty writableRoots are refused", async () => {
+		process.env.FAKE_CODEX_SANDBOX_EXTRAS = JSON.stringify({ writableRoots: ["/somewhere"] });
+		expect(await kindOf(resumeManagedCodexSession(input(), world().callbacks))).toBe("privileges");
+	});
+
+	test.each([
+		["a plain read-only answer", {}],
+		["network access on", { networkAccess: true }],
+		["a writable root", { writableRoots: ["/etc"] }],
+	])(
+		"a recovery with read-only: the provider's verdict equals assertCodexThreadPrivileges on the same answer (%s)",
+		async (_name, extras) => {
+			process.env.FAKE_CODEX_SANDBOX_EXTRAS = JSON.stringify(extras);
+			const privileges = requireLaunchPrivileges("codex_cli", "default", "read-only");
+			let direct: "ok" | "privileges" = "ok";
+			try {
+				assertCodexThreadPrivileges(
+					{
+						approvalPolicy: "never",
+						sandbox: { type: "readOnly", networkAccess: false, ...extras } as never,
+					},
+					privileges,
+				);
+			} catch {
+				direct = "privileges";
+			}
+			const viaProvider = await kindOf(
+				resumeManagedCodexSession(input({ resumeKind: "recovery", privileges }), world().callbacks),
+			);
+			expect(viaProvider).toBe(direct);
+		},
+	);
+});
+
+describe("shutdown: every way out ends the process, checked by the OS", () => {
+	test("a spawn error (the neutral directory can't be entered) rejects, with no tracker and no report", async () => {
+		const w = world({ neutralCwd: async () => join(root, "no-such-dir") });
+		await expect(resumeManagedCodexSession(input(), w.callbacks)).rejects.toThrow();
+		expect(w.states).toEqual([]);
+		expect(hasManagedCodexRuntime(SESSION)).toBe(false);
+	});
+
+	test("a child that exits before initialize rejects, and its process is gone", async () => {
+		process.env.FAKE_CODEX_EARLY_EXIT = "3";
+		const w = world();
+		await expect(resumeManagedCodexSession(input(), w.callbacks)).rejects.toThrow();
+		await processGone(fakePid());
+		expect(w.states).toEqual([]);
+	});
+
+	test("a child that ignores the stdin close is ended by SIGTERM", async () => {
+		process.env.FAKE_CODEX_IGNORE_STDIN_CLOSE = "1";
+		process.env.FAKE_CODEX_READ_ERROR = JSON.stringify({
+			code: -32600,
+			message: "thread not loaded: x",
+		});
+		expect(await kindOf(resumeManagedCodexSession(input(), world().callbacks))).toBe("missing");
+		await processGone(fakePid());
+		expect(readFakeLog(logPath).some((e) => e.signal === "SIGTERM")).toBe(true);
+	}, 30_000);
+
+	test("a child that also ignores SIGTERM is ended by SIGKILL", async () => {
+		process.env.FAKE_CODEX_IGNORE_STDIN_CLOSE = "1";
+		process.env.FAKE_CODEX_IGNORE_TERM = "1";
+		process.env.FAKE_CODEX_READ_ERROR = JSON.stringify({
+			code: -32600,
+			message: "thread not loaded: x",
+		});
+		expect(await kindOf(resumeManagedCodexSession(input(), world().callbacks))).toBe("missing");
+		await processGone(fakePid());
+		expect(readFakeLog(logPath).some((e) => e.signal === "SIGTERM")).toBe(true);
+	}, 30_000);
 });
