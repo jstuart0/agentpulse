@@ -13,7 +13,7 @@
  * service later gains can't ride out by accident.
  */
 import { Hono } from "hono";
-import type { Context, Next } from "hono";
+import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type {
 	CodexApprovalDecisionResponse,
@@ -25,18 +25,13 @@ import type {
 } from "../../shared/codex-approvals.js";
 import type { AuthUser } from "../auth/middleware.js";
 import { requireAuth } from "../auth/middleware.js";
-import {
-	isJsonContentType,
-	isLoopbackHostHeader,
-	isTrustedHostWhenAuthOff,
-} from "../auth/request-origin.js";
+import { isJsonContentType } from "../auth/request-origin.js";
 import {
 	getRequestActor,
 	isHumanCaller,
-	refuseBadOrigin,
+	requireBrowserOriginGate,
 	requireOperatorScope,
 } from "../auth/route-scope-policy.js";
-import { config } from "../config.js";
 import { changesOutsideCwd } from "../services/codex-approval-presentation.js";
 import {
 	type ApprovalCaller,
@@ -222,38 +217,6 @@ codexApprovalsRouter.get("/sessions/:sessionId/approvals/:approvalId", async (c)
 
 // ── the decision ────────────────────────────────────────────────────────────
 
-/**
- * Step 1 of the check order. A foreign Origin is refused for everyone. A cookie
- * or forwardauth caller (a browser, so one the page could be tricked into
- * sending for) must also prove the request is the page's own: an allowed Origin,
- * or `Sec-Fetch-Site: same-origin`. refuseBadOrigin passes a request with no
- * Origin at all, which is right for a script with a key (judged by
- * authentication) and wrong here for a request that rides on a cookie. Under
- * DISABLE_AUTH the caller is the synthetic key caller, but the Host is judged
- * (rebinding) before anything else; see below.
- */
-async function originGate(c: Context, next: Next) {
-	const foreign = refuseBadOrigin(c);
-	if (foreign) return foreign;
-	const hasOrigin = c.req.header("Origin") !== undefined;
-	const sameOrigin = c.req.header("Sec-Fetch-Site") === "same-origin";
-	if (config.disableAuth) {
-		// A rebound page has Origin equal to Host, which refuseBadOrigin accepts: the Host itself must be
-		// loopback or allowlisted. Without an Origin, only a client on this machine sending JSON (curl) passes.
-		const host = c.req.header("Host");
-		if (!isTrustedHostWhenAuthOff(host)) return c.json({ error: "bad_origin" }, 403);
-		const localScript =
-			!hasOrigin && isLoopbackHostHeader(host) && isJsonContentType(c.req.header("Content-Type"));
-		if (!hasOrigin && !sameOrigin && !localScript) return c.json({ error: "bad_origin" }, 403);
-		return next();
-	}
-	const authUser = c.get("authUser") as AuthUser;
-	if (authUser.source !== "api_key" && !hasOrigin && !sameOrigin) {
-		return c.json({ error: "bad_origin" }, 403);
-	}
-	return next();
-}
-
 const limitBody = bodyLimit({
 	maxSize: MAX_BODY_BYTES,
 	onError: (c) => c.json({ error: "invalid_decision" }, 400),
@@ -261,7 +224,7 @@ const limitBody = bodyLimit({
 
 codexApprovalsRouter.post(
 	"/sessions/:sessionId/approvals/:approvalId/decision",
-	originGate,
+	requireBrowserOriginGate,
 	limitBody,
 	async (c) => {
 		// Step 2: the body. A wrong content type, bad JSON or a non-object is the same fixed code as a bad decision.

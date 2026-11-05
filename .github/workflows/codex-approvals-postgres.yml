@@ -4,7 +4,8 @@ name: Codex approvals (Postgres)
 # tables, their triggers and their guarded statements behave differently on Postgres (row locks, trigger
 # functions, text comparison of ISO times), so a pull request that touches them runs those suites on
 # Postgres before the merge. ingest-latency.test.ts rides along because the hook path's statement budget
-# is the first thing a change to the shared tables or db client moves.
+# is the first thing a change to the shared tables or db client moves. The take-over suites (AGEN-115) ride
+# along too: their concurrency cases lean on row locks and unique inserts, which SQLite can pass vacuously.
 
 on:
   pull_request:
@@ -13,6 +14,12 @@ on:
       - "src/server/db/**"
       - "src/server/services/codex-approval*"
       - "src/server/routes/codex-approvals*"
+      - "src/server/routes/session-bind*"
+      - "src/server/services/session-binding*"
+      - "src/server/services/session-resume-lifecycle*"
+      - "src/server/services/control-actions.ts"
+      - "src/server/services/managed-session-state.ts"
+      - "src/server/services/session-owner-admin.ts"
       - ".github/workflows/codex-approvals-postgres.yml"
 
 concurrency:
@@ -73,3 +80,5 @@ jobs:
           src/server/services/codex-approval
           src/server/routes/codex-approvals
           src/server/routes/ingest-latency.test.ts
+          src/server/services/session-binding.test.ts
+          src/server/routes/session-bind-route.test.ts

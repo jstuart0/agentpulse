@@ -1971,7 +1971,7 @@ async function computeStatsByHost(options?: {
 // crashed without sending Stop, the working flag can stay latched
 // forever. After this many ms with no activity we clear the flag so
 // the regular active → idle → completed flow can resume.
-const STUCK_WORKING_RECOVERY_MS = 2 * SESSION_END_TIMEOUT_MS;
+export const STUCK_WORKING_RECOVERY_MS = 2 * SESSION_END_TIMEOUT_MS;
 
 /**
  * Whether a managed session under a live supervisor is still inside the

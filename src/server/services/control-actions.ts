@@ -30,6 +30,7 @@ import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { CONTINUABLE_MANAGED_STATES } from "./ai/continuability.js";
 import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
+import { BindRefusal } from "./bind-refusal.js";
 import { fenceApprovalsForStop } from "./codex-approvals-fence.js";
 import { type ClosedApproval, runApprovalClosedEffects } from "./codex-approvals.js";
 import { buildStoredCliArgs, validateAgainstSupervisor } from "./launch-compatibility.js";
@@ -217,7 +218,7 @@ async function expireStaleControlLocksForSupervisor(supervisorId: string) {
 	}
 }
 
-function mapControlAction(row: typeof controlActions.$inferSelect): ControlAction {
+export function mapControlAction(row: typeof controlActions.$inferSelect): ControlAction {
 	return {
 		id: row.id,
 		sessionId: row.sessionId ?? null,
@@ -701,6 +702,11 @@ export async function retryLaunchForSession(sessionId: string, actor: Actor) {
 
 	const original = await resolveManagedLaunch(getDb(), sessionId, managed.launchRequestId);
 	if (!original) throw new Error("Original launch request not found.");
+	// A taken-over session's launch row is a record of the takeover, not a recipe: its host, directory and
+	// privileges describe a thread that already existed. Refused before anything is cloned.
+	if ((original.metadata as Record<string, unknown> | null)?.boundObservedSession === true) {
+		throw new BindRefusal("retry_not_available");
+	}
 	// F47/D12: same cross-host guard queuePromptAction applies — refuse to
 	// clone another host's launch.env into a fresh launch_requests row when
 	// the managed row's launchRequestId points at a launch for a

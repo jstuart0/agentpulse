@@ -38,7 +38,12 @@ import { getAdminServiceKeyIds } from "../services/service-keys.js";
 import { type Actor, type EffectiveRole, actorFromAuthUser } from "./actor.js";
 import { SCOPE_ALL, SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE, SCOPE_RESPOND } from "./api-key.js";
 import { type AuthUser, authenticate } from "./middleware.js";
-import { isAcceptedRequestOrigin } from "./request-origin.js";
+import {
+	isAcceptedRequestOrigin,
+	isJsonContentType,
+	isLoopbackHostHeader,
+	isTrustedHostWhenAuthOff,
+} from "./request-origin.js";
 
 const READ_METHODS = new Set(["GET", "HEAD"]);
 
@@ -382,6 +387,9 @@ export const OWNER_CHECKED_ROUTES: ReadonlySet<string> = new Set([
 	"POST /sessions/:sessionId/prompt",
 	"POST /sessions/:sessionId/stop",
 	"POST /sessions/:sessionId/retry",
+	// Taking an observed session over: strict owner-or-admin (an unowned session is an admin's), a signed-in
+	// person only, and in no scope grant. Judged in the handler by assertCanBindSession.
+	"POST /sessions/:sessionId/bind",
 	"GET /sessions/:sessionId/control-actions",
 	"PUT /ai/sessions/:sessionId/watcher",
 	"DELETE /ai/sessions/:sessionId/watcher",
@@ -517,6 +525,38 @@ export function refuseBadOrigin(c: Context): Response | null {
 	const origin = c.req.header("Origin");
 	if (origin === undefined || isAcceptedRequestOrigin(origin, c.req.header("Host"))) return null;
 	return c.json({ error: "bad_origin" }, 403);
+}
+
+/**
+ * The browser origin gate, step 1 of the check order of every route a page could be tricked into sending that starts something (approval decisions, taking a session over). A foreign Origin is refused for everyone. A cookie
+ * or forwardauth caller (a browser, so one the page could be tricked into
+ * sending for) must also prove the request is the page's own: an allowed Origin,
+ * or `Sec-Fetch-Site: same-origin`. refuseBadOrigin passes a request with no
+ * Origin at all, which is right for a script with a key (judged by
+ * authentication) and wrong here for a request that rides on a cookie. Under
+ * DISABLE_AUTH the caller is the synthetic key caller, but the Host is judged
+ * (rebinding) before anything else; see below.
+ */
+export async function requireBrowserOriginGate(c: Context, next: Next) {
+	const foreign = refuseBadOrigin(c);
+	if (foreign) return foreign;
+	const hasOrigin = c.req.header("Origin") !== undefined;
+	const sameOrigin = c.req.header("Sec-Fetch-Site") === "same-origin";
+	if (config.disableAuth) {
+		// A rebound page has Origin equal to Host, which refuseBadOrigin accepts: the Host itself must be
+		// loopback or allowlisted. Without an Origin, only a client on this machine sending JSON (curl) passes.
+		const host = c.req.header("Host");
+		if (!isTrustedHostWhenAuthOff(host)) return c.json({ error: "bad_origin" }, 403);
+		const localScript =
+			!hasOrigin && isLoopbackHostHeader(host) && isJsonContentType(c.req.header("Content-Type"));
+		if (!hasOrigin && !sameOrigin && !localScript) return c.json({ error: "bad_origin" }, 403);
+		return next();
+	}
+	const authUser = c.get("authUser") as AuthUser;
+	if (authUser.source !== "api_key" && !hasOrigin && !sameOrigin) {
+		return c.json({ error: "bad_origin" }, 403);
+	}
+	return next();
 }
 
 /**

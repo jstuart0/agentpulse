@@ -167,14 +167,61 @@ export async function getSessionOwnerHostStates(
 	if (sessionIds.length === 0) return new Map();
 	const result = new Map<string, SessionHostStatus>();
 	for (const row of await readOwnerHostRows(sessionIds, db)) {
-		if (row.hostId === null || row.enrollmentState === "revoked") {
-			result.set(row.sessionId, { state: "gone", lastSeenAt: null });
-			continue;
-		}
-		const state = isSupervisorLive(row.lease, row.enrollmentState, nowMs) ? "live" : "offline";
-		result.set(row.sessionId, { state, lastSeenAt: row.lastHeartbeatAt });
+		const state = classifyHost(row.hostId !== null, row.lease, row.enrollmentState, nowMs);
+		result.set(row.sessionId, { state, lastSeenAt: state === "gone" ? null : row.lastHeartbeatAt });
 	}
 	return result;
+}
+
+/** The one classifier of a host row: gone (no row, or revoked), else live or offline by its lease. */
+function classifyHost(
+	exists: boolean,
+	lease: string | null,
+	enrollmentState: string | null,
+	nowMs: number,
+): SessionHostState {
+	if (!exists || enrollmentState === "revoked") return "gone";
+	return isSupervisorLive(lease, enrollmentState, nowMs) ? "live" : "offline";
+}
+
+export interface HostStateRead {
+	state: SessionHostState;
+	ownerUserId: string | null;
+	enrollmentState: string | null;
+	/** The host's own report, uncleaned: the caller reads it through the capability cleaner. */
+	capabilities: unknown;
+	trustedRoots: unknown;
+}
+
+/**
+ * One host's state by id, by the same rule `getSessionOwnerHostStates` uses (a lease that has run out is
+ * offline whatever the stored status column says; no row, or revoked, is gone). Pass the transaction handle
+ * inside a locked body.
+ */
+export async function readHostState(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	supervisorId: string,
+	nowMs: number = Date.now(),
+): Promise<HostStateRead> {
+	const [row] = await db
+		.select({
+			lease: supervisors.heartbeatLeaseExpiresAt,
+			enrollmentState: supervisors.enrollmentState,
+			ownerUserId: supervisors.ownerUserId,
+			capabilities: supervisors.capabilities,
+			trustedRoots: supervisors.trustedRoots,
+		})
+		.from(supervisors)
+		.where(eq(supervisors.id, supervisorId))
+		.limit(1);
+	return {
+		state: classifyHost(Boolean(row), row?.lease ?? null, row?.enrollmentState ?? null, nowMs),
+		ownerUserId: row?.ownerUserId ?? null,
+		enrollmentState: row?.enrollmentState ?? null,
+		capabilities: row?.capabilities ?? null,
+		trustedRoots: row?.trustedRoots ?? null,
+	};
 }
 
 /**
@@ -309,4 +356,105 @@ export async function assertSupervisorCanWriteSession(
 			`launchRequestId ${launchRequestId} does not name a launch ${supervisorId} claimed for session ${sessionId}`,
 		);
 	}
+}
+
+/**
+ * A managed row that stands for this id in any way: the session itself, or a row whose provider thread or
+ * provider session is this id (a launched session whose thread is the id being claimed). Any of them means
+ * the id is already managed.
+ */
+export async function findManagedRowForThread(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	id: string,
+): Promise<typeof managedSessions.$inferSelect | null> {
+	const [row] = await db
+		.select()
+		.from(managedSessions)
+		.where(
+			or(
+				eq(managedSessions.sessionId, id),
+				eq(managedSessions.providerThreadId, id),
+				eq(managedSessions.providerSessionId, id),
+			),
+		)
+		.limit(1);
+	return row ?? null;
+}
+
+/** A takeover lost its race: another transaction made the launch or the managed row for this session first. */
+export class SessionAlreadyBoundError extends Error {
+	constructor() {
+		super("session already bound");
+		this.name = "SessionAlreadyBoundError";
+	}
+}
+
+/**
+ * Makes `values.managed.supervisorId` the owner of record for an observed session, in the caller's
+ * transaction: a completed launch row whose correlation id is the session id and whose claimant is the
+ * host (that alone decides ownership, `resolveSessionOwner`'s first rule), then the managed row. Both
+ * inserts are conditional on the unique keys, so of two racing takeovers one writes and the other gets a
+ * lost insert, which throws and rolls its transaction back. The caller builds the rows.
+ */
+export async function claimObservedSession(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	values: {
+		launch: typeof launchRequests.$inferInsert;
+		managed: typeof managedSessions.$inferInsert;
+	},
+): Promise<void> {
+	const launched = await tx
+		.insert(launchRequests)
+		.values(values.launch)
+		.onConflictDoNothing()
+		.returning({ id: launchRequests.id });
+	if (launched.length === 0) throw new SessionAlreadyBoundError();
+	const managed = await tx
+		.insert(managedSessions)
+		.values(values.managed)
+		.onConflictDoNothing()
+		.returning({ sessionId: managedSessions.sessionId });
+	if (managed.length === 0) throw new SessionAlreadyBoundError();
+}
+
+/**
+ * Undoes `claimObservedSession` for a takeover that failed: deletes the managed row that names this launch
+ * and the launch row, and only a launch the takeover itself made (`metadata.boundObservedSession`, the
+ * session's own correlation id). A launched session's rows, a row already managed for another launch and a
+ * launch without the flag are never touched; the session row and its events are left as they were. Returns
+ * whether it released anything. There is no `Actor` on a sweep, so it logs its own line, carrying who pressed
+ * the button.
+ */
+export async function releaseObservedBinding(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	input: { sessionId: string; launchRequestId: string; reason: string },
+): Promise<boolean> {
+	const launch = await findLaunchRowByCorrelationId(input.sessionId, tx);
+	const metadata = (launch?.metadata ?? null) as Record<string, unknown> | null;
+	if (!launch || launch.id !== input.launchRequestId || metadata?.boundObservedSession !== true) {
+		return false;
+	}
+	await tx
+		.delete(managedSessions)
+		.where(
+			and(
+				eq(managedSessions.sessionId, input.sessionId),
+				eq(managedSessions.launchRequestId, launch.id),
+			),
+		);
+	await tx.delete(launchRequests).where(eq(launchRequests.id, launch.id));
+	console.log(
+		JSON.stringify({
+			kind: "session_takeover_released",
+			level: "info",
+			sessionId: input.sessionId,
+			launchRequestId: launch.id,
+			reason: input.reason,
+			boundByUserId: metadata.boundByUserId ?? null,
+		}),
+	);
+	return true;
 }

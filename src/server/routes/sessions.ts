@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gt, lt, lte } from "drizzle-orm";
 import type { Context, Next } from "hono";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { AGENT_TYPES } from "../../shared/constants.js";
 import {
 	type HostFilterEcho,
@@ -32,7 +33,9 @@ import {
 	callerHasManageScope,
 	getRequestActor,
 	getRequestMode,
+	isHumanCaller,
 	refuseBadOrigin,
+	requireBrowserOriginGate,
 	requireOperatorScope,
 } from "../auth/route-scope-policy.js";
 import { config } from "../config.js";
@@ -44,6 +47,7 @@ import { logAdminAction } from "../services/audit-log.js";
 import {
 	NotOwnerError,
 	assertCanArchiveSession,
+	assertCanBindSession,
 	assertCanDeleteSession,
 	assertCanEditSessionNotes,
 	assertCanPinSession,
@@ -51,6 +55,7 @@ import {
 	bindIngestKey,
 	judgeForeignKeyWrite,
 } from "../services/authorization.js";
+import { BindRefusal } from "../services/bind-refusal.js";
 import {
 	ControlBusyError,
 	HostGoneError,
@@ -68,6 +73,8 @@ import { toSessionEventDtos } from "../services/event-dto.js";
 import { notifySessionUpdated } from "../services/notifier.js";
 import { readServiceKeyLists } from "../services/service-key-lists.js";
 import { isServiceKeyRow } from "../services/service-keys.js";
+import { tryConsumeSessionBind } from "../services/session-bind-limit.js";
+import { bindObservedSession } from "../services/session-binding.js";
 import {
 	type SessionDetailRead,
 	getSessionDetail,
@@ -177,6 +184,11 @@ sessionsRouter.use("*", requireOperatorScope());
 
 type SessionAssertion = typeof assertCanDeleteSession;
 
+/** A refused takeover (or the refusal of something a takeover is in the way of): the code, and the status it carries. */
+function refusedBind(c: Context, refusal: BindRefusal): Response {
+	return c.json({ error: refusal.code }, refusal.status as ContentfulStatusCode);
+}
+
 /**
  * Team mode: archive, rename, pin, notes, the stored CLAUDE.md and delete need the session's owner or an
  * admin (an unowned session is open to any member). Returns the 403
@@ -192,6 +204,8 @@ async function refuseUnlessOwnerOrAdmin(
 		return null;
 	} catch (err) {
 		if (err instanceof NotOwnerError) return c.json({ error: "not_owner" }, 403);
+		// Delete and archive are refused while a takeover of the session is open.
+		if (err instanceof BindRefusal) return refusedBind(c, err);
 		throw err;
 	}
 }
@@ -980,6 +994,69 @@ sessionsRouter.post("/sessions/:sessionId/prompt", async (c: Context) => {
 	}
 });
 
+const BIND_BODY_LIMIT_BYTES = 16 * 1024;
+const BIND_BODY_KEYS = new Set(["targetSupervisorId", "sameMachineConfirmed"]);
+
+/**
+ * Takes an observed Codex session over: the machine it ran on will resume it, so prompts, Stop and approvals
+ * work from the dashboard. A person's act (a signed-in human, never an API key: an agent holding a manage key
+ * must not be able to start a process on a machine and capture another conversation), and a request a page
+ * could be tricked into sending, so it passes the browser origin gate first. Order: origin gate, body size
+ * and type, human, the caller's budget, authority over the session, the strict body, the service.
+ */
+sessionsRouter.post(
+	"/sessions/:sessionId/bind",
+	requireBrowserOriginGate,
+	bodyLimit({
+		maxSize: BIND_BODY_LIMIT_BYTES,
+		onError: (c) => c.json({ error: "payload_too_large" }, 413),
+	}),
+	async (c: Context) => {
+		if (!isJsonContentType(c.req.header("Content-Type"))) {
+			return c.json({ error: "unsupported_media_type" }, 415);
+		}
+		const authUser = c.get("authUser") as AuthUser | undefined;
+		if (authUser && !isHumanCaller(authUser)) return c.json({ error: "human_required" }, 403);
+		const subject = authUser?.userId ?? authUser?.keyId ?? "anonymous";
+		if (!tryConsumeSessionBind(subject)) return c.json({ error: "rate_limited" }, 429);
+		const sessionId = c.req.param("sessionId") ?? "";
+		const actor = await getRequestActor(c);
+		try {
+			await assertCanBindSession(actor, sessionId);
+			const body: unknown = await c.req.json().catch(() => null);
+			if (typeof body !== "object" || body === null || Array.isArray(body)) {
+				return c.json({ error: "invalid_body" }, 400);
+			}
+			const { targetSupervisorId, sameMachineConfirmed, ...rest } = body as Record<string, unknown>;
+			if (
+				Object.keys(rest).length > 0 ||
+				Object.keys(body).some((key) => !BIND_BODY_KEYS.has(key)) ||
+				typeof targetSupervisorId !== "string" ||
+				targetSupervisorId === "" ||
+				sameMachineConfirmed !== true
+			) {
+				return c.json({ error: "invalid_body" }, 400);
+			}
+			const result = await bindObservedSession(
+				sessionId,
+				{ targetSupervisorId, sameMachineConfirmed },
+				actor,
+			);
+			c.header("Cache-Control", "no-store");
+			return c.json(
+				{
+					action: redactControlAction(result.action, { includePrompt: false }),
+					launchRequestId: result.launchRequestId,
+				},
+				202,
+			);
+		} catch (error) {
+			if (error instanceof BindRefusal) return refusedBind(c, error);
+			throw error;
+		}
+	},
+);
+
 sessionsRouter.post("/sessions/:sessionId/retry", async (c: Context) => {
 	// A retry clones the session's launch (its env, prompt and host), so it is the owner's or an admin's.
 	const refusal = await refuseUnlessMayChange(c, c.req.param("sessionId") ?? "");
@@ -998,6 +1075,7 @@ sessionsRouter.post("/sessions/:sessionId/retry", async (c: Context) => {
 		>;
 		return c.json({ ...result, launchRequest: { ...launch, launchSpec: spec } }, 201);
 	} catch (error) {
+		if (error instanceof BindRefusal) return refusedBind(c, error);
 		const hostRefusal = hostRefusalResponse(c, error);
 		if (hostRefusal) return hostRefusal;
 		return c.json({ error: error instanceof Error ? error.message : "Unable to retry" }, 400);

@@ -18,13 +18,16 @@
  *    not to someone the instance doesn't know). A host credential has no role
  *    at all and is refused on everything.
  *
- * Host ownership gates rotate and revoke only, never who may launch on the host.
+ * Host ownership gates rotate and revoke only, never who may launch on the host. A takeover (binding an
+ * observed session to a host) isn't a launch: it has its own rules below (`mayBindSession`,
+ * `mayBindToHost`), stricter than both.
  */
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Actor, InstanceModeName } from "../auth/actor.js";
 import { getDb } from "../db/client.js";
-import { apiKeys, sessions, supervisors, users } from "../db/schema/index.js";
+import { apiKeys, controlActions, sessions, supervisors, users } from "../db/schema/index.js";
 import { incrementIngestKeyBound } from "../routes/ingest-counters.js";
+import { BindRefusal } from "./bind-refusal.js";
 import { getMode } from "./instance-mode.js";
 import { isOnServiceKeyList } from "./service-key-lists.js";
 import { resolveSessionHost } from "./session-ownership.js";
@@ -162,8 +165,39 @@ export async function assertCanChangeSessions(
 	if (sessionIds.some((id) => !allowed.has(id))) throw new NotOwnerError("session");
 }
 
-export const assertCanDeleteSession = assertSessionOwnerOrAdmin;
-export const assertCanArchiveSession = assertSessionOwnerOrAdmin;
+/**
+ * While a takeover of this session is open its rows are half made: deleting or archiving it now would pull
+ * the session out from under the host that is resuming it. Judged ahead of solo's no-op, because a takeover
+ * is a takeover in solo too. Only a takeover counts; recovery of a degraded session changes no ownership.
+ */
+async function assertNoOpenTakeover(sessionId: string): Promise<void> {
+	const open = await getDb()
+		.select({ metadata: controlActions.metadata })
+		.from(controlActions)
+		.where(
+			and(
+				eq(controlActions.sessionId, sessionId),
+				eq(controlActions.actionType, "resume"),
+				inArray(controlActions.status, ["queued", "running"]),
+			),
+		);
+	const takeover = open.some(
+		(row) => (row.metadata as Record<string, unknown> | null)?.resumeKind === "takeover",
+	);
+	if (takeover) throw new BindRefusal("takeover_in_progress");
+}
+
+/** Delete: the owner or an admin (team), and never while a takeover of it is open. */
+export async function assertCanDeleteSession(actor: Actor, sessionId: string): Promise<void> {
+	await assertSessionOwnerOrAdmin(actor, sessionId);
+	await assertNoOpenTakeover(sessionId);
+}
+
+/** Archive: the same rule as delete. */
+export async function assertCanArchiveSession(actor: Actor, sessionId: string): Promise<void> {
+	await assertSessionOwnerOrAdmin(actor, sessionId);
+	await assertNoOpenTakeover(sessionId);
+}
 export const assertCanRenameSession = assertSessionOwnerOrAdmin;
 export const assertCanPinSession = assertSessionOwnerOrAdmin;
 /** Notes and the stored CLAUDE.md (which feeds the owner's AI watcher context). */
@@ -172,6 +206,126 @@ export const assertCanEditSessionNotes = assertSessionOwnerOrAdmin;
 export const assertCanConfigureWatcher = assertSessionOwnerOrAdmin;
 /** Approve, decline or edit a watcher proposal on a session. Same rule as configuring it. */
 export const assertCanDecideProposal = assertSessionOwnerOrAdmin;
+
+/**
+ * May this actor take this session over (bind it to a host so the host can run it)? The pure rule, strict
+ * like `mayAnswerApproval` and unlike the aliases above:
+ *  - Solo: allowed.
+ *  - Team: a host credential (role `none`) never; an admin always; a missing session, nobody else.
+ *  - An unowned session: an admin's alone. Every identified member may already prompt and stop an unowned
+ *    session, and a takeover captures the conversation and its directory on a host.
+ *  - An owned session: its owner.
+ */
+export function mayBindSession(
+	actor: Actor,
+	mode: InstanceModeName,
+	session: { ownerUserId: string | null } | null,
+): boolean {
+	if (mode === "solo") return true;
+	if (actor.role === "none") return false;
+	if (actor.role === "admin") return true;
+	if (session === null || session.ownerUserId === null) return false;
+	return actor.userId !== null && actor.userId === session.ownerUserId;
+}
+
+/**
+ * Throws `BindRefusal` unless the actor may take this session over. A session that doesn't exist, or one the
+ * actor couldn't read at all, is `session_not_found` (the answer for a missing one, so a refusal says nothing
+ * about existence); an unowned session a member can read but can't take over is `not_owner`. Reads only the
+ * session, so a refusal performs no host read.
+ */
+export async function assertCanBindSession(actor: Actor, sessionId: string): Promise<void> {
+	const mode = await modeOf(actor);
+	const [row] = await getDb()
+		.select({ ownerUserId: sessions.ownerUserId })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	const refusal = refuseBindSession(
+		actor,
+		mode,
+		row ? { ownerUserId: row.ownerUserId ?? null } : null,
+	);
+	if (refusal !== null) throw new BindRefusal(refusal);
+}
+
+/**
+ * The verdict behind `assertCanBindSession`, for a caller that already holds the session row (the binding
+ * service re-judges it inside its lock): null to carry on, else the code to refuse with.
+ */
+export function refuseBindSession(
+	actor: Actor,
+	mode: InstanceModeName,
+	session: { ownerUserId: string | null } | null,
+): "session_not_found" | "not_owner" | null {
+	if (session === null) return "session_not_found";
+	if (mode === "solo") return null;
+	if (!canReadSession(actor, session)) return "session_not_found";
+	return mayBindSession(actor, mode, session) ? null : "not_owner";
+}
+
+export type HostBindVerdict = "host_gone" | "host_not_allowed" | "host_owner_mismatch";
+
+/**
+ * May this actor take a session (owned by `sessionOwnerUserId`) over onto this host? The pure rule;
+ * null means yes. Authority over the host is separate from authority over the session:
+ *  - Solo: any existing host.
+ *  - A host credential: never.
+ *  - A member: a host they own. A foreign, an unowned and a missing host are all the same `host_not_allowed`,
+ *    so the answer is no oracle for which hosts exist.
+ *  - An admin: any existing host; a missing or revoked one is `host_gone`.
+ *  - Two different non-null owners are refused for everyone, an admin included (`host_owner_mismatch`): the
+ *    host's owner would gain read and write on a session that isn't theirs. An admin who means it changes
+ *    the session's owner first, which is on the record.
+ */
+export function mayBindToHost(
+	actor: Actor,
+	mode: InstanceModeName,
+	sessionOwnerUserId: string | null,
+	host: { ownerUserId: string | null; enrollmentState?: string | null } | null,
+): HostBindVerdict | null {
+	const gone = host === null || host.enrollmentState === "revoked";
+	if (mode === "solo") return gone ? "host_gone" : null;
+	if (actor.role === "none") return "host_not_allowed";
+	if (actor.role !== "admin") {
+		if (host === null || actor.userId === null || host.ownerUserId !== actor.userId) {
+			return "host_not_allowed";
+		}
+	}
+	if (host === null || gone) return "host_gone";
+	if (
+		sessionOwnerUserId !== null &&
+		host.ownerUserId !== null &&
+		sessionOwnerUserId !== host.ownerUserId
+	) {
+		return "host_owner_mismatch";
+	}
+	return null;
+}
+
+/**
+ * Throws `BindRefusal` unless the actor may use this host for a takeover (see `mayBindToHost`). Recovery of a
+ * managed session doesn't call it: the host is the launch's own.
+ */
+export async function assertCanTargetHost(
+	actor: Actor,
+	sessionOwnerUserId: string | null,
+	supervisorId: string,
+): Promise<void> {
+	const mode = await modeOf(actor);
+	const [host] = await getDb()
+		.select({ ownerUserId: supervisors.ownerUserId, enrollmentState: supervisors.enrollmentState })
+		.from(supervisors)
+		.where(eq(supervisors.id, supervisorId))
+		.limit(1);
+	const verdict = mayBindToHost(
+		actor,
+		mode,
+		sessionOwnerUserId,
+		host ? { ownerUserId: host.ownerUserId ?? null, enrollmentState: host.enrollmentState } : null,
+	);
+	if (verdict !== null) throw new BindRefusal(verdict);
+}
 
 /**
  * May this actor answer a Codex approval on this session? The pure rule, for a
