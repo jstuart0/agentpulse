@@ -300,12 +300,9 @@ export function ComposerBody({
 					</div>
 				</div>
 				{status ? (
-					<div
-						role="status"
-						className={status.srOnly ? "sr-only" : "text-[11px] text-muted-foreground"}
-					>
+					<output className={status.srOnly ? "sr-only" : "block text-[11px] text-muted-foreground"}>
 						{status.text}
-					</div>
+					</output>
 				) : null}
 				{box.alert ? (
 					<div id={alertId} role="alert" className="text-xs text-red-600 dark:text-red-400">

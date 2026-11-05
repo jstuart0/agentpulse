@@ -1135,7 +1135,11 @@ describe("a host's failure text is bounded and cleaned where it is stored (revie
 		await status(first.id, hostile);
 		const stored = (await actionById(first.id))?.error ?? "";
 		expect(stored).toStartWith("bad [31mgnp.exe x");
-		expect(stored).not.toMatch(/[\u0000-\u001f‮]/);
+		expect(
+			Array.from(stored).some(
+				(ch) => (ch.codePointAt(0) ?? 0) < 32 || (ch.codePointAt(0) ?? 0) === 0x202e,
+			),
+		).toBe(false);
 		expect(Array.from(stored).length).toBeLessThanOrEqual(501);
 		const second = await queuePromptAction(w.sessionId, "two", ACTOR);
 		await claimNextControlAction(w.host.id);

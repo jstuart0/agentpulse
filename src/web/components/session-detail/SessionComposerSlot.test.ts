@@ -51,7 +51,7 @@ describe("SessionComposerSlot", () => {
 		expect(out).toContain("This starts a new turn in the same Codex thread");
 		expect(out).toContain("What should Codex do next?");
 		expect(out).toContain("Send prompt");
-		expect(out).toContain('role="status"');
+		expect(out).toContain("<output");
 		expect(out).not.toMatch(/<textarea[^>]*readonly/i);
 	});
 
@@ -198,14 +198,14 @@ describe("ComposerBody states", () => {
 		expect(out).toMatch(/<button[^>]*aria-disabled="true"[^>]*>Sending…<\/button>/);
 		expect(out).not.toMatch(/<button[^>]*\sdisabled=""/);
 		expect(out).toMatch(
-			/<div role="status" class="text-\[11px\] text-muted-foreground">Waiting for the host to start this turn\.<\/div>/,
+			/<output class="block text-\[11px\] text-muted-foreground">Waiting for the host to start this turn\.<\/output>/,
 		);
 		expect(out).not.toContain('role="alert"');
 	});
 
 	test("after a send went through, 'Prompt sent.' is for a screen reader only", () => {
 		const out = body({ justSent: true, prompt: "" });
-		expect(out).toMatch(/<div role="status" class="sr-only">Prompt sent\.<\/div>/);
+		expect(out).toMatch(/<output class="sr-only">Prompt sent\.<\/output>/);
 	});
 
 	test("a failed send: editable text, the reason in role=alert, and the way to a new session when it asks for one", () => {
@@ -241,7 +241,7 @@ describe("ComposerBody states", () => {
 
 	test("Claude headless has no status line", () => {
 		const out = body({ mode: headless, sideText: headless.side });
-		expect(out).not.toContain('role="status"');
+		expect(out).not.toContain("<output");
 	});
 
 	test("an unavailable host or terminal turns the box off", () => {

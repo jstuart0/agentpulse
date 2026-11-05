@@ -61,6 +61,17 @@ function modeOf(session: Probe, canPrompt = true) {
 	if (mode === null) throw new Error("expected a mode");
 	return mode;
 }
+function hasControlOrBidi(text: string): boolean {
+	return Array.from(text).some((ch) => {
+		const code = ch.codePointAt(0) ?? 0;
+		return (
+			code < 32 ||
+			code === 127 ||
+			(code >= 0x202a && code <= 0x202e) ||
+			(code >= 0x2066 && code <= 0x2069)
+		);
+	});
+}
 const ALLOWED = { canPrompt: true };
 const DENIED = { canPrompt: false };
 const IDLE = { step: "idle" } as const;
@@ -327,7 +338,7 @@ describe("the box across a send", () => {
 		const result = settled({ outcome: "failed", error: hostile });
 		const alert = boxState(codex, result.phase, NO_FLIGHT).alert ?? "";
 		expect(alert.startsWith("a bcyyy")).toBe(true);
-		expect(alert).not.toMatch(/[\u0000-\u001f‮]/);
+		expect(hasControlOrBidi(alert)).toBe(false);
 		expect(Array.from(alert).length).toBeLessThanOrEqual(501);
 	});
 
@@ -430,7 +441,11 @@ describe("shouldRefocusBox", () => {
 describe("focusBoxAfterSettle", () => {
 	test("focuses the box, except on a touch screen or when there is no box", () => {
 		let focused = 0;
-		const box = { focus: () => void (focused += 1) };
+		const box = {
+			focus: () => {
+				focused += 1;
+			},
+		};
 		focusBoxAfterSettle(box, () => ({ matches: false }));
 		expect(focused).toBe(1);
 		focusBoxAfterSettle(box, (q) => ({ matches: q === "(pointer: coarse)" }));
