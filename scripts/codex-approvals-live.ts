@@ -55,6 +55,7 @@ import {
 import { homedir, hostname, tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { guardAuthCopy, removeAuthCopy } from "./codex-canary-guard.js";
+import { ownCodexPids as findOwnCodexPids } from "./lib/codex-own-pids.js";
 
 type Frame = { t: number; dir: "in" | "out"; frame: any };
 type Obs = Record<string, unknown>;
@@ -1215,17 +1216,7 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 	// The guard goes in first: from the moment the copy exists, any way this process ends removes it.
 	const authCopy = join(codexHome, "auth.json");
 	const childGroups = new Set<number>();
-	/** Codex processes whose environment names this run's CODEX_HOME: also those a launch still in flight hasn't returned yet. */
-	const ownCodexPids = (): number[] =>
-		spawnSync("pgrep", ["-x", "codex"], { encoding: "utf8" })
-			.stdout.split("\n")
-			.filter(Boolean)
-			.filter((pid) =>
-				spawnSync("ps", ["-Eww", "-p", pid, "-o", "command="], {
-					encoding: "utf8",
-				}).stdout.includes(`CODEX_HOME=${codexHome}`),
-			)
-			.map(Number);
+	const ownCodexPids = (): number[] => findOwnCodexPids(codexHome);
 	guardAuthCopy(authCopy, () => [...childGroups, ...ownCodexPids()]);
 	copyFileSync(realAuth, authCopy);
 	chmodSync(authCopy, 0o600);
