@@ -7,7 +7,7 @@
  *
  *   bun scripts/codex-approvals-live.ts --spike --work <dir> --raw <dir> [--only S2,S4]
  *   bun scripts/codex-approvals-live.ts --scrub --raw <dir> --out <fixtures dir> --work <dir>
- *   bun scripts/codex-approvals-live.ts --real --work <dir> [--minutes 12] [--only argv,decline,fc-accept,fc-decline,fc-patch]
+ *   bun scripts/codex-approvals-live.ts --real --work <dir> [--minutes 12] [--only argv,decline,fc-accept,fc-decline,fc-patch,followup]
  *
  * `--real` is the per-release canary (D18). It drives a real Codex through the whole of AgentPulse and
  * nothing else: a throwaway server on 127.0.0.1 with a temp SQLite database, the real report gate and
@@ -20,7 +20,13 @@
  *     mixed patch (update, move, delete) left the disk as the shown changes say;
  *   - a declined file change left no effect;
  *   - with a request pending, no process in the Codex child's tree has a listening socket (`lsof`), and
- *     after stop none of that tree is left.
+ *     after stop none of that tree is left;
+ *   - `followup` (AGEN-91): a prompt sent to a live session through `POST /sessions/:id/prompt` and a real
+ *     control-action handler starts a second turn on the same Codex process and thread, still asks for
+ *     approval in the launch directory, is refused while that turn is pending, and ends cleanly when
+ *     declined. The follow-up's `turn/start` and the `turn/completed` Codex sends are compared with the
+ *     recorded 0.163 fixture.
+ * An `--only` id that names no scenario exits 2 before anything starts.
  * Codex is asked in a way that cannot be answered without an approval (escalated command, exact patch
  * text); if it asks nothing anyway, that scenario fails, because a canary that passes without asking
  * proves nothing. It uses a throwaway CODEX_HOME holding only a copy of `auth.json`, which is deleted at
@@ -38,6 +44,7 @@ import {
 	mkdirSync,
 	readFileSync,
 	readdirSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -53,6 +60,22 @@ const opt = (name: string) => {
 	const i = args.indexOf(name);
 	return i >= 0 ? args[i + 1] : undefined;
 };
+
+/** The scenarios `--real` knows, in the order a default run takes them. */
+const REAL_SCENARIO_IDS = ["argv", "decline", "fc-accept", "fc-decline", "fc-patch", "followup"];
+
+/** `--only` is checked before anything starts: an id that matches nothing would otherwise run zero scenarios and pass. */
+function realScenarioIds(raw: string | undefined): string[] {
+	const ids = raw === undefined ? REAL_SCENARIO_IDS : raw.split(",");
+	const unknown = ids.filter((id) => !REAL_SCENARIO_IDS.includes(id));
+	if (unknown.length > 0) {
+		console.error(
+			`[real] unknown scenario ${unknown.map((id) => JSON.stringify(id)).join(", ")}; known: ${REAL_SCENARIO_IDS.join(", ")}`,
+		);
+		process.exit(2);
+	}
+	return ids;
+}
 
 function assertScratch(dir: string) {
 	const abs = resolve(dir);
@@ -1171,7 +1194,7 @@ function listenersIn(pgid: number): { pids: number[]; listeners: string; listenF
  * directories Codex runs in. A kill timer ends it whatever happens, and every Codex child is in its own
  * process group, so the shutdown reaches the native binary too.
  */
-async function real(workArg: string, minutes: number): Promise<number> {
+async function real(workArg: string, minutes: number, only: string[]): Promise<number> {
 	const root = assertScratch(workArg);
 	const codexHome = join(root, "codex-home");
 	const home = join(root, "home");
@@ -1250,9 +1273,14 @@ async function real(workArg: string, minutes: number): Promise<number> {
 		(config as Record<string, unknown>).disableAuth = false;
 		const { app } = await import("../src/server/app.js");
 		const { createApiKey } = await import("../src/server/auth/api-key.js");
-		const { launchRequests, codexApprovals, managedSessions, events } = await import(
-			"../src/server/db/schema/index.js"
-		);
+		const {
+			launchRequests,
+			codexApprovals,
+			managedSessions,
+			events,
+			sessions: sessionsTable,
+			controlActions,
+		} = await import("../src/server/db/schema/index.js");
 		const team = await import("../src/server/test-utils/team-fixtures.js");
 		const { eq, desc } = await import("drizzle-orm");
 		const { createReportGate } = await import("../src/supervisor/services/report-gate.js");
@@ -1271,6 +1299,11 @@ async function real(workArg: string, minutes: number): Promise<number> {
 		const person = await team.seedLocalUser("real-person", "admin");
 		const manage = await createApiKey("real-manage", ["manage"]);
 		const json = { "Content-Type": "application/json" };
+		const supervisorConfigModule = await import("../src/supervisor/config.js");
+		const supervisorConfig = await supervisorConfigModule.withExecutableCapabilities(
+			supervisorConfigModule.buildDefaultConfig(),
+		);
+		results.registeredFeatures = supervisorConfig.capabilities.features;
 		const enrolled = await fetch(`${base}/api/v1/admin/supervisors/enroll`, {
 			method: "POST",
 			headers: { ...json, Authorization: `Bearer ${manage.key}` },
@@ -1286,14 +1319,9 @@ async function real(workArg: string, minutes: number): Promise<number> {
 				arch: "arm64",
 				version: "1.0.0",
 				enrollmentToken,
-				capabilities: {
-					version: 1,
-					agentTypes: ["codex_cli"],
-					launchModes: ["managed_codex"],
-					os: "macos",
-					terminalSupport: [],
-					features: [],
-				},
+				// What the real supervisor registers with on this machine, so the server's own feature gates
+				// (a Codex host without `codex_follow_up_prompts` is refused prompts) are the ones under test.
+				capabilities: supervisorConfig.capabilities,
 				trustedRoots: [root],
 			}),
 		});
@@ -1584,8 +1612,483 @@ async function real(workArg: string, minutes: number): Promise<number> {
 			prompt: () =>
 				`Call apply_patch once, and use no other tool, with exactly this patch text, then stop:\n${patchFor(file, line)}`,
 		});
+		/**
+		 * AGEN-91: a prompt sent to a live Codex session. Everything between the person and Codex is the real
+		 * thing: the prompt route, the server's queue, a control-action claim over HTTP, and the supervisor's
+		 * own `createControlActionHandler`. A tap on the RPC client records the frames Codex actually sent and
+		 * got, so the wire shape is judged against what the app-server did, not against what our code meant.
+		 */
+		async function followupScenario() {
+			const name = "followup";
+			const rpc = await import("../src/supervisor/providers/codex-rpc.js");
+			const { createControlActionHandler } = await import("../src/supervisor/control-actions.js");
+			const claude = await import("../src/supervisor/providers/claude.js");
+			const { executeCleanupWorkArea } = await import(
+				"../src/supervisor/services/cleanup-workarea.js"
+			);
+			const { boundaryOf } = await import("../src/server/services/ai/turn-identity.js");
+			const { aiWatcherRuns } = await import("../src/server/db/schema/index.js");
+			const { and, asc } = await import("drizzle-orm");
+
+			// The tap: observation only, every call goes straight through.
+			const wire = { turnStarts: [] as any[], frames: [] as any[] };
+			const proto = rpc.RpcClient.prototype as any;
+			const originalRequest = proto.request;
+			const originalReceive = proto.receive;
+			const partial = new WeakMap<object, string>();
+			proto.request = function (method: string, params: unknown, ...rest: unknown[]) {
+				if (method === "turn/start") wire.turnStarts.push(JSON.parse(JSON.stringify(params)));
+				return originalRequest.call(this, method, params, ...rest);
+			};
+			proto.receive = function (chunk: Uint8Array | string) {
+				const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+				const lines = ((partial.get(this) ?? "") + text).split("\n");
+				partial.set(this, lines.pop() ?? "");
+				for (const line of lines) {
+					if (!line.includes('"turn')) continue;
+					try {
+						const frame = JSON.parse(line);
+						if (
+							frame.method === "turn/started" ||
+							frame.method === "turn/completed" ||
+							frame.result?.turn?.id
+						) {
+							wire.frames.push(frame);
+						}
+					} catch {}
+				}
+				return originalReceive.call(this, chunk);
+			};
+
+			// The supervisor's control loop: claim over HTTP, hand to the real handler.
+			const handler = createControlActionHandler({
+				gate,
+				trustedRoots: [root],
+				providers: {
+					stopManagedCodexSession: managed.stopManagedCodexSession,
+					promptManagedCodexSession: managed.promptManagedCodexSession,
+					hasManagedCodexRuntime: managed.hasManagedCodexRuntime,
+					promptClaudeHeadlessSession: claude.promptClaudeHeadlessSession,
+					promptClaudeInteractiveSession: claude.promptClaudeInteractiveSession,
+				},
+				executeCleanupWorkArea,
+			});
+			const claimedMetadata = new Map<string, string[]>();
+			let pumping = false;
+			intervals.push(
+				setInterval(() => {
+					if (pumping) return;
+					pumping = true;
+					void (async () => {
+						try {
+							const result = (await request(`/supervisors/${supervisorId}/control-actions/claim`, {
+								method: "POST",
+							})) as { action: any | null };
+							if (!result.action) return;
+							claimedMetadata.set(
+								result.action.id,
+								Object.keys(result.action.metadata ?? {}).sort(),
+							);
+							await handler(result.action);
+						} catch (error) {
+							console.error("[real] control loop:", String(error));
+						} finally {
+							pumping = false;
+						}
+					})();
+				}, 700),
+			);
+
+			const dir = join(root, `project-${name}`);
+			mkdirSync(dir, { recursive: true });
+			spawnSync("git", ["init", "-q"], { cwd: dir });
+			const sessionId = `real-${name}-${crypto.randomUUID().slice(0, 6)}`;
+			sessions.push(sessionId);
+			await getDb().insert(launchRequests).values({
+				launchCorrelationId: sessionId,
+				agentType: "codex_cli",
+				cwd: dir,
+				requestedSupervisorId: supervisorId,
+				requestedLaunchMode: "managed_codex",
+				status: "validated",
+				// "on-request" isn't a launchable value; `default` leaves Codex on its own policy, which in this
+				// throwaway CODEX_HOME is on-request (the other scenarios rely on the same).
+				approvalPolicy: "default",
+				sandboxMode: "workspace-write",
+				baseInstructions: "",
+				taskPrompt: "Reply with the single word ready. Do not run any command or use any tool.",
+			});
+			const workingNow = async () =>
+				(
+					await getDb()
+						.select({ w: sessionsTable.isWorking })
+						.from(sessionsTable)
+						.where(eq(sessionsTable.sessionId, sessionId))
+				)[0]?.w;
+			const out: Record<string, unknown> = { sessionId };
+			let sawWorkingInLaunchTurn = false;
+			const sampler = setInterval(
+				() =>
+					void workingNow()
+						.then((w) => {
+							if (w) sawWorkingInLaunchTurn = true;
+						})
+						.catch(() => {}),
+				200,
+			);
+			intervals.push(sampler);
+
+			const claim = await request(`/supervisors/${supervisorId}/launches/claim`, {
+				method: "POST",
+			});
+			const launch = (claim as { launchRequest: any }).launchRequest;
+			gate.noteLaunch(launch.id, launch.launchCorrelationId, launch.cwd);
+			const started = await managed.launchManagedCodexRequest(launch, {
+				reportState: (body: any) => gate.reportState(body),
+				reportEvents: (batch: any) => gate.reportEvents(sessionId, batch),
+			});
+			const managedRow = async () =>
+				(
+					await getDb()
+						.select()
+						.from(managedSessions)
+						.where(eq(managedSessions.sessionId, sessionId))
+				)[0];
+			out.verdict = await until("the protocol verdict", 30_000, async () => {
+				return ((await managedRow())?.providerCapabilitySnapshot as any)?.agentpulseApprovals as
+					| string
+					| undefined;
+			}).catch(() => undefined);
+
+			// The launch turn: working while it runs, idle after, and no turn boundary for a watcher to wake on.
+			await until("the launch turn to end", 120_000, async () => {
+				return sawWorkingInLaunchTurn && (await workingNow()) === false ? true : undefined;
+			}).catch(() => {});
+			clearInterval(sampler);
+			out.workingDuringLaunchTurn = sawWorkingInLaunchTurn;
+			out.workingAfterLaunchTurn = await workingNow();
+			const launchEvents = await getDb()
+				.select({ type: events.eventType, category: events.category })
+				.from(events)
+				.where(eq(events.sessionId, sessionId))
+				.orderBy(asc(events.id));
+			out.launchTurnEventTypes = launchEvents.map((e) => e.type);
+			out.launchTurnBoundaries = launchEvents
+				.filter((e) => boundaryOf({ eventType: e.type, category: e.category }) !== null)
+				.map((e) => e.type);
+			out.watcherRunsAfterLaunch = (
+				await getDb().select().from(aiWatcherRuns).where(eq(aiWatcherRuns.sessionId, sessionId))
+			).length;
+			const processStart = () =>
+				spawnSync("ps", ["-o", "lstart=", "-p", String(started.pid)], {
+					encoding: "utf8",
+				}).stdout.trim();
+			const pidBefore = started.pid;
+			const startedBefore = processStart();
+
+			const prompt = `Run exactly this one shell command ${ESCALATE} and then stop. Do not do anything else: touch followup-declined.txt`;
+			const sendPrompt = async (text: string) => {
+				const res = await fetch(`${base}/api/v1/sessions/${sessionId}/prompt`, {
+					method: "POST",
+					headers: await personHeaders(),
+					body: JSON.stringify({ prompt: text }),
+				});
+				return { status: res.status, body: (await res.json().catch(() => null)) as any };
+			};
+			const finalAction = (id: string, ms: number) =>
+				until(`control action ${id} to finish`, ms, async () => {
+					const [row] = await getDb()
+						.select()
+						.from(controlActions)
+						.where(eq(controlActions.id, id));
+					return row && (row.status === "succeeded" || row.status === "failed") ? row : undefined;
+				});
+
+			const first = await sendPrompt(prompt);
+			out.promptRouteStatus = first.status;
+			const firstAction = first.body?.action?.id
+				? await finalAction(first.body.action.id, 60_000).catch(() => undefined)
+				: undefined;
+			out.actionStatus = firstAction?.status;
+			out.actionError = firstAction?.error ?? null;
+			out.actionMetadataAfter = firstAction?.metadata ?? null;
+			out.queuedMetadataKeys = first.body?.action?.id
+				? (claimedMetadata.get(first.body.action.id) ?? null)
+				: null;
+
+			const row = await until("an approval request in the follow-up turn", 180_000, async () => {
+				return (
+					await getDb().select().from(codexApprovals).where(eq(codexApprovals.sessionId, sessionId))
+				)[0];
+			}).catch((error) => {
+				out.asked = false;
+				out.sawNoRequest = String(error);
+				return undefined;
+			});
+			if (!row) {
+				const recent = await getDb()
+					.select({ type: events.eventType, content: events.content })
+					.from(events)
+					.where(eq(events.sessionId, sessionId))
+					.orderBy(desc(events.id))
+					.limit(6);
+				out.timeline = recent.map((e) => `${e.type}: ${(e.content ?? "").slice(0, 240)}`);
+			} else {
+				out.asked = true;
+				out.workingWhilePending = await workingNow();
+				const detail = (await (
+					await fetch(`${base}/api/v1/sessions/${sessionId}/approvals/${row.id}`, {
+						headers: await personHeaders(),
+					})
+				).json()) as { presentation?: { cwd?: string | null; command?: string | null } };
+				out.shownCwd = detail.presentation?.cwd ?? null;
+				out.shownCommand = detail.presentation?.command ?? null;
+
+				// A second prompt while the turn is pending: refused by the host that holds the thread.
+				const second = await sendPrompt("Say hello.");
+				out.secondPromptRouteStatus = second.status;
+				const secondAction = second.body?.action?.id
+					? await finalAction(second.body.action.id, 30_000).catch(() => undefined)
+					: undefined;
+				out.secondActionStatus = secondAction?.status;
+				out.secondActionError = secondAction?.error ?? null;
+
+				const list = (await (
+					await fetch(`${base}/api/v1/sessions/${sessionId}/approvals`, {
+						headers: await personHeaders(),
+					})
+				).json()) as any;
+				const answered = await fetch(
+					`${base}/api/v1/sessions/${sessionId}/approvals/${list.approvals[0].id}/decision`,
+					{
+						method: "POST",
+						headers: await personHeaders(),
+						body: JSON.stringify({ decision: "decline" }),
+					},
+				);
+				out.declineStatus = answered.status;
+				await until("the row to close", 90_000, async () => {
+					const [current] = await getDb()
+						.select()
+						.from(codexApprovals)
+						.where(eq(codexApprovals.id, row.id));
+					return current?.status === "closed" ? current : undefined;
+				}).catch(() => {});
+			}
+
+			// The end of the turn: an event, then the working flag clears.
+			const ended = await until("the follow-up turn's end event", 120_000, async () =>
+				(await getDb().select().from(events).where(eq(events.sessionId, sessionId))).find(
+					(e) =>
+						e.eventType === "HeadlessPromptCompleted" || e.eventType === "HeadlessPromptFailed",
+				),
+			).catch(() => undefined);
+			out.endEvent = ended ? { type: ended.eventType, content: ended.content } : null;
+			await until("the working flag to clear", 30_000, async () =>
+				(await workingNow()) === false ? true : undefined,
+			).catch(() => {});
+			await sleepMs(3_000);
+			out.workingAfterDecline = await workingNow();
+			out.directoryAfter = listing(dir);
+
+			const allEvents = await getDb().select().from(events).where(eq(events.sessionId, sessionId));
+			out.submittedRows = allEvents
+				.filter((e) => e.eventType === "HeadlessPromptSubmitted")
+				.map((e) => e.content);
+			out.pid = {
+				before: pidBefore,
+				startedBefore,
+				startedAfter: processStart(),
+				alive: pidAlive(started.pid),
+			};
+			out.threadId = (await managedRow())?.providerThreadId ?? null;
+			out.wire = {
+				turnStartParamKeys: wire.turnStarts.map((p) => Object.keys(p).sort()),
+				followUpInput: wire.turnStarts[1]?.input ?? null,
+				frames: wire.frames.map((f) =>
+					f.method
+						? {
+								method: f.method,
+								paramKeys: Object.keys(f.params ?? {}).sort(),
+								turnKeys: Object.keys(f.params?.turn ?? {}).sort(),
+								threadId: f.params?.threadId ?? null,
+								turnId: f.params?.turn?.id ?? null,
+								status: f.params?.turn?.status ?? null,
+							}
+						: { responseTurnId: f.result.turn.id, resultKeys: Object.keys(f.result).sort() },
+				),
+			};
+
+			// Put the client back as it was, then stop the session.
+			proto.request = originalRequest;
+			proto.receive = originalReceive;
+			await managed.stopManagedCodexSession(sessionId).catch(() => {});
+			out.treeAfterStop = await treeAfterStop(started.pid);
+			expect(`${name}: processes left after stop`, out.treeAfterStop === "none", out.treeAfterStop);
+
+			// ---- assertions ----
+			expect(
+				`${name}: the protocol verdict is supported`,
+				out.verdict === "supported",
+				out.verdict,
+			);
+			expect(
+				`${name}: the host registered with codex_follow_up_prompts`,
+				(supervisorConfig.capabilities.features as string[]).includes("codex_follow_up_prompts"),
+				supervisorConfig.capabilities.features,
+			);
+			expect(
+				`${name}: isWorking was true during the launch turn`,
+				out.workingDuringLaunchTurn === true,
+			);
+			expect(
+				`${name}: isWorking was false after the launch turn`,
+				out.workingAfterLaunchTurn === false,
+			);
+			expect(
+				`${name}: the launch turn wrote no turn boundary`,
+				(out.launchTurnBoundaries as string[]).length === 0,
+				out.launchTurnBoundaries,
+			);
+			expect(`${name}: no watcher run was queued`, out.watcherRunsAfterLaunch === 0);
+			expect(`${name}: the prompt route accepted the prompt`, first.status === 202, first.body);
+			expect(`${name}: the action succeeded`, out.actionStatus === "succeeded", out.actionError);
+			const metaAfter = (out.actionMetadataAfter ?? {}) as Record<string, unknown>;
+			expect(
+				`${name}: the action carries a turnId and the thread`,
+				typeof metaAfter.turnId === "string" &&
+					metaAfter.turnId !== "" &&
+					metaAfter.threadId === out.threadId,
+				metaAfter,
+			);
+			const queuedKeys = (out.queuedMetadataKeys ?? []) as string[];
+			expect(
+				`${name}: the queued metadata names no env, approvalPolicy, sandboxMode or model`,
+				out.queuedMetadataKeys !== null &&
+					["env", "approvalPolicy", "sandboxMode", "model"].every((k) => !queuedKeys.includes(k)),
+				out.queuedMetadataKeys,
+			);
+			expect(
+				`${name}: exactly one HeadlessPromptSubmitted, with the prompt's text`,
+				JSON.stringify(out.submittedRows) === JSON.stringify([prompt]),
+				out.submittedRows,
+			);
+			expect(
+				`${name}: Codex asked for approval in the follow-up turn`,
+				out.asked === true,
+				out.sawNoRequest ?? out.timeline,
+			);
+			if (out.asked === true) {
+				const real = (p: string) => {
+					try {
+						return realpathSync(p);
+					} catch {
+						return p;
+					}
+				};
+				expect(
+					`${name}: the approval's presentation.cwd is the launch directory`,
+					typeof out.shownCwd === "string" && real(out.shownCwd as string) === real(dir),
+					{ shown: out.shownCwd, launch: dir },
+				);
+				expect(
+					`${name}: isWorking was true while the approval was pending`,
+					out.workingWhilePending === true,
+				);
+				expect(
+					`${name}: a second prompt while pending was refused with the busy message`,
+					out.secondActionStatus === "failed" &&
+						String(out.secondActionError).includes("hasn't ended its current turn"),
+					{
+						route: out.secondPromptRouteStatus,
+						status: out.secondActionStatus,
+						error: out.secondActionError,
+					},
+				);
+				expect(`${name}: the decline was accepted`, out.declineStatus === 200, out.declineStatus);
+			}
+			expect(
+				`${name}: no file after the decline`,
+				!has(out, "followup-declined.txt"),
+				out.directoryAfter,
+			);
+			expect(`${name}: a turn-end event was written`, out.endEvent !== null, out.endEvent);
+			expect(`${name}: isWorking is false after the decline`, out.workingAfterDecline === false);
+			const pid = out.pid as any;
+			expect(
+				`${name}: the Codex process is the same across both turns`,
+				pid.alive === true && pid.startedBefore !== "" && pid.startedBefore === pid.startedAfter,
+				pid,
+			);
+
+			// The wire, against what Codex really sent and the recorded 0.163 fixture.
+			const fixtureFrames = readFileSync(
+				join(
+					import.meta.dir,
+					"../src/supervisor/providers/__fixtures__/codex-0.163/command-accept.jsonl",
+				),
+				"utf8",
+			)
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => JSON.parse(line).frame)
+				.filter(Boolean);
+			const fixtureStart = fixtureFrames.find((f: any) => f.method === "turn/start")?.params;
+			const fixtureDone = fixtureFrames.find((f: any) => f.method === "turn/completed")?.params;
+			const keys = (o: unknown) => Object.keys((o ?? {}) as object).sort();
+			const [launchStart, followStart] = wire.turnStarts;
+			expect(
+				`${name}: two turn/start requests went out`,
+				wire.turnStarts.length === 2,
+				wire.turnStarts.length,
+			);
+			expect(
+				`${name}: the follow-up's turn/start is exactly {threadId, input}`,
+				JSON.stringify(keys(followStart)) === JSON.stringify(["input", "threadId"]) &&
+					followStart?.threadId === out.threadId &&
+					JSON.stringify(followStart?.input) === JSON.stringify([{ type: "text", text: prompt }]),
+				followStart,
+			);
+			expect(
+				`${name}: the launch's turn/start has the keys the 0.163 fixture recorded`,
+				JSON.stringify(keys(launchStart)) === JSON.stringify(keys(fixtureStart)),
+				{ live: keys(launchStart), fixture: keys(fixtureStart) },
+			);
+			expect(
+				`${name}: the follow-up's input item has the fixture's shape`,
+				JSON.stringify(keys(followStart?.input?.[0])) ===
+					JSON.stringify(keys(fixtureStart?.input?.[0])),
+				{ live: keys(followStart?.input?.[0]), fixture: keys(fixtureStart?.input?.[0]) },
+			);
+			const turnId = String(metaAfter.turnId ?? "");
+			const completed = wire.frames.find(
+				(f) => f.method === "turn/completed" && f.params?.turn?.id === turnId,
+			);
+			expect(
+				`${name}: Codex's turn/completed for the follow-up carries the thread id at params.threadId`,
+				completed?.params?.threadId === out.threadId,
+				completed
+					? { threadId: completed.params?.threadId }
+					: "no turn/completed with that turn id",
+			);
+			expect(
+				`${name}: turn/completed has at least the fixture's params and turn keys`,
+				completed !== undefined &&
+					keys(fixtureDone).every((k) => keys(completed.params).includes(k)) &&
+					keys(fixtureDone?.turn).every((k) => keys(completed.params.turn).includes(k)),
+				{
+					live: [keys(completed?.params), keys(completed?.params?.turn)],
+					fixture: [keys(fixtureDone), keys(fixtureDone?.turn)],
+				},
+			);
+			expect(
+				`${name}: turn/start's reply names the turn the action reported`,
+				wire.frames.some((f) => f.result?.turn?.id === turnId),
+			);
+			return out;
+		}
+
 		const ARGV_SCRIPT = 'printf "%s\\n" "$0" "$@" > argv-out.txt\n';
-		const only = (opt("--only") ?? "argv,decline,fc-accept,fc-decline,fc-patch").split(",");
 		const run = async (id: string, plan: () => Plan) =>
 			only.includes(id) ? await scenario(plan()) : { skipped: true };
 		const every = (name: string, out: any) => {
@@ -1650,6 +2153,8 @@ async function real(workArg: string, minutes: number): Promise<number> {
 					"Then stop.",
 				].join("\n"),
 		}));
+
+		results.followup = only.includes("followup") ? await followupScenario() : { skipped: true };
 
 		const argv = results.argv as any;
 		every("argv", argv);
@@ -1733,7 +2238,8 @@ async function real(workArg: string, minutes: number): Promise<number> {
 }
 
 if (flag("--real")) {
-	process.exit(await real(opt("--work") ?? "", Number(opt("--minutes") ?? 12)));
+	const only = realScenarioIds(opt("--only"));
+	process.exit(await real(opt("--work") ?? "", Number(opt("--minutes") ?? 12), only));
 } else if (flag("--parent-helper")) {
 	const i = args.indexOf("--parent-helper");
 	await parentHelper(args[i + 1]!, args[i + 2]!);
