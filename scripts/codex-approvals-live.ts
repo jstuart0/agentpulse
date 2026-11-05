@@ -1674,13 +1674,14 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 				const lines = ((partial.get(this) ?? "") + text).split("\n");
 				partial.set(this, lines.pop() ?? "");
 				for (const line of lines) {
-					if (!line.includes('"turn')) continue;
+					if (!line.includes('"turn') && !line.includes('"approvalPolicy"')) continue;
 					try {
 						const frame = JSON.parse(line);
 						if (
 							frame.method === "turn/started" ||
 							frame.method === "turn/completed" ||
-							frame.result?.turn?.id
+							frame.result?.turn?.id ||
+							frame.result?.approvalPolicy !== undefined
 						) {
 							wire.frames.push(frame);
 						}
@@ -1740,9 +1741,9 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 				requestedSupervisorId: supervisorId,
 				requestedLaunchMode: "managed_codex",
 				status: "validated",
-				// "on-request" isn't a launchable value; `default` leaves Codex on its own policy, which in this
-				// throwaway CODEX_HOME is on-request (the other scenarios rely on the same).
-				approvalPolicy: "default",
+				// An explicit policy that differs from Codex's own default (on-request in this throwaway
+				// CODEX_HOME): a follow-up that fell back to the config default would stop asking.
+				approvalPolicy: "untrusted",
 				sandboxMode: "workspace-write",
 				baseInstructions: "",
 				taskPrompt: "Reply with the single word ready. Do not run any command or use any tool.",
@@ -1816,7 +1817,10 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 			const pidBefore = started.pid;
 			const startedBefore = processStart();
 
-			const prompt = `Run exactly this one shell command ${ESCALATE} and then stop. Do not do anything else: touch followup-declined.txt`;
+			// Plain and inside the workspace: under on-request with workspace-write Codex runs it unasked, so an
+			// approval row means the thread's `untrusted` policy held across the second turn.
+			const prompt =
+				"Run exactly this one shell command and then stop. Do not do anything else: touch followup-declined.txt";
 			const sendPrompt = async (text: string) => {
 				const res = await fetch(`${base}/api/v1/sessions/${sessionId}/prompt`, {
 					method: "POST",
@@ -1945,9 +1949,27 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 								turnId: f.params?.turn?.id ?? null,
 								status: f.params?.turn?.status ?? null,
 							}
-						: { responseTurnId: f.result.turn.id, resultKeys: Object.keys(f.result).sort() },
+						: f.result?.turn?.id
+							? { responseTurnId: f.result.turn.id, resultKeys: Object.keys(f.result).sort() }
+							: {
+									threadStartReply: {
+										approvalPolicy: f.result.approvalPolicy,
+										sandboxType: f.result.sandbox?.type ?? null,
+									},
+								},
 				),
 			};
+
+			// What Codex itself reported for the thread (the thread/start reply), not what we asked for.
+			const threadStartReply = wire.frames.find(
+				(f) => f.result?.approvalPolicy !== undefined && !f.result?.turn,
+			)?.result;
+			out.reportedByCodex = threadStartReply
+				? {
+						approvalPolicy: threadStartReply.approvalPolicy,
+						sandboxType: threadStartReply.sandbox?.type ?? null,
+					}
+				: null;
 
 			// Put the client back as it was, then stop the session.
 			proto.request = originalRequest;
@@ -1966,6 +1988,12 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 				`${name}: the host registered with codex_follow_up_prompts`,
 				(supervisorConfig.capabilities.features as string[]).includes("codex_follow_up_prompts"),
 				supervisorConfig.capabilities.features,
+			);
+			expect(
+				`${name}: Codex reported the thread's approval policy as untrusted and the sandbox as workspaceWrite`,
+				(out.reportedByCodex as any)?.approvalPolicy === "untrusted" &&
+					(out.reportedByCodex as any)?.sandboxType === "workspaceWrite",
+				out.reportedByCodex,
 			);
 			expect(
 				`${name}: isWorking was true during the launch turn`,
