@@ -7,7 +7,24 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Added
+
+- **Take over a Codex session you started by hand, and resume one whose process ended (AGEN-115).** On a stopped, observed
+  Codex session the page offers **Take over**: pick the machine it ran on, and that machine's supervisor resumes the same
+  conversation under `untrusted` / `workspace-write`, so prompts, Stop and approvals work from the dashboard. A managed Codex
+  session whose process was lost (a supervisor restart) shows **Resume session**. Codex only; a signed-in person only (never
+  an API key); a takeover counts as a launch in the day's launch count; the session must have been quiet for 5 minutes. If a
+  TUI left Codex's background service holding the thread, the takeover says so and names `codex app-server daemon stop`.
+  `POST /sessions/:id/bind` is new and `POST /sessions/:id/resume` is real (it was a 501). A taken-over session can't be
+  retried (`409 retry_not_available`), and delete and archive are refused while a takeover is open (`takeover_in_progress`).
+  With `DISABLE_AUTH=true` the same posture applies as for approvals: anyone who can reach the server can do it.
+
 ### Upgrade notes
+
+- **Take over and resume: server first, then supervisors.** A host that doesn't advertise `resumes_sessions` is refused
+  (`409 host_upgrade_required`) and a queued action that reaches one fails at claim. Sessions launched before the upgrade that
+  lost their process can be resumed only if the thread is one this supervisor started (its record is written from this
+  version on; before that the thread's `originator` is the proof).
 
 - **Upgrade the server first, then the supervisors.** Until a host's supervisor is updated, a prompt to one of its Codex sessions
   is refused with `409 host_upgrade_required` and nothing is queued. A prompt queued before the update that a supervisor

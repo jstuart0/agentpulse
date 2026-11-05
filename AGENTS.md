@@ -161,6 +161,10 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 - `POST /api/v1/sessions/:id/approvals/:approvalId/decision` — `{ decision: "accept" | "decline" | "cancel", presentationHash? }`; accept needs a signed-in person and the hash, never an API key
 - `POST /api/v1/supervisors/:id/managed-sessions/:sessionId/approvals` and `POST /api/v1/supervisors/:id/approvals/sync` — supervisor credential only: report a request, and poll for answers
 
+**Taking over and resuming Codex sessions:**
+- `POST /api/v1/sessions/:id/bind` — `{ targetSupervisorId, sameMachineConfirmed: true }`; takes an observed Codex session over on that host. A signed-in person only, never an API key (`human_required`). Refusal codes are in `src/shared/session-resume.ts`
+- `POST /api/v1/sessions/:id/resume` — no body; resumes a managed Codex session whose process is gone (`degraded`)
+
 **Projects:**
 - `GET /api/v1/projects` — List projects, full detail (`manage`-scoped only)
 - `GET /api/v1/projects/summary` — Observe-safe project list (id/name/defaults, redacted `githubRepoUrl`)

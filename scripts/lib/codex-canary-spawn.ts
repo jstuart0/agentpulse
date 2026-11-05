@@ -5,7 +5,7 @@
  * `codex-canary-safety.ts` for the rules the CI scan holds the rest of `scripts/` to.
  */
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { ALLOWED_CODEX_SUBCOMMANDS, ALLOWED_DAEMON_SUBCOMMANDS } from "./codex-canary-safety.js";
+import { ALLOWED_DAEMON_SUBCOMMANDS } from "./codex-canary-safety.js";
 
 export interface CodexRunOptions {
 	codexHome: string;
@@ -16,18 +16,25 @@ export interface CodexRunOptions {
 	timeoutMs?: number;
 }
 
-/** Throws unless `args` is something a canary may run. Exported so the CI test can drive it with no Codex. */
+/**
+ * Throws unless `args` is something a canary may run: `exec`, `--version`, a plain `app-server` (stdio), and
+ * `app-server daemon` with only `start`, `stop` or `version`. `bootstrap` installs a durable service on the
+ * machine, `update` and `restart` change one that may hold someone else's work: none of them, ever.
+ */
 export function assertAllowedCodexArgs(args: readonly string[]): void {
-	const first = args[0];
-	if (!first || !(ALLOWED_CODEX_SUBCOMMANDS as readonly string[]).includes(first)) {
-		throw new Error(`codex ${first ?? "(no subcommand)"} isn't allowed in a canary`);
+	const [first, second, third] = args;
+	if (first === "exec" || first === "--version") return;
+	if (first === "app-server" && second === undefined) return;
+	if (first === "app-server" && second === "daemon") {
+		if (
+			third &&
+			(ALLOWED_DAEMON_SUBCOMMANDS as readonly string[]).includes(third) &&
+			args.length === 3
+		)
+			return;
+		throw new Error(`codex app-server daemon ${third ?? ""} isn't allowed in a canary`);
 	}
-	if (first === "daemon") {
-		const sub = args[1];
-		if (!sub || !(ALLOWED_DAEMON_SUBCOMMANDS as readonly string[]).includes(sub)) {
-			throw new Error(`codex daemon ${sub ?? ""} isn't allowed in a canary`);
-		}
-	}
+	throw new Error(`codex ${args.join(" ") || "(no subcommand)"} isn't allowed in a canary`);
 }
 
 function envFor(options: CodexRunOptions): NodeJS.ProcessEnv {

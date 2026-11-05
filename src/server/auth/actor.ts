@@ -3,6 +3,10 @@
  * resolved_by_user_id. Every service function that writes one of those
  * columns takes an Actor instead of hardcoding a placeholder label,
  * so DISABLE_AUTH, an API key, and a real user are each recorded honestly.
+ *
+ * One exception to "who asked": on the launch row a takeover creates (AGEN-115), `requested_by_user_id` is the
+ * session's intended owner, so the readers that scope by it show the row to them; the person who pressed the
+ * button is `metadata.boundByUserId` and the audit line.
  */
 import type { AuthUser } from "./middleware.js";
 

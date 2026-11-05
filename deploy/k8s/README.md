@@ -1155,6 +1155,11 @@ approval code:
    launches `untrusted` / `workspace-write` (a follow-up that lost the thread's policy would run unasked and
    fail). `--only followup` runs just that scenario; an unknown `--only` id exits 2. Run both before
    releasing a change to prompt routing or to the supervisor's Codex turn handling.
+   **Take over and resume (AGEN-115):** also run, once per Codex release,
+   `bun scripts/codex-approvals-live.ts --real --work <scratch directory> --only bind-codex,recover-codex,bind-codex-daemon,bind-codex-directory`
+   (it spends real usage; no terminal UI is started and nothing is killed by name). It must exit 0. `--hold-minutes 60` on
+   `bind-codex-daemon` records how long Codex's background service keeps a thread held after its last client leaves. There is
+   no manifest or environment change for this feature, and with `DISABLE_AUTH=true` it carries the same posture as approvals.
 2. A new approval shape that passes: add its hash to `SUPPORTED_CODEX_SHAPES` in
    `src/supervisor/providers/codex-protocol.ts` (`--schema-hash <generated schema directory>` in the same script prints it, from the output of `codex app-server generate-json-schema --experimental --out <dir>`), and
    record the new frames under `src/supervisor/providers/__fixtures__/`.

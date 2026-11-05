@@ -81,9 +81,9 @@ describe("assertAllowedCodexArgs: the spawner's allowlist", () => {
 			["exec", "--json", "x"],
 			["app-server"],
 			["--version"],
-			["daemon", "start"],
-			["daemon", "stop"],
-			["daemon", "version"],
+			["app-server", "daemon", "start"],
+			["app-server", "daemon", "stop"],
+			["app-server", "daemon", "version"],
 		]) {
 			expect(() => assertAllowedCodexArgs(args)).not.toThrow();
 		}

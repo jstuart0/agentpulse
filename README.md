@@ -796,6 +796,15 @@ When a Codex session that AgentPulse launched asks to run a command or change fi
 - **What hasn't been measured.** All of this was exercised against Codex 0.163.0 on macOS. Linux and Windows hosts, a Codex with its own `config.toml` approval settings, Codex's streamed patch updates (never seen in the recorded runs), answering from a phone (no phone client can answer yet; a phone gets the notification and sees the session waiting), and a screen reader (the card was driven in an emulated browser only) have not been tested, so don't rely on them.
 - **Using MCP.** `list_pending_approvals` and `decline_approval` are available to `manage` keys, deliberately without an accept. See [`docs/MCP.md`](docs/MCP.md).
 
+## Taking over a Codex session you started by hand
+
+A Codex session you ran yourself (in a terminal, or `codex exec`) shows up as observed: you can read it, but not send it prompts. Once it has ended, open it and choose **Take over**, then the machine it ran on. That machine's supervisor resumes the same conversation, and from then on prompts, Stop and approvals work from the dashboard. It runs under `untrusted` / `workspace-write` (commands and file changes ask you first), and those limits stay with the session.
+
+- **Wait about 5 minutes after you exit it.** A session heard from more recently is refused as still active; one that crashed mid-turn becomes available about an hour after its last activity.
+- **If Codex's background service still holds it,** the takeover says so. That service outlives the terminal (measured on 0.163: for at least 8 minutes). When it is safe, run `codex app-server daemon stop` on that machine, which also stops anything else running through it, and try again.
+- **A project with its own `.codex/config.toml`** is refused: its settings can run commands without asking you.
+- A session whose process was lost when its supervisor restarted shows **Resume session** instead. Codex only, a signed-in person only (API keys can't), and the supervisor on the machine must be updated.
+
 ## What the setup script does
 
 Running `curl -fsSL --proto '=https' .../setup.sh | bash` configures:

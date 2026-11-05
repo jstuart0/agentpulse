@@ -8,6 +8,7 @@
  *   bun scripts/codex-approvals-live.ts --spike --work <dir> --raw <dir> [--only S2,S4]
  *   bun scripts/codex-approvals-live.ts --scrub --raw <dir> --out <fixtures dir> --work <dir>
  *   bun scripts/codex-approvals-live.ts --real --work <dir> [--minutes 12] [--only argv,decline,fc-accept,fc-decline,fc-patch,followup]
+ *   bun scripts/codex-approvals-live.ts --real --work <dir> --only bind-codex,recover-codex,bind-codex-daemon,bind-codex-directory [--hold-minutes 1-60] [--mutate <name>]
  *
  * `--real` is the per-release canary (D18). It drives a real Codex through the whole of AgentPulse and
  * nothing else: a throwaway server on 127.0.0.1 with a temp SQLite database, the real report gate and
@@ -30,6 +31,16 @@
  *     which on-request would run unasked: a follow-up that lost the thread's policy shows no approval and
  *     fails. It also checks the thread's reported policy, that the follow-up's `turn/start` carries only
  *     `threadId` and `input`, and that the launch turn wrote no watcher-waking boundary event.
+ * The take-over scenarios (AGEN-115, `codex-takeover-canary.ts`), asked for with `--only`: `bind-codex` (a thread
+ * made wide by `codex exec --dangerously-bypass-approvals-and-sandbox` is taken over and answers exactly
+ * untrusted / workspace-write, recalls its first turn's sentinel, asks before a plain touch, and Stop leaves no
+ * process), `recover-codex` (a managed launch killed and resumed under its own read-only sandbox),
+ * `bind-codex-daemon` (a daemon that still holds the thread refuses with "running" until `daemon stop`;
+ * `--hold-minutes` measures how long it holds) and `bind-codex-directory` (a candidate that isn't the thread's
+ * directory, a hostile project config, a FIFO config, an fsmonitor hook and an exclude rule). `--mutate` names
+ * a deliberate break each scenario must then fail on. Rules for every run: no terminal UI; nothing is killed
+ * but this run's own children and processes naming this run's exact CODEX_HOME; Codex is started only through
+ * `lib/codex-canary-spawn.ts`; CI holds these in `codex-live-safety.test.ts`.
  * An `--only` id that names no scenario exits 2 before anything starts.
  * Codex is asked in a way that cannot be answered without an approval (escalated command, exact patch
  * text); if it asks nothing anyway, that scenario fails, because a canary that passes without asking
@@ -55,6 +66,7 @@ import {
 import { homedir, hostname, tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { guardAuthCopy, removeAuthCopy } from "./codex-canary-guard.js";
+import { TAKEOVER_SCENARIO_IDS, runTakeoverScenarios } from "./codex-takeover-canary.js";
 import { ownCodexPids as findOwnCodexPids } from "./lib/codex-own-pids.js";
 
 type Frame = { t: number; dir: "in" | "out"; frame: any };
@@ -71,11 +83,21 @@ const opt = (name: string) => {
 const DISPOSE_TIMEOUT_MS = 20_000;
 
 /** The scenarios `--real` knows, in the order a default run takes them. */
-const REAL_SCENARIO_IDS = ["argv", "decline", "fc-accept", "fc-decline", "fc-patch", "followup"];
+const REAL_SCENARIO_IDS = [
+	"argv",
+	"decline",
+	"fc-accept",
+	"fc-decline",
+	"fc-patch",
+	"followup",
+	...TAKEOVER_SCENARIO_IDS,
+];
+/** A default `--real` run is the AGEN-87 canary; the take-over scenarios are asked for by name, since each spends real usage. */
+const DEFAULT_REAL_SCENARIO_IDS = REAL_SCENARIO_IDS.slice(0, 6);
 
 /** `--only` is checked before anything starts: an id that matches nothing would otherwise run zero scenarios and pass. */
 function realScenarioIds(raw: string | undefined): string[] {
-	const ids = raw === undefined ? REAL_SCENARIO_IDS : raw.split(",");
+	const ids = raw === undefined ? DEFAULT_REAL_SCENARIO_IDS : raw.split(",");
 	const unknown = ids.filter((id) => !REAL_SCENARIO_IDS.includes(id));
 	if (unknown.length > 0) {
 		console.error(
@@ -1302,7 +1324,7 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 			controlActions,
 		} = await import("../src/server/db/schema/index.js");
 		const team = await import("../src/server/test-utils/team-fixtures.js");
-		const { eq, desc } = await import("drizzle-orm");
+		const { eq, desc, and } = await import("drizzle-orm");
 		const { createReportGate } = await import("../src/supervisor/services/report-gate.js");
 		const { createReportOutbox } = await import("../src/supervisor/services/report-outbox.js");
 		const { createRulesWatch } = await import("../src/supervisor/services/exclude-rules-watch.js");
@@ -2209,6 +2231,52 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 		}));
 
 		results.followup = only.includes("followup") ? await followupScenario() : { skipped: true };
+
+		if (only.some((id) => (TAKEOVER_SCENARIO_IDS as readonly string[]).includes(id))) {
+			Object.assign(
+				results,
+				await runTakeoverScenarios(
+					{
+						root,
+						home,
+						codexHome,
+						base,
+						supervisorId,
+						hostName: "real-host",
+						gate,
+						request,
+						managed,
+						getDb,
+						t: {
+							sessions: sessionsTable,
+							launchRequests,
+							managedSessions,
+							controlActions,
+							codexApprovals,
+							events,
+						},
+						eq,
+						and,
+						desc,
+						personHeaders,
+						until,
+						expect,
+						childGroups,
+						sessions,
+						intervals,
+						mutate: opt("--mutate") ?? null,
+						holdMinutes: Math.min(60, Math.max(0, Number(opt("--hold-minutes") ?? 0))),
+						onlyHome: home,
+						manageKey: manage.key,
+						capabilities: supervisorConfig.capabilities,
+						adoptCredential: (credential: string) => {
+							reg.supervisorCredential = credential;
+						},
+					} as Parameters<typeof runTakeoverScenarios>[0],
+					only,
+				),
+			);
+		}
 
 		const argv = results.argv as any;
 		every("argv", argv);

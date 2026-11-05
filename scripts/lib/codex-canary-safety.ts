@@ -15,7 +15,6 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export const ALLOWED_DAEMON_SUBCOMMANDS = ["start", "stop", "version"] as const;
-export const ALLOWED_CODEX_SUBCOMMANDS = ["exec", "app-server", "daemon", "--version"] as const;
 
 /** Files that may start a Codex process. The spike's `Session` class predates this rule and is the one older caller. */
 export const CODEX_SPAWN_ALLOWED_FILES = [
@@ -98,7 +97,11 @@ export function scanText(path: string, raw: string): Finding[] {
 		const m = spawn.exec(text);
 		if (m) add("codex-spawn", m[0]);
 	}
-	for (const m of text.matchAll(/\bdaemon\b["'`,\s\[]+([A-Za-z-]+)/g)) {
+	// `["daemon", "<sub>"]` as arguments, or `codex [app-server] daemon <sub>` as a command line.
+	for (const m of [
+		...text.matchAll(/["'`]daemon["'`]\s*,\s*["'`]([A-Za-z-]+)["'`]/g),
+		...text.matchAll(/\bcodex\s+(?:app-server\s+)?daemon\s+([A-Za-z-]+)/g),
+	]) {
 		if (!(ALLOWED_DAEMON_SUBCOMMANDS as readonly string[]).includes(m[1] as string)) {
 			add("daemon-subcommand", m[0]);
 		}

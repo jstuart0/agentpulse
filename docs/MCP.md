@@ -153,7 +153,8 @@ These are never registered as tools, enforced by a drift-guard test that walks t
 - **`accept_approval`** (or any way to accept a Codex approval) — the server accepts only from a signed-in person who has seen the exact text, and refuses every API key (`human_required`), an admin's included. `agentpulse mcp install` puts a `manage` key in an agent's own configuration, so an accepting tool would let an agent approve its own command. `decline_approval` and `list_pending_approvals` are the whole surface; the tool-invariants test walks the registry for an accept-shaped name.
 - **`batch_decline`** — bulk destructive inbox action; no batch-approve exists either, so no batch tool was added for either direction.
 - **`ask`** (`POST /ai/ask`) — the natural-language Ask surface can itself launch/mutate. Exposing it as one tool would collapse AgentPulse's per-tool confirmation model into a single opaque "do anything" tool.
-- **`fork_session`** / **`resume_session`** — the underlying REST routes (`POST /sessions/:id/fork`, `/resume`) are 501 stubs today; there's nothing to wrap yet.
+- **`fork_session`** — the underlying route (`POST /sessions/:id/fork`) is a 501 stub; there's nothing to wrap yet.
+- **`resume_session`** and any take-over tool — `POST /sessions/:id/resume` is real now (AGEN-115), and so is `POST /sessions/:id/bind`, but both refuse every API key (`human_required`), a `manage` key included: `agentpulse mcp install` puts one in an agent's own configuration, and a call starts a process on a machine and, for a take-over, captures a conversation. A person does it from the session page. `retry_launch` on a taken-over session is refused `409 retry_not_available`.
 - Channel read/CRUD, watcher/provider/risk-class/labs mutation, vector-search rebuild — all deliberately out of scope for Phase 1.
 
 ## Security
