@@ -51,6 +51,36 @@ const runtimes = new Map<string, ManagedCodexRuntime>();
 /** The two ids a managed runtime reports under: the launch row and the session it creates. */
 type ManagedRuntimeIds = Pick<LaunchRequest, "id" | "launchCorrelationId">;
 
+/** Sessions a launch or a resume is still starting on this host: a prompt for one is not a prompt for a dead process. */
+const startingSessions = new Set<string>();
+
+/** Test seam: mark or unmark a session as starting. */
+export function _setSessionStartingForTest(sessionId: string, starting: boolean): void {
+	if (starting) startingSessions.add(sessionId);
+	else startingSessions.delete(sessionId);
+}
+
+/**
+ * A prompt reached this host for a session it holds no runtime for (the double failure: a state report was
+ * lost after a resume, so the server believes it is running). One report, before the prompt is refused:
+ * degraded and idle, so the server offers Resume. Never throws; the prompt is refused either way.
+ */
+async function reportNoRuntime(sessionId: string, callbacks: LaunchCallbacks): Promise<void> {
+	try {
+		await callbacks.reportState({
+			sessionId,
+			managedState: "degraded",
+			status: "idle",
+			providerSyncState: "failed",
+			providerSyncError: "This session's Codex process is not running on its host.",
+		});
+	} catch (error) {
+		console.error(
+			`[codex-managed] couldn't report a session with no runtime (session=${sessionId}): ${forHostLog(error)}`,
+		);
+	}
+}
+
 /** True when this supervisor holds a live Codex runtime for the session (a Claude action for one is a mismatch). */
 export function hasManagedCodexRuntime(sessionId: string): boolean {
 	return runtimes.has(sessionId);
@@ -91,7 +121,11 @@ const HOST_LOG_ERROR_CHARS = 300;
  * host log only.
  */
 const PROMPT_COPY = {
+	// No runtime at all on this host. Its words change (to offer Resume) in the phase that adds the button.
 	noRuntime:
+		"This session's Codex process isn't running on its host any more. Start a new session for this work.",
+	// A runtime that is stopping, closing or gone mid-call: not a dead process, so no Resume to offer.
+	stopping:
 		"This session's Codex process isn't running on its host any more. Start a new session for this work.",
 	busy: "Codex hasn't ended its current turn. Send this again when it ends.",
 	uncertain:
@@ -467,6 +501,15 @@ function buildManagedRuntime(args: BuildRuntimeArgs): ManagedCodexRuntime {
 }
 
 export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks: LaunchCallbacks) {
+	startingSessions.add(launch.launchCorrelationId);
+	try {
+		return await startManagedCodexLaunch(launch, callbacks);
+	} finally {
+		startingSessions.delete(launch.launchCorrelationId);
+	}
+}
+
+async function startManagedCodexLaunch(launch: LaunchRequest, callbacks: LaunchCallbacks) {
 	const privileges = requireLaunchPrivileges(
 		"codex_cli",
 		launch.approvalPolicy,
@@ -748,8 +791,14 @@ export async function promptManagedCodexSession(
 	const { sessionId, prompt } = input;
 	const runtime = runtimes.get(sessionId);
 	const client = runtime?.client;
-	if (!runtime || !client || client.isClosed || runtime.intentionalClose || runtime.stopping) {
+	if (!runtime) {
+		// This host holds nothing for a session the server believes is running: tell it, so the person is
+		// offered Resume (a launch or resume for the id still starting is not a dead process).
+		if (!startingSessions.has(sessionId)) await reportNoRuntime(sessionId, callbacks);
 		throw new Error(PROMPT_COPY.noRuntime);
+	}
+	if (!client || client.isClosed || runtime.intentionalClose || runtime.stopping) {
+		throw new Error(PROMPT_COPY.stopping);
 	}
 	if (runtime.turnUncertain) throw new Error(PROMPT_COPY.uncertain);
 	if (runtime.activeTurnId || runtime.turnStarting) throw new Error(PROMPT_COPY.busy);
@@ -802,7 +851,7 @@ export async function promptManagedCodexSession(
 		const taken = stillMine();
 		undo();
 		if (taken) await writeEnd({ failed: true, content: PROMPT_COPY.stopped, status: "not_sent" });
-		throw new Error(PROMPT_COPY.noRuntime);
+		throw new Error(PROMPT_COPY.stopping);
 	}
 	// Codex spoke up while the prompt was being recorded (a turn started or went uncertain): sending now could steer it.
 	if (runtime.activeTurnId || runtime.turnUncertain) {
@@ -836,7 +885,7 @@ export async function promptManagedCodexSession(
 		if (client.isClosed) {
 			// An unplanned close took the follow-up and wrote its end; a planned one leaves it to us.
 			if (taken) await writeEnd({ failed: true, content: PROMPT_COPY.stopped, status: "not_sent" });
-			throw new Error(PROMPT_COPY.noRuntime);
+			throw new Error(PROMPT_COPY.stopping);
 		}
 		if (taken) await writeEnd({ failed: true, content: PROMPT_COPY.rejected, status: "rejected" });
 		throw new Error(PROMPT_COPY.rejected);
@@ -1138,6 +1187,19 @@ export async function resumeManagedCodexSession(
 	input: ResumeInput,
 	callbacks: ResumeCallbacks,
 	deps: { timeoutMs?: number; codexHome?: string } = {},
+): Promise<{ pid: number; metadata: Record<string, unknown> }> {
+	startingSessions.add(input.sessionId);
+	try {
+		return await runResume(input, callbacks, deps);
+	} finally {
+		startingSessions.delete(input.sessionId);
+	}
+}
+
+async function runResume(
+	input: ResumeInput,
+	callbacks: ResumeCallbacks,
+	deps: { timeoutMs?: number; codexHome?: string },
 ): Promise<{ pid: number; metadata: Record<string, unknown> }> {
 	const { sessionId, launchRequestId, threadId, privileges } = input;
 	const takeover = input.resumeKind === "takeover";

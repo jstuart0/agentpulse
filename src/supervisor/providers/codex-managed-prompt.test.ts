@@ -45,6 +45,7 @@ import { createReportGate } from "../services/report-gate.js";
 import { SupervisorRequestError } from "../services/report-resilience.js";
 import { installFakeCodex, readFakeLog } from "./__fixtures__/fake-codex.js";
 import {
+	_setSessionStartingForTest,
 	launchManagedCodexRequest,
 	promptManagedCodexSession,
 	stopManagedCodexSession,
@@ -1208,5 +1209,61 @@ describe("launching", () => {
 			launchManagedCodexRequest(launchRequest(crypto.randomUUID()), failing),
 		).rejects.toThrow(/turn refused/);
 		expect(degradedReportsAttempted, "the failing report was really tried").toBeGreaterThan(0);
+	});
+});
+
+describe("a prompt for a session this host holds no runtime for reports it once (AGEN-115)", () => {
+	const degradedReports = (seq: Seq[]) =>
+		seq.filter(
+			(entry): entry is Extract<Seq, { kind: "state" }> =>
+				entry.kind === "state" && entry.body.managedState === "degraded",
+		);
+
+	test("the host reports degraded and idle with the connection-lost error, BEFORE the refusal", async () => {
+		const seq: Seq[] = [];
+		const id = crypto.randomUUID();
+		let refusedAfter = -1;
+		await promptManagedCodexSession({ sessionId: id, prompt: "hi" }, makeCallbacks(seq, {})).catch(
+			() => {
+				refusedAfter = seq.length;
+			},
+		);
+		const reports = degradedReports(seq);
+		expect(reports).toHaveLength(1);
+		expect(reports[0].body).toMatchObject({
+			sessionId: id,
+			managedState: "degraded",
+			status: "idle",
+			providerSyncState: "failed",
+		});
+		expect(typeof reports[0].body.providerSyncError).toBe("string");
+		expect(refusedAfter).toBe(1);
+	});
+
+	test("nothing is reported while a launch or a resume for the id is still starting", async () => {
+		const seq: Seq[] = [];
+		const id = crypto.randomUUID();
+		_setSessionStartingForTest(id, true);
+		try {
+			await expectRejects(
+				promptManagedCodexSession({ sessionId: id, prompt: "hi" }, makeCallbacks(seq, {})),
+				COPY.noRuntime,
+			);
+		} finally {
+			_setSessionStartingForTest(id, false);
+		}
+		expect(seq).toEqual([]);
+	});
+
+	test("a runtime that is stopping is refused as gone with no report, and neither does the Stop itself make one", async () => {
+		const world = await launch({ knobs: { FAKE_CODEX_IGNORE_INTERRUPT: "1" } });
+		await prompt(world, "go");
+		const stopping = stopManagedCodexSession(world.id, { interruptTimeoutMs: 600 });
+		await waitFor("the interrupt", () =>
+			readFakeLog(world.logPath).some((entry) => entry.method === "turn/interrupt"),
+		);
+		await expectRejects(prompt(world, "too late"), COPY.noRuntime);
+		await stopping;
+		expect(degradedReports(world.seq)).toEqual([]);
 	});
 });
