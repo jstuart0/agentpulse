@@ -874,9 +874,8 @@ async function handleManagedCodexNotification(
 		const turn = params.turn;
 		const turnId = typeof turn?.id === "string" && turn.id ? turn.id : null;
 		if (turnId && runtime.activeTurnId && turnId !== runtime.activeTurnId) return;
-		// A turn already known to have ended, or not the follow-up this runtime is starting, ends nothing now.
+		// A turn already known to have ended ends nothing now.
 		if (turnId && turnId === runtime.lastCompletedTurnId) return;
-		if (turnId && runtime.followUp?.turnId && turnId !== runtime.followUp.turnId) return;
 
 		// All of this is synchronous: nothing else may observe the runtime between the clears and the take.
 		if (turnId) runtime.lastCompletedTurnId = turnId;
