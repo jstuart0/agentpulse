@@ -7,7 +7,9 @@ import {
 	RESUME_REFUSED_MESSAGE,
 	type ResumeFailureKind,
 	type ResumeKind,
+	TAKEOVER_IN_PROGRESS_MESSAGE,
 	TAKEOVER_PRIVILEGES,
+	hostCannotRunCodexMessage,
 	isResumableSessionId,
 	resumeFailureMessage,
 } from "./session-resume.js";
@@ -67,6 +69,7 @@ test("the refusal-code union is exactly the plan's list, so a code without copy 
 			"already_managed",
 			"cwd_not_trusted",
 			"cwd_unknown",
+			"host_cannot_run_codex",
 			"host_gone",
 			"host_not_allowed",
 			"host_offline",
@@ -185,4 +188,13 @@ test("every failure kind has words for both resume kinds, and none says 'held by
 		}
 	}
 	expect((RESUME_FAILURE_KINDS as readonly string[]).includes("held_by_daemon")).toBe(false);
+});
+
+test("the words for a host that can't run Codex, and for delete during a takeover", () => {
+	expect(hostCannotRunCodexMessage(HOST)).toBe(
+		"build-box can't run Codex sessions: Codex isn't set up there, or it doesn't support managed Codex sessions. Choose another machine.",
+	);
+	expect(TAKEOVER_IN_PROGRESS_MESSAGE).toBe(
+		"This session is being taken over. Try again when that's finished.",
+	);
 });

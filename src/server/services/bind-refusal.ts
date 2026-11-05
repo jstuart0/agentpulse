@@ -24,6 +24,7 @@ const STATUS: Record<BindRefusalCode, number> = {
 	host_offline: 409,
 	host_gone: 409,
 	host_upgrade_required: 409,
+	host_cannot_run_codex: 409,
 	takeover_in_progress: 409,
 	retry_not_available: 409,
 	not_resumable: 409,

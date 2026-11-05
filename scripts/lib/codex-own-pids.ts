@@ -1,6 +1,9 @@
 /**
  * The canary's only search-and-kill helper. `pgrep -x codex` produces candidates; a candidate is signalled
  * only when its environment names this run's exact CODEX_HOME. Never select a process by name alone.
+ *
+ * macOS only: a process's environment is read with `ps -Eww`. Where that flag isn't supported nothing matches,
+ * so on other platforms this selects (and kills) nothing rather than guessing.
  */
 import { spawnSync } from "node:child_process";
 

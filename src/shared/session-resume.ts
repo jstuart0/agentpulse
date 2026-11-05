@@ -45,6 +45,7 @@ export const RESUME_REFUSAL_CODES = [
 	"host_offline",
 	"host_gone",
 	"host_upgrade_required",
+	"host_cannot_run_codex",
 	"session_key_mismatch",
 	"rate_limited",
 	"takeover_in_progress",
@@ -182,3 +183,14 @@ export const RESUME_REFUSED_MESSAGE: Readonly<Record<ResumeKind, (host: string) 
 		`${host} refused this session, so it wasn't taken over. Check that it's the machine the session ran on and that the session has ended there. Its supervisor log has the reason.`,
 	recovery: (host) => `${host} refused to resume this session. Its supervisor log has the reason.`,
 };
+
+/** What delete and archive say while a takeover of the session is open. */
+export const TAKEOVER_IN_PROGRESS_MESSAGE =
+	"This session is being taken over. Try again when that's finished.";
+
+/**
+ * A host that is current enough but can't run a Codex session at all: no usable Codex executable, or no
+ * managed Codex launch mode. Not an upgrade problem, so it isn't `host_upgrade_required`.
+ */
+export const hostCannotRunCodexMessage = (host: string): string =>
+	`${host} can't run Codex sessions: Codex isn't set up there, or it doesn't support managed Codex sessions. Choose another machine.`;

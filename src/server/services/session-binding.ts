@@ -11,7 +11,7 @@
  * Every read in the locked body goes through `tx`, with no other await in it. The pre-reads outside the lock
  * only choose the cheapest refusal; each fact is read again inside it.
  */
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { SESSION_IDLE_TIMEOUT_MS, isLaunchable } from "../../shared/constants.js";
 import { privilegeCliArgs } from "../../shared/launch-privileges.js";
 import {
@@ -20,7 +20,12 @@ import {
 	TAKEOVER_PRIVILEGES,
 	isResumableSessionId,
 } from "../../shared/session-resume.js";
-import type { ControlAction, LaunchSpec, SessionTemplateInput } from "../../shared/types.js";
+import type {
+	ControlAction,
+	LaunchSpec,
+	SessionTemplateInput,
+	SupervisorRecord,
+} from "../../shared/types.js";
 import type { Actor, InstanceModeName } from "../auth/actor.js";
 import { awaitSeamInsideAdminLock, withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
@@ -32,6 +37,7 @@ import { BindRefusal } from "./bind-refusal.js";
 import { mapControlAction, takeControlLock } from "./control-actions.js";
 import { getMode } from "./instance-mode.js";
 import {
+	ENFORCES_LAUNCH_PRIVILEGES,
 	buildLaunchSpec,
 	isWithinTrustedRoot,
 	validateAgainstSupervisor,
@@ -135,8 +141,19 @@ function judgeCandidateCwd(cwd: string | null, trustedRoots: string[]): string {
 	return cwd;
 }
 
-function hostTakesResumes(capabilities: unknown): boolean {
-	return (withCapabilityDefaults(capabilities).features ?? []).includes(RESUMES_SESSIONS);
+/**
+ * Can this host run a takeover at all? A supervisor that doesn't advertise both features is too old
+ * (`host_upgrade_required`); one that does but has no usable Codex or no managed Codex mode can't run
+ * Codex whatever its version (`host_cannot_run_codex`). The directory was judged by the caller.
+ */
+function refuseIfHostCannotRun(template: SessionTemplateInput, host: SupervisorRecord): void {
+	const features = host.capabilities.features ?? [];
+	if (!features.includes(RESUMES_SESSIONS) || !features.includes(ENFORCES_LAUNCH_PRIVILEGES)) {
+		throw new BindRefusal("host_upgrade_required");
+	}
+	if (validateAgainstSupervisor(template, host, "managed_codex").errors.length > 0) {
+		throw new BindRefusal("host_cannot_run_codex");
+	}
 }
 
 function hasLivePermissionWait(metadata: unknown): boolean {
@@ -238,10 +255,7 @@ export async function bindObservedSession(
 	const candidateCwd = judgeCandidateCwd(session.cwd, host.trustedRoots);
 	const template = templateFor(session, candidateCwd);
 	if (validateTemplateInput(template).errors.length > 0) throw new BindRefusal("cwd_not_trusted");
-	if (validateAgainstSupervisor(template, host, "managed_codex").errors.length > 0) {
-		throw new BindRefusal("host_upgrade_required");
-	}
-	if (!hostTakesResumes(host.capabilities)) throw new BindRefusal("host_upgrade_required");
+	refuseIfHostCannotRun(template, host);
 
 	await deps.beforeLock?.();
 
@@ -272,8 +286,15 @@ export async function bindObservedSession(
 		if (freshHostVerdict !== null) throw new BindRefusal(freshHostVerdict);
 		if (fresh.isArchived) throw new BindRefusal("session_not_found");
 		if (fresh.agentType !== "codex_cli") throw new BindRefusal("agent_not_supported");
-		if (!hostTakesResumes(hostNow.capabilities)) throw new BindRefusal("host_upgrade_required");
-		const cwd = judgeCandidateCwd(fresh.cwd, readTrustedRoots(hostNow.trustedRoots));
+		const trustedRoots = readTrustedRoots(hostNow.trustedRoots);
+		const cwd = judgeCandidateCwd(fresh.cwd, trustedRoots);
+		// The fresh host row, judged exactly as the pre-read judged the first one: it may have been
+		// downgraded or reconfigured since.
+		refuseIfHostCannotRun(templateFor(fresh, cwd), {
+			...host,
+			capabilities: withCapabilityDefaults(hostNow.capabilities),
+			trustedRoots,
+		});
 		if (mode === "team" && actor.role !== "admin") {
 			await refuseUnlessKeyBelongsToHostOwner(tx, fresh, hostNow.ownerUserId);
 		}
@@ -316,6 +337,9 @@ export async function bindObservedSession(
 					env: {},
 					launchSpec: launchSpec as unknown as Record<string, unknown>,
 					requestedBy: actor.label,
+					// ATTRIBUTION, not "who asked" (D19): on a carrier row this is the session's intended owner, so
+					// `canReadLaunch` shows it to them. No authorization decision may read it as the actor; the
+					// person who pressed the button is `metadata.boundByUserId` and the audit line.
 					requestedByUserId: intendedOwner,
 					requestedSupervisorId: host.id,
 					routingPolicy: "manual_target",
@@ -395,12 +419,25 @@ export async function bindObservedSession(
 		launchRequestId: committed.launchRequestId,
 		...(committed.intendedOwner !== null ? { intendedOwner: committed.intendedOwner } : {}),
 	});
-	const row = await getDb()
-		.select()
-		.from(sessions)
-		.where(and(eq(sessions.sessionId, sessionId)))
-		.limit(1);
-	if (row[0]) notifySessionUpdated(row[0]);
-	await requestWsRevalidation();
+	// The bind has committed: a failure to announce it must not turn the answer into a 500.
+	try {
+		const [row] = await getDb()
+			.select()
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+		if (row) notifySessionUpdated(row);
+		await requestWsRevalidation();
+	} catch (error) {
+		console.error(
+			JSON.stringify({
+				kind: "session_bound_notify_failed",
+				level: "error",
+				sessionId,
+				launchRequestId: committed.launchRequestId,
+				error: error instanceof Error ? error.message.slice(0, 300) : "unknown",
+			}),
+		);
+	}
 	return { action: committed.action, launchRequestId: committed.launchRequestId };
 }

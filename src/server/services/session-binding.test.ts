@@ -663,6 +663,91 @@ describe("hosts, through the service", () => {
 	});
 });
 
+describe("what the fresh host row must still allow, and what a host that can't run Codex says", () => {
+	test("a host downgraded after the pre-reads is refused inside the lock", async () => {
+		const host = await seedHost();
+		const id = await seedObserved();
+		const result = await refusal(
+			bind(id, host, SOLO, {
+				now: NOW,
+				beforeLock: async () => {
+					await getDb()
+						.update(supervisors)
+						.set({
+							capabilities: {
+								...CAPABILITIES,
+								features: [CODEX_FOLLOW_UP_PROMPTS, RESUMES_SESSIONS],
+							},
+						})
+						.where(eq(supervisors.id, host));
+				},
+			}),
+		);
+		expect(result.code).toBe("host_upgrade_required");
+		await expectNoRows(id);
+	});
+
+	test("a host that lost its Codex executable after the pre-reads is host_cannot_run_codex", async () => {
+		const host = await seedHost();
+		const id = await seedObserved();
+		const result = await refusal(
+			bind(id, host, SOLO, {
+				now: NOW,
+				beforeLock: async () => {
+					await getDb()
+						.update(supervisors)
+						.set({
+							capabilities: {
+								...CAPABILITIES,
+								executables: { codex: { available: false, command: "codex" } },
+							},
+						})
+						.where(eq(supervisors.id, host));
+				},
+			}),
+		);
+		expect(result).toMatchObject({ code: "host_cannot_run_codex", status: 409 });
+		await expectNoRows(id);
+	});
+
+	test.each([
+		[
+			"no usable Codex executable",
+			{ executables: { codex: { available: false, command: "codex" } } },
+		],
+		["no managed_codex launch mode", { launchModes: ["headless", "interactive_terminal"] }],
+		["no codex_cli agent type", { agentTypes: ["claude_code"] }],
+	])("%s is host_cannot_run_codex, not an upgrade problem", async (_name, override) => {
+		const host = await seedHost({ capabilities: { ...CAPABILITIES, ...override } });
+		const id = await seedObserved();
+		expect(await refusal(bind(id, host, SOLO))).toMatchObject({
+			code: "host_cannot_run_codex",
+			status: 409,
+		});
+		await expectNoRows(id);
+	});
+
+	test("a bind that committed answers even when announcing it fails", async () => {
+		const host = await seedHost();
+		const id = await seedObserved();
+		const revalidate = spyOn(wsRevalidation, "requestWsRevalidation").mockRejectedValue(
+			new Error("socket sweep failed"),
+		);
+		const errors = spyOn(console, "error");
+		try {
+			const result = await bind(id, host, SOLO);
+			expect(result.launchRequestId).toBeDefined();
+			expect((await rowsFor(id)).managed).toBeDefined();
+			expect(
+				errors.mock.calls.some((call) => String(call[0]).includes("session_bound_notify_failed")),
+			).toBe(true);
+		} finally {
+			revalidate.mockRestore();
+			errors.mockRestore();
+		}
+	});
+});
+
 // ── 3: inputs (items 10, 11) ─────────────────────────────────────────────────
 
 describe("inputs", () => {
