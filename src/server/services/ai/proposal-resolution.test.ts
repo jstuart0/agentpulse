@@ -936,8 +936,16 @@ describe("drift guards", () => {
 			[
 				"services/control-actions.ts",
 				"export async function expireStaleControlLock(",
-				"async function expireStaleControlLocksForSupervisor(",
+				// The resume block follows it; its settle functions are named separately below.
+				"// ── resume actions",
 			],
+			[
+				"services/control-actions.ts",
+				"async function settleExpiredResume(",
+				"export const RESUME_SWEEP_BATCH",
+			],
+			["services/control-actions.ts", "export async function failResumeAction(", "\n}\n"],
+			["services/control-actions.ts", "export async function completeResumeAction(", "\n}\n"],
 			[
 				"services/control-actions.ts",
 				"async function resolveManagedLaunch(",
@@ -990,7 +998,10 @@ describe("drift guards", () => {
 			const b = source.indexOf(to, a + from.length);
 			const body = source.slice(a, b === -1 ? undefined : b);
 			// A default parameter (`db: any = getDb()`) is the one place the ordinary handle may appear.
-			expect(body.replace(/\b\w+: any = getDb\(\)/g, "")).not.toMatch(/\bgetDb\(/);
+			// The other is an identity test on the handle (`db !== getDb()`), which reads no row.
+			expect(
+				body.replace(/\b\w+: any = getDb\(\)/g, "").replace(/\bdb !== getDb\(\)/g, ""),
+			).not.toMatch(/\bgetDb\(/);
 		}
 	});
 });

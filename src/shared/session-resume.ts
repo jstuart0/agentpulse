@@ -89,6 +89,35 @@ export interface ResumeActionMetadata {
 	assignOwner?: true;
 	/** Who pressed the button. A takeover's launch row names the session's owner instead. */
 	boundByUserId?: string | null;
+	/**
+	 * The title the person's thread has: the session's own name. The host starts its runtime with it as the
+	 * thread's current title, so the first provider sync (which compares it with the server's desired title)
+	 * renames nothing. Absent when the session has no name; the server then has no title to sync either.
+	 */
+	sessionName?: string;
+}
+
+const SESSION_NAME_MAX_CHARS = 200;
+
+/**
+ * The one place the server builds what the host reads from a `resume` action, so a field the host needs
+ * can't be left out of one of the two literals (the name was).
+ */
+export function buildResumeActionMetadata(
+	input: Omit<ResumeActionMetadata, "agentType" | "sessionName" | "assignOwner"> & {
+		assignOwner?: boolean;
+		sessionName?: string | null;
+	},
+): ResumeActionMetadata {
+	const { sessionName, assignOwner, ...rest } = input;
+	const name =
+		typeof sessionName === "string" ? sessionName.trim().slice(0, SESSION_NAME_MAX_CHARS) : "";
+	return {
+		...rest,
+		agentType: "codex_cli",
+		...(assignOwner ? { assignOwner: true as const } : {}),
+		...(name !== "" ? { sessionName: name } : {}),
+	};
 }
 
 /** What to do about a thread another Codex still holds. Backticks mark a command; the web draws them as code. */

@@ -801,7 +801,7 @@ When a Codex session that AgentPulse launched asks to run a command or change fi
 A Codex session you ran yourself (in a terminal, or `codex exec`) shows up as observed: you can read it, but not send it prompts. Once it has ended, open it and choose **Take over**, then the machine it ran on. That machine's supervisor resumes the same conversation, and from then on prompts, Stop and approvals work from the dashboard. It runs under `untrusted` / `workspace-write` (commands and file changes ask you first), and those limits stay with the session.
 
 - **Wait about 5 minutes after you exit it.** A session heard from more recently is refused as still active; one that crashed mid-turn becomes available about an hour after its last activity.
-- **If Codex's background service still holds it,** the takeover says so. That service outlives the terminal (measured on 0.163: it let go after about 30 minutes). That usually lets go within about 30 minutes; to free it sooner, run `codex app-server daemon stop` on that machine, which interrupts anything else running through it.
+- **If Codex's background service still holds it,** the takeover says so. That service outlives the terminal, and on 0.163 it let go after about 30 minutes; to free it sooner, run `codex app-server daemon stop` on that machine, which interrupts anything else running through it.
 - **A project with its own `.codex/config.toml`** is refused: its settings can run commands without asking you.
 - A session whose process was lost when its supervisor restarted shows **Resume session** instead. Codex only, a signed-in person only (API keys can't), and the supervisor on the machine must be updated.
 

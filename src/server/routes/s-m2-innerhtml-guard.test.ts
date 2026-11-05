@@ -24,6 +24,8 @@ const ALLOWED_OCCURRENCES: Record<string, number> = {
 	"src/web/components/session-detail/summary-contract.test.ts": 2,
 	"src/web/components/session-detail/SessionSummaryPanel.test.ts": 1,
 	"src/web/components/session-detail/CopyFallback.test.ts": 1,
+	// Reviewed AGEN-115: the take-over source test names the attribute only to assert it is absent.
+	"src/web/components/session-detail/session-takeover-source.test.ts": 1,
 };
 
 function walkFiles(dir: string, ext: string[]): string[] {

@@ -1236,6 +1236,14 @@ describe("queueSessionResume", () => {
 		expect((await rows(ctx.id)).actions.length).toBe(1);
 	});
 
+	test("a recovery carries the title the managed row already has, else the session's name", async () => {
+		const ctx = await recovery();
+		const { actions, managed } = await rows(ctx.id);
+		const metadata = actions[0].metadata as Record<string, unknown>;
+		expect(metadata.sessionName).toBe(managed.desiredThreadTitle ?? "launched");
+		expect(typeof metadata.sessionName).toBe("string");
+	});
+
 	test("it uses the session rule (assertCanBindSession) and no host-owner check", async () => {
 		const t = await team();
 		const host = await seedTakeoverHost({ ownerUserId: null });

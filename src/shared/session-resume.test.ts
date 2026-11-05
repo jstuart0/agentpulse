@@ -9,6 +9,7 @@ import {
 	type ResumeKind,
 	TAKEOVER_IN_PROGRESS_MESSAGE,
 	TAKEOVER_PRIVILEGES,
+	buildResumeActionMetadata,
 	hostCannotRunCodexMessage,
 	isResumableSessionId,
 	resumeFailureMessage,
@@ -204,4 +205,35 @@ test("the words for a host that can't run Codex, and for delete during a takeove
 	expect(TAKEOVER_IN_PROGRESS_MESSAGE).toBe(
 		"This session is being taken over. Try again when that's finished.",
 	);
+});
+
+describe("buildResumeActionMetadata: the one place the server writes what the host reads", () => {
+	const base = {
+		resumeKind: "takeover" as const,
+		threadId: "0199c7a4-5b3e-7c2d-8f10-a1b2c3d4e5f6",
+		cwd: "/work/p",
+		approvalPolicy: "untrusted" as const,
+		sandboxMode: "workspace-write" as const,
+		expectedEnforcedArgs: ["--sandbox", "workspace-write", "--ask-for-approval", "untrusted"],
+		boundByUserId: null,
+	};
+	test("carries the session's name, trimmed, so the host's runtime starts with the title the thread already has", () => {
+		expect(
+			buildResumeActionMetadata({ ...base, sessionName: "  refactor the parser " }).sessionName,
+		).toBe("refactor the parser");
+	});
+	test("no name, a blank one or a non-string leaves the key out, never an empty title", () => {
+		for (const sessionName of [null, undefined, "", "   "]) {
+			expect(
+				Object.hasOwn(buildResumeActionMetadata({ ...base, sessionName }), "sessionName"),
+			).toBe(false);
+		}
+	});
+	test("a very long name is cut, and the owner flag is only present when set", () => {
+		expect(
+			buildResumeActionMetadata({ ...base, sessionName: "x".repeat(900) }).sessionName?.length,
+		).toBeLessThanOrEqual(200);
+		expect(Object.hasOwn(buildResumeActionMetadata(base), "assignOwner")).toBe(false);
+		expect(buildResumeActionMetadata({ ...base, assignOwner: true }).assignOwner).toBe(true);
+	});
 });

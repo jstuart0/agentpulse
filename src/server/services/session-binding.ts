@@ -18,6 +18,7 @@ import {
 	RESUMES_SESSIONS,
 	type ResumeActionMetadata,
 	TAKEOVER_PRIVILEGES,
+	buildResumeActionMetadata,
 	isResumableSessionId,
 } from "../../shared/session-resume.js";
 import type {
@@ -402,9 +403,8 @@ export async function bindObservedSession(
 		}
 		await seam("locked", tx);
 
-		const metadata: ResumeActionMetadata = {
+		const metadata: ResumeActionMetadata = buildResumeActionMetadata({
 			resumeKind: "takeover",
-			agentType: "codex_cli",
 			threadId: sessionId,
 			cwd,
 			approvalPolicy: TAKEOVER_PRIVILEGES.approvalPolicy,
@@ -414,9 +414,10 @@ export async function bindObservedSession(
 				TAKEOVER_PRIVILEGES.approvalPolicy,
 				TAKEOVER_PRIVILEGES.sandboxMode,
 			),
-			...(assignOwner ? { assignOwner: true as const } : {}),
+			assignOwner,
 			boundByUserId: actor.userId,
-		};
+			sessionName: fresh.displayName,
+		});
 		const [row] = await tx
 			.insert(controlActions)
 			.values({
@@ -543,9 +544,8 @@ export async function queueSessionResume(
 		if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp, now))) {
 			throw new BindRefusal("not_resumable");
 		}
-		const metadata: ResumeActionMetadata = {
+		const metadata: ResumeActionMetadata = buildResumeActionMetadata({
 			resumeKind: "recovery",
-			agentType: "codex_cli",
 			threadId,
 			cwd,
 			approvalPolicy: template.approvalPolicy ?? null,
@@ -556,7 +556,8 @@ export async function queueSessionResume(
 				template.sandboxMode,
 			),
 			boundByUserId: actor.userId,
-		};
+			sessionName: managed.desiredThreadTitle ?? fresh.displayName,
+		});
 		const [row] = await tx
 			.insert(controlActions)
 			.values({

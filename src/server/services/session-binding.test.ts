@@ -1601,6 +1601,79 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 	return out;
 }
 
+describe("what the host is told: the session's name (D11 step 14)", () => {
+	test("a takeover's action carries the session's display name, from the row read inside the lock", async () => {
+		const host = await seedHost();
+		const id = await seedObserved({ displayName: "refactor the parser" });
+		const result = await bind(id, host, SOLO, deps);
+		expect((result.action.metadata as Record<string, unknown>).sessionName).toBe(
+			"refactor the parser",
+		);
+	});
+
+	test("a session with no name sends none, so the host's runtime and the server's title agree on nothing to rename", async () => {
+		const host = await seedHost();
+		const id = await seedObserved({ displayName: null });
+		const result = await bind(id, host, SOLO, deps);
+		expect(Object.hasOwn(result.action.metadata as object, "sessionName")).toBe(false);
+	});
+
+	test("the host's own parser gets that name: real server-built metadata in, the resume input out, never the id's first eight characters", async () => {
+		const { mkdtempSync, realpathSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { createSessionResumer } = await import("../../supervisor/services/session-resume.js");
+		const { createManagedThreadRecord } = await import(
+			"../../supervisor/services/managed-thread-record.js"
+		);
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "ap-title-")));
+		const host = await seedHost({ trustedRoots: [dir] });
+		const id = await seedObserved({ cwd: dir, displayName: "refactor the parser" });
+		const result = await bind(id, host, SOLO, deps);
+		// What the host's claim returns: the stored row, unredacted.
+		const [row] = await getDb()
+			.select()
+			.from(controlActions)
+			.where(eq(controlActions.id, result.action.id));
+		const seen: Array<{ sessionName: string }> = [];
+		const resume = createSessionResumer({
+			gate: {
+				rulesState: () => "none",
+				queuedState: () => "none",
+				verdictForDirectory: () => "send",
+				reportControlStatus: async () => ({}),
+				refuseResume: async () => {},
+			} as never,
+			hostName: "h",
+			trustedRoots: [dir],
+			record: createManagedThreadRecord({ path: join(dir, "threads.json"), log: () => {} }),
+			hold: { add() {}, delete() {} },
+			neutralCwd: async () => dir,
+			providers: {
+				managedCodexRuntimeHolds: () => false,
+				resumeManagedCodexSession: (async (input: { sessionName: string }) => {
+					seen.push(input);
+					return { pid: 1, metadata: {} };
+				}) as never,
+			},
+			log: () => {},
+		});
+		await resume(
+			{
+				id: row.id,
+				sessionId: id,
+				launchRequestId: row.launchRequestId,
+				actionType: "resume",
+				status: "running",
+				metadata: row.metadata,
+			} as never,
+			id,
+		);
+		expect(seen).toHaveLength(1);
+		expect(seen[0]?.sessionName).toBe("refactor the parser");
+		expect(seen[0]?.sessionName).not.toBe(id.slice(0, 8));
+	});
+});
+
 describe("drift guards", () => {
 	const serviceSource = () =>
 		readFileSync(join(REPO, "src/server/services/session-binding.ts"), "utf8");
