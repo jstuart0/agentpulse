@@ -8,6 +8,7 @@ import type {
 	SemanticStatusUpdate,
 	SessionEvent,
 } from "../../shared/types.js";
+import { config } from "../config.js";
 import { getDb } from "../db/client.js";
 import { events, managedDeliveryReceipts, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
@@ -471,6 +472,13 @@ const BOUNDARY_EVENT_TYPES = new Set([
 // See the plan's Decision 21 for the full rationale and the exact
 // boundary semantics (29.999s latched, 30.000s/30.001s not).
 const TERMINAL_LATCH_WINDOW_MS = 30_000;
+
+// Test seam (AGEN-115): runs after a SessionEnd has read its snapshot and before its terminal update,
+// so a test can land a resume in that window.
+let sessionEndSnapshotHook: (() => Promise<void>) | null = null;
+export function _setSessionEndSnapshotHookForTest(hook: (() => Promise<void>) | null): void {
+	sessionEndSnapshotHook = hook;
+}
 const CLOSED_TURN_ID_LIMIT = 20;
 
 interface EndedByEventState {
@@ -1390,7 +1398,44 @@ export async function processHookEvent(
 		}
 	}
 
-	await getDb().update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
+	let sessionEndFenced = false;
+	if (eventType === "SessionEnd") {
+		// A resumed session is not ended by a hook (D14): the real end of a taken-over session comes from
+		// the host's reports. The fence is read again here, in the terminal update's own transaction
+		// (FOR UPDATE on Postgres), because `priorRow` may have been read before the resume committed.
+		// Only SessionEnd pays for this; every other event keeps its single statement.
+		await sessionEndSnapshotHook?.();
+		sessionEndFenced = await withTransaction(async (tx) => {
+			const read = tx
+				.select({ metadata: sessions.metadata })
+				.from(sessions)
+				.where(eq(sessions.sessionId, sessionId))
+				.limit(1);
+			const [fresh] = await (config.dialect === "postgres" ? read.for("update") : read);
+			const freshMetadata = (fresh?.metadata ?? {}) as Record<string, unknown>;
+			if (freshMetadata.managedResumeAt) {
+				// Stored, but with no lifecycle effect and no latch.
+				const {
+					status: _s,
+					endedAt: _e,
+					isWorking: _w,
+					currentTurnStartedAt: _t,
+					metadata: _m,
+					...kept
+				} = updates;
+				await tx.update(sessions).set(kept).where(eq(sessions.sessionId, sessionId));
+				return true;
+			}
+			const merged = computeD21MetadataUpdate(freshMetadata, payload, now);
+			await tx
+				.update(sessions)
+				.set(merged ? { ...updates, metadata: merged } : updates)
+				.where(eq(sessions.sessionId, sessionId));
+			return false;
+		});
+	} else {
+		await getDb().update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
+	}
 	// The turn is committed; tell the phones. Fire and forget: dispatch yields before reading anything.
 	if (eventType === "Stop" && !d21.latched)
 		void dispatchEvent({ type: "turn_completed", sessionId }, pushOrigin);
@@ -1441,7 +1486,7 @@ export async function processHookEvent(
 
 	// Evaluate project alert rules for status_completed on SessionEnd.
 	// Best-effort: rule evaluation failure must not block event ingestion.
-	if (eventType === "SessionEnd") {
+	if (eventType === "SessionEnd" && !sessionEndFenced) {
 		void dispatchEvent({ type: "session_completed", sessionId }, pushOrigin);
 		void evaluateAlertRules(sessionId, "completed").catch((err) => {
 			console.error("[alert-rule] evaluateAlertRules(completed) threw:", err);

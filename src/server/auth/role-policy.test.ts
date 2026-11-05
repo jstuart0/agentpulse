@@ -211,6 +211,7 @@ const EXPECTED_OWNER_CHECKED_ROUTES = new Set([
 	"POST /sessions/:sessionId/stop",
 	"POST /sessions/:sessionId/retry",
 	"POST /sessions/:sessionId/bind",
+	"POST /sessions/:sessionId/resume",
 	"GET /sessions/:sessionId/control-actions",
 	// Watcher: configuring a session needs its owner or an admin.
 	"PUT /ai/sessions/:sessionId/watcher",

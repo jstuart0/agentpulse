@@ -1148,6 +1148,16 @@ export interface ManagedSessionStateInput {
 	providerProtocolVersion?: string | null;
 	providerCapabilitySnapshot?: Record<string, unknown> | null;
 	metadata?: Record<string, unknown> | null;
+	/**
+	 * The `resume` action this report belongs to (a host reporting that it resumed a thread). Refused
+	 * `session_not_owned`, before anything is written, unless that action is still open for this session.
+	 */
+	resumeActionId?: string;
+	/**
+	 * Clears `providerSyncError`. Honoured only together with an open `resumeActionId`; a plain `null` in
+	 * `providerSyncError` never clears (it would erase the restart marker a replay guard keys on).
+	 */
+	clearProviderSyncError?: boolean;
 }
 
 export interface ManagedSessionEventInput {

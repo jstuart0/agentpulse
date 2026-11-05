@@ -390,6 +390,7 @@ export const OWNER_CHECKED_ROUTES: ReadonlySet<string> = new Set([
 	// Taking an observed session over: strict owner-or-admin (an unowned session is an admin's), a signed-in
 	// person only, and in no scope grant. Judged in the handler by assertCanBindSession.
 	"POST /sessions/:sessionId/bind",
+	"POST /sessions/:sessionId/resume",
 	"GET /sessions/:sessionId/control-actions",
 	"PUT /ai/sessions/:sessionId/watcher",
 	"DELETE /ai/sessions/:sessionId/watcher",

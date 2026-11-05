@@ -126,6 +126,18 @@ export function assertNotInsideAdminLock(): void {
 	}
 }
 
+/**
+ * True while the calling code runs inside an admin-lock body or a SQLite transaction slot. On SQLite a
+ * transaction's `tx` is the same handle as `getDb()`, so a function handed `getDb()` can't tell by identity
+ * whether it is already inside one; this can. (On Postgres a transaction handle is a distinct object, which
+ * callers compare themselves.)
+ */
+export function isInsideTransaction(): boolean {
+	return (
+		insideAdminLock.getStore() !== undefined || insideSqliteTransaction.getStore()?.open === true
+	);
+}
+
 export interface AdminLockOptions {
 	/** SQLite only: total time to keep retrying BEGIN IMMEDIATE (default 1000 ms). Tests shorten it. */
 	sqliteRetryBudgetMs?: number;

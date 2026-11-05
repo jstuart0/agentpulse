@@ -4,6 +4,13 @@ import {
 	CONTROL_TIMEOUT_ERROR,
 	HOST_UPGRADE_REQUIRED_MESSAGE,
 } from "../../shared/managed-messages.js";
+import {
+	RESUMES_SESSIONS,
+	type ResumeKind,
+	SESSION_RESUMED_CONTENT,
+	SESSION_RESUMED_EVENT_TYPE,
+	resumeFailureMessage,
+} from "../../shared/session-resume.js";
 import type {
 	ControlAction,
 	ControlActionStatus,
@@ -15,7 +22,9 @@ import type {
 	SessionTemplateInput,
 } from "../../shared/types.js";
 import type { Actor } from "../auth/actor.js";
-import { withAdminLock } from "../db/admin-lock.js";
+import { OwnerDisabledError, OwnerNotFoundError } from "../auth/owner-state.js";
+import { config } from "../config.js";
+import { isInsideTransaction, withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
 import {
 	events,
@@ -28,6 +37,7 @@ import {
 } from "../db/schema/index.js";
 import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
+import { requestWsRevalidation } from "../ws/revalidation.js";
 import { CONTINUABLE_MANAGED_STATES } from "./ai/continuability.js";
 import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
 import { BindRefusal } from "./bind-refusal.js";
@@ -35,10 +45,13 @@ import { fenceApprovalsForStop } from "./codex-approvals-fence.js";
 import { type ClosedApproval, runApprovalClosedEffects } from "./codex-approvals.js";
 import { buildStoredCliArgs, validateAgainstSupervisor } from "./launch-compatibility.js";
 import { mapLaunchRequest } from "./launch-validator.js";
+import { notifySessionUpdated } from "./notifier.js";
 import { bumpVersionAndReload } from "./projects/cache.js";
+import { assignTakeoverOwner } from "./session-owner-admin.js";
 import {
 	getSessionOwnerHostStates,
 	ownerLaunchJoin,
+	releaseObservedBinding,
 	resolveSessionOwner,
 	sessionOwnedBy,
 } from "./session-ownership.js";
@@ -71,7 +84,7 @@ function lockExpiryIso(clock: Clock = Date.now) {
  * id, fall back to resolving by launchCorrelationId = sessionId instead —
  * the same launch the fallback shape is standing in for.
  */
-async function resolveManagedLaunch(
+export async function resolveManagedLaunch(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	db: any,
 	sessionId: string,
@@ -104,7 +117,7 @@ async function resolveManagedLaunch(
  * supervisor, pre-claim) matches the session's actual owner of record
  * before trusting launch.env or routing a new control action to it.
  */
-async function launchOwnedBySessionOwner(
+export async function launchOwnedBySessionOwner(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	db: any,
 	sessionId: string,
@@ -154,6 +167,22 @@ export async function expireStaleControlLock(
 		.where(eq(controlActions.id, managed.activeControlActionId))
 		.limit(1);
 
+	// A resume that timed out isn't just failed: its rows are settled with it, in one transaction with
+	// the action's status, wherever the expiry was reached from.
+	if (
+		action?.actionType === "resume" &&
+		(action.status === "queued" || action.status === "running")
+	) {
+		const settle = (handle: unknown) => settleExpiredResume(handle, managed, action);
+		if (isInsideTransaction() || db !== getDb()) {
+			await settle(db);
+		} else {
+			await withTransaction(settle);
+			await flushResumeAnnouncements();
+		}
+		return;
+	}
+
 	const timestamp = nowIso(clock);
 	await db
 		.update(controlActions)
@@ -190,6 +219,355 @@ export async function expireStaleControlLock(
 				eq(managedSessions.activeControlActionId, managed.activeControlActionId),
 			),
 		);
+}
+
+// ── resume actions: how they end (AGEN-115, D10, D14) ───────────────────────
+
+/** What `failResumeAction` and `completeResumeAction` report: nothing changed, or the session whose rows moved. */
+export type ResumeSettle =
+	| { settled: false }
+	| { settled: true; sessionId: string; outcome: "failed" | "succeeded" };
+
+interface ResumeActionRef {
+	id: string;
+	sessionId: string | null;
+	launchRequestId: string | null;
+	metadata?: unknown;
+}
+
+/** Test seam: runs after the settle's writes, inside its transaction. */
+interface ResumeSettleDeps {
+	afterWrites?: (tx: unknown) => Promise<void>;
+}
+
+function resumeKindOf(action: ResumeActionRef): ResumeKind {
+	return (action.metadata as { resumeKind?: unknown } | null)?.resumeKind === "recovery"
+		? "recovery"
+		: "takeover";
+}
+
+/** Sessions whose signals are owed to a settle that ran inside someone else's transaction. */
+const owedResumeAnnouncements = new Set<string>();
+
+/**
+ * Tells everyone a resume action's rows moved: one `session_updated` per session and one socket
+ * revalidation for the batch. Called after the settling transaction has committed; a failure to announce
+ * is logged and never undoes the settle.
+ */
+export async function flushResumeAnnouncements(): Promise<void> {
+	if (owedResumeAnnouncements.size === 0) return;
+	const ids = [...owedResumeAnnouncements];
+	owedResumeAnnouncements.clear();
+	try {
+		for (const id of ids) {
+			const [row] = await getDb()
+				.select()
+				.from(sessions)
+				.where(eq(sessions.sessionId, id))
+				.limit(1);
+			if (row) notifySessionUpdated(row);
+		}
+		await requestWsRevalidation();
+	} catch (error) {
+		console.error(
+			JSON.stringify({
+				kind: "resume_announce_failed",
+				level: "error",
+				error: error instanceof Error ? error.message.slice(0, 300) : "unknown",
+			}),
+		);
+	}
+}
+
+async function inTransactionOf<T>(handle: unknown | null, fn: (tx: any) => Promise<T>): Promise<T> {
+	return handle ? fn(handle) : withTransaction(fn);
+}
+
+/**
+ * Ends a `resume` action as failed, and settles its rows: a takeover releases the carrier launch and the
+ * managed row (the session and its events are untouched); a recovery leaves the degraded row as it was.
+ * Every ending of a resume goes through here or `completeResumeAction`. It begins with a guarded update of
+ * the action (still queued or running), so racing paths produce one outcome: the loser changes nothing.
+ * `handle` is the caller's transaction, or null to open one; the signals are sent once the transaction
+ * has committed (when the caller owns it, after the caller's own commit, by the next flush).
+ */
+export async function failResumeAction(
+	handle: unknown | null,
+	action: ResumeActionRef,
+	reason: string,
+	deps: ResumeSettleDeps = {},
+): Promise<ResumeSettle> {
+	const outcome = await inTransactionOf(handle, async (tx): Promise<ResumeSettle> => {
+		const timestamp = nowIso();
+		const flipped = await tx
+			.update(controlActions)
+			.set({ status: "failed", error: reason, finishedAt: timestamp, updatedAt: timestamp })
+			.where(
+				and(
+					eq(controlActions.id, action.id),
+					inArray(controlActions.status, ["queued", "running"]),
+				),
+			)
+			.returning({ id: controlActions.id });
+		if (flipped.length === 0) return { settled: false };
+		const sessionId = action.sessionId;
+		if (!sessionId) return { settled: false };
+		if (resumeKindOf(action) === "takeover" && action.launchRequestId) {
+			await releaseObservedBinding(tx, {
+				sessionId,
+				launchRequestId: action.launchRequestId,
+				reason,
+			});
+		}
+		// Frees the lock if the row survives (a recovery, or a takeover whose row names another launch).
+		await tx
+			.update(managedSessions)
+			.set({ activeControlActionId: null, controlLockExpiresAt: null, updatedAt: timestamp })
+			.where(
+				and(
+					eq(managedSessions.sessionId, sessionId),
+					eq(managedSessions.activeControlActionId, action.id),
+				),
+			);
+		await deps.afterWrites?.(tx);
+		return { settled: true, sessionId, outcome: "failed" };
+	});
+	await announceAfterSettle(handle, outcome);
+	return outcome;
+}
+
+async function announceAfterSettle(handle: unknown | null, outcome: ResumeSettle): Promise<void> {
+	if (!outcome.settled) return;
+	owedResumeAnnouncements.add(outcome.sessionId);
+	if (handle === null) await flushResumeAnnouncements();
+}
+
+/** The fixed words of the permission wait that survive a resume: approval ids are rows of ours, native ids died with the process. */
+function waitAfterResume(metadata: Record<string, unknown>): Record<string, unknown> | undefined {
+	const wait = metadata.permissionWait as { ids?: unknown } | undefined;
+	if (!wait || typeof wait !== "object") return undefined;
+	const ids = (Array.isArray(wait.ids) ? wait.ids : []).filter(
+		(id): id is string => typeof id === "string" && id.startsWith("approval:"),
+	);
+	return ids.length > 0 ? { ...wait, ids, anon: 0 } : undefined;
+}
+
+/**
+ * Ends a `resume` action as succeeded and brings the session back, in one transaction: only if the managed
+ * row names this launch and the action is still open (else nothing changes). The ended state is cleared
+ * (`endedAt`, `status`, the working flag, the turn start, `endedByEvent`), `managedResumeAt` fences later
+ * `SessionEnd` hooks, a native permission wait left by the dead process is dropped (approval waits are
+ * ours and stay), an unowned session gets its owner (a takeover with `assignOwner`; never overwriting one,
+ * and a disabled assignee leaves it unowned and is logged), and a fixed-words `ManagedSessionResumed` event
+ * is written. A write that matches no row throws and rolls the whole settle back.
+ */
+export async function completeResumeAction(
+	handle: unknown | null,
+	action: ResumeActionRef,
+	deps: ResumeSettleDeps = {},
+): Promise<ResumeSettle> {
+	const outcome = await inTransactionOf(handle, async (tx): Promise<ResumeSettle> => {
+		const sessionId = action.sessionId;
+		if (!sessionId) return { settled: false };
+		const [managed] = await tx
+			.select()
+			.from(managedSessions)
+			.where(eq(managedSessions.sessionId, sessionId))
+			.limit(1);
+		if (!managed || managed.launchRequestId !== action.launchRequestId) return { settled: false };
+
+		const timestamp = nowIso();
+		const flipped = await tx
+			.update(controlActions)
+			.set({ status: "succeeded", error: null, finishedAt: timestamp, updatedAt: timestamp })
+			.where(
+				and(
+					eq(controlActions.id, action.id),
+					inArray(controlActions.status, ["queued", "running"]),
+				),
+			)
+			.returning({ id: controlActions.id });
+		if (flipped.length === 0) return { settled: false };
+
+		const read = tx
+			.select({
+				metadata: sessions.metadata,
+				semanticStatus: sessions.semanticStatus,
+				ownerUserId: sessions.ownerUserId,
+			})
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+		const [session] = await (config.dialect === "postgres" ? read.for("update") : read);
+		if (!session) throw new Error("A resume settled for a session whose row is gone.");
+
+		const {
+			endedByEvent: _ended,
+			permissionWait: _wait,
+			...kept
+		} = (session.metadata ?? {}) as Record<string, unknown>;
+		const wait = waitAfterResume({ permissionWait: (session.metadata as any)?.permissionWait });
+		const metadata = {
+			...kept,
+			managedResumeAt: timestamp,
+			...(wait ? { permissionWait: wait } : {}),
+		};
+		const updated = await tx
+			.update(sessions)
+			.set({
+				endedAt: null,
+				status: "idle",
+				isWorking: false,
+				currentTurnStartedAt: null,
+				lastActivityAt: timestamp,
+				metadata,
+				...(session.semanticStatus === "waiting" ? { semanticStatus: null } : {}),
+			})
+			.where(eq(sessions.sessionId, sessionId))
+			.returning({ id: sessions.id });
+		if (updated.length === 0) throw new Error("A resume settled for a session whose row is gone.");
+
+		await assignOwnerIfAsked(tx, action, sessionId, session.ownerUserId ?? null);
+
+		const kind = resumeKindOf(action);
+		await tx.insert(events).values({
+			sessionId,
+			eventType: SESSION_RESUMED_EVENT_TYPE,
+			category: "system_event",
+			source: "managed_control",
+			content: SESSION_RESUMED_CONTENT[kind],
+			isNoise: false,
+			rawPayload: { resume_kind: kind },
+			createdAt: timestamp,
+		});
+		await tx
+			.update(managedSessions)
+			.set({ activeControlActionId: null, controlLockExpiresAt: null, updatedAt: timestamp })
+			.where(
+				and(
+					eq(managedSessions.sessionId, sessionId),
+					eq(managedSessions.activeControlActionId, action.id),
+				),
+			);
+		await deps.afterWrites?.(tx);
+		return { settled: true, sessionId, outcome: "succeeded" };
+	});
+	await announceAfterSettle(handle, outcome);
+	return outcome;
+}
+
+/** D6: an unowned session taken over by an admin gets its intended owner only now that the takeover has worked. */
+async function assignOwnerIfAsked(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	action: ResumeActionRef,
+	sessionId: string,
+	currentOwner: string | null,
+): Promise<void> {
+	const metadata = (action.metadata ?? {}) as { assignOwner?: unknown; boundByUserId?: unknown };
+	if (metadata.assignOwner !== true || currentOwner !== null || !action.launchRequestId) return;
+	const [launch] = await tx
+		.select({ requestedByUserId: launchRequests.requestedByUserId })
+		.from(launchRequests)
+		.where(eq(launchRequests.id, action.launchRequestId))
+		.limit(1);
+	const intended = launch?.requestedByUserId ?? null;
+	if (intended === null) return;
+	try {
+		await assignTakeoverOwner(tx, sessionId, intended);
+	} catch (error) {
+		if (!(error instanceof OwnerDisabledError || error instanceof OwnerNotFoundError)) throw error;
+		console.log(
+			JSON.stringify({
+				kind: "takeover_owner_unassignable",
+				level: "warn",
+				sessionId,
+				launchRequestId: action.launchRequestId,
+				boundByUserId: typeof metadata.boundByUserId === "string" ? metadata.boundByUserId : null,
+			}),
+		);
+	}
+}
+
+/** A lapsed lock on a resume: if the host's state report landed (managed, this launch) it worked; otherwise it didn't. */
+async function settleExpiredResume(
+	handle: unknown,
+	managed: typeof managedSessions.$inferSelect,
+	action: typeof controlActions.$inferSelect,
+): Promise<ResumeSettle> {
+	if (managed.managedState === "managed" && managed.launchRequestId === action.launchRequestId) {
+		return completeResumeAction(handle, action);
+	}
+	return failResumeAction(
+		handle,
+		action,
+		resumeFailureMessage("timeout", managed.hostName ?? "The host", resumeKindOf(action)),
+	);
+}
+
+export const RESUME_SWEEP_BATCH = 100;
+
+/**
+ * Settles the resume actions whose lock has run out, oldest first, at most `RESUME_SWEEP_BATCH` a pass. The
+ * lazy expiry only runs from the owning host's own polls and the enqueue paths, so an offline, removed or
+ * revoked host would otherwise hold a session in `pending` for ever. One failing action doesn't stop the rest.
+ */
+export async function sweepExpiredResumeActions(nowMs: number = Date.now()): Promise<number> {
+	const candidates: Array<{ sessionId: string; lockExpiresAt: string | null }> = await getDb()
+		.select({
+			sessionId: managedSessions.sessionId,
+			lockExpiresAt: managedSessions.controlLockExpiresAt,
+		})
+		.from(controlActions)
+		.innerJoin(managedSessions, eq(managedSessions.activeControlActionId, controlActions.id))
+		.where(
+			and(
+				eq(controlActions.actionType, "resume"),
+				inArray(controlActions.status, ["queued", "running"]),
+			),
+		)
+		.orderBy(asc(controlActions.createdAt))
+		.limit(RESUME_SWEEP_BATCH * 5);
+	const lapsed = candidates
+		.filter((row) => row.lockExpiresAt !== null && new Date(row.lockExpiresAt).getTime() <= nowMs)
+		.slice(0, RESUME_SWEEP_BATCH);
+	let settled = 0;
+	for (const row of lapsed) {
+		try {
+			await expireStaleControlLock(getDb(), row.sessionId, () => nowMs);
+			settled += 1;
+		} catch (error) {
+			console.error(
+				JSON.stringify({
+					kind: "resume_sweep_failed",
+					level: "error",
+					sessionId: row.sessionId,
+					error: error instanceof Error ? error.message.slice(0, 300) : "unknown",
+				}),
+			);
+		}
+	}
+	await flushResumeAnnouncements();
+	return settled;
+}
+
+/** A host that lost `resumes_sessions` (rolled back, replaced) is told so at claim time, not left to the lock. */
+async function refuseResumeForOldHost(
+	action: typeof controlActions.$inferSelect,
+	supervisorId: string,
+): Promise<boolean> {
+	const host = await getSupervisor(supervisorId);
+	if ((host?.capabilities.features ?? []).includes(RESUMES_SESSIONS)) return false;
+	await failResumeAction(
+		null,
+		action,
+		resumeFailureMessage(
+			"host_upgrade_required",
+			host?.hostName ?? "The host",
+			resumeKindOf(action),
+		),
+	);
+	return true;
 }
 
 function isUnclaimedAiPrompt(action: typeof controlActions.$inferSelect): boolean {
@@ -564,6 +942,7 @@ export async function queueStopAction(
 	const result = tx
 		? await enqueueStopInTx(tx, input)
 		: await withAdminLock((own) => enqueueStopInTx(own, input));
+	if (!tx) await flushResumeAnnouncements();
 	if (!result.ok) throw refusalToError(result.reason);
 	if (!tx) await runApprovalClosedEffects(result.fencedApprovals, deps);
 	return result.action;
@@ -618,6 +997,12 @@ export async function enqueuePromptInTx(
 	// Only a Codex launch asks the host anything: Claude prompts cost no extra statement.
 	if (isCodex && !(await hostTakesCodexPrompts(tx, sessionId))) {
 		return { ok: false, reason: "host_upgrade_required" };
+	}
+	// A row still `pending` with an action holding its lock is being taken over or resumed: it can't take a
+	// prompt yet, and "not continuable" would send the person off to start again. Narrow on purpose: a
+	// pending row with no active action keeps the answer below.
+	if (isCodex && managed.managedState === "pending" && managed.activeControlActionId) {
+		return { ok: false, reason: "control_busy" };
 	}
 	// A Codex session's process dies with its host's supervisor, and registration then marks it degraded: a
 	// prompt queued for it would only be refused by the host after the person was told it was sent.
@@ -688,6 +1073,7 @@ export async function queuePromptAction(
 	const result = tx
 		? await enqueuePromptInTx(tx, input)
 		: await withAdminLock((own) => enqueuePromptInTx(own, input));
+	if (!tx) await flushResumeAnnouncements();
 	if (!result.ok) throw refusalToError(result.reason);
 	return result.action;
 }
@@ -1019,6 +1405,10 @@ export async function claimNextControlAction(supervisorId: string) {
 			}
 		}
 
+		if (candidate.actionType === "resume" && candidate.sessionId) {
+			if (await refuseResumeForOldHost(candidate, supervisorId)) continue;
+		}
+
 		const timestamp = nowIso();
 		const [updated] = await getDb()
 			.update(controlActions)
@@ -1049,6 +1439,25 @@ export async function updateControlAction(input: {
 		.where(eq(controlActions.id, input.actionId))
 		.limit(1);
 	if (!current || current.claimedBySupervisorId !== input.supervisorId) return null;
+
+	// A resume ends through the one settle, which also moves the rows (D10).
+	if (current.actionType === "resume" && input.status !== "running") {
+		if (input.status === "failed") {
+			await failResumeAction(
+				null,
+				current,
+				input.error ?? resumeFailureMessage("rejected", "The host", resumeKindOf(current)),
+			);
+		} else {
+			await completeResumeAction(null, current);
+		}
+		const [fresh] = await getDb()
+			.select()
+			.from(controlActions)
+			.where(eq(controlActions.id, input.actionId))
+			.limit(1);
+		return fresh ? mapControlAction(fresh) : null;
+	}
 
 	const timestamp = nowIso();
 	const [updated] = await getDb()

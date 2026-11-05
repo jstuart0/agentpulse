@@ -18,6 +18,10 @@
  * 500, 200 and 200 for the empty probe body; all now answer 400 invalid_body (a
  * missing or mistyped field is refused instead of reaching the database).
  *
+ * Deliberate change since the recording (AGEN-115): POST /sessions/:sessionId/resume was a 501 stub for
+ * every caller and is now the route that resumes a managed Codex session whose process is gone. It carries
+ * the same gates as /bind, so the same five callers get the same 403s for the same reasons (below).
+ *
  * Added since the recording (AGEN-115), so it has no main-branch value: POST /sessions/:sessionId/bind, the
  * route that takes an observed Codex session over. Recorded from a run of the probe, and all five are 403 for
  * different reasons: the three cookie callers send no Origin and no Sec-Fetch-Site (bad_origin, the browser
@@ -58,7 +62,7 @@ export const BASE_ROUTE_STATUSES: ReadonlyArray<readonly [string, readonly numbe
 	["POST /sessions/:sessionId/retry", [400, 400, 400, 400, 400]],
 	["POST /sessions/:sessionId/bind", [403, 403, 403, 403, 403]],
 	["POST /sessions/:sessionId/fork", [501, 501, 501, 501, 501]],
-	["POST /sessions/:sessionId/resume", [501, 501, 501, 501, 501]],
+	["POST /sessions/:sessionId/resume", [403, 403, 403, 403, 403]],
 	["PUT /sessions/:sessionId/pin", [400, 400, 400, 400, 400]],
 	["POST /sessions/:sessionId/acknowledge", [200, 200, 200, 200, 200]],
 	["DELETE /sessions/:sessionId/acknowledge", [200, 200, 200, 200, 200]],

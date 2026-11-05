@@ -82,3 +82,5 @@ jobs:
           src/server/routes/ingest-latency.test.ts
           src/server/services/session-binding.test.ts
           src/server/routes/session-bind-route.test.ts
+          src/server/services/session-resume-lifecycle.test.ts
+          src/server/services/managed-turn-state.test.ts

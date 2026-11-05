@@ -74,7 +74,7 @@ import { notifySessionUpdated } from "../services/notifier.js";
 import { readServiceKeyLists } from "../services/service-key-lists.js";
 import { isServiceKeyRow } from "../services/service-keys.js";
 import { tryConsumeSessionBind } from "../services/session-bind-limit.js";
-import { bindObservedSession } from "../services/session-binding.js";
+import { bindObservedSession, queueSessionResume } from "../services/session-binding.js";
 import {
 	type SessionDetailRead,
 	getSessionDetail,
@@ -1086,9 +1086,64 @@ sessionsRouter.post("/sessions/:sessionId/fork", async (c) => {
 	return c.json({ error: "Fork is not implemented yet for this provider." }, 501);
 });
 
-sessionsRouter.post("/sessions/:sessionId/resume", async (c) => {
-	return c.json({ error: "Resume is not implemented yet for this provider." }, 501);
-});
+/**
+ * Resumes a managed Codex session whose process is gone. Same gates as a takeover (a signed-in person, the
+ * browser origin gate, the shared per-caller budget, the session's owner), and no body: the host, the
+ * directory and the privileges are the launch's own.
+ */
+sessionsRouter.post(
+	"/sessions/:sessionId/resume",
+	requireBrowserOriginGate,
+	bodyLimit({
+		maxSize: BIND_BODY_LIMIT_BYTES,
+		onError: (c) => c.json({ error: "payload_too_large" }, 413),
+	}),
+	async (c: Context) => {
+		const authUser = c.get("authUser") as AuthUser | undefined;
+		if (authUser && !isHumanCaller(authUser)) return c.json({ error: "human_required" }, 403);
+		const subject = authUser?.userId ?? authUser?.keyId ?? "anonymous";
+		if (!tryConsumeSessionBind(subject)) return c.json({ error: "rate_limited" }, 429);
+		const sessionId = c.req.param("sessionId") ?? "";
+		const actor = await getRequestActor(c);
+		try {
+			await assertCanBindSession(actor, sessionId);
+			const text = await c.req.text().catch(() => null);
+			if (text === null) return c.json({ error: "invalid_body" }, 400);
+			if (text.trim() !== "") {
+				if (!isJsonContentType(c.req.header("Content-Type"))) {
+					return c.json({ error: "unsupported_media_type" }, 415);
+				}
+				const body: unknown = (() => {
+					try {
+						return JSON.parse(text);
+					} catch {
+						return null;
+					}
+				})();
+				if (
+					typeof body !== "object" ||
+					body === null ||
+					Array.isArray(body) ||
+					Object.keys(body).length > 0
+				) {
+					return c.json({ error: "invalid_body" }, 400);
+				}
+			}
+			const result = await queueSessionResume(sessionId, actor);
+			c.header("Cache-Control", "no-store");
+			return c.json(
+				{
+					action: redactControlAction(result.action, { includePrompt: false }),
+					launchRequestId: result.launchRequestId,
+				},
+				202,
+			);
+		} catch (error) {
+			if (error instanceof BindRefusal) return refusedBind(c, error);
+			throw error;
+		}
+	},
+);
 
 // PUT /api/v1/sessions/:sessionId/pin - Toggle pin
 sessionsRouter.put("/sessions/:sessionId/pin", async (c) => {

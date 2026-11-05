@@ -1,5 +1,6 @@
 import { APPROVAL_RESOLVED_EVENT_TYPE } from "../../shared/codex-approvals.js";
 import { AGENT_METADATA } from "../../shared/constants.js";
+import { SESSION_RESUMED_EVENT_TYPE } from "../../shared/session-resume.js";
 import type {
 	AgentType,
 	EventCategory,
@@ -311,7 +312,19 @@ const RESERVED_EVENT_NAME_RE = /^ai/i;
  */
 export function isServerOnlyEventName(name: unknown): boolean {
 	if (typeof name !== "string") return false;
-	return RESERVED_EVENT_NAME_RE.test(name.trim()) || isApprovalResolvedEventName(name);
+	return (
+		RESERVED_EVENT_NAME_RE.test(name.trim()) ||
+		isApprovalResolvedEventName(name) ||
+		isSessionResumedEventName(name)
+	);
+}
+
+/** The name of the event recording a resume (AGEN-115), however a sender spells its case. */
+export function isSessionResumedEventName(name: unknown): boolean {
+	return (
+		typeof name === "string" &&
+		name.trim().toLowerCase() === SESSION_RESUMED_EVENT_TYPE.toLowerCase()
+	);
 }
 
 /** The name of the event recording a Codex approval closing, however a sender spells its case. */

@@ -1171,7 +1171,7 @@ describe("a degrade does not reprocess history", () => {
 				second = await managedState.degradeCodexSessionsOfRestartedHost(hostA.id);
 			});
 			expect(second).toEqual([]);
-			expect(calls).toBe(3); // the three reads; no write
+			expect(calls).toBe(4); // the four reads (open resume actions, rows to degrade, working rows, open prompts); no write
 			expect((await managedOf(live)).updatedAt).toBe(stamped);
 
 			expect((await register({ id: hostA.id, hostName: "p2-host-a" }, hostA.token)).status).toBe(

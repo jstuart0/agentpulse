@@ -194,3 +194,13 @@ export const TAKEOVER_IN_PROGRESS_MESSAGE =
  */
 export const hostCannotRunCodexMessage = (host: string): string =>
 	`${host} can't run Codex sessions: Codex isn't set up there, or it doesn't support managed Codex sessions. Choose another machine.`;
+
+/** The timeline event the server writes when a resume succeeds. Server-only: hooks and supervisors can't write it. */
+export const SESSION_RESUMED_EVENT_TYPE = "ManagedSessionResumed";
+
+/** Its fixed words, one per resume kind. */
+export const SESSION_RESUMED_CONTENT: Readonly<Record<ResumeKind, string>> = {
+	takeover: "AgentPulse took over this session.",
+	recovery:
+		"AgentPulse resumed this session. Any turn that was running when its process ended didn't finish.",
+};

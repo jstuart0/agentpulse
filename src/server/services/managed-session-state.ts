@@ -1,5 +1,6 @@
 import { and, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { HOST_RESTARTED_SYNC_ERROR } from "../../shared/managed-messages.js";
+import { resumeFailureMessage } from "../../shared/session-resume.js";
 import { isWithinWindow } from "../../shared/time-window.js";
 import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type {
@@ -9,6 +10,7 @@ import type {
 	ManagedState,
 	Session,
 } from "../../shared/types.js";
+import { config } from "../config.js";
 import { getDb } from "../db/client.js";
 import {
 	controlActions,
@@ -21,6 +23,7 @@ import {
 import { withTransaction } from "../db/with-transaction.js";
 import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
 import { closeApprovalsForSession } from "./codex-approvals.js";
+import { failResumeAction } from "./control-actions.js";
 import {
 	type NormalizedEvent,
 	isApprovalResolvedEventName,
@@ -37,6 +40,7 @@ import { generateSessionName } from "./name-generator.js";
 import { ownerForNewSession } from "./session-attribution.js";
 import { mapSessionDto } from "./session-dto.js";
 import {
+	SessionOwnershipError,
 	assertSupervisorCanWriteSession,
 	ownerLaunchJoin,
 	sessionOwnedBy,
@@ -109,33 +113,83 @@ export function isTerminalStateReport(input: ManagedSessionStateInput): boolean 
 function withoutServerOwnedMetadata(
 	metadata: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | null | undefined {
-	if (!metadata || !("permissionWait" in metadata)) return metadata;
-	const { permissionWait: _serverOwned, ...rest } = metadata;
+	if (!metadata || !SERVER_OWNED_METADATA_KEYS.some((key) => key in metadata)) return metadata;
+	const rest = { ...metadata };
+	for (const key of SERVER_OWNED_METADATA_KEYS) delete rest[key];
 	return rest;
 }
 
-export async function upsertManagedSessionState(
+/**
+ * Keys of a session's metadata only the server writes. `permissionWait` is the record of what the session
+ * is blocked on, from hook events and approval rows. `managedResumeAt` fences a resumed session against a
+ * stale or forged `SessionEnd` and is never cleared (AGEN-115, D14): a supervisor can neither set nor clear it.
+ */
+const SERVER_OWNED_METADATA_KEYS = ["permissionWait", "managedResumeAt"] as const;
+
+// Test seam (AGEN-115): runs after a report's open-action check and before its writes, so a test can land a
+// settle of the same action in that window.
+let afterResumeCheckHook: (() => Promise<void>) | null = null;
+export function _setAfterResumeCheckHookForTest(hook: (() => Promise<void>) | null): void {
+	afterResumeCheckHook = hook;
+}
+
+/**
+ * Refuses a report that names a resume action unless that action is still open for this session, in the
+ * report's own transaction and before anything is written. On Postgres the action row is locked
+ * `FOR SHARE`, so a concurrent settle (which updates it) waits for the report's writes instead of
+ * releasing rows underneath them.
+ */
+async function requireOpenResumeAction(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	sessionId: string,
+	resumeActionId: string,
+): Promise<void> {
+	const read = tx
+		.select({ id: controlActions.id })
+		.from(controlActions)
+		.where(
+			and(
+				eq(controlActions.id, resumeActionId),
+				eq(controlActions.sessionId, sessionId),
+				eq(controlActions.actionType, "resume"),
+				inArray(controlActions.status, ["queued", "running"]),
+			),
+		)
+		.limit(1);
+	const [open] = await (config.dialect === "postgres" ? read.for("share") : read);
+	if (!open) throw new SessionOwnershipError("launch_mismatch");
+}
+
+async function inTransactionOf<T>(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	alreadyInside: boolean,
+	fn: (tx: any) => Promise<T>,
+): Promise<T> {
+	return alreadyInside ? fn(db) : withTransaction(fn);
+}
+
+async function writeManagedSessionState(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	inTx: boolean,
 	supervisorId: string,
 	input: ManagedSessionStateInput,
-	options: {
-		/**
-		 * The report is a replay from the supervisor's outbox, or a late one. It can be
-		 * older than the approval rows, so it closes none.
-		 */
-		replay?: boolean;
-	} = {},
-): Promise<{ session: Session; managedSession: ManagedSession }> {
+	options: { replay?: boolean },
+	resumeActionId: string | null,
+) {
 	await assertSupervisorCanWriteSession(supervisorId, input.sessionId, {
 		launchRequestId: input.launchRequestId,
 	});
 	const supervisorMetadata = withoutServerOwnedMetadata(input.metadata);
 	const timestamp = nowIso();
-	const [existingManaged] = await getDb()
+	const [existingManaged] = await db
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, input.sessionId))
 		.limit(1);
-	const [existingSession] = await getDb()
+	const [existingSession] = await db
 		.select()
 		.from(sessions)
 		.where(eq(sessions.sessionId, input.sessionId))
@@ -174,7 +228,7 @@ export async function upsertManagedSessionState(
 		// right below regardless of which side's insert actually won.
 		let launchRequesterUserId: string | null = null;
 		if (input.launchRequestId) {
-			const [launch] = await getDb()
+			const [launch] = await db
 				.select({ requestedByUserId: launchRequests.requestedByUserId })
 				.from(launchRequests)
 				.where(eq(launchRequests.id, input.launchRequestId))
@@ -183,7 +237,7 @@ export async function upsertManagedSessionState(
 		}
 		// A host kept when its owner was disabled still works, but its owner is
 		// gone: the join leaves a disabled owner out, so the session is unowned.
-		const [supervisorRow] = await getDb()
+		const [supervisorRow] = await db
 			.select({ ownerUserId: users.id })
 			.from(supervisors)
 			.leftJoin(users, and(eq(users.id, supervisors.ownerUserId), isNull(users.disabledAt)))
@@ -194,7 +248,7 @@ export async function upsertManagedSessionState(
 			supervisorOwnerUserId: supervisorRow?.ownerUserId ?? null,
 		});
 
-		await getDb()
+		await db
 			.insert(sessions)
 			.values({
 				sessionId: input.sessionId,
@@ -211,7 +265,7 @@ export async function upsertManagedSessionState(
 			})
 			.onConflictDoNothing({ target: sessions.sessionId });
 	} else {
-		await withTransaction(async (tx) => {
+		await inTransactionOf(db, inTx, async (tx) => {
 			const updates: Record<string, unknown> = { ...sessionUpdates };
 			if (supervisorMetadata) {
 				// Late read-modify-write inside the transaction: re-read metadata
@@ -233,14 +287,14 @@ export async function upsertManagedSessionState(
 		});
 	}
 
-	const [currentSession] = await getDb()
+	const [currentSession] = await db
 		.select()
 		.from(sessions)
 		.where(eq(sessions.sessionId, input.sessionId))
 		.limit(1);
 
 	const desiredTitle = input.desiredThreadTitle ?? currentSession?.displayName ?? null;
-	const [supervisor] = await getDb()
+	const [supervisor] = await db
 		.select()
 		.from(supervisors)
 		.where(eq(supervisors.id, supervisorId))
@@ -263,10 +317,15 @@ export async function upsertManagedSessionState(
 		(heldDegraded ? undefined : input.providerSyncState) ??
 		existingManaged?.providerSyncState ??
 		"pending";
-	const providerSyncError =
-		(heldDegraded ? undefined : input.providerSyncError) ??
-		existingManaged?.providerSyncError ??
-		null;
+	// Clearing is explicit, and only for a report that belongs to an open resume (checked at the top). A
+	// held replay never clears, and a plain null never does: the restart marker must survive it.
+	const clearsSyncError =
+		resumeActionId !== null && input.clearProviderSyncError === true && !heldDegraded;
+	const providerSyncError = clearsSyncError
+		? null
+		: ((heldDegraded ? undefined : input.providerSyncError) ??
+			existingManaged?.providerSyncError ??
+			null);
 	const lastProviderSyncAt =
 		input.lastProviderSyncAt ?? existingManaged?.lastProviderSyncAt ?? null;
 	const providerProtocolVersion =
@@ -281,7 +340,7 @@ export async function upsertManagedSessionState(
 		(existingManaged?.managedState as ManagedState | undefined) ??
 		"managed";
 
-	await getDb()
+	await db
 		.insert(managedSessions)
 		.values({
 			sessionId: input.sessionId,
@@ -327,11 +386,40 @@ export async function upsertManagedSessionState(
 			},
 		});
 
-	const [managedRow] = await getDb()
+	const [managedRow] = await db
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, input.sessionId))
 		.limit(1);
+
+	return { currentSession, managedRow };
+}
+
+export async function upsertManagedSessionState(
+	supervisorId: string,
+	input: ManagedSessionStateInput,
+	options: {
+		/**
+		 * The report is a replay from the supervisor's outbox, or a late one. It can be
+		 * older than the approval rows, so it closes none.
+		 */
+		replay?: boolean;
+	} = {},
+): Promise<{ session: Session; managedSession: ManagedSession }> {
+	const resumeActionId =
+		typeof input.resumeActionId === "string" && input.resumeActionId !== ""
+			? input.resumeActionId
+			: null;
+	// A report that belongs to a resume checks that action and writes in one transaction; every other
+	// report runs exactly as it always did (no extra read, no transaction of its own).
+	const { currentSession, managedRow } =
+		resumeActionId === null
+			? await writeManagedSessionState(getDb(), false, supervisorId, input, options, null)
+			: await withTransaction(async (tx) => {
+					await requireOpenResumeAction(tx, input.sessionId, resumeActionId);
+					await afterResumeCheckHook?.();
+					return writeManagedSessionState(tx, true, supervisorId, input, options, resumeActionId);
+				});
 
 	// A live report that the session ended closes its open Codex approvals: nothing can
 	// still be waiting for an answer. Not a replayed report, which may predate them.
@@ -612,6 +700,36 @@ export async function degradeCodexSessionsOfRestartedHost(
 			isArchived: sessions.isArchived,
 		};
 		const ownedCodex = and(sessionOwnedBy(supervisorId), isCodexLaunch);
+		// A resume in flight dies with the process it was starting: settled first, in this transaction. A
+		// takeover's rows are released (so the session is observed again, not degraded); a recovery's row
+		// stays and is degraded below with the rest.
+		const openResumes: Array<{
+			action: typeof controlActions.$inferSelect;
+			hostName: string | null;
+		}> = await tx
+			.select({ action: controlActions, hostName: managedSessions.hostName })
+			.from(controlActions)
+			.innerJoin(managedSessions, eq(managedSessions.sessionId, controlActions.sessionId))
+			.innerJoin(sessions, eq(sessions.sessionId, managedSessions.sessionId))
+			.leftJoin(launchRequests, ownerLaunchJoin)
+			.where(
+				and(
+					ownedCodex,
+					eq(controlActions.actionType, "resume"),
+					inArray(controlActions.status, ["queued", "running"]),
+				),
+			);
+		for (const { action, hostName } of openResumes) {
+			const kind =
+				(action.metadata as { resumeKind?: unknown } | null)?.resumeKind === "recovery"
+					? "recovery"
+					: "takeover";
+			await failResumeAction(
+				tx,
+				action,
+				resumeFailureMessage("restart", hostName ?? "The host", kind),
+			);
+		}
 		const needsDegrade: OwnedCodexRow[] = await tx
 			.select(columns)
 			.from(managedSessions)

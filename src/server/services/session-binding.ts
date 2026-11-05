@@ -29,12 +29,17 @@ import type {
 import type { Actor, InstanceModeName } from "../auth/actor.js";
 import { awaitSeamInsideAdminLock, withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
-import { apiKeys, controlActions, sessions } from "../db/schema/index.js";
+import { apiKeys, controlActions, managedSessions, sessions } from "../db/schema/index.js";
 import { requestWsRevalidation } from "../ws/revalidation.js";
 import { logAdminAction } from "./audit-log.js";
 import { mayBindToHost, refuseBindSession } from "./authorization.js";
 import { BindRefusal } from "./bind-refusal.js";
-import { mapControlAction, takeControlLock } from "./control-actions.js";
+import {
+	launchOwnedBySessionOwner,
+	mapControlAction,
+	resolveManagedLaunch,
+	takeControlLock,
+} from "./control-actions.js";
 import { getMode } from "./instance-mode.js";
 import {
 	ENFORCES_LAUNCH_PRIVILEGES,
@@ -49,6 +54,7 @@ import {
 	findLaunchRowByCorrelationId,
 	findManagedRowForThread,
 	readHostState,
+	resolveSessionOwner,
 } from "./session-ownership.js";
 import { STUCK_WORKING_RECOVERY_MS } from "./session-tracker.js";
 import { readTrustedRoots, withCapabilityDefaults } from "./supervisor-capabilities.js";
@@ -207,6 +213,29 @@ async function refuseUnlessKeyBelongsToHostOwner(
 	}
 	if (keyOwner === null || hostOwnerUserId === null || keyOwner !== hostOwnerUserId) {
 		throw new BindRefusal("session_key_mismatch");
+	}
+}
+
+/** The rows have committed: a failure to announce it must not turn the answer into a 500. */
+async function announceCommitted(sessionId: string, launchRequestId: string): Promise<void> {
+	try {
+		const [row] = await getDb()
+			.select()
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+		if (row) notifySessionUpdated(row);
+		await requestWsRevalidation();
+	} catch (error) {
+		console.error(
+			JSON.stringify({
+				kind: "session_bound_notify_failed",
+				level: "error",
+				sessionId,
+				launchRequestId,
+				error: error instanceof Error ? error.message.slice(0, 300) : "unknown",
+			}),
+		);
 	}
 }
 
@@ -419,25 +448,124 @@ export async function bindObservedSession(
 		launchRequestId: committed.launchRequestId,
 		...(committed.intendedOwner !== null ? { intendedOwner: committed.intendedOwner } : {}),
 	});
-	// The bind has committed: a failure to announce it must not turn the answer into a 500.
-	try {
-		const [row] = await getDb()
+	await announceCommitted(sessionId, committed.launchRequestId);
+	return { action: committed.action, launchRequestId: committed.launchRequestId };
+}
+
+/**
+ * Resumes a managed Codex session whose process is gone (AGEN-115, recovery): the same `resume` action a
+ * takeover queues, for a row the host reported (or registration stamped) `degraded`, with the privileges
+ * and directory its own launch recorded. Authority is the session's (`refuseBindSession`); the host is the
+ * launch's own, so there is no host-owner check. Refused, with nothing queued, unless the row is degraded,
+ * its thread id is a UUID, the launch is Codex and consistent with the owner of record, and that host is
+ * live, current and still allows the directory.
+ */
+export async function queueSessionResume(
+	sessionId: string,
+	actor: Actor,
+	deps: Pick<BindDeps, "now"> = {},
+): Promise<BindResult> {
+	const now = deps.now ?? Date.now;
+	const mode: InstanceModeName = actor.mode ?? (await getMode());
+	const session = await readSession(getDb(), sessionId);
+	const authority = refuseBindSession(
+		actor,
+		mode,
+		session ? { ownerUserId: session.ownerUserId ?? null } : null,
+	);
+	if (authority !== null || session === null)
+		throw new BindRefusal(authority ?? "session_not_found");
+	if (session.isArchived) throw new BindRefusal("session_not_found");
+
+	const committed = await withAdminLock(async (tx) => {
+		const [managed] = await tx
 			.select()
-			.from(sessions)
-			.where(eq(sessions.sessionId, sessionId))
+			.from(managedSessions)
+			.where(eq(managedSessions.sessionId, sessionId))
 			.limit(1);
-		if (row) notifySessionUpdated(row);
-		await requestWsRevalidation();
-	} catch (error) {
-		console.error(
-			JSON.stringify({
-				kind: "session_bound_notify_failed",
-				level: "error",
+		if (!managed || managed.managedState !== "degraded") throw new BindRefusal("not_resumable");
+		const threadId = managed.providerThreadId;
+		if (typeof threadId !== "string" || !isResumableSessionId(threadId)) {
+			throw new BindRefusal("not_resumable");
+		}
+		const launch = await resolveManagedLaunch(tx, sessionId, managed.launchRequestId);
+		if (
+			!launch ||
+			launch.launchCorrelationId !== sessionId ||
+			launch.agentType !== "codex_cli" ||
+			!(await launchOwnedBySessionOwner(tx, sessionId, launch))
+		) {
+			throw new BindRefusal("not_resumable");
+		}
+
+		const hostId = await resolveSessionOwner(tx, sessionId);
+		if (hostId === null) throw new BindRefusal("host_gone");
+		const hostNow = await readHostState(tx, hostId, now());
+		if (hostNow.state === "gone") throw new BindRefusal("host_gone");
+		if (hostNow.state === "offline") throw new BindRefusal("host_offline");
+		const trustedRoots = readTrustedRoots(hostNow.trustedRoots);
+		const cwd = judgeCandidateCwd(launch.cwd, trustedRoots);
+		const template = normalizeTemplateInput({
+			name: "Resume",
+			agentType: "codex_cli",
+			cwd,
+			model: null,
+			approvalPolicy: launch.approvalPolicy as SessionTemplateInput["approvalPolicy"],
+			sandboxMode: launch.sandboxMode as SessionTemplateInput["sandboxMode"],
+			env: {},
+		});
+		refuseIfHostCannotRun(template, {
+			id: hostId,
+			hostName: managed.hostName ?? hostId,
+			platform: "",
+			arch: "",
+			version: "",
+			capabilities: withCapabilityDefaults(hostNow.capabilities),
+			trustedRoots,
+		} as SupervisorRecord);
+
+		const controlActionId = crypto.randomUUID();
+		const timestamp = new Date(now()).toISOString();
+		if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp, now))) {
+			throw new BindRefusal("not_resumable");
+		}
+		const metadata: ResumeActionMetadata = {
+			resumeKind: "recovery",
+			agentType: "codex_cli",
+			threadId,
+			cwd,
+			approvalPolicy: template.approvalPolicy ?? null,
+			sandboxMode: template.sandboxMode ?? null,
+			expectedEnforcedArgs: privilegeCliArgs(
+				"codex_cli",
+				template.approvalPolicy,
+				template.sandboxMode,
+			),
+			boundByUserId: actor.userId,
+		};
+		const [row] = await tx
+			.insert(controlActions)
+			.values({
+				id: controlActionId,
 				sessionId,
-				launchRequestId: committed.launchRequestId,
-				error: error instanceof Error ? error.message.slice(0, 300) : "unknown",
-			}),
-		);
-	}
+				launchRequestId: launch.id,
+				actionType: "resume",
+				requestedBy: actor.label,
+				requestedByUserId: actor.userId,
+				status: "queued",
+				metadata,
+				createdAt: timestamp,
+				updatedAt: timestamp,
+			})
+			.returning();
+		return { action: mapControlAction(row), launchRequestId: launch.id as string, hostId };
+	});
+
+	logAdminAction("session_resumed", actor, {
+		sessionId,
+		supervisorId: committed.hostId,
+		launchRequestId: committed.launchRequestId,
+	});
+	await announceCommitted(sessionId, committed.launchRequestId);
 	return { action: committed.action, launchRequestId: committed.launchRequestId };
 }
