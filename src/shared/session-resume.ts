@@ -93,7 +93,7 @@ export interface ResumeActionMetadata {
 
 /** What to do about a thread another Codex still holds. Backticks mark a command; the web draws them as code. */
 const STILL_HELD = (host: string, done: string): string =>
-	`Codex on ${host} still holds this session, so it wasn't ${done}. If it's open in a terminal, exit it and try again. If you already closed it, Codex's background service is probably holding it. Stopping that service interrupts anything else running through it. When that's safe, run \`codex app-server daemon stop\` on ${host} and try again.`;
+	`Codex on ${host} still holds this session, so it wasn't ${done}. If it's open in a terminal, exit it and try again. If you already closed it, Codex's background service is probably holding it. That usually lets go within about 30 minutes, so try again then. To free it sooner, run \`codex app-server daemon stop\` on ${host}, which interrupts anything else running through that service.`;
 
 const SAYS_RESUMED_ABOUT_RETRY = "Start a new session for this work.";
 

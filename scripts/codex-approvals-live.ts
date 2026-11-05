@@ -67,6 +67,7 @@ import { homedir, hostname, tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { guardAuthCopy, removeAuthCopy } from "./codex-canary-guard.js";
 import { TAKEOVER_SCENARIO_IDS, runTakeoverScenarios } from "./codex-takeover-canary.js";
+import { assertThrowawayCodexHome } from "./lib/codex-canary-safety.js";
 import { ownCodexPids as findOwnCodexPids } from "./lib/codex-own-pids.js";
 
 type Frame = { t: number; dir: "in" | "out"; frame: any };
@@ -1229,6 +1230,8 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 	const root = assertScratch(workArg);
 	const codexHome = join(root, "codex-home");
 	const home = join(root, "home");
+	// Before anything is created or copied: a throwaway home, strictly inside the scratch directory, not a link.
+	assertThrowawayCodexHome(codexHome, root, homedir());
 	for (const dir of [codexHome, home, join(home, ".agentpulse")]) {
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 	}

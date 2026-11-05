@@ -65,6 +65,13 @@ describe("assertThrowawayCodexHome", () => {
 		expect(() => assertThrowawayCodexHome(link, join(scratch, "run"), fakeHome)).toThrow("link");
 	});
 
+	test("a CODEX_HOME that already exists as a link is refused even when it points inside the scratch directory", () => {
+		mkdirSync(join(scratch, "run", "elsewhere"), { recursive: true });
+		const link = join(scratch, "run", "inside-link");
+		symlinkSync(join(scratch, "run", "elsewhere"), link);
+		expect(() => assertThrowawayCodexHome(link, join(scratch, "run"), fakeHome)).toThrow("link");
+	});
+
 	test("a path that only shares a prefix with the scratch directory is a different directory, and refused", () => {
 		expect(() =>
 			assertThrowawayCodexHome(join(scratch, "run2", "h"), join(scratch, "run"), fakeHome),
@@ -200,5 +207,27 @@ describe("the scan of scripts/", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("real() checks its CODEX_HOME before it copies the credential", () => {
+	test("the check runs ahead of the copy of auth.json (a source read)", () => {
+		const live = readFileSync(join(ROOT, "scripts", "codex-approvals-live.ts"), "utf-8");
+		const check = live.indexOf("assertThrowawayCodexHome(codexHome, root, homedir())");
+		const copy = live.indexOf("copyFileSync(realAuth, authCopy)");
+		expect(check).toBeGreaterThan(0);
+		expect(copy).toBeGreaterThan(check);
+	});
+});
+
+describe("the canary's control copy of the home", () => {
+	test("never includes the credential (a source read of the list it copies)", () => {
+		const canary = readFileSync(join(ROOT, "scripts", "codex-takeover-canary.ts"), "utf-8");
+		const list = canary.slice(
+			canary.indexOf("const copy = join(ctx.root"),
+			canary.indexOf("stdioResume(ctx, threadId, copy)"),
+		);
+		expect(list).toContain('"sessions"');
+		expect(list).not.toContain("auth.json");
 	});
 });

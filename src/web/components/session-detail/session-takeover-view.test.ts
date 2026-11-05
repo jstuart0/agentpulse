@@ -583,7 +583,10 @@ describe("failures from the host come verbatim from the shared words", () => {
 			"studio can't find this session's history, so it wasn't taken over. It probably ran on another machine or under another account.",
 		);
 		expect(takeover("running")).toContain("`codex app-server daemon stop`");
-		expect(takeover("running")).toContain("Stopping that service interrupts anything else");
+		expect(takeover("running")).toContain("That usually lets go within about 30 minutes");
+		expect(takeover("running")).toContain(
+			"which interrupts anything else running through that service",
+		);
 		expect(recovery("running")).toContain("so it wasn't resumed");
 		expect(takeover("cwd_mismatch")).toContain("so it wasn't taken over");
 		expect(takeover("privileges")).toContain("required approval settings");

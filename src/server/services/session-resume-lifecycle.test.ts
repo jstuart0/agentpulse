@@ -1247,6 +1247,30 @@ describe("queueSessionResume", () => {
 		expect((await rows(seeded.sessionId)).actions.length).toBe(1);
 	});
 
+	test("an owner who loses the session between the pre-read and the lock is refused inside it: nothing queued, no lock taken", async () => {
+		const t = await team();
+		const host = await seedTakeoverHost({ ownerUserId: null });
+		const seeded = await seedDegradedLaunched(host, { ownerUserId: t.alice.id });
+		const refused = await queueSessionResume(seeded.sessionId, memberActor(t.alice.id), {
+			// The admin's reassignment wins the race: it lands after alice was authorized and before the lock.
+			beforeLock: async () => {
+				await getDb()
+					.update(sessions)
+					.set({ ownerUserId: t.bob.id })
+					.where(eq(sessions.sessionId, seeded.sessionId));
+			},
+		}).catch((e) => e);
+		expect(refused).toBeInstanceOf(BindRefusal);
+		expect(refused).toMatchObject({ code: "session_not_found" });
+		const { actions, managed } = await rows(seeded.sessionId);
+		expect(actions).toEqual([]);
+		expect(managed.activeControlActionId).toBeNull();
+		expect(managed.controlLockExpiresAt).toBeNull();
+		// Control: the new owner, asking after the reassignment, is let through.
+		await queueSessionResume(seeded.sessionId, memberActor(t.bob.id));
+		expect((await rows(seeded.sessionId)).actions.length).toBe(1);
+	});
+
 	test("the audit line is session_resumed with the real actor", async () => {
 		const t = await team();
 		const host = await seedTakeoverHost({ ownerUserId: t.alice.id });

@@ -16,7 +16,7 @@ import {
 
 const HOST = "build-box";
 const COMMAND_TAIL =
-	"If it's open in a terminal, exit it and try again. If you already closed it, Codex's background service is probably holding it. Stopping that service interrupts anything else running through it. When that's safe, run `codex app-server daemon stop` on build-box and try again.";
+	"If it's open in a terminal, exit it and try again. If you already closed it, Codex's background service is probably holding it. That usually lets go within about 30 minutes, so try again then. To free it sooner, run `codex app-server daemon stop` on build-box, which interrupts anything else running through that service.";
 
 describe("isResumableSessionId", () => {
 	test("accepts a lowercase UUID of any version Codex or randomUUID mints", () => {

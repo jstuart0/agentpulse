@@ -639,7 +639,6 @@ async function bindCodex(ctx: CanaryCtx, tap: { wire: Wire }): Promise<Record<st
 		"state_5.sqlite-wal",
 		"state_5.sqlite-shm",
 		"config.toml",
-		"auth.json",
 	]) {
 		if (existsSync(join(ctx.codexHome, name)))
 			cpSync(join(ctx.codexHome, name), join(copy, name), { recursive: true });

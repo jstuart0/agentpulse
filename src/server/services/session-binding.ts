@@ -463,7 +463,7 @@ export async function bindObservedSession(
 export async function queueSessionResume(
 	sessionId: string,
 	actor: Actor,
-	deps: Pick<BindDeps, "now"> = {},
+	deps: Pick<BindDeps, "now" | "beforeLock"> = {},
 ): Promise<BindResult> {
 	const now = deps.now ?? Date.now;
 	const mode: InstanceModeName = actor.mode ?? (await getMode());
@@ -477,7 +477,21 @@ export async function queueSessionResume(
 		throw new BindRefusal(authority ?? "session_not_found");
 	if (session.isArchived) throw new BindRefusal("session_not_found");
 
+	await deps.beforeLock?.();
+
 	const committed = await withAdminLock(async (tx) => {
+		// Authority is judged again on what the lock sees: an admin may have reassigned the session since the
+		// pre-read, and the former owner's recovery must not queue.
+		const fresh = await readSession(tx, sessionId);
+		const freshAuthority = refuseBindSession(
+			actor,
+			mode,
+			fresh ? { ownerUserId: fresh.ownerUserId ?? null } : null,
+		);
+		if (freshAuthority !== null || fresh === null) {
+			throw new BindRefusal(freshAuthority ?? "session_not_found");
+		}
+		if (fresh.isArchived) throw new BindRefusal("session_not_found");
 		const [managed] = await tx
 			.select()
 			.from(managedSessions)

@@ -10,8 +10,12 @@
  *  4. Nothing is killed by name. A process is signalled by a pid this run started, or by a pid whose own
  *     environment names this run's exact `CODEX_HOME` (`lib/codex-own-pids.ts`, the one searching helper).
  *  5. No terminal user interface: a TUI shows an update dialog and takes keys, and nothing here sends keys.
+ *
+ * The scan (`scanText`) is an advisory tripwire for accidents, not a barrier: a determined edit can get past a
+ * pattern. What actually holds the line is rule 1's check at run time and the spawner's allowlist; the scan
+ * only makes a careless slip fail in CI.
  */
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export const ALLOWED_DAEMON_SUBCOMMANDS = ["start", "stop", "version"] as const;
@@ -53,6 +57,11 @@ export function assertThrowawayCodexHome(
 	if (forbidden(path)) throw new Error("CODEX_HOME is the real home or its .codex");
 	if (!inside(resolve(scratchRoot), path)) {
 		throw new Error("CODEX_HOME is not strictly inside the scratch directory");
+	}
+	try {
+		if (lstatSync(path).isSymbolicLink()) throw new Error("CODEX_HOME is itself a link");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
 	let real: string;
 	try {
