@@ -64,6 +64,8 @@ export interface NotifyRun {
 
 export interface NotifyTrigger {
 	id: number;
+	/** What ended the turn. A failed turn's note is never "finished". */
+	eventType?: string;
 	rawPayload?: Record<string, unknown> | null;
 }
 
@@ -110,6 +112,17 @@ function newEvidence(bundle: EvidenceBundle, after: number) {
 	const rows = bundle.rows.filter((row) => row.id > after && !mine(row));
 	const firstPromptRows = bundle.firstPromptRows.filter((row) => !mine(row));
 	return { rows, firstPromptRows };
+}
+
+/** The note for a turn that failed to finish: whatever the model thought of the evidence, it didn't finish. */
+const FAILED_TURN_NOTE = "The last turn didn't finish. Open the session to see what happened.";
+
+function failedTurnWording<T extends { verdict: string; why: string }>(
+	trigger: NotifyTrigger,
+	answer: T,
+): T {
+	if (trigger.eventType !== "HeadlessPromptFailed" || answer.verdict !== "finished") return answer;
+	return { ...answer, verdict: "needs_you", why: FAILED_TURN_NOTE };
 }
 
 export async function runNotify(
@@ -212,8 +225,9 @@ export async function runNotify(
 		if (stopReason === "length") return await fail("length", usage);
 		if (stopReason === "refusal") return await fail("refusal", usage);
 		if (text.trim() === "") return await fail("empty_output", usage);
-		const parsed = parseNotifyAnswer(text, built.nonce, ledger.ids);
-		if (!parsed.ok) return await fail(parsed.code, usage);
+		const answer = parseNotifyAnswer(text, built.nonce, ledger.ids);
+		if (!answer.ok) return await fail(answer.code, usage);
+		const parsed = failedTurnWording(triggerEvent, answer);
 		const typedUrls = collectUserPromptUrls(userPromptTexts(evidence));
 		const suspect = checkText(
 			parsed.why,

@@ -56,6 +56,7 @@ import {
 	ReservedEventTypeError,
 	appendManagedSessionDelivery,
 	appendManagedSessionEvents,
+	degradeCodexSessionsOfRestartedHost,
 	listManagedSessionsNeedingSync,
 	upsertManagedSessionState,
 } from "../services/managed-session-state.js";
@@ -247,6 +248,23 @@ async function closeRestartedHostApprovals(supervisorId: string): Promise<void> 
 	}
 }
 
+/**
+ * The same registration, for the host's Codex sessions: their app-servers are gone, so they leave
+ * `managed` and stop reading as working, and prompts still waiting for them fail. A failure here
+ * must not fail the registration either. The changed sessions are announced after the commit.
+ */
+async function degradeRestartedHostSessions(supervisorId: string): Promise<void> {
+	try {
+		const changed = await degradeCodexSessionsOfRestartedHost(supervisorId);
+		for (const sessionId of changed) {
+			const session = await getSession(sessionId);
+			if (session) notifySessionUpdated(session);
+		}
+	} catch {
+		console.error("[supervisors] could not degrade a restarted host's Codex sessions");
+	}
+}
+
 // Registration is reachable before any credential check, so its body is capped.
 const REGISTER_BODY_LIMIT_BYTES = 64 * 1024;
 
@@ -365,6 +383,7 @@ supervisorsAgentRouter.post("/supervisors/register", registerBodyLimit, async (c
 			? await registerSupervisor(registrationInput)
 			: await enrollSupervisor(registrationInput, enrollmentCreatedByUserId);
 		await closeRestartedHostApprovals(registered.supervisor.id);
+		await degradeRestartedHostSessions(registered.supervisor.id);
 		return c.json({ ...registered, serverFeatures: SERVER_FEATURES });
 	} catch (err) {
 		if (err instanceof OwnerDisabledError) {
@@ -557,15 +576,22 @@ supervisorsAgentRouter.post(
 		try {
 			let inserted: SessionEvent[];
 			if (deliveryId) {
-				const result = await appendManagedSessionDelivery(supervisorId, sessionId, incoming, {
-					deliveryId,
-					bodyDigest: sha256Hex(text),
-				});
+				const result = await appendManagedSessionDelivery(
+					supervisorId,
+					sessionId,
+					incoming,
+					{
+						deliveryId,
+						bodyDigest: sha256Hex(text),
+					},
+					undefined,
+					{ late },
+				);
 				// A delivery already received changed nothing: there is nothing to announce.
 				if (result.replay) return c.json({ events: [] });
 				inserted = result.events;
 			} else {
-				inserted = await appendManagedSessionEvents(supervisorId, sessionId, incoming);
+				inserted = await appendManagedSessionEvents(supervisorId, sessionId, incoming, { late });
 			}
 			const session = await getSession(sessionId);
 			if (session) {

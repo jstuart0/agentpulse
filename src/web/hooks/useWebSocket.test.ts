@@ -105,16 +105,16 @@ afterEach(async () => {
 	useUserStore.setState({ mode: "solo" } as never);
 });
 
-describe("desktop notification when a turn finishes in a hidden tab", () => {
+describe("desktop notification when a session stops working in a hidden tab (it says stopped, never finished)", () => {
 	test("the viewer's own session notifies under Everyone", async () => {
 		await finishedAfterWorking(socket, (w) => row("s-mine", ME, w));
-		expect(notifications.map((n) => n.title)).toEqual(["s-mine finished"]);
+		expect(notifications.map((n) => n.title)).toEqual(["s-mine stopped"]);
 	});
 
 	test("and while the view is another person's sessions: the notification doesn't depend on the view", async () => {
 		useDashboardScopeStore.setState({ owner: ALICE, resolved: true });
 		await finishedAfterWorking(socket, (w) => row("s-mine", ME, w));
-		expect(notifications.map((n) => n.title)).toEqual(["s-mine finished"]);
+		expect(notifications.map((n) => n.title)).toEqual(["s-mine stopped"]);
 		expect(useSessionStore.getState().sessions).toEqual([]);
 	});
 
@@ -139,7 +139,7 @@ describe("desktop notification when a turn finishes in a hidden tab", () => {
 	test("solo notifies for every session, as before", async () => {
 		useUserStore.setState({ mode: "solo", userId: null } as never);
 		await finishedAfterWorking(socket, (w) => row("s-any", ALICE, w));
-		expect(notifications.map((n) => n.title)).toEqual(["s-any finished"]);
+		expect(notifications.map((n) => n.title)).toEqual(["s-any stopped"]);
 	});
 });
 
@@ -321,7 +321,7 @@ describe("a machine filter on the dashboard", () => {
 	test("which machine is on screen doesn't decide who is notified", async () => {
 		useDashboardScopeStore.setState({ host: "edge-02" });
 		await finishedAfterWorking(socket, (w) => onMachine("s-mine", "build-01", w));
-		expect(notifications.map((n) => n.title)).toEqual(["s-mine finished"]);
+		expect(notifications.map((n) => n.title)).toEqual(["s-mine stopped"]);
 		expect(shown()).toEqual([]);
 	});
 });

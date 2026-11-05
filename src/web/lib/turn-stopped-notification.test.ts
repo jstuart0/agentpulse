@@ -9,25 +9,28 @@ import { turnStoppedNotification } from "./turn-stopped-notification.js";
 describe("turnStoppedNotification", () => {
 	test("the title is '<name> stopped' and the body is 'In <directory>', for any agent", () => {
 		for (const agentType of ["claude_code", "codex_cli", "copilot_cli"]) {
-			expect(
-				turnStoppedNotification({
-					sessionId: "abcdef123456",
-					displayName: "quiet-otter",
-					cwd: "/work/projects/api",
-					agentType,
-					currentTask: "Done with the migration",
-				}),
-			).toEqual({ title: "quiet-otter stopped", body: "In api" });
+			const session = {
+				sessionId: "abcdef123456",
+				displayName: "quiet-otter",
+				cwd: "/work/projects/api",
+				agentType,
+				currentTask: "Done with the migration",
+			};
+			expect(turnStoppedNotification(session)).toEqual({
+				title: "quiet-otter stopped",
+				body: "In api",
+			});
 		}
 	});
 
 	test("it never says finished, and ignores the agent's reported current task", () => {
-		const note = turnStoppedNotification({
+		const session = {
 			sessionId: "abcdef123456",
 			displayName: "quiet-otter",
 			cwd: "/work/api",
 			currentTask: "Finished everything",
-		});
+		};
+		const note = turnStoppedNotification(session);
 		expect(`${note.title} ${note.body ?? ""}`.toLowerCase()).not.toContain("finished");
 		expect(`${note.title} ${note.body ?? ""}`).not.toContain("Finished everything");
 	});

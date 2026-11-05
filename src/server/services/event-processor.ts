@@ -20,6 +20,7 @@ import {
 } from "../routes/ingest-counters.js";
 import { requestWsRevalidation } from "../ws/revalidation.js";
 import { evaluateAlertRules } from "./ai/alert-rule-evaluator.js";
+import { TURN_END_EVENT_TYPES, TURN_START_EVENT_TYPES } from "./ai/turn-identity.js";
 import {
 	type ForeignKeyVerdict,
 	commitForeignKeyVerdict,
@@ -318,6 +319,12 @@ export interface ManagedInsertDeps {
 		receiptKey: string,
 		createdAt: string,
 	) => Promise<boolean>;
+	/**
+	 * Runs on the same `tx` after the rows are written, before the commit: whatever else must
+	 * change with the batch (a managed turn's working state). A throw rolls back the rows and the
+	 * receipt together, so the supervisor's retry applies everything. Never reached on a replay.
+	 */
+	afterRows?: (tx: DbHandle) => Promise<void>;
 }
 
 /** Writes the receipt; false when the same delivery already has one (a replay). */
@@ -334,6 +341,19 @@ async function insertDeliveryReceipt(
 		.returning({ id: managedDeliveryReceipts.id });
 	return written.length > 0;
 }
+
+/**
+ * What a managed delivery's content window never drops: turn starts and ends (a prompt sent twice,
+ * a turn that ends the same way twice are two occurrences, and a fixed-template prompt like
+ * "continue" repeats by design) and Codex's agent message (a repeated "Should I continue?" must
+ * still be the newest assistant text the human gate reads). A retry is stopped by the receipt, not
+ * by this window.
+ */
+const MANAGED_KEEP_EVENT_TYPES: ReadonlySet<string> = new Set([
+	...TURN_START_EVENT_TYPES,
+	...TURN_END_EVENT_TYPES,
+	"ManagedAgentMessage",
+]);
 
 const DEFAULT_MANAGED_INSERT_DEPS: ManagedInsertDeps = {
 	persist: persistEvents,
@@ -367,12 +387,14 @@ export async function insertManagedEvents(
 			return { events: [], replay: true };
 		}
 		const plan = planEventInsert({
-			policy: { kind: "content_window" },
+			policy: { kind: "content_window", keepEventTypes: MANAGED_KEEP_EVENT_TYPES },
 			recent: await loadRecentRows(sessionId, tx),
 			incoming: normalizedEvents,
 			nowIso: now.toISOString(),
 		});
-		return { events: await deps.persist(sessionId, plan, tx), replay: false };
+		const stored = await deps.persist(sessionId, plan, tx);
+		await deps.afterRows?.(tx);
+		return { events: stored, replay: false };
 	});
 }
 

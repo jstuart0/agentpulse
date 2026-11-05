@@ -864,7 +864,7 @@ export function SessionDetailPage() {
 							</div>
 						}
 					>
-						<AiPanel sessionId={session.sessionId} />
+						<AiPanel sessionId={session.sessionId} agentType={session.agentType} />
 					</Suspense>
 				) : session.managedSession?.launchRequestId ? (
 					<EmbeddedLaunchPanel launchId={session.managedSession.launchRequestId} />

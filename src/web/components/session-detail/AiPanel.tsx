@@ -22,6 +22,7 @@ import { autoConfirmationPoints } from "./watcher-panel-model.js";
 
 interface AiPanelProps {
 	sessionId: string;
+	agentType?: string;
 }
 
 /** The AI tab: a line about Session summaries while they're off, above whatever the tab itself shows. */
@@ -36,7 +37,7 @@ export function AiPanel(props: AiPanelProps) {
 	);
 }
 
-function AiWatcherPanel({ sessionId }: AiPanelProps) {
+function AiWatcherPanel({ sessionId, agentType }: AiPanelProps) {
 	const featureActive = useAiStatusStore((s) => s.status?.active ?? null);
 	const [providers, setProviders] = useState<AiProvider[]>([]);
 	const [config, setConfig] = useState<AiWatcherConfig | null>(null);
@@ -318,6 +319,11 @@ function AiWatcherPanel({ sessionId }: AiPanelProps) {
 								<option value="ask_on_risk">Ask on risky actions</option>
 								<option value="auto">Send fixed nudges automatically…</option>
 							</select>
+							{config.policy === "auto" && agentType === "codex_cli" && (
+								<div className="mt-1 text-[11px] text-muted-foreground">
+									On a Codex session this still asks a person.
+								</div>
+							)}
 							{config.policy === "auto" && !config.autoConfirmedAt && (
 								<div className="mt-1 text-[11px] text-amber-300">
 									Automatic sending is on hold until you confirm it again.{" "}

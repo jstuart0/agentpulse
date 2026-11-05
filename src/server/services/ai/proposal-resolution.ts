@@ -42,7 +42,7 @@ import {
 import { enqueuePromptInTx } from "../control-actions.js";
 import { getMode } from "../instance-mode.js";
 import { notifyInboxChanged } from "../notifier.js";
-import { getSessionOwnerConnections } from "../session-ownership.js";
+import { findLaunchRowByCorrelationId, getSessionOwnerConnections } from "../session-ownership.js";
 import { emitAiEvent } from "./ai-events.js";
 import {
 	AUTO_CONTINUE_KINDS,
@@ -445,6 +445,12 @@ async function runDispatchChecksAndEnqueue(tx: Tx, input: DispatchChecks): Promi
 				.set({ autoConfirmedAt: null, autoConfirmedBy: null, updatedAt: new Date().toISOString() })
 				.where(eq(watcherConfigs.sessionId, sessionId));
 			return refusal(409, "auto_send_blocked", "confirmer_lapsed");
+		}
+		// An unattended send never reaches a Codex session in this release (AGEN-91 D13). Keyed on the
+		// launch, not the session row: a hook can create the row first with an agent type of its choosing.
+		const launch = await findLaunchRowByCorrelationId(sessionId, tx);
+		if (launch?.agentType === "codex_cli") {
+			return refusal(409, "auto_send_blocked", "codex_needs_person");
 		}
 	}
 

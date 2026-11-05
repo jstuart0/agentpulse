@@ -822,6 +822,7 @@ export class WatcherRunner {
 			session: {
 				displayName: (session.displayName as string | null) ?? null,
 				cwd: (session.cwd as string | null) ?? null,
+				agentType: (session.agentType as string | null) ?? null,
 			},
 			trigger,
 			turnKey,

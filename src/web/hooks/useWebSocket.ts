@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
+import { turnStoppedNotification } from "../lib/turn-stopped-notification.js";
 import { useConnectionStore } from "../stores/connection-store.js";
 import { useDashboardScopeStore } from "../stores/dashboard-scope-store.js";
 import { useEventStore } from "../stores/event-store.js";
@@ -14,7 +15,7 @@ import {
 	shouldAcceptLiveEvent,
 } from "./ws-owner-filter.js";
 
-function sendNotification(title: string, body: string) {
+function sendNotification(title: string, body?: string) {
 	if (!("Notification" in window)) return;
 	if (Notification.permission === "granted") {
 		new Notification(title, { body, icon: "/assets/agentpulse-social.jpg" });
@@ -110,19 +111,16 @@ export function useWebSocket(enabled = true) {
 					case "session_updated": {
 						const session = msg.data.session;
 						const wasWorking = workingRef.current.get(session.sessionId);
-						const name = session.displayName || session.sessionId?.slice(0, 8);
 
 						const wasInStore = useSessionStore
 							.getState()
 							.sessions.some((existing) => existing.sessionId === session.sessionId);
 						const plan = planSessionMessage(session, wasInStore, socketContext());
 
-						// Notify when agent stops working (finished a turn)
+						// Notify when a session stops working. It can't tell how the turn ended, so it says "stopped".
 						if (wasWorking && !session.isWorking && document.hidden && plan.notify) {
-							sendNotification(
-								`${name} finished`,
-								session.currentTask || `Done in ${session.cwd?.split("/").pop() || "unknown"}`,
-							);
+							const note = turnStoppedNotification(session);
+							sendNotification(note.title, note.body);
 						}
 
 						workingRef.current.set(session.sessionId, session.isWorking);

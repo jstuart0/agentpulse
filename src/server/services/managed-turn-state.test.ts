@@ -41,6 +41,7 @@ const { updateStaleSessions } = await import("./session-tracker.js");
 const { promptDeliverability } = await import("./ai/prompt-deliverability.js");
 const managedState = await import("./managed-session-state.js");
 const { HOST_RESTARTED_SYNC_ERROR } = await import("./managed-sync-errors.js");
+const audit = await import("./ai/dispatch-audit-service.js");
 
 const originalDisableAuth = config.disableAuth;
 let manageKey: string;
@@ -413,14 +414,14 @@ describe("a Codex turn moves working state", () => {
 		expect((await rowOf(sessionId)).isWorking).toBe(true);
 	});
 
-	test("an unknown session id is a no-op and a null agent_type row is left alone", async () => {
+	test("an unknown session id is a no-op and another agent's row is left alone", async () => {
 		await managedState.applyManagedTurnBoundaries(getDb(), "no-such-session", [submitted()], {
 			late: false,
 		});
 		const sessionId = await codexSession(hostA);
 		await getDb()
 			.update(sessions)
-			.set({ agentType: null as never })
+			.set({ agentType: "copilot_cli" })
 			.where(eq(sessions.sessionId, sessionId));
 		await ok(await postEvents(hostA, sessionId, [submitted()]));
 		expect((await rowOf(sessionId)).isWorking).toBe(false);
@@ -527,7 +528,7 @@ describe("the update is inside the receipt transaction", () => {
 			await managedState.appendManagedSessionDelivery(
 				hostA.id,
 				sessionId,
-				batch,
+				batch as never,
 				{ deliveryId, bodyDigest: "digest" },
 				{
 					afterRows: async (tx) => {
@@ -816,6 +817,18 @@ describe("a restarted host's Codex sessions", () => {
 		const stop = await insertPromptAction(a, "queued", "stop");
 		const claudePrompt = await insertPromptAction(aClaude, "queued");
 		const bPrompt = await insertPromptAction(b, "queued");
+		// An AI prompt that was queued has an audit row saying it was sent: it never will be.
+		const auditId = await audit.insertAuditIntent(getDb(), {
+			sessionId: a,
+			sessionName: null,
+			actorKind: "auto",
+			actorUserId: null,
+			actorLabel: "ai",
+			promptSha256: null,
+			promptText: null,
+			controlActionId: queued.id,
+		});
+		await audit.markAuditSent(getDb(), auditId);
 		await getDb()
 			.update(managedSessions)
 			.set({
@@ -841,6 +854,11 @@ describe("a restarted host's Codex sessions", () => {
 			expect(row.error).toBe("The host's supervisor restarted before this prompt was confirmed.");
 			expect(row.finishedAt).not.toBeNull();
 		}
+		const [auditRow] = await getDb()
+			.select()
+			.from(schema.aiDispatchAudit)
+			.where(eq(schema.aiDispatchAudit.id, auditId));
+		expect(auditRow).toMatchObject({ outcome: "failed", refusalCode: "expired_unclaimed" });
 		expect((await managedOf(a)).activeControlActionId).toBeNull();
 		expect((await managedOf(a)).controlLockExpiresAt).toBeNull();
 		expect((await managedOf(a2)).activeControlActionId).toBeNull();

@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { isWithinWindow } from "../../shared/time-window.js";
 import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type {
@@ -10,6 +10,7 @@ import type {
 } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import {
+	controlActions,
 	launchRequests,
 	managedSessions,
 	sessions,
@@ -17,6 +18,7 @@ import {
 	users,
 } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
+import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
 import { closeApprovalsForSession } from "./codex-approvals.js";
 import {
 	type NormalizedEvent,
@@ -30,6 +32,7 @@ import {
 	insertNormalizedEvents,
 } from "./event-processor.js";
 import { cleanMachineName } from "./machine-name.js";
+import { HOST_RESTARTED_SYNC_ERROR } from "./managed-sync-errors.js";
 import { generateSessionName } from "./name-generator.js";
 import { ownerForNewSession } from "./session-attribution.js";
 import { mapSessionDto } from "./session-dto.js";
@@ -146,6 +149,16 @@ export async function upsertManagedSessionState(
 	if (input.cwd !== undefined) sessionUpdates.cwd = input.cwd;
 	if (input.model !== undefined) sessionUpdates.model = input.model;
 
+	// A Codex runtime reporting idle means its turn is over (completed, failed to start, or the
+	// runtime closed), whatever event did or didn't arrive. Folded into the update this function
+	// already makes, so it costs no statement. A repeat after a Completed event moves nothing:
+	// the completion is stamped only if the session was still working.
+	if (input.status === "idle" && existingSession?.agentType === "codex_cli") {
+		sessionUpdates.isWorking = false;
+		sessionUpdates.currentTurnStartedAt = null;
+		if (existingSession.isWorking) sessionUpdates.lastAgentTurnCompletedAt = timestamp;
+	}
+
 	if (!existingSession) {
 		// The supervisor-report creation path. Owner comes from a
 		// correlated launch's requester when this report already names one
@@ -233,9 +246,21 @@ export async function upsertManagedSessionState(
 	const providerThreadId = input.providerThreadId ?? existingManaged?.providerThreadId ?? null;
 	const providerThreadTitle =
 		input.providerThreadTitle ?? existingManaged?.providerThreadTitle ?? null;
+	// A replayed report is older than the restart that degraded this row: its process is gone, so
+	// it can't make the row managed again. A live report still wins, which is how a later
+	// rebind will bring the session back.
+	const heldDegraded =
+		options.replay === true &&
+		existingManaged?.managedState === "degraded" &&
+		existingManaged.providerSyncError === HOST_RESTARTED_SYNC_ERROR;
 	const providerSyncState =
-		input.providerSyncState ?? existingManaged?.providerSyncState ?? "pending";
-	const providerSyncError = input.providerSyncError ?? existingManaged?.providerSyncError ?? null;
+		(heldDegraded ? undefined : input.providerSyncState) ??
+		existingManaged?.providerSyncState ??
+		"pending";
+	const providerSyncError =
+		(heldDegraded ? undefined : input.providerSyncError) ??
+		existingManaged?.providerSyncError ??
+		null;
 	const lastProviderSyncAt =
 		input.lastProviderSyncAt ?? existingManaged?.lastProviderSyncAt ?? null;
 	const providerProtocolVersion =
@@ -246,7 +271,9 @@ export async function upsertManagedSessionState(
 	// producer in the codebase only writes ManagedState members, so the
 	// runtime value is always valid.
 	const resolvedManagedState: ManagedState =
-		input.managedState ?? (existingManaged?.managedState as ManagedState | undefined) ?? "managed";
+		(heldDegraded ? undefined : input.managedState) ??
+		(existingManaged?.managedState as ManagedState | undefined) ??
+		"managed";
 
 	await getDb()
 		.insert(managedSessions)
@@ -401,11 +428,13 @@ export async function appendManagedSessionEvents(
 	supervisorId: string,
 	sessionId: string,
 	events: ManagedSessionEventInput[],
+	options: { late?: boolean } = {},
 ) {
-	return insertNormalizedEvents(
-		sessionId,
-		await prepareManagedEvents(supervisorId, sessionId, events),
-	);
+	const prepared = await prepareManagedEvents(supervisorId, sessionId, events);
+	const stored = await insertNormalizedEvents(sessionId, prepared);
+	// No delivery id means no receipt transaction to ride: the update follows the insert.
+	await applyManagedTurnBoundaries(getDb(), sessionId, prepared, { late: options.late === true });
+	return stored;
 }
 
 /**
@@ -419,13 +448,194 @@ export async function appendManagedSessionDelivery(
 	events: ManagedSessionEventInput[],
 	delivery: { deliveryId: string; bodyDigest: string },
 	deps?: Partial<ManagedInsertDeps>,
+	options: { late?: boolean } = {},
 ): Promise<ManagedInsertResult> {
+	const prepared = await prepareManagedEvents(supervisorId, sessionId, events);
 	return insertManagedEvents(
 		sessionId,
-		await prepareManagedEvents(supervisorId, sessionId, events),
+		prepared,
 		{ senderId: supervisorId, ...delivery },
-		deps,
+		{
+			// Inside the receipt transaction, on the batch as sent: a row the window dropped still counts.
+			afterRows: (tx) =>
+				applyManagedTurnBoundaries(tx, sessionId, prepared, { late: options.late === true }),
+			...deps,
+		},
 	);
+}
+
+/** The slice of an event the turn rules read; a NormalizedEvent satisfies it. */
+export interface TurnBoundaryEvent {
+	eventType: string;
+	rawPayload?: Record<string, unknown> | null;
+}
+
+type TurnChange = "start" | "launch_start" | "end" | "stopped";
+
+/** What one event does to a managed Codex session's turn, or null. The marker is what makes it a Codex runtime's. */
+function turnChangeOf(event: TurnBoundaryEvent, late: boolean): TurnChange | null {
+	const marked = event.rawPayload?.codexRuntime === true;
+	switch (event.eventType) {
+		case "HeadlessPromptSubmitted":
+			return marked && !late ? "start" : null;
+		case "ManagedSessionStart":
+			return marked && !late ? "launch_start" : null;
+		case "HeadlessPromptCompleted":
+		case "HeadlessPromptFailed":
+			return marked ? "end" : null;
+		case "ManagedSessionStopped":
+			return "stopped";
+		default:
+			return null;
+	}
+}
+
+/**
+ * A managed Codex turn's working state, from the events a supervisor reports (AGEN-91 D5). Codex's
+ * own hooks post under the thread id, not this session's id, so nothing else flips these columns.
+ * The last relevant event in the batch wins. A late report (an outbox replay) can end a turn but
+ * never start one. `db` is the receipt transaction's `tx` when there is one.
+ *
+ * Statements: none for a batch with no relevant event (every Claude event lacks the marker, so no
+ * agent-type read is needed to decide that); one guarded UPDATE otherwise. The guard on
+ * `agent_type` keeps a marker on another agent's row from changing anything.
+ */
+export async function applyManagedTurnBoundaries(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	sessionId: string,
+	incoming: readonly TurnBoundaryEvent[],
+	options: { late: boolean },
+): Promise<void> {
+	let last: TurnChange | null = null;
+	for (const event of incoming) last = turnChangeOf(event, options.late) ?? last;
+	if (last === null) return;
+
+	const now = new Date().toISOString();
+	const updates: Record<string, unknown> =
+		last === "stopped"
+			? { isWorking: false, currentTurnStartedAt: null }
+			: last === "end"
+				? {
+						isWorking: false,
+						currentTurnStartedAt: null,
+						lastAgentTurnCompletedAt: now,
+						lastActivityAt: now,
+					}
+				: {
+						isWorking: true,
+						currentTurnStartedAt: now,
+						lastActivityAt: now,
+						status: "active",
+						endedAt: null,
+						// A sent prompt acknowledges whatever came before it; the launch turn has nothing before it.
+						...(last === "start" ? { lastUserAcknowledgedAt: now } : {}),
+					};
+	await db
+		.update(sessions)
+		.set(updates)
+		.where(and(eq(sessions.sessionId, sessionId), eq(sessions.agentType, "codex_cli")));
+}
+
+const DEGRADE_CHUNK = 500;
+const TERMINAL_MANAGED_STATES: readonly string[] = ["stopped", "completed", "failed"];
+export const HOST_RESTARTED_PROMPT_ERROR =
+	"The host's supervisor restarted before this prompt was confirmed.";
+
+function inChunks<T>(items: readonly T[]): T[][] {
+	const out: T[][] = [];
+	for (let i = 0; i < items.length; i += DEGRADE_CHUNK) out.push(items.slice(i, i + DEGRADE_CHUNK));
+	return out;
+}
+
+/**
+ * A supervisor registered again, so the process (and every app-server) it ran before is gone
+ * (AGEN-91 D8). In one transaction, for the sessions that host owns of record:
+ *  - every nonterminal Codex session becomes `degraded` with HOST_RESTARTED_SYNC_ERROR, which a
+ *    replayed report can't undo (a rename-failure row is stamped too: its runtime is just as dead);
+ *  - `isWorking` clears on them and on any other working Codex session of the host;
+ *  - the host's Codex prompt actions still queued or running fail, and their locks are released.
+ * Stop and Claude actions are not touched. Returns the sessions whose row changed, for the caller
+ * to broadcast after the commit. The owner-of-record rule comes from session-ownership.
+ */
+export async function degradeCodexSessionsOfRestartedHost(
+	supervisorId: string,
+	deps: { afterWrites?: (tx: unknown) => Promise<void> } = {},
+): Promise<string[]> {
+	return withTransaction(async (tx) => {
+		const owned = await tx
+			.select({
+				sessionId: managedSessions.sessionId,
+				managedState: managedSessions.managedState,
+				isWorking: sessions.isWorking,
+			})
+			.from(managedSessions)
+			.innerJoin(sessions, eq(sessions.sessionId, managedSessions.sessionId))
+			.leftJoin(launchRequests, ownerLaunchJoin)
+			.where(and(sessionOwnedBy(supervisorId), eq(sessions.agentType, "codex_cli")));
+		const allIds: string[] = owned.map((row: { sessionId: string }) => row.sessionId);
+		const toDegrade: string[] = owned
+			.filter(
+				(row: { managedState: string }) => !TERMINAL_MANAGED_STATES.includes(row.managedState),
+			)
+			.map((row: { sessionId: string }) => row.sessionId);
+		const toClear: string[] = owned
+			.filter((row: { isWorking: boolean }) => row.isWorking)
+			.map((row: { sessionId: string }) => row.sessionId);
+		const timestamp = nowIso();
+
+		for (const ids of inChunks(toDegrade)) {
+			await tx
+				.update(managedSessions)
+				.set({
+					managedState: "degraded",
+					providerSyncState: "failed",
+					providerSyncError: HOST_RESTARTED_SYNC_ERROR,
+					updatedAt: timestamp,
+				})
+				.where(inArray(managedSessions.sessionId, ids));
+		}
+		for (const ids of inChunks(toClear)) {
+			await tx
+				.update(sessions)
+				.set({ isWorking: false, currentTurnStartedAt: null })
+				.where(inArray(sessions.sessionId, ids));
+		}
+
+		for (const ids of inChunks(allIds)) {
+			const open: Array<{ id: string; status: string }> = await tx
+				.select({ id: controlActions.id, status: controlActions.status })
+				.from(controlActions)
+				.where(
+					and(
+						eq(controlActions.actionType, "prompt"),
+						inArray(controlActions.status, ["queued", "running"]),
+						inArray(controlActions.sessionId, ids),
+					),
+				);
+			if (open.length === 0) continue;
+			const actionIds = open.map((action) => action.id);
+			await tx
+				.update(controlActions)
+				.set({
+					status: "failed",
+					error: HOST_RESTARTED_PROMPT_ERROR,
+					finishedAt: timestamp,
+					updatedAt: timestamp,
+				})
+				.where(inArray(controlActions.id, actionIds));
+			await tx
+				.update(managedSessions)
+				.set({ activeControlActionId: null, controlLockExpiresAt: null, updatedAt: timestamp })
+				.where(inArray(managedSessions.activeControlActionId, actionIds));
+			for (const action of open) {
+				if (action.status === "queued") await markAuditExpiredUnclaimed(tx, action.id);
+			}
+		}
+
+		await deps.afterWrites?.(tx);
+		return [...new Set([...toDegrade, ...toClear])];
+	});
 }
 
 export async function attachManagedSessionToLaunch(input: {
