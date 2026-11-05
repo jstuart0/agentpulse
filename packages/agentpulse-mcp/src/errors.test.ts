@@ -55,6 +55,20 @@ describe("mapError — ownership and role refusals (403)", () => {
 		expect(new Set(texts).size).toBe(texts.length);
 	});
 
+	test("bad_origin names both causes: a foreign Origin, and an untrusted Host with authentication off", () => {
+		const text = mapError(new ApiError(403, { error: "bad_origin" }), BASE_URL).content[0].text;
+		expect(text).toContain("Origin");
+		expect(text).toContain("Host");
+	});
+
+	test("415 unsupported_media_type tells the caller to declare JSON", () => {
+		const text = mapError(new ApiError(415, { error: "unsupported_media_type" }), BASE_URL)
+			.content[0].text;
+		expect(text).toContain("application/json");
+		expect(text.startsWith("AgentPulse")).toBe(true);
+		expect(text).not.toContain("unsupported_media_type");
+	});
+
 	test("a 403 with an unrecognised code still falls through to the generic message", () => {
 		const text = mapError(new ApiError(403, { error: "something_else" }), BASE_URL).content[0].text;
 		expect(text).toContain("something_else");

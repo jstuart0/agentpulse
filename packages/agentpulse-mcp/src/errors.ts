@@ -270,7 +270,13 @@ const ERROR_TABLE: ReadonlyArray<{
 		status: 403,
 		error: "bad_origin",
 		message:
-			"AgentPulse refused: the request carried a browser Origin that isn't this instance's. Send it from the AgentPulse dashboard, or without an Origin header.",
+			"AgentPulse refused: the request isn't from a place this instance trusts. Either it carried a browser Origin that isn't this instance's, or, with authentication off, its Host isn't a loopback address or an allowed name. Send it from the AgentPulse dashboard, or from a client on the same machine without an Origin header.",
+	},
+	{
+		status: 415,
+		error: "unsupported_media_type",
+		message:
+			"AgentPulse refused: the request body must be declared as JSON (Content-Type: application/json).",
 	},
 	// requireAiBuild → 404 (AI not compiled in). requireAiActive → 409
 	// (compiled in but runtime-disabled) — a DIFFERENT message from both the
