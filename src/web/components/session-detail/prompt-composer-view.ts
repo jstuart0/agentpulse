@@ -13,6 +13,7 @@ import { describeApiError } from "../../lib/api-errors.js";
 import { ApiError } from "../../lib/api.js";
 import { hasPendingCodexApproval } from "../../lib/codex-approval-wait.js";
 import { HOST_RESTARTED_PROMPT_COPY, hostNameOf, hostRefusalMessage } from "./host-control-view.js";
+import { bindRefusalMessage, isTakenOver } from "./session-takeover-view.js";
 
 export const COMPOSER_BLOCKED_RESTARTED = HOST_RESTARTED_PROMPT_COPY;
 export const COMPOSER_BLOCKED_CONNECTION =
@@ -46,6 +47,9 @@ export interface ComposerCopy {
 	side: string;
 }
 
+/** What the locked notice offers for a Codex session whose process is gone. Absent: nothing to press. */
+export type ResumeOffer = { state: "available" } | { state: "disabled" } | { state: "in_flight" };
+
 export type ComposerMode =
 	| ({ kind: "claude_interactive" | "claude_headless" | "codex" } & ComposerCopy)
 	| {
@@ -53,10 +57,26 @@ export type ComposerMode =
 			reason: string;
 			/** The reason ends in "start a new session", so the page offers the way to do it. */
 			startNew: boolean;
+			resume?: ResumeOffer;
 	  };
 
 type ModeSession = Pick<Session, "agentType" | "managedSession"> &
-	Partial<Pick<Session, "hostControl">>;
+	Partial<Pick<Session, "hostControl" | "ownerUserId">>;
+
+export interface ComposerAccess {
+	canPrompt: boolean;
+	/** `sessionBindAccess`: stricter than prompting (an unowned session is an admin's alone in team mode). */
+	canResume: boolean;
+	/** A resume of this session is queued or running. */
+	resumeInFlight?: boolean;
+}
+
+export const RESUME_BUTTON = "Resume session";
+export const RESUME_BUTTON_BUSY = "Resuming…";
+
+const RESUME_LEAD_RESTARTED = "This session's process ended when its host restarted.";
+const RESUME_LEAD_CONNECTION =
+	"This session lost its connection to Codex, so it can't take prompts.";
 
 const CLAUDE_INTERACTIVE: ComposerCopy = {
 	hint: "This sends your prompt into the owned interactive Claude session and keeps the terminal and workspace on the same session.",
@@ -76,9 +96,16 @@ const CODEX: ComposerCopy = {
 	button: "Send prompt",
 	side: "Replies and approval requests appear in this session.",
 };
+/** A taken-over session was never launched, so its settings are the session's own. */
+const CODEX_TAKEN_OVER: ComposerCopy = {
+	...CODEX,
+	hint: "This starts a new turn in the same Codex thread, under this session's approval policy and sandbox.",
+};
 
-function blocked(reason: string, startNew = false): ComposerMode {
-	return { kind: "blocked", reason, startNew };
+function blocked(reason: string, startNew = false, resume?: ResumeOffer): ComposerMode {
+	return resume
+		? { kind: "blocked", reason, startNew, resume }
+		: { kind: "blocked", reason, startNew };
 }
 
 const CODEX_HIDDEN_STATES = new Set(["stopped", "completed", "failed"]);
@@ -93,23 +120,55 @@ function codexHostReason(session: ModeSession): string | null {
 	return `${hostNameOf(session)} is offline, so this session can't take prompts until it's back.`;
 }
 
+/**
+ * A degraded Codex session whose thread is known can be resumed: its process is gone, the thread isn't. The
+ * degraded reading is judged before the host's, so an offline host reaches a disabled Resume that points at
+ * the offline sentence instead of hiding it. The old sentences stand for a session with no thread id.
+ */
+function degradedMode(session: ModeSession, access: ComposerAccess): ComposerMode {
+	const managed = session.managedSession as NonNullable<ModeSession["managedSession"]>;
+	const restarted = managed.providerSyncError === HOST_RESTARTED_SYNC_ERROR;
+	const hostReason = codexHostReason(session);
+	if (!managed.providerThreadId) {
+		if (hostReason !== null) return blocked(hostReason);
+		return restarted
+			? blocked(COMPOSER_BLOCKED_RESTARTED, true)
+			: blocked(COMPOSER_BLOCKED_CONNECTION, true);
+	}
+	if (access.resumeInFlight) {
+		return blocked(`Asking ${hostNameOf(session)} to resume this session…`, false, {
+			state: "in_flight",
+		});
+	}
+	const lead = restarted ? RESUME_LEAD_RESTARTED : RESUME_LEAD_CONNECTION;
+	if (!access.canResume) {
+		if (hostReason !== null) return blocked(hostReason);
+		const who = session.ownerUserId ? "its owner or an admin" : "an admin";
+		return blocked(`${lead} Ask ${who} to resume it, or start a new session for this work.`, true);
+	}
+	if (session.hostControl?.state === "gone") return blocked(hostReason ?? "");
+	if (hostReason !== null) return blocked(hostReason, false, { state: "disabled" });
+	return blocked(
+		restarted
+			? `${lead} Resume it to keep going, or start a new session for this work.`
+			: `${lead} Resume it to reconnect, or start a new session to keep going.`,
+		true,
+		{ state: "available" },
+	);
+}
+
 /** The box to show, or null when there should be none. */
-export function composerMode(
-	session: ModeSession,
-	access: { canPrompt: boolean },
-): ComposerMode | null {
+export function composerMode(session: ModeSession, access: ComposerAccess): ComposerMode | null {
 	const managed = session.managedSession;
 	if (!managed) return null;
 	if (session.agentType === "codex_cli") {
 		if (CODEX_HIDDEN_STATES.has(managed.managedState)) return null;
 		if (!access.canPrompt) return blocked(COMPOSER_BLOCKED_NOT_OWNER);
+		if (managed.managedState === "degraded") return degradedMode(session, access);
 		const hostReason = codexHostReason(session);
 		if (hostReason !== null) return blocked(hostReason);
-		if (managed.managedState === "managed") return { kind: "codex", ...CODEX };
-		if (managed.managedState === "degraded") {
-			return managed.providerSyncError === HOST_RESTARTED_SYNC_ERROR
-				? blocked(COMPOSER_BLOCKED_RESTARTED, true)
-				: blocked(COMPOSER_BLOCKED_CONNECTION, true);
+		if (managed.managedState === "managed") {
+			return { kind: "codex", ...(isTakenOver(managed) ? CODEX_TAKEN_OVER : CODEX) };
 		}
 		return blocked(COMPOSER_BLOCKED_NOT_READY);
 	}
@@ -263,13 +322,37 @@ export function focusBoxAfterSettle(
 	if (box && shouldRefocusBox(matchMedia)) box.focus();
 }
 
-/** The reason to show in place of the box (with the way to a new session), or null when the box itself shows. */
+/** The reason to show in place of the box (with the way to a new session, and Resume when it is offered), or null when the box itself shows. */
 export function lockedNotice(
 	mode: ComposerMode | null,
 	hasDraft: boolean,
-): { reason: string; startNew: boolean } | null {
+): { reason: string; startNew: boolean; resume?: ResumeOffer } | null {
 	if (mode === null) return hasDraft ? { reason: COMPOSER_ENDED, startNew: false } : null;
-	return mode.kind === "blocked" ? { reason: mode.reason, startNew: mode.startNew } : null;
+	if (mode.kind !== "blocked") return null;
+	return mode.resume
+		? { reason: mode.reason, startNew: mode.startNew, resume: mode.resume }
+		: { reason: mode.reason, startNew: mode.startNew };
+}
+
+/**
+ * A refusal or failure from POST /resume, as the sentence to show and whether it ends in "start a new
+ * session" (the page then offers the way to do it). The wording is the recovery's: it names the session's
+ * host and never offers another machine, since a managed session has only the one it ran on.
+ */
+export function describeResumeFailure(
+	error: unknown,
+	session: Pick<Session, "managedSession">,
+): { reason: string; startNew: boolean } {
+	const reason = bindRefusalMessage(error, {
+		host: session.managedSession?.hostName ?? null,
+		kind: "recovery",
+	});
+	return { reason, startNew: offersNewSession(reason) };
+}
+
+/** Whether a sentence sends the person to a new session, which the page backs with a link to Templates. */
+export function offersNewSession(sentence: string): boolean {
+	return /start a new session/i.test(sentence);
 }
 
 export const FOLLOW_POLL_MS = 1500;

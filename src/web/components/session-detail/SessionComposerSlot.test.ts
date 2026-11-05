@@ -161,21 +161,23 @@ describe("the page mounts the slot", () => {
 
 	test("the slot is mounted whenever the session is managed, and no Claude-only gate is left", () => {
 		expect(page).toContain("<SessionComposerSlot");
-		expect(page).toMatch(/session\.managedSession \?\s*\(?\s*<SessionComposerSlot/);
+		// bottomSlot (session-takeover-view.ts, tested there) returns "composer" for every managed session.
+		expect(page).toMatch(/case "composer":\s*return \(\s*<SessionComposerSlot/);
+		expect(page).toMatch(/switch \(bottomSlot\(session, attempt\)\)/);
 		expect(page).not.toContain("isClaudeManaged");
 		expect(page).not.toContain('session.agentType === "claude_code" && session.managedSession');
 	});
 });
 
 describe("ComposerBody states", () => {
-	const mode = composerMode(session("codex_cli", "managed"), { canPrompt: true }) as Exclude<
-		ComposerMode,
-		{ kind: "blocked" }
-	>;
-	const headless = composerMode(session("claude_code", "headless"), { canPrompt: true }) as Exclude<
-		ComposerMode,
-		{ kind: "blocked" }
-	>;
+	const mode = composerMode(session("codex_cli", "managed"), {
+		canPrompt: true,
+		canResume: true,
+	}) as Exclude<ComposerMode, { kind: "blocked" }>;
+	const headless = composerMode(session("claude_code", "headless"), {
+		canPrompt: true,
+		canResume: true,
+	}) as Exclude<ComposerMode, { kind: "blocked" }>;
 	const base: ComposerBodyProps = {
 		mode,
 		phase: { step: "idle" },
@@ -333,13 +335,15 @@ describe("Resume session on a Codex session whose process is gone (AGEN-115)", (
 	test("the button is a 44px target and not disabled when the host is live", () => {
 		const out = renderWith(degraded());
 		expect(out).toMatch(/<button[^>]*min-h-\[44px\][^>]*>Resume session/);
-		expect(out).not.toMatch(/<button[^>]*disabled[^>]*>Resume session/);
+		expect(out).not.toMatch(/<button[^>]*disabled=""[^>]*>Resume session/);
 	});
 
 	test("an offline host: the button is disabled and the sentence is the offline one alone", () => {
 		const out = renderWith(degraded({}, { hostControl: { state: "offline", lastSeenAt: null } }));
-		expect(out).toMatch(/<button[^>]*disabled[^>]*>Resume session<\/button>/);
-		expect(out).toContain("studio is offline, so this session can&#x27;t take prompts until it&#x27;s back.");
+		expect(out).toMatch(/<button[^>]*disabled=""[^>]*>Resume session<\/button>/);
+		expect(out).toContain(
+			"studio is offline, so this session can&#x27;t take prompts until it&#x27;s back.",
+		);
 		expect(out).not.toContain("Resume it to keep going");
 	});
 
@@ -350,13 +354,14 @@ describe("Resume session on a Codex session whose process is gone (AGEN-115)", (
 			kind: "recovery",
 			startedAt: "2026-11-04T12:00:00.000Z",
 		});
-		expect(out).toMatch(/<button[^>]*disabled[^>]*>Resuming…<\/button>/);
+		expect(out).toMatch(/<button[^>]*disabled=""[^>]*>Resuming…<\/button>/);
 		expect(out).toContain("Asking studio to resume this session…");
 		expect(out).not.toContain("<textarea");
 	});
 
 	test("a failed recovery shows the host's sentence in an alert, and the Resume button is back", () => {
-		const reason = "studio no longer has this session's history, so it can't be resumed. Start a new session for this work.";
+		const reason =
+			"studio no longer has this session's history, so it can't be resumed. Start a new session for this work.";
 		const out = renderWith(degraded(), {
 			state: "failed",
 			actionId: "a",

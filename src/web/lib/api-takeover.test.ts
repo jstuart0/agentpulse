@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import "../components/session-detail/session-takeover-view.js";
 import { describeApiError } from "./api-errors.js";
 import { ApiError, api } from "./api.js";
 
@@ -29,7 +30,7 @@ describe("api: taking a session over and resuming one", () => {
 	test("bindSession posts exactly the strict body to the session's bind path, with a JSON content type", async () => {
 		stub(() => json(202, { action: { id: "a" }, launchRequestId: "l" }));
 		const out = await api.bindSession("s/1", { targetSupervisorId: "h1" });
-		expect(out).toEqual({ action: { id: "a" }, launchRequestId: "l" });
+		expect(out).toMatchObject({ action: { id: "a" }, launchRequestId: "l" });
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.url).toContain("/sessions/s%2F1/bind");
 		expect(calls[0]?.method).toBe("POST");

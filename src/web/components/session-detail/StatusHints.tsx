@@ -2,6 +2,7 @@ import { AGENT_METADATA } from "../../../shared/constants.js";
 import type { AgentType, Session } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { hostControlHint } from "./host-control-view.js";
+import { isTakenOver } from "./session-takeover-view.js";
 
 /**
  * F24 (D35): the caveat text for an observe-only agent (Copilot CLI), or
@@ -107,6 +108,13 @@ export function HostControlHint({
 	);
 }
 
+/** A taken-over session was started outside AgentPulse; the heading says so rather than implying a launch. */
+export function managedCodexHeading(managedSession: {
+	hostAffinityReason?: string | null;
+}): string {
+	return isTakenOver(managedSession) ? "Managed Codex · taken over" : "Managed Codex";
+}
+
 export function ManagedCodexStatus({
 	managedSession,
 	showSyncState = true,
@@ -129,7 +137,9 @@ export function ManagedCodexStatus({
 		<div className="mx-3 md:mx-6 mt-2 md:mt-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5">
 			<div className="flex flex-wrap items-start justify-between gap-3">
 				<div className="min-w-0">
-					<p className="text-xs font-medium text-foreground">Managed Codex</p>
+					<p className="text-xs font-medium text-foreground">
+						{managedCodexHeading(managedSession)}
+					</p>
 					<p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
 						Thread title sync is managed by AgentPulse.
 						{managedSession.hostName && (

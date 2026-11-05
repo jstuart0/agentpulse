@@ -237,6 +237,7 @@ function AiWatcherPanel({ sessionId, agentType }: AiPanelProps) {
 					<WatcherModeSwitches
 						config={config}
 						delivery={delivery}
+						agentType={agentType}
 						onToggle={(key, value) => void updateConfigField(key, value)}
 						onReset={() => void resetAutoSends()}
 					/>

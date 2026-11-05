@@ -185,9 +185,7 @@ export const RESUME_REFUSED_MESSAGE: Readonly<Record<ResumeKind, (host: string) 
 	recovery: (host) => `${host} refused to resume this session. Its supervisor log has the reason.`,
 };
 
-/** What delete and archive say while a takeover of the session is open. */
-export const TAKEOVER_IN_PROGRESS_MESSAGE =
-	"This session is being taken over. Try again when that's finished.";
+export { TAKEOVER_IN_PROGRESS_MESSAGE } from "./takeover-in-progress.js";
 
 /**
  * A host that is current enough but can't run a Codex session at all: no usable Codex executable, or no

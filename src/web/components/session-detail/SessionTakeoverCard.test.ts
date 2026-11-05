@@ -4,17 +4,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { installDomStubs, removeDomStubs } from "../../test-utils/render-hook.js";
 import {
-	LockedDraft,
 	TAKEOVER_SLOT_ID,
 	TakeoverCardBody,
+	TakeoverDialogDescription,
 	TakeoverDialogFields,
 	TakeoverProgress,
 } from "./SessionTakeoverCard.js";
-import { SessionTakeoverCard } from "./SessionTakeoverCard.js";
-
-// LockedDraft lives with the composer; the card file re-exports nothing of it. Imported there below.
-void LockedDraft;
-void SessionTakeoverCard;
 
 beforeAll(() => installDomStubs());
 afterAll(() => removeDomStubs());
@@ -24,7 +19,9 @@ const noop = () => {};
 
 describe("TakeoverCardBody", () => {
 	test("hidden renders nothing at all", () => {
-		expect(html(createElement(TakeoverCardBody, { view: { kind: "hidden" }, onOpen: noop }))).toBe("");
+		expect(html(createElement(TakeoverCardBody, { view: { kind: "hidden" }, onOpen: noop }))).toBe(
+			"",
+		);
 	});
 
 	test("eligible: the sentence, the Take over… button, and a slot that focus can land on", () => {
@@ -103,7 +100,9 @@ describe("TakeoverCardBody", () => {
 				onOpen: noop,
 			}),
 		);
-		expect(out).toMatch(/role="alert"[^>]*>[^<]*studio can&#x27;t find this session&#x27;s history/);
+		expect(out).toMatch(
+			/role="alert"[^>]*>[^<]*studio can&#x27;t find this session&#x27;s history/,
+		);
 		expect(out).toContain("Take over…");
 	});
 
@@ -185,8 +184,8 @@ describe("TakeoverDialogFields", () => {
 		expect(out).toContain("Machine it ran on");
 		expect(out).toContain("Choose a machine");
 		expect(out).toContain('<option value="" ');
-		expect(out).not.toMatch(/<option[^>]*selected/);
-		expect(out).toMatch(/<select[^>]*value=""|<option value="" /);
+		expect(out).not.toMatch(/<option value="[^"]+"[^>]*selected/);
+		expect(out).toMatch(/<option value=""[^>]*selected/);
 	});
 
 	test("a disabled option says why in its label", () => {
@@ -212,16 +211,41 @@ describe("TakeoverDialogFields", () => {
 		expect(out).toMatch(/aria-describedby="[^"]+"/);
 	});
 
-	test("the admin and team notes appear when there are any", () => {
-		const out = render({
-			lines: { ...lines, adminNote: "This is Bob's session.", teamNote: "check this is your session first." },
-		});
-		expect(out).toContain("This is Bob&#x27;s session.");
+	test("the team note appears when there is one", () => {
+		const out = render({ lines: { ...lines, teamNote: "check this is your session first." } });
 		expect(out).toContain("check this is your session first.");
+		expect(render()).not.toContain("check this is your session first.");
 	});
 
 	test("long names and directories wrap instead of widening the sheet", () => {
 		const out = render();
 		expect(out).toMatch(/\[overflow-wrap:anywhere\]|break-all|break-words/);
+	});
+});
+
+describe("TakeoverDialogDescription", () => {
+	const lines = {
+		title: "t",
+		lead: "Only continue if this session has ended on the machine it ran on.",
+		adminNote: "This is Bob's session. It stays theirs, and they'll see that you took it over.",
+		reportedHostNote: "x",
+		directory: "Directory: /w",
+		teamNote: null,
+		whatHappens: "Codex will run on that machine.",
+	};
+	test("the limits and the lead come first, in the region the dialog is described by", () => {
+		const out = html(createElement(TakeoverDialogDescription, { lines }));
+		const lead = out.indexOf("Only continue if");
+		const admin = out.indexOf("This is Bob");
+		const what = out.indexOf("Codex will run on that machine.");
+		expect(lead).toBeGreaterThanOrEqual(0);
+		expect(admin).toBeGreaterThan(lead);
+		expect(what).toBeGreaterThan(admin);
+	});
+	test("no admin note, no empty paragraph", () => {
+		const out = html(
+			createElement(TakeoverDialogDescription, { lines: { ...lines, adminNote: null } }),
+		);
+		expect(out).not.toContain("<p></p>");
 	});
 });

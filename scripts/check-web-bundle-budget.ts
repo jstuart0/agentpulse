@@ -14,7 +14,8 @@
  * to DashboardPage 26,258 and index 116,943 on its own) the limits were re-based on that base + the same
  * modest headroom; measured with the Summary work: DashboardPage 26,341, index 117,586. AGEN-85 and AGEN-86 (the probe before a reload, the
  * paused socket's slow retry) measured index 118,197 and moved its limit to 118,400. AGEN-87 (the Codex approval card, a lazy chunk the page loads only for a managed Codex session) measured
- * CodexApprovalCard 9,385 and left every other limit where it was: index 118,191, SessionDetailPage 20,855, DashboardPage 26,393. The review of that card (ruby's phase 6 findings: the double-tap guards, the changed-request line, the per-file diff flags, the outcome in the dialog) is what raised its own limit to 12,000 (measured 11,626); the card has never shipped, and the limit exists to catch growth. The review measured index 118,196 and SessionDetailPage 20,926. AGEN-91 (the Codex prompt box: its states and copy, the send/follow hook, the failed-turn row, and the session-action access moved here from index) took SessionDetailPage to 23,943 and moved its limit to 24,500, and gave index back 130 bytes (118,271). No chunk may carry zod (the
+ * CodexApprovalCard 9,385 and left every other limit where it was: index 118,191, SessionDetailPage 20,855, DashboardPage 26,393. The review of that card (ruby's phase 6 findings: the double-tap guards, the changed-request line, the per-file diff flags, the outcome in the dialog) is what raised its own limit to 12,000 (measured 11,626); the card has never shipped, and the limit exists to catch growth. The review measured index 118,196 and SessionDetailPage 20,926. AGEN-91 (the Codex prompt box: its states and copy, the send/follow hook, the failed-turn row, and the session-action access moved here from index) took SessionDetailPage to 23,943 and moved its limit to 24,500, and gave index back 130 bytes (118,271). AGEN-115 (taking a Codex session over and resuming one: the attempt, the labels, the Resume button and every refusal's sentence on the session page; the card, dialog and machine list as their own lazy chunk) measured
+ * SessionDetailPage 25,321, SessionTakeoverCard 4,939 and index 118,384 (the two api methods and one error sentence), and moved the page limit to 25,900, the index limit to 118,600 and added the card's at 5,400. No chunk may carry zod (the
  * validating schema is server-only).
  */
 import { readFileSync, readdirSync } from "node:fs";
@@ -39,11 +40,12 @@ export interface Finding {
 }
 
 export const BUDGETS: Budget[] = [
-	{ chunk: "SessionDetailPage", maxGzip: 24_500, measured: 23_943 },
+	{ chunk: "SessionDetailPage", maxGzip: 25_900, measured: 25_321 },
 	{ chunk: "SessionSummaryTab", maxGzip: 12_500, measured: 11_582 },
 	{ chunk: "CodexApprovalCard", maxGzip: 12_000, measured: 11_626 },
+	{ chunk: "SessionTakeoverCard", maxGzip: 5_400, measured: 4_939 },
 	{ chunk: "DashboardPage", maxGzip: 27_200, measured: 26_341 },
-	{ chunk: "index", maxGzip: 118_400, measured: 118_197 },
+	{ chunk: "index", maxGzip: 118_600, measured: 118_384 },
 ];
 
 /** A missing chunk fails: a renamed chunk must not silently escape its budget. `scale` shrinks every limit (the self-test). */

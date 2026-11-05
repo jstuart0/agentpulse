@@ -11,24 +11,27 @@ import { ApiError } from "../../lib/api.js";
 import { ownershipUi } from "../../lib/ownership-ui.js";
 import {
 	TAKEOVER_FAILURE_FALLBACK,
-	TAKEOVER_NO_HOST_SOLO,
-	TAKEOVER_NO_HOST_TEAM,
 	TAKEOVER_NOT_ADMIN,
-	TAKEOVER_STILL_WAITING,
+	attemptAnnouncement,
 	bindRefusalMessage,
-	bindableHosts,
 	bottomSlot,
 	isTakenOver,
 	launchSummaryLine,
 	overviewOriginField,
 	showsStatusHint,
 	takeoverAttempt,
+} from "./session-takeover-view.js";
+import {
+	TAKEOVER_NO_HOST_SOLO,
+	TAKEOVER_NO_HOST_TEAM,
+	TAKEOVER_STILL_WAITING,
+	bindableHosts,
 	takeoverCardView,
 	takeoverConfirmLabel,
 	takeoverDialogLines,
 	takeoverEligibility,
 	takeoverProgress,
-} from "./session-takeover-view.js";
+} from "./takeover-card-view.js";
 
 const MIN = 60_000;
 const NOW = Date.parse("2026-11-04T12:00:00.000Z");
@@ -255,7 +258,9 @@ describe("bindableHosts: usable hosts, disabled options with reasons, none prese
 		const result = solo([
 			host("mac"),
 			host("off", { heartbeatLeaseExpiresAt: new Date(NOW - 1).toISOString() }),
-			host("old", { capabilities: { version: 1, features: [] } } as Partial<SupervisorRecord>),
+			host("old", {
+				capabilities: { version: 1, features: [] },
+			} as unknown as Partial<SupervisorRecord>),
 		]);
 		expect(result.usable).toBe(1);
 		expect(result.options.map((o) => [o.id, o.disabled, o.label])).toEqual([
@@ -271,12 +276,12 @@ describe("bindableHosts: usable hosts, disabled options with reasons, none prese
 			{ id: "mac", disabled: true, label: "mac (doesn't allow this directory)" },
 		]);
 		expect(result.usable).toBe(0);
-		expect(solo([host("mac")], { ownerUserId: null, cwd: "/workshop/x" }).options[0]?.disabled).toBe(
-			true,
-		);
-		expect(solo([host("mac")], { ownerUserId: null, cwd: "/work/../etc" }).options[0]?.disabled).toBe(
-			true,
-		);
+		expect(
+			solo([host("mac")], { ownerUserId: null, cwd: "/workshop/x" }).options[0]?.disabled,
+		).toBe(true);
+		expect(
+			solo([host("mac")], { ownerUserId: null, cwd: "/work/../etc" }).options[0]?.disabled,
+		).toBe(true);
 		expect(solo([host("mac")], { ownerUserId: null, cwd: "/work" }).options[0]?.disabled).toBe(
 			false,
 		);
@@ -402,8 +407,13 @@ describe("the dialog's words", () => {
 		);
 		expect(takeoverDialogLines(base).adminNote).toBeNull();
 		expect(
-			takeoverDialogLines({ ...base, team: true, owner: "u2", ownerName: "Bob", viewerIsAdmin: false })
-				.adminNote,
+			takeoverDialogLines({
+				...base,
+				team: true,
+				owner: "u2",
+				ownerName: "Bob",
+				viewerIsAdmin: false,
+			}).adminNote,
 		).toBeNull();
 	});
 
@@ -550,7 +560,9 @@ describe("failures from the host come verbatim from the shared words", () => {
 			"studio can't find this session's history, so it wasn't taken over. It probably ran on another machine or under another account.",
 		);
 		expect(takeover("running")).toContain("codex app-server daemon stop");
-		expect(takeover("running")).toContain("which also stops anything else running through that service");
+		expect(takeover("running")).toContain(
+			"which also stops anything else running through that service",
+		);
 		expect(takeover("cwd_mismatch")).toContain("so it wasn't taken over");
 		expect(takeover("privileges")).toContain("required approval settings");
 		expect(takeover("unsupported_codex")).toContain("Update Codex on studio");
@@ -590,7 +602,9 @@ describe("takeoverProgress: the words while the host works", () => {
 		expect(takeoverProgress("takeover", "studio", started(19_999), NOW)).toBe(
 			"Asking studio to take over this session…",
 		);
-		expect(takeoverProgress("takeover", "studio", started(20_000), NOW)).toBe(TAKEOVER_STILL_WAITING("studio"));
+		expect(takeoverProgress("takeover", "studio", started(20_000), NOW)).toBe(
+			TAKEOVER_STILL_WAITING("studio"),
+		);
 		expect(TAKEOVER_STILL_WAITING("studio")).toBe(
 			"Still no answer from studio. This can take about a minute and a half. You can leave this page.",
 		);
@@ -648,9 +662,12 @@ describe("takeoverCardView: which card, and with what words", () => {
 			kind: "eligible",
 			text: "Started outside AgentPulse. Once it has ended, a connected machine can take it over so you can send prompts here.",
 			failure: null,
+			hostsState: "ready",
 		});
 		expect(
-			takeoverCardView(input({ attempt: { state: "failed", actionId: "x", kind: "takeover", reason: "no" } })),
+			takeoverCardView(
+				input({ attempt: { state: "failed", actionId: "x", kind: "takeover", reason: "no" } }),
+			),
 		).toMatchObject({ kind: "eligible", failure: "no" });
 	});
 
@@ -699,9 +716,11 @@ describe("takeoverCardView: which card, and with what words", () => {
 				}),
 			),
 		).toEqual({ kind: "hidden" });
-		expect(
-			takeoverCardView(input({ canBind: false, team: true, viewerIsAdmin: false })),
-		).toEqual({ kind: "info", text: TAKEOVER_NOT_ADMIN, failure: null });
+		expect(takeoverCardView(input({ canBind: false, team: true, viewerIsAdmin: false }))).toEqual({
+			kind: "info",
+			text: TAKEOVER_NOT_ADMIN,
+			failure: null,
+		});
 		expect(
 			takeoverCardView(
 				input({
@@ -753,15 +772,18 @@ describe("bottomSlot: what sits where the prompt box would", () => {
 
 	test("a takeover in flight shows its progress instead of the composer, whatever managedSession says", () => {
 		for (const managedSession of [null, { managedState: "pending" }, { managedState: "managed" }]) {
-			expect(bottomSlot(probe({ managedSession: managedSession as never }), inFlight("takeover"))).toBe(
-				"takeover_progress",
-			);
+			expect(
+				bottomSlot(probe({ managedSession: managedSession as never }), inFlight("takeover")),
+			).toBe("takeover_progress");
 		}
 	});
 
 	test("a recovery in flight keeps the composer's slot, so a draft in it survives", () => {
 		expect(
-			bottomSlot(probe({ managedSession: { managedState: "degraded" } as never }), inFlight("recovery")),
+			bottomSlot(
+				probe({ managedSession: { managedState: "degraded" } as never }),
+				inFlight("recovery"),
+			),
 		).toBe("composer");
 	});
 
@@ -799,6 +821,55 @@ describe("labels on a taken-over session", () => {
 
 	test("Launch tab: 'Taken over · Codex' replaces the launch status; a launch keeps its own line", () => {
 		expect(launchSummaryLine(true, "completed", "Managed Codex")).toBe("Taken over · Codex");
-		expect(launchSummaryLine(false, "completed", "Headless task")).toBe("completed · Headless task");
+		expect(launchSummaryLine(false, "completed", "Headless task")).toBe(
+			"completed · Headless task",
+		);
+	});
+});
+
+describe("attemptAnnouncement: what a screen reader hears when an attempt ends", () => {
+	const flight = (kind: ResumeKind) => ({
+		state: "in_flight" as const,
+		actionId: "a",
+		kind,
+		startedAt: new Date(NOW).toISOString(),
+	});
+	const none = { state: "none" as const };
+
+	test("success: the host took it over, or the session resumed on it, and a prompt can be sent", () => {
+		expect(attemptAnnouncement(flight("takeover"), none, "studio")).toBe(
+			"studio took over this session. You can send a prompt now.",
+		);
+		expect(attemptAnnouncement(flight("recovery"), none, "studio")).toBe(
+			"Session resumed on studio. You can send a prompt now.",
+		);
+	});
+
+	test("failure: the host's own sentence", () => {
+		const failed = {
+			state: "failed" as const,
+			actionId: "a",
+			kind: "takeover" as const,
+			reason: "no go",
+		};
+		expect(attemptAnnouncement(flight("takeover"), failed, "studio")).toBe("no go");
+	});
+
+	test("nothing changed, or an attempt that was never seen in flight: silence", () => {
+		expect(attemptAnnouncement(none, none, "studio")).toBeNull();
+		expect(attemptAnnouncement(flight("takeover"), flight("takeover"), "studio")).toBeNull();
+		const failed = {
+			state: "failed" as const,
+			actionId: "a",
+			kind: "takeover" as const,
+			reason: "x",
+		};
+		expect(attemptAnnouncement(none, failed, "studio")).toBeNull();
+	});
+
+	test("no host name reads as 'The host'", () => {
+		expect(attemptAnnouncement(flight("takeover"), none, null)).toBe(
+			"The host took over this session. You can send a prompt now.",
+		);
 	});
 });

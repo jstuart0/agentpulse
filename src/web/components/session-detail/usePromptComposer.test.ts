@@ -74,7 +74,7 @@ function mount(over: Partial<PromptComposerOptions> & { s?: Session } = {}) {
 	const calls = { submitted: 0, settled: 0 };
 	const options: PromptComposerOptions = {
 		session: s,
-		mode: composerMode(s, { canPrompt: true }),
+		mode: composerMode(s, { canPrompt: true, canResume: true }),
 		onSubmitted: async () => {
 			calls.submitted += 1;
 		},

@@ -704,17 +704,18 @@ describe("describeResumeFailure: a refusal from POST /resume, in the recovery's 
 			"AgentPulse can't confirm this session can be resumed on studio. Start a new session for this work.",
 		);
 		expect(out.startNew).toBe(true);
-		expect(describeResumeFailure(new ApiError(409, "x", { error: "host_offline" }), session)).toEqual(
-			{
-				reason: "studio is offline, so nothing was started. Try again when it's back.",
-				startNew: false,
-			},
-		);
+		expect(
+			describeResumeFailure(new ApiError(409, "x", { error: "host_offline" }), session),
+		).toEqual({
+			reason: "studio is offline, so nothing was started. Try again when it's back.",
+			startNew: false,
+		});
 	});
 
 	test("a network failure keeps its own plain sentence", () => {
 		expect(
-			describeResumeFailure(new TypeError("Failed to fetch"), probe("codex_cli", "degraded")).reason,
+			describeResumeFailure(new TypeError("Failed to fetch"), probe("codex_cli", "degraded"))
+				.reason,
 		).toBe("Couldn't reach AgentPulse. Check your connection and try again.");
 	});
 });
@@ -722,7 +723,8 @@ describe("describeResumeFailure: a refusal from POST /resume, in the recovery's 
 describe("composerMode: the hint says whose settings a Codex turn runs under", () => {
 	test("a launched session keeps 'the launch's approval policy and sandbox'", () => {
 		const session = probe("codex_cli", "managed");
-		(session.managedSession as { hostAffinityReason: string | null }).hostAffinityReason = "launched";
+		(session.managedSession as { hostAffinityReason: string | null }).hostAffinityReason =
+			"launched";
 		expect(composerMode(session, ALLOWED)).toMatchObject({
 			hint: "This starts a new turn in the same Codex thread, under the launch's approval policy and sandbox.",
 		});

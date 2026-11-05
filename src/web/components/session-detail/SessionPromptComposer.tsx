@@ -4,21 +4,30 @@ import type { Session } from "../../../shared/types.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../../hooks/useOwnershipUi.js";
 import { api } from "../../lib/api.js";
 import { sessionActionAccess } from "../../lib/session-action-access.js";
+import { sessionBindAccess } from "../../lib/session-bind-access.js";
 import { useUserStore } from "../../stores/user-store.js";
 import { controlBlockedReason } from "./host-control-view.js";
 import {
 	COMPOSER_ENDED,
 	COMPOSER_KEEP_TEXT,
 	type ComposerMode,
+	RESUME_BUTTON,
+	RESUME_BUTTON_BUSY,
+	type ResumeOffer,
 	type SendPhase,
 	boxState,
 	composerMode,
 	composerNotice,
 	composerStatus,
+	describeResumeFailure,
 	focusBoxAfterSettle,
 	lockedNotice,
+	offersNewSession,
 } from "./prompt-composer-view.js";
+import type { TakeoverAttempt } from "./session-takeover-view.js";
 import { usePromptComposer } from "./usePromptComposer.js";
+
+const NO_ATTEMPT: TakeoverAttempt = { state: "none" };
 
 /**
  * The prompt box for a managed session, or nothing. It is keyed by session, so a draft, a send in
@@ -28,25 +37,35 @@ import { usePromptComposer } from "./usePromptComposer.js";
  */
 export function SessionComposerSlot({
 	session,
+	attempt = NO_ATTEMPT,
 	onSubmitted,
+	focusToken = 0,
 }: {
 	session: Session;
+	/** Where a resume of this session stands, derived from its control actions by the page. */
+	attempt?: TakeoverAttempt;
 	onSubmitted: () => Promise<void>;
+	/** Raised by the page when a take-over or resume has just worked: the box takes focus once it appears. */
+	focusToken?: number;
 }) {
 	const ui = useOwnershipUi();
 	const userId = useUserStore((s) => s.userId);
 	const isAdmin = useViewerIsAdmin();
-	const { canPrompt } = sessionActionAccess(ui, session, {
-		userId,
-		effectiveRole: isAdmin ? "admin" : "member",
+	const viewer = { userId, effectiveRole: isAdmin ? ("admin" as const) : ("member" as const) };
+	const { canPrompt } = sessionActionAccess(ui, session, viewer);
+	const mode = composerMode(session, {
+		canPrompt,
+		canResume: sessionBindAccess(ui, session, viewer),
+		resumeInFlight: attempt.state === "in_flight" && attempt.kind === "recovery",
 	});
-	const mode = composerMode(session, { canPrompt });
 	return (
 		<SessionPromptComposer
 			key={session.sessionId}
 			session={session}
 			mode={mode}
+			attempt={attempt}
 			onSubmitted={onSubmitted}
+			focusToken={focusToken}
 		/>
 	);
 }
@@ -54,13 +73,29 @@ export function SessionComposerSlot({
 export function SessionPromptComposer({
 	session,
 	mode,
+	attempt = NO_ATTEMPT,
 	onSubmitted,
+	focusToken = 0,
 }: {
 	session: Session;
 	mode: ComposerMode | null;
+	attempt?: TakeoverAttempt;
 	onSubmitted: () => Promise<void>;
+	focusToken?: number;
 }) {
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const focusedFor = useRef(0);
+	const boxShown = mode !== null && mode.kind !== "blocked";
+	useEffect(() => {
+		if (!boxShown || focusToken <= focusedFor.current) return;
+		focusedFor.current = focusToken;
+		const matchMedia = typeof window === "undefined" ? undefined : window.matchMedia;
+		focusBoxAfterSettle(textareaRef.current, matchMedia?.bind(window));
+	}, [boxShown, focusToken]);
+	const [resumePosting, setResumePosting] = useState(false);
+	const [resumeRefusal, setResumeRefusal] = useState<{ reason: string; startNew: boolean } | null>(
+		null,
+	);
 	const { prompt, edit, phase, posting, justSent, submit } = usePromptComposer({
 		session,
 		mode,
@@ -102,15 +137,49 @@ export function SessionPromptComposer({
 		};
 	}, [interactive, session.managedSession?.supervisorId]);
 
+	async function resume() {
+		if (resumePosting) return;
+		setResumePosting(true);
+		setResumeRefusal(null);
+		try {
+			await api.resumeSession(session.sessionId);
+		} catch (error) {
+			setResumeRefusal(describeResumeFailure(error, session));
+			setResumePosting(false);
+			return;
+		}
+		try {
+			await onSubmitted();
+		} catch (error) {
+			console.error("Failed to refresh the session after a resume", error);
+		} finally {
+			setResumePosting(false);
+		}
+	}
+
 	const hasDraft = prompt.trim() !== "";
 	const locked = lockedNotice(mode, hasDraft);
 	if (locked !== null) {
+		const failed =
+			attempt.state === "failed" && attempt.kind === "recovery"
+				? { reason: attempt.reason, startNew: offersNewSession(attempt.reason) }
+				: null;
 		return (
 			<LockedDraft
 				reason={locked.reason}
 				showDraft={hasDraft}
 				draft={prompt}
 				startNew={locked.startNew}
+				resume={
+					locked.resume
+						? {
+								offer: locked.resume,
+								posting: resumePosting,
+								onResume: () => void resume(),
+								alert: resumeRefusal ?? failed,
+							}
+						: undefined
+				}
 			/>
 		);
 	}
@@ -160,21 +229,52 @@ export function LockedDraft({
 	showDraft,
 	draft,
 	startNew,
+	resume,
 }: {
 	reason: string;
 	showDraft: boolean;
 	draft: string;
 	startNew: boolean;
+	resume?: {
+		offer: ResumeOffer;
+		posting: boolean;
+		onResume: () => void;
+		alert: { reason: string; startNew: boolean } | null;
+	};
 }) {
 	const reasonId = useId();
 	const textareaId = useId();
+	const busy = resume !== undefined && (resume.posting || resume.offer.state === "in_flight");
 	return (
 		<div className="border-t border-border bg-card/80 px-3 py-3 md:px-6">
 			<div className="flex flex-col gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5">
-				<p id={reasonId} className="text-[11px] leading-relaxed text-foreground">
+				<p
+					id={reasonId}
+					role={resume?.offer.state === "in_flight" ? "status" : undefined}
+					className="text-[11px] leading-relaxed text-foreground"
+				>
 					{reason}
 					{startNew ? <StartNewLink /> : null}
 				</p>
+				{resume ? (
+					<div className="flex flex-col gap-2 md:flex-row md:items-center">
+						<button
+							type="button"
+							onClick={resume.onResume}
+							disabled={busy || resume.offer.state === "disabled"}
+							aria-describedby={reasonId}
+							className="min-h-[44px] rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 aria-disabled:opacity-50 md:min-h-0"
+						>
+							{busy ? RESUME_BUTTON_BUSY : RESUME_BUTTON}
+						</button>
+						{resume.alert ? (
+							<p role="alert" className="text-xs text-red-700 dark:text-red-400">
+								{resume.alert.reason}
+								{resume.alert.startNew ? <StartNewLink /> : null}
+							</p>
+						) : null}
+					</div>
+				) : null}
 				{showDraft ? (
 					<>
 						<label htmlFor={textareaId} className="sr-only">

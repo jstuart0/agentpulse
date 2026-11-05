@@ -1,5 +1,8 @@
-import { SESSION_RESUMED_CONTENT, SESSION_RESUMED_EVENT_TYPE } from "../../../shared/session-resume.js";
 import { describe, expect, test } from "bun:test";
+import {
+	SESSION_RESUMED_CONTENT,
+	SESSION_RESUMED_EVENT_TYPE,
+} from "../../../shared/session-resume.js";
 import type { SessionEvent } from "../../../shared/types.js";
 import {
 	APPROVAL_RESOLVED_EVENT,

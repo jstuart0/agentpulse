@@ -6,6 +6,7 @@ import {
 	isPromptMirrorSourcePair,
 	normalizeComparableContent,
 } from "../../../shared/event-authority.js";
+import { SESSION_RESUMED_EVENT_TYPE } from "../../../shared/session-resume.js";
 import type { EventCategory, EventSource, SessionEvent } from "../../../shared/types.js";
 import { timeAttribute } from "../../lib/event-time.js";
 import { cn, formatTimeAgo } from "../../lib/utils.js";
@@ -251,6 +252,7 @@ export function eventRowIsPlainText(event: Pick<SessionEvent, "eventType">): boo
 	return (
 		event.eventType === "ManagedEventsLost" ||
 		event.eventType === APPROVAL_RESOLVED_EVENT ||
+		event.eventType === SESSION_RESUMED_EVENT_TYPE ||
 		event.eventType === FAILED_TURN_EVENT
 	);
 }

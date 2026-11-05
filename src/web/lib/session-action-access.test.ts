@@ -4,8 +4,8 @@ import {
 	NOTES_BLOCKED_REASON,
 	RENAME_BLOCKED_REASON,
 	sessionActionAccess,
-	sessionBindAccess,
 } from "./session-action-access.js";
+import { sessionBindAccess } from "./session-bind-access.js";
 
 describe("notes and CLAUDE.md editing", () => {
 	test("the blocked reason names who can edit", () => {
@@ -153,8 +153,13 @@ describe("sessionBindAccess: taking over, or resuming, a session", () => {
 	});
 
 	test("sessionActionAccess keeps exactly its keys: the iOS harness reads them", () => {
-		expect(
-			Object.keys(sessionActionAccess(solo, { ownerUserId: null }, {})).sort(),
-		).toEqual(["canArchive", "canDelete", "canEditNotes", "canPin", "canPrompt", "canRename"]);
+		expect(Object.keys(sessionActionAccess(solo, { ownerUserId: null }, {})).sort()).toEqual([
+			"canArchive",
+			"canDelete",
+			"canEditNotes",
+			"canPin",
+			"canPrompt",
+			"canRename",
+		]);
 	});
 });

@@ -1,3 +1,4 @@
+import { TAKEOVER_IN_PROGRESS_MESSAGE } from "../../shared/takeover-in-progress.js";
 import { ApiError } from "./api.js";
 
 /**
@@ -26,6 +27,7 @@ const MESSAGES: Record<string, string> = {
 	insufficient_scope: "This key doesn't have permission to do that.",
 	busy: "The server is busy. Try again in a moment.",
 	key_not_user_settable: "That setting can't be changed here.",
+	takeover_in_progress: TAKEOVER_IN_PROGRESS_MESSAGE,
 };
 
 /**

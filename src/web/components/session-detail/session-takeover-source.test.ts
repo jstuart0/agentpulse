@@ -19,6 +19,7 @@ const code = (rel: string) =>
 const FEATURE = [
 	"components/session-detail/SessionTakeoverCard.tsx",
 	"components/session-detail/session-takeover-view.ts",
+	"components/session-detail/takeover-card-view.ts",
 ];
 const card = code("components/session-detail/SessionTakeoverCard.tsx");
 
@@ -35,7 +36,9 @@ describe("the take-over dialog", () => {
 	test("it arms after 700 ms and focuses Cancel first (weak: a source read; the behaviour is driven in hooks/useArmedAfter.test.ts)", () => {
 		expect(card).toMatch(/armAfterMs=\{700\}/);
 		expect(card).toMatch(/\bfocusCancel\b/);
-		expect(read("hooks/useArmedAfter.test.ts")).toMatch(/starts unarmed, stays unarmed before the time, and arms after it/);
+		expect(read("hooks/useArmedAfter.test.ts")).toMatch(
+			/starts unarmed, stays unarmed before the time, and arms after it/,
+		);
 		expect(read("components/ConfirmDialog.tsx")).toMatch(/useArmedAfter\(armAfterMs\)/);
 	});
 
@@ -68,7 +71,9 @@ describe("the feature's own code", () => {
 			expect(src).not.toMatch(/XMLHttpRequest/);
 		}
 		expect(card).toMatch(/api\.bindSession/);
-		expect(card).toMatch(/api\.resumeSession|onResume/);
+		expect(code("components/session-detail/SessionPromptComposer.tsx")).toMatch(
+			/api\.resumeSession/,
+		);
 	});
 
 	test("never compares the instance mode: that is ownership-ui.ts's alone", () => {
@@ -100,8 +105,7 @@ describe("the feature's own code", () => {
 		const names = users.map((f) => f.slice(WEB.length + 1));
 		for (const name of names) {
 			expect(
-				name === "pages/SessionDetailPage.tsx" ||
-					name.startsWith("components/session-detail/"),
+				name === "pages/SessionDetailPage.tsx" || name.startsWith("components/session-detail/"),
 			).toBe(true);
 		}
 	});
