@@ -12,10 +12,12 @@ import type { ControlAction, Session } from "../../../shared/types.js";
 import { describeApiError } from "../../lib/api-errors.js";
 import { ApiError } from "../../lib/api.js";
 import { hasPendingCodexApproval } from "../../lib/codex-approval-wait.js";
-import { HOST_RESTARTED_PROMPT_COPY, hostNameOf, hostRefusalMessage } from "./host-control-view.js";
+import { hostNameOf, hostRefusalMessage } from "./host-control-view.js";
 import { bindRefusalMessage, isTakenOver } from "./session-takeover-view.js";
 
-export const COMPOSER_BLOCKED_RESTARTED = HOST_RESTARTED_PROMPT_COPY;
+/** Resume isn't offered here (no thread id to resume), so this one doesn't say "Resume it". */
+export const COMPOSER_BLOCKED_RESTARTED =
+	"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.";
 export const COMPOSER_BLOCKED_CONNECTION =
 	"This session's connection to Codex isn't healthy, so it can't take prompts. Start a new session to keep going.";
 export const COMPOSER_BLOCKED_NOT_READY =

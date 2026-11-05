@@ -21,7 +21,7 @@ export type HostRefusalCode =
 
 /** Why a Codex session can't take prompts after its host restarted (its process is gone). */
 export const HOST_RESTARTED_PROMPT_COPY =
-	"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.";
+	"This session's process ended when its host restarted. Resume it to keep going, or start a new session for this work.";
 
 const UNNAMED_HOST = "This session's host";
 

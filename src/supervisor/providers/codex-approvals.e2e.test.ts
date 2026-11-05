@@ -1451,7 +1451,7 @@ describe("a follow-up prompt goes through the same approval machinery (AGEN-91)"
 		await expect(
 			promptManagedCodexSession({ sessionId, prompt: "again" }, callbacks),
 		).rejects.toThrow(
-			"This session's Codex process isn't running on its host any more. Start a new session for this work.",
+			"This session's Codex process isn't running on its host any more. Resume it from its page in the web dashboard, or start a new session for this work.",
 		);
 	});
 

@@ -3,6 +3,7 @@ import { HOST_RESTARTED_SYNC_ERROR } from "../../../shared/managed-messages.js";
 import { CONTROL_TIMEOUT_ERROR } from "../../../shared/managed-messages.js";
 import type { ControlAction, HostControl, ManagedState, Session } from "../../../shared/types.js";
 import { ApiError } from "../../lib/api.js";
+import { HOST_RESTARTED_PROMPT_COPY } from "./host-control-view.js";
 import {
 	COMPOSER_BLOCKED_CONNECTION,
 	COMPOSER_BLOCKED_NOT_OWNER,
@@ -401,7 +402,7 @@ describe("describeSendFailure", () => {
 			new ApiError(409, "x", { error: "managed_state_not_continuable" }),
 			session,
 		);
-		expect(restarted).toEqual({ reason: COMPOSER_BLOCKED_RESTARTED, startNew: true });
+		expect(restarted).toEqual({ reason: HOST_RESTARTED_PROMPT_COPY, startNew: true });
 		const upgrade = describeSendFailure(
 			new ApiError(409, "x", { error: "host_upgrade_required" }),
 			session,

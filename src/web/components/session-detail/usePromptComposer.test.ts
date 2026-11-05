@@ -16,8 +16,8 @@ import {
 	removeDomStubs,
 	renderHook,
 } from "../../test-utils/render-hook.js";
+import { HOST_RESTARTED_PROMPT_COPY } from "./host-control-view.js";
 import {
-	COMPOSER_BLOCKED_RESTARTED,
 	COMPOSER_BUSY,
 	COMPOSER_UNKNOWN_OUTCOME,
 	FOLLOW_POLL_MS,
@@ -127,12 +127,12 @@ describe("a refused send (409)", () => {
 		expect(sends).toBe(1);
 		expect(polls).toBe(0);
 		expect(v.prompt).toBe("do the thing");
-		expect(v.phase).toEqual({ step: "failed", reason: COMPOSER_BLOCKED_RESTARTED, startNew: true });
+		expect(v.phase).toEqual({ step: "failed", reason: HOST_RESTARTED_PROMPT_COPY, startNew: true });
 		const mode = t.options.mode;
 		if (!mode) throw new Error("mode");
 		const box = boxState(mode, v.phase, { posting: v.posting });
 		expect(box).toMatchObject({
-			alert: COMPOSER_BLOCKED_RESTARTED,
+			alert: HOST_RESTARTED_PROMPT_COPY,
 			readOnly: false,
 			sendDisabled: false,
 			buttonText: "Send prompt",

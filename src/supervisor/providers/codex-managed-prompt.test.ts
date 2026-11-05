@@ -61,6 +61,9 @@ const COPY = {
 	timeout:
 		"Codex didn't answer in time. The prompt may have started, so check the timeline. Prompts stay blocked until this turn ends or the session is stopped.",
 	noRuntime:
+		"This session's Codex process isn't running on its host any more. Resume it from its page in the web dashboard, or start a new session for this work.",
+	// A runtime that is stopping or gone mid-call: not a dead process, so no Resume to offer.
+	stopping:
 		"This session's Codex process isn't running on its host any more. Start a new session for this work.",
 	tooLong: "This prompt is too long to send to Codex.",
 	notRecorded: "AgentPulse couldn't record this prompt, so it wasn't sent.",
@@ -1015,7 +1018,7 @@ describe("what the report gate says about the prompt event", () => {
 		await waitFor("the report to be in flight", () => reached);
 		await stopManagedCodexSession(world.id, { interruptTimeoutMs: 100 });
 		release();
-		await expectRejects(pending, COPY.noRuntime);
+		await expectRejects(pending, COPY.stopping);
 		expect(turnStarts(world)).toHaveLength(1);
 		const failed = eventsOf(world, "HeadlessPromptFailed");
 		expect(failed).toHaveLength(1);
@@ -1031,7 +1034,7 @@ describe("what the report gate says about the prompt event", () => {
 			readFakeLog(world.logPath).some((entry) => entry.method === "turn/interrupt"),
 		);
 		// Not "busy": the session is going away, and the person should be told so.
-		await expectRejects(prompt(world, "too late"), COPY.noRuntime);
+		await expectRejects(prompt(world, "too late"), COPY.stopping);
 		endTurn(world, "turn-2");
 		await settle(world);
 		await stopping;
@@ -1262,7 +1265,7 @@ describe("a prompt for a session this host holds no runtime for reports it once 
 		await waitFor("the interrupt", () =>
 			readFakeLog(world.logPath).some((entry) => entry.method === "turn/interrupt"),
 		);
-		await expectRejects(prompt(world, "too late"), COPY.noRuntime);
+		await expectRejects(prompt(world, "too late"), COPY.stopping);
 		await stopping;
 		expect(degradedReports(world.seq)).toEqual([]);
 	});

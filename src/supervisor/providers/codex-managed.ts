@@ -120,9 +120,9 @@ const HOST_LOG_ERROR_CHARS = 300;
  * host log only.
  */
 const PROMPT_COPY = {
-	// No runtime at all on this host. Its words change (to offer Resume) in the phase that adds the button.
+	// No runtime at all on this host: the session page offers Resume for it.
 	noRuntime:
-		"This session's Codex process isn't running on its host any more. Start a new session for this work.",
+		"This session's Codex process isn't running on its host any more. Resume it from its page in the web dashboard, or start a new session for this work.",
 	// A runtime that is stopping, closing or gone mid-call: not a dead process, so no Resume to offer.
 	stopping:
 		"This session's Codex process isn't running on its host any more. Start a new session for this work.",
