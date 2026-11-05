@@ -9,6 +9,7 @@ import { parseDate } from "../../lib/utils.js";
 import { useUserStore } from "../../stores/user-store.js";
 import { useUsersStore } from "../../stores/users-store.js";
 import { ConfirmDialog } from "../ConfirmDialog.js";
+import { HostSentence } from "./HostSentence.js";
 import { type TakeoverAttempt, bindRefusalMessage } from "./session-takeover-view.js";
 import {
 	type BindHostOption,
@@ -56,8 +57,8 @@ export function TakeoverCardBody({
 		>
 			<div className="flex flex-col gap-2">
 				{view.failure ? (
-					<p role="alert" className={`text-xs text-red-700 dark:text-red-400 ${WRAP}`}>
-						{view.failure}
+					<p role="alert" className={`text-sm text-red-700 dark:text-red-400 ${WRAP}`}>
+						<HostSentence text={view.failure} />
 					</p>
 				) : null}
 				<p className={`text-xs leading-relaxed text-muted-foreground ${WRAP}`}>{view.text}</p>
@@ -113,7 +114,11 @@ export function TakeoverDialogDescription({ lines }: { lines: TakeoverDialogLine
 		<>
 			<p className={WRAP}>{lines.lead}</p>
 			{lines.adminNote ? <p className={WRAP}>{lines.adminNote}</p> : null}
-			<p className={WRAP}>{lines.whatHappens}</p>
+			{lines.whatHappens.map((paragraph) => (
+				<p key={paragraph} className={WRAP}>
+					{paragraph}
+				</p>
+			))}
 		</>
 	);
 }

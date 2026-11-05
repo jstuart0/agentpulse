@@ -100,6 +100,7 @@ const RETRY_NOT_AVAILABLE =
 registerApiErrorMessages({ retry_not_available: RETRY_NOT_AVAILABLE });
 
 const RECOVERY_NOT_OWNER = "Only the session's owner or an admin can resume it.";
+const TAKEOVER_NOT_OWNER = "Only this session's owner or an admin can take it over.";
 
 /** One sentence per code the take-over and resume routes (and the delete, archive and retry routes they guard) answer. */
 const REFUSALS: Record<string, RefusalWords> = {
@@ -116,7 +117,7 @@ const REFUSALS: Record<string, RefusalWords> = {
 	host_owner_mismatch: (host) =>
 		`${host} belongs to someone other than this session's owner. Change the session's owner first, or choose a host of theirs.`,
 	host_not_allowed: () => "You can't use that machine. Choose one of your own, or ask an admin.",
-	not_owner: (_host, kind) => (kind === "recovery" ? RECOVERY_NOT_OWNER : TAKEOVER_NOT_ADMIN),
+	not_owner: (_host, kind) => (kind === "recovery" ? RECOVERY_NOT_OWNER : TAKEOVER_NOT_OWNER),
 	session_not_found: () => "This session isn't available.",
 	host_offline: (host, kind) =>
 		kind === "recovery"
@@ -127,12 +128,15 @@ const REFUSALS: Record<string, RefusalWords> = {
 			? `${host} was removed from AgentPulse, so this session can't be resumed. Start a new session for this work.`
 			: `${host} was removed from AgentPulse. Choose another machine.`,
 	host_upgrade_required: (host, kind) => resumeFailureMessage("host_upgrade_required", host, kind),
-	host_cannot_run_codex: (host) => hostCannotRunCodexMessage(host),
+	host_cannot_run_codex: (host, kind) => hostCannotRunCodexMessage(host, kind),
 	session_key_mismatch: (host) =>
 		`This session was reported by a key that isn't tied to ${host}. Ask an admin to take it over.`,
 	rate_limited: () => "Too many attempts. Try again in a minute.",
 	takeover_in_progress: () => TAKEOVER_IN_PROGRESS_MESSAGE,
-	human_required: () => "Taking over a session needs a signed-in person, not an API key.",
+	human_required: (_host, kind) =>
+		kind === "recovery"
+			? "Resuming a session needs a signed-in person, not an API key."
+			: "Taking over a session needs a signed-in person, not an API key.",
 	retry_not_available: () => RETRY_NOT_AVAILABLE,
 	not_resumable: (host, kind) => resumeFailureMessage("thread_unverified", host, kind),
 	invalid_body: () => UNREADABLE_REQUEST,
@@ -155,8 +159,8 @@ export function bindRefusalMessage(
 			return (REFUSALS[error.code] as RefusalWords)(host, ctx.kind);
 		}
 		return ctx.kind === "takeover"
-			? "Couldn't take this session over. Try again."
-			: "Couldn't resume this session. Try again.";
+			? TAKEOVER_FAILURE_FALLBACK
+			: "That machine couldn't resume this session. Try again.";
 	}
 	return UNREACHABLE;
 }
@@ -217,4 +221,42 @@ export function overviewOriginField(
 /** The Launch tab's one-line summary: a taken-over session was never launched, so its carrier row isn't "completed". */
 export function launchSummaryLine(takenOver: boolean, status: string, modeLabel: string): string {
 	return takenOver ? "Taken over · Codex" : `${status} · ${modeLabel}`;
+}
+
+export type SentencePart = { code: boolean; text: string };
+
+/**
+ * A host sentence cut at its backtick spans, so the web can draw a command as code. Text only: no part is
+ * ever markup, and an unpaired backtick stays an ordinary character.
+ */
+export function sentenceParts(sentence: string): SentencePart[] {
+	const parts: SentencePart[] = [];
+	let rest = sentence;
+	for (;;) {
+		const match = /`([^`]+)`/.exec(rest);
+		if (!match) break;
+		if (match.index > 0) parts.push({ code: false, text: rest.slice(0, match.index) });
+		parts.push({ code: true, text: match[1] as string });
+		rest = rest.slice(match.index + match[0].length);
+	}
+	if (rest !== "") parts.push({ code: false, text: rest });
+	return parts;
+}
+
+/** The link to the launch row's page. A taken-over session was never launched, so its row is "details". */
+export function launchLinkLabel(
+	managedSession: { hostAffinityReason?: string | null } | null | undefined,
+): "View launch" | "View details" {
+	return isTakenOver(managedSession) ? "View details" : "View launch";
+}
+
+/**
+ * What Control history calls an action. A resume that took a session over says "take over"; every other
+ * action, a recovery's resume included, keeps its type's own word.
+ */
+export function controlActionLabel(action: Pick<ControlAction, "actionType" | "metadata">): string {
+	return action.actionType === "resume" &&
+		(action.metadata as { resumeKind?: unknown } | null)?.resumeKind === "takeover"
+		? "take over"
+		: action.actionType;
 }

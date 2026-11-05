@@ -1224,7 +1224,7 @@ async function runResume(
 	// No AGENTPULSE_* name reaches Codex (it needs none, and this process holds the supervisor's own settings);
 	// everything else is kept, because a person's provider or proxy variables are theirs.
 	const env = Object.fromEntries(
-		Object.entries(process.env).filter(([name]) => !name.startsWith("AGENTPULSE_")),
+		Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("AGENTPULSE_")),
 	);
 	const server = await startCodexAppServer({ executable: binary.path, cwd: neutral, env });
 	const { client } = server;

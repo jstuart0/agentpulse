@@ -122,3 +122,23 @@ describe("a stored sync error on a session that has ended", () => {
 		expect(showProviderSyncError({ ...open, isArchived: true })).toBe(false);
 	});
 });
+
+describe("a degraded session's slot owns its state (AGEN-115)", () => {
+	const degraded = {
+		hostControl: { state: "live", lastSeenAt: null },
+		managedSession: { managedState: "degraded" },
+		isArchived: false,
+		endedAt: null,
+		status: "active",
+	} as never;
+	test("the sync pill and the stored error are hidden, and shown again once it is managed", () => {
+		expect(showProviderSyncState(degraded)).toBe(false);
+		expect(showProviderSyncError(degraded)).toBe(false);
+		const managed = {
+			...(degraded as object),
+			managedSession: { managedState: "managed" },
+		} as never;
+		expect(showProviderSyncState(managed)).toBe(true);
+		expect(showProviderSyncError(managed)).toBe(true);
+	});
+});

@@ -348,9 +348,7 @@ describe("Resume session on a Codex session whose process is gone (AGEN-115)", (
 	test("an offline host: the button is disabled and the sentence is the offline one alone", () => {
 		const out = renderWith(degraded({}, { hostControl: { state: "offline", lastSeenAt: null } }));
 		expect(out).toMatch(/<button[^>]*disabled=""[^>]*>Resume session<\/button>/);
-		expect(out).toContain(
-			"studio is offline, so this session can&#x27;t take prompts until it&#x27;s back.",
-		);
+		expect(out).toContain("studio is offline. You can resume this session when it&#x27;s back.");
 		expect(out).not.toContain("Resume it to keep going");
 	});
 
@@ -366,7 +364,7 @@ describe("Resume session on a Codex session whose process is gone (AGEN-115)", (
 		expect(out).not.toContain("<textarea");
 	});
 
-	test("a failed recovery shows the host's sentence in an alert, and the Resume button is back", () => {
+	test("a failure that says to start a new session leads: no 'Resume it' lead, the failure first, a secondary retry", () => {
 		const reason =
 			"studio no longer has this session's history, so it can't be resumed. Start a new session for this work.";
 		const out = renderWith(degraded(), {
@@ -375,10 +373,27 @@ describe("Resume session on a Codex session whose process is gone (AGEN-115)", (
 			kind: "recovery",
 			reason,
 		});
-		expect(out).toMatch(/role="alert"[^>]*>[^<]*studio no longer has this session&#x27;s history/);
-		expect(out).toMatch(/<button[^>]*>Resume session<\/button>/);
-		// The sentence above already links to Templates, so the failure doesn't offer a second one.
+		expect(out).toMatch(
+			/role="alert"[^>]*>(<span>)?studio no longer has this session&#x27;s history/,
+		);
+		expect(out).not.toContain("Resume it to keep going");
+		expect(out).toMatch(/<button[^>]*>Try resuming again<\/button>/);
+		expect(out).not.toContain(">Resume session<");
+		expect(out.indexOf('role="alert"')).toBeLessThan(out.indexOf("Try resuming again"));
 		expect(out.match(/Go to Templates/g)).toHaveLength(1);
+	});
+
+	test("a failure that leaves Resume possible keeps the lead and the primary button, the alert beside it", () => {
+		const reason = "studio restarted before it finished, so the session wasn't resumed. Try again.";
+		const out = renderWith(degraded(), {
+			state: "failed",
+			actionId: "a",
+			kind: "recovery",
+			reason,
+		});
+		expect(out).toContain("Resume it to keep going");
+		expect(out).toMatch(/<button[^>]*>Resume session<\/button>/);
+		expect(out).toContain("text-sm text-red-700");
 	});
 
 	test("a failed takeover is not shown here: it belongs to the takeover card", () => {

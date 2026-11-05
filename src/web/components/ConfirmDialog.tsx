@@ -1,4 +1,4 @@
-import { type ReactNode, useId, useRef } from "react";
+import { type ReactNode, useEffect, useId, useRef } from "react";
 import { useArmedAfter } from "../hooks/useArmedAfter.js";
 import { DialogShell } from "./DialogShell.js";
 
@@ -57,6 +57,11 @@ export function ConfirmDialog({
 	const descriptionId = useId();
 	const cancelRef = useRef<HTMLButtonElement>(null);
 	const armed = useArmedAfter(armAfterMs);
+	const errorRef = useRef<HTMLParagraphElement>(null);
+	// On a phone the refusal can land below the fold of a tall sheet: bring it into view.
+	useEffect(() => {
+		if (error) errorRef.current?.scrollIntoView?.({ block: "nearest" });
+	}, [error]);
 
 	return (
 		<DialogShell
@@ -78,12 +83,12 @@ export function ConfirmDialog({
 				</div>
 				{fields ? <div className="mt-4 space-y-3">{fields}</div> : null}
 				{error && (
-					<p role="alert" className="mt-3 text-sm text-red-700 dark:text-red-400">
+					<p ref={errorRef} role="alert" className="mt-3 text-sm text-red-700 dark:text-red-400">
 						{error}
 					</p>
 				)}
 			</div>
-			<div className="flex flex-col-reverse gap-2 border-t border-border p-4 md:flex-row md:justify-end md:px-6">
+			<div className="sticky bottom-0 flex flex-col-reverse gap-2 border-t border-border bg-card p-4 md:static md:flex-row md:justify-end md:px-6">
 				<button
 					ref={cancelRef}
 					type="button"

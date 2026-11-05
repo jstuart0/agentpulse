@@ -95,8 +95,10 @@ export function hostRefusalMessage(
 }
 
 /** The provider-sync pill describes a connection that isn't there when the host isn't live. */
-export function showProviderSyncState(session: Pick<Session, "hostControl">): boolean {
-	return hostCanControl(session);
+export function showProviderSyncState(
+	session: Pick<Session, "hostControl"> & Partial<Pick<Session, "managedSession">>,
+): boolean {
+	return hostCanControl(session) && session.managedSession?.managedState !== "degraded";
 }
 
 /**
@@ -104,8 +106,11 @@ export function showProviderSyncState(session: Pick<Session, "hostControl">): bo
  * that has ended or been archived it is old news in red, so it isn't shown.
  */
 export function showProviderSyncError(
-	session: Pick<Session, "isArchived" | "endedAt" | "status">,
+	session: Pick<Session, "isArchived" | "endedAt" | "status"> &
+		Partial<Pick<Session, "managedSession">>,
 ): boolean {
+	// A degraded session's state is the Resume slot's to say; the stored error would say it again, in red.
+	if (session.managedSession?.managedState === "degraded") return false;
 	if (session.isArchived || session.endedAt) return false;
 	return (
 		session.status !== "completed" && session.status !== "failed" && session.status !== "archived"

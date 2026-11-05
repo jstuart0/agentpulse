@@ -6,12 +6,14 @@ import { api } from "../../lib/api.js";
 import { sessionActionAccess } from "../../lib/session-action-access.js";
 import { sessionBindAccess } from "../../lib/session-bind-access.js";
 import { useUserStore } from "../../stores/user-store.js";
+import { HostSentence } from "./HostSentence.js";
 import { controlBlockedReason } from "./host-control-view.js";
 import {
 	COMPOSER_ENDED,
 	COMPOSER_KEEP_TEXT,
 	type ComposerMode,
 	RESUME_BUTTON,
+	RESUME_BUTTON_AGAIN,
 	RESUME_BUTTON_BUSY,
 	type ResumeOffer,
 	type SendPhase,
@@ -27,6 +29,8 @@ import {
 import type { TakeoverAttempt } from "./session-takeover-view.js";
 import { usePromptComposer } from "./usePromptComposer.js";
 
+/** Keeps a long name or sentence inside a phone's width. */
+const WRAP = "[overflow-wrap:anywhere]";
 const NO_ATTEMPT: TakeoverAttempt = { state: "none" };
 
 /**
@@ -245,32 +249,44 @@ export function LockedDraft({
 	const reasonId = useId();
 	const textareaId = useId();
 	const busy = resume !== undefined && (resume.posting || resume.offer.state === "in_flight");
+	// A failure that ends in "start a new session" leads: the "Resume it" lead above it would contradict it.
+	const retryFirst = resume?.alert?.startNew === true && resume.offer.state === "available";
 	return (
 		<div className="border-t border-border bg-card/80 px-3 py-3 md:px-6">
 			<div className="flex flex-col gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5">
-				<p
-					id={reasonId}
-					role={resume?.offer.state === "in_flight" ? "status" : undefined}
-					className="text-[11px] leading-relaxed text-foreground"
-				>
-					{reason}
-					{startNew ? <StartNewLink /> : null}
-				</p>
+				{retryFirst ? null : (
+					<p
+						id={reasonId}
+						role={resume?.offer.state === "in_flight" ? "status" : undefined}
+						className="text-[11px] leading-relaxed text-foreground"
+					>
+						{reason}
+						{startNew ? <StartNewLink /> : null}
+					</p>
+				)}
+				{resume?.alert && retryFirst ? (
+					<p role="alert" className={`text-sm text-red-700 dark:text-red-400 ${WRAP}`}>
+						<HostSentence text={resume.alert.reason} /> <StartNewLink />
+					</p>
+				) : null}
 				{resume ? (
 					<div className="flex flex-col gap-2 md:flex-row md:items-center">
 						<button
 							type="button"
 							onClick={resume.onResume}
 							disabled={busy || resume.offer.state === "disabled"}
-							aria-describedby={reasonId}
-							className="min-h-[44px] rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0"
+							aria-describedby={retryFirst ? undefined : reasonId}
+							className={`min-h-[44px] rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 ${
+								retryFirst
+									? "border border-border text-foreground hover:bg-accent"
+									: "bg-primary text-primary-foreground hover:bg-primary/90"
+							}`}
 						>
-							{busy ? RESUME_BUTTON_BUSY : RESUME_BUTTON}
+							{busy ? RESUME_BUTTON_BUSY : retryFirst ? RESUME_BUTTON_AGAIN : RESUME_BUTTON}
 						</button>
-						{resume.alert ? (
-							<p role="alert" className="text-xs text-red-700 dark:text-red-400">
-								{resume.alert.reason}
-								{resume.alert.startNew && !startNew ? <StartNewLink /> : null}
+						{resume.alert && !retryFirst ? (
+							<p role="alert" className={`text-sm text-red-700 dark:text-red-400 ${WRAP}`}>
+								<HostSentence text={resume.alert.reason} />
 							</p>
 						) : null}
 					</div>

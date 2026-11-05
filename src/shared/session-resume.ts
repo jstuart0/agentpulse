@@ -91,8 +91,9 @@ export interface ResumeActionMetadata {
 	boundByUserId?: string | null;
 }
 
-const STOP_DAEMON_TAIL = (host: string) =>
-	`Exit it there. If its window is closed, run \`codex app-server daemon stop\` on ${host}, which also stops anything else running through that service, and try again.`;
+/** What to do about a thread another Codex still holds. Backticks mark a command; the web draws them as code. */
+const STILL_HELD = (host: string, done: string): string =>
+	`Codex on ${host} still holds this session, so it wasn't ${done}. If it's open in a terminal, exit it and try again. If you already closed it, Codex's background service is probably holding it. Stopping that service interrupts anything else running through it. When that's safe, run \`codex app-server daemon stop\` on ${host} and try again.`;
 
 const SAYS_RESUMED_ABOUT_RETRY = "Start a new session for this work.";
 
@@ -107,18 +108,17 @@ const HELD_REPORTS: Words = (host) =>
 const TAKEOVER_WORDS: KindWords = {
 	missing: (host) =>
 		`${host} can't find this session's history, so it wasn't taken over. It probably ran on another machine or under another account.`,
-	running: (host) =>
-		`Codex on ${host} still holds this session, so it wasn't taken over. ${STOP_DAEMON_TAIL(host)}`,
+	running: (host) => STILL_HELD(host, "taken over"),
 	cwd_mismatch: (host) =>
 		`This session's recorded directory doesn't match ${host}'s, so it wasn't taken over. It may have run on another machine.`,
 	privileges: (host) =>
-		`${host} wouldn't run this session under the required approval settings, so it wasn't taken over.`,
+		`${host} wouldn't run this session under the required approval settings, so it wasn't taken over. Its supervisor log has the reason.`,
 	unsupported_codex: (host) =>
 		`${host}'s Codex version isn't one AgentPulse can answer approvals for, so the session wasn't taken over. Update Codex on ${host}.`,
 	reports_pending: WAITING_ON_REPORTS,
 	reports_held: HELD_REPORTS,
 	project_config: (host) =>
-		`This session's directory has its own Codex settings (a .codex/config.toml file), which Codex would apply, so it wasn't taken over. Remove that file on ${host}, then try again.`,
+		`This session's project has a .codex/config.toml, in its directory or a folder above it. Its settings can run commands without asking you, so it wasn't taken over. If the project needs that file, keep it and carry on in your terminal. Otherwise move it out of the project on ${host} and try again.`,
 	// A takeover never consults the host's thread record; the sentence exists so the table is total.
 	thread_unverified: (host) =>
 		`AgentPulse can't confirm this session can be resumed on ${host}. ${SAYS_RESUMED_ABOUT_RETRY}`,
@@ -138,17 +138,16 @@ const RECOVERY_REJECTED: Words = (host) =>
 const RECOVERY_WORDS: KindWords = {
 	missing: (host) =>
 		`${host} no longer has this session's history, so it can't be resumed. ${SAYS_RESUMED_ABOUT_RETRY}`,
-	running: (host) =>
-		`Codex on ${host} still holds this session, so it wasn't resumed. ${STOP_DAEMON_TAIL(host)}`,
+	running: (host) => STILL_HELD(host, "resumed"),
 	cwd_mismatch: (host) =>
 		`This session's directory on ${host} has changed, so it wasn't resumed. ${SAYS_RESUMED_ABOUT_RETRY}`,
 	privileges: (host) =>
-		`${host} wouldn't run this session under its approval settings, so it wasn't resumed.`,
+		`${host} wouldn't run this session under its approval settings, so it wasn't resumed. Its supervisor log has the reason.`,
 	// A recovery proceeds on a Codex it can't answer approvals for (it declines them locally), so that
 	// kind reads as the generic refusal.
 	unsupported_codex: RECOVERY_REJECTED,
 	project_config: (host) =>
-		`This session's directory has its own Codex settings (a .codex/config.toml file), which Codex would apply, so it wasn't resumed. Remove that file on ${host}, then try again.`,
+		`This session's project has a .codex/config.toml, in its directory or a folder above it. Its settings can run commands without asking you, so it wasn't resumed. If the project needs that file, start a new session for this work. Otherwise move it out of the project on ${host} and try again.`,
 	reports_pending: WAITING_ON_REPORTS,
 	reports_held: HELD_REPORTS,
 	thread_unverified: (host) =>
@@ -191,8 +190,10 @@ export { TAKEOVER_IN_PROGRESS_MESSAGE } from "./takeover-in-progress.js";
  * A host that is current enough but can't run a Codex session at all: no usable Codex executable, or no
  * managed Codex launch mode. Not an upgrade problem, so it isn't `host_upgrade_required`.
  */
-export const hostCannotRunCodexMessage = (host: string): string =>
-	`${host} can't run Codex sessions: Codex isn't set up there, or it doesn't support managed Codex sessions. Choose another machine.`;
+export const hostCannotRunCodexMessage = (host: string, kind: ResumeKind = "takeover"): string =>
+	kind === "recovery"
+		? `${host} can't run Codex sessions: Codex isn't set up there, or it doesn't support managed Codex sessions. Fix that on ${host}, or start a new session for this work.`
+		: `${host} can't run Codex sessions: Codex isn't set up there, or it doesn't support managed Codex sessions. Choose another machine.`;
 
 /** The timeline event the server writes when a resume succeeds. Server-only: hooks and supervisors can't write it. */
 export const SESSION_RESUMED_EVENT_TYPE = "ManagedSessionResumed";

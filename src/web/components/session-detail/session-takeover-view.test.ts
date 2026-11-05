@@ -15,9 +15,12 @@ import {
 	attemptAnnouncement,
 	bindRefusalMessage,
 	bottomSlot,
+	controlActionLabel,
 	isTakenOver,
+	launchLinkLabel,
 	launchSummaryLine,
 	overviewOriginField,
+	sentenceParts,
 	showsStatusHint,
 	takeoverAttempt,
 } from "./session-takeover-view.js";
@@ -384,18 +387,35 @@ describe("the dialog's words", () => {
 		);
 		expect(lines.title).toBe("Take over fix the tests?");
 		expect(lines.directory).toBe("Directory: /work/repo");
-		expect(lines.whatHappens).toBe(
-			"Codex will run on that machine. Commands and file changes ask for your approval here, and writes stay inside this directory. These settings stay with the session, even if you reopen it elsewhere later. Anyone who can already send prompts to your sessions, including API keys you've issued, can send them to this one. You can stop it from here, but a stopped session can't be taken over again.",
-		);
+		expect(lines.whatHappens).toEqual([
+			"Codex will run on the machine you choose. Commands and file changes will ask for your approval here, and writes stay inside the directory below.",
+			"These limits stay with the session, even if the take-over fails partway.",
+			"Anyone who can already send prompts to your sessions, including API keys you've issued, can send them to this one.",
+			"You can stop it from here, but a stopped session can't be taken over again.",
+		]);
 	});
 
 	test("the reported machine is a sentence to check, or says none was reported", () => {
 		expect(takeoverDialogLines({ ...base, reportedHost: "studio" }).reportedHostNote).toBe(
-			"This session's events named studio. That name isn't verified, so check it yourself.",
+			"This session reported running on studio. AgentPulse can't verify that, so make sure it's right.",
 		);
 		expect(takeoverDialogLines(base).reportedHostNote).toBe(
 			"This session didn't report a machine name.",
 		);
+	});
+
+	test("a different machine chosen is said, not filtered; a long reported name is cut", () => {
+		expect(
+			takeoverDialogLines({ ...base, reportedHost: "studio", hostName: "laptop" }).reportedHostNote,
+		).toBe(
+			"This session reported running on studio. AgentPulse can't verify that, so make sure it's right. You chose laptop, but this session reported studio.",
+		);
+		expect(
+			takeoverDialogLines({ ...base, reportedHost: "studio", hostName: "Studio" }).reportedHostNote,
+		).not.toContain("You chose");
+		const long = takeoverDialogLines({ ...base, reportedHost: "x".repeat(300) }).reportedHostNote;
+		expect(long.length).toBeLessThan(200);
+		expect(long).toContain("…");
 	});
 
 	test("an admin on someone else's session, and on an unowned one, each get their line; solo gets neither", () => {
@@ -495,7 +515,10 @@ describe("refusals in the dialog: every code the routes can answer has a sentenc
 		expect(refuse("host_not_allowed")).toBe(
 			"You can't use that machine. Choose one of your own, or ask an admin.",
 		);
-		expect(refuse("not_owner")).toBe("Only an admin can take over a session with no owner.");
+		expect(refuse("not_owner")).toBe("Only this session's owner or an admin can take it over.");
+		expect(refuse("not_owner", "recovery")).toBe(
+			"Only the session's owner or an admin can resume it.",
+		);
 		expect(refuse("session_not_found")).toBe("This session isn't available.");
 		expect(refuse("host_offline")).toBe(
 			"studio is offline, so nothing was started. Try again when it's back, or choose another machine.",
@@ -559,10 +582,9 @@ describe("failures from the host come verbatim from the shared words", () => {
 		expect(takeover("missing")).toBe(
 			"studio can't find this session's history, so it wasn't taken over. It probably ran on another machine or under another account.",
 		);
-		expect(takeover("running")).toContain("codex app-server daemon stop");
-		expect(takeover("running")).toContain(
-			"which also stops anything else running through that service",
-		);
+		expect(takeover("running")).toContain("`codex app-server daemon stop`");
+		expect(takeover("running")).toContain("Stopping that service interrupts anything else");
+		expect(recovery("running")).toContain("so it wasn't resumed");
 		expect(takeover("cwd_mismatch")).toContain("so it wasn't taken over");
 		expect(takeover("privileges")).toContain("required approval settings");
 		expect(takeover("unsupported_codex")).toContain("Update Codex on studio");
@@ -570,7 +592,10 @@ describe("failures from the host come verbatim from the shared words", () => {
 			"studio is still sending earlier reports for this session. Try again in a few seconds.",
 		);
 		expect(takeover("reports_held")).toContain("~/.agentpulse/supervisor-outbox/");
-		expect(takeover("project_config")).toContain(".codex/config.toml");
+		expect(takeover("project_config")).toContain("in its directory or a folder above it");
+		expect(recovery("project_config")).toContain("start a new session for this work");
+		expect(takeover("privileges")).toContain("Its supervisor log has the reason.");
+		expect(recovery("privileges")).toContain("Its supervisor log has the reason.");
 		expect(takeover("timeout")).toBe(
 			"studio didn't answer in time, so the session wasn't taken over. Check that the machine is awake, then try again.",
 		);
@@ -751,6 +776,39 @@ describe("takeoverCardView: which card, and with what words", () => {
 			takeoverCardView(input({ session: probe({ lastActivityAt: ago(MIN) }) })),
 		];
 		expect(JSON.stringify(views).toLowerCase()).not.toMatch(/\bbind/);
+	});
+});
+
+describe("sentenceParts: a command in backticks is code, everything else text", () => {
+	test("splits on paired backticks, in order, and never produces markup", () => {
+		expect(sentenceParts("run `codex app-server daemon stop` on studio.")).toEqual([
+			{ code: false, text: "run " },
+			{ code: true, text: "codex app-server daemon stop" },
+			{ code: false, text: " on studio." },
+		]);
+		expect(sentenceParts("a `b` and `c`").filter((p) => p.code)).toHaveLength(2);
+	});
+	test("no backticks, or an unpaired one, is one plain part", () => {
+		expect(sentenceParts("plain")).toEqual([{ code: false, text: "plain" }]);
+		expect(sentenceParts("odd ` one")).toEqual([{ code: false, text: "odd ` one" }]);
+		expect(sentenceParts("<img src=x>")).toEqual([{ code: false, text: "<img src=x>" }]);
+		expect(sentenceParts("")).toEqual([]);
+	});
+});
+
+describe("labels that say take over only for a takeover", () => {
+	test("the launch link is 'View details' for a taken-over carrier and 'View launch' for a launch", () => {
+		expect(launchLinkLabel({ hostAffinityReason: "taken_over" })).toBe("View details");
+		expect(launchLinkLabel({ hostAffinityReason: "launched" })).toBe("View launch");
+		expect(launchLinkLabel(null)).toBe("View launch");
+	});
+	test("control history says 'take over' for a takeover's resume; a recovery's resume and every other type keep their word", () => {
+		const a = (actionType: string, resumeKind?: string) =>
+			({ actionType, metadata: resumeKind ? { resumeKind } : null }) as never;
+		expect(controlActionLabel(a("resume", "takeover"))).toBe("take over");
+		expect(controlActionLabel(a("resume", "recovery"))).toBe("resume");
+		expect(controlActionLabel(a("prompt"))).toBe("prompt");
+		expect(controlActionLabel(a("stop"))).toBe("stop");
 	});
 });
 

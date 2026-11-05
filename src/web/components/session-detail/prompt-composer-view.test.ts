@@ -633,7 +633,7 @@ describe("composerMode: a Codex session whose process is gone can be resumed (AG
 		const mode = composerMode(degraded({ host: "offline" }), withAccess(true));
 		expect(mode).toEqual({
 			kind: "blocked",
-			reason: "studio is offline, so this session can't take prompts until it's back.",
+			reason: "studio is offline. You can resume this session when it's back.",
 			startNew: false,
 			resume: { state: "disabled" },
 		});

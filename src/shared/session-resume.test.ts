@@ -16,7 +16,7 @@ import {
 
 const HOST = "build-box";
 const COMMAND_TAIL =
-	"Exit it there. If its window is closed, run `codex app-server daemon stop` on build-box, which also stops anything else running through that service, and try again.";
+	"If it's open in a terminal, exit it and try again. If you already closed it, Codex's background service is probably holding it. Stopping that service interrupts anything else running through it. When that's safe, run `codex app-server daemon stop` on build-box and try again.";
 
 describe("isResumableSessionId", () => {
 	test("accepts a lowercase UUID of any version Codex or randomUUID mints", () => {
@@ -98,7 +98,7 @@ describe("resumeFailureMessage, takeover", () => {
 		cwd_mismatch:
 			"This session's recorded directory doesn't match build-box's, so it wasn't taken over. It may have run on another machine.",
 		privileges:
-			"build-box wouldn't run this session under the required approval settings, so it wasn't taken over.",
+			"build-box wouldn't run this session under the required approval settings, so it wasn't taken over. Its supervisor log has the reason.",
 		unsupported_codex:
 			"build-box's Codex version isn't one AgentPulse can answer approvals for, so the session wasn't taken over. Update Codex on build-box.",
 		reports_pending:
@@ -106,7 +106,7 @@ describe("resumeFailureMessage, takeover", () => {
 		reports_held:
 			"build-box has earlier reports for this session that it can't send, so nothing was started. Its supervisor log names the folder under `~/.agentpulse/supervisor-outbox/`.",
 		project_config:
-			"This session's directory has its own Codex settings (a .codex/config.toml file), which Codex would apply, so it wasn't taken over. Remove that file on build-box, then try again.",
+			"This session's project has a .codex/config.toml, in its directory or a folder above it. Its settings can run commands without asking you, so it wasn't taken over. If the project needs that file, keep it and carry on in your terminal. Otherwise move it out of the project on build-box and try again.",
 		timeout:
 			"build-box didn't answer in time, so the session wasn't taken over. Check that the machine is awake, then try again.",
 		restart: "build-box restarted before it finished, so the session wasn't taken over. Try again.",
@@ -132,7 +132,7 @@ describe("resumeFailureMessage, recovery", () => {
 		cwd_mismatch:
 			"This session's directory on build-box has changed, so it wasn't resumed. Start a new session for this work.",
 		privileges:
-			"build-box wouldn't run this session under its approval settings, so it wasn't resumed.",
+			"build-box wouldn't run this session under its approval settings, so it wasn't resumed. Its supervisor log has the reason.",
 		thread_unverified:
 			"AgentPulse can't confirm this session can be resumed on build-box. Start a new session for this work.",
 		rejected:
@@ -164,7 +164,7 @@ describe("resumeFailureMessage, recovery", () => {
 
 	test("project_config applies to a recovery too, in resumed words", () => {
 		expect(resumeFailureMessage("project_config", HOST, "recovery")).toBe(
-			"This session's directory has its own Codex settings (a .codex/config.toml file), which Codex would apply, so it wasn't resumed. Remove that file on build-box, then try again.",
+			"This session's project has a .codex/config.toml, in its directory or a folder above it. Its settings can run commands without asking you, so it wasn't resumed. If the project needs that file, start a new session for this work. Otherwise move it out of the project on build-box and try again.",
 		);
 	});
 });
@@ -197,6 +197,9 @@ test("every failure kind has words for both resume kinds, and none says 'held by
 test("the words for a host that can't run Codex, and for delete during a takeover", () => {
 	expect(hostCannotRunCodexMessage(HOST)).toBe(
 		"build-box can't run Codex sessions: Codex isn't set up there, or it doesn't support managed Codex sessions. Choose another machine.",
+	);
+	expect(hostCannotRunCodexMessage(HOST, "recovery")).toBe(
+		"build-box can't run Codex sessions: Codex isn't set up there, or it doesn't support managed Codex sessions. Fix that on build-box, or start a new session for this work.",
 	);
 	expect(TAKEOVER_IN_PROGRESS_MESSAGE).toBe(
 		"This session is being taken over. Try again when that's finished.",

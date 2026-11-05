@@ -27,6 +27,7 @@ import type { TimelineMode } from "./TimelineView.js";
 import { WorkspaceTabBar, activityTabWorking } from "./WorkspaceTabBar.js";
 import { buildExportMarkdown } from "./export-markdown.js";
 import { controlBlockedReason } from "./host-control-view.js";
+import { launchLinkLabel } from "./session-takeover-view.js";
 
 interface SessionHeaderProps {
 	session: Session;
@@ -251,7 +252,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 								onClick={() => navigate(`/launches/${session.managedSession?.launchRequestId}`)}
 								className="rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-accent transition-colors"
 							>
-								View launch
+								{launchLinkLabel(session.managedSession)}
 							</button>
 						)}
 						{canStop && (

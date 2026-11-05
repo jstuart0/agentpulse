@@ -73,6 +73,7 @@ export interface ComposerAccess {
 
 export const RESUME_BUTTON = "Resume session";
 export const RESUME_BUTTON_BUSY = "Resuming…";
+export const RESUME_BUTTON_AGAIN = "Try resuming again";
 
 const RESUME_LEAD_RESTARTED = "This session's process ended when its host restarted.";
 const RESUME_LEAD_CONNECTION =
@@ -147,7 +148,15 @@ function degradedMode(session: ModeSession, access: ComposerAccess): ComposerMod
 		return blocked(`${lead} Ask ${who} to resume it, or start a new session for this work.`, true);
 	}
 	if (session.hostControl?.state === "gone") return blocked(hostReason ?? "");
-	if (hostReason !== null) return blocked(hostReason, false, { state: "disabled" });
+	if (hostReason !== null) {
+		return blocked(
+			`${hostNameOf(session)} is offline. You can resume this session when it's back.`,
+			false,
+			{
+				state: "disabled",
+			},
+		);
+	}
 	return blocked(
 		restarted
 			? `${lead} Resume it to keep going, or start a new session for this work.`

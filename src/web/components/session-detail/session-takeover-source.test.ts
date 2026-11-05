@@ -63,6 +63,22 @@ describe("the take-over dialog", () => {
 	});
 });
 
+describe("dialog footer and the supervisor's environment filter", () => {
+	test("the footer sticks to the bottom of a tall sheet on a phone, and a refusal is scrolled into view", () => {
+		const dialog = read("components/ConfirmDialog.tsx");
+		expect(dialog).toMatch(/sticky bottom-0[^"]*bg-card[^"]*md:static/);
+		expect(dialog).toMatch(/scrollIntoView/);
+	});
+
+	test("the supervisor drops AGENTPULSE_ names whatever their case (a source read: it runs inside the Codex start)", () => {
+		const managed = readFileSync(
+			join(WEB, "..", "supervisor", "providers", "codex-managed.ts"),
+			"utf-8",
+		);
+		expect(managed).toContain('name.toUpperCase().startsWith("AGENTPULSE_")');
+	});
+});
+
 describe("the feature's own code", () => {
 	test("reaches the server only through api.ts: no fetch, no XMLHttpRequest", () => {
 		for (const rel of FEATURE) {

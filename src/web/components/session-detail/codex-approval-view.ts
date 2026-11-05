@@ -799,3 +799,15 @@ export function writeDismissed(
 		// Private mode or a full quota: the page still hides it.
 	}
 }
+
+/**
+ * Whether the card may say the host can't answer approvals ("update the supervisor"). Not while the session is
+ * being taken over or resumed (`pending`) or has lost its process (`degraded`): its state is the slot's to say,
+ * and the host's capability snapshot describes a runtime that isn't there.
+ */
+export function showsAvailabilityHint(
+	managedSession: { managedState?: string | null } | null | undefined,
+): boolean {
+	const state = managedSession?.managedState;
+	return state !== "pending" && state !== "degraded";
+}

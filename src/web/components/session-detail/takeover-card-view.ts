@@ -3,6 +3,7 @@
  * sentence and every rule is tested without rendering. Everything here is display: the server decides. Loaded
  * only by the card's lazy chunk; the rules the session page itself needs are in session-takeover-view.ts.
  */
+import { cleanHostText } from "../../../shared/clean-host-text.js";
 import { SESSION_END_TIMEOUT_MS, SESSION_IDLE_TIMEOUT_MS } from "../../../shared/constants.js";
 import { RESUMES_SESSIONS, type ResumeKind } from "../../../shared/session-resume.js";
 import { parseStoredTimestamp } from "../../../shared/timestamp.js";
@@ -221,13 +222,31 @@ export interface TakeoverDialogLines {
 	reportedHostNote: string;
 	directory: string;
 	teamNote: string | null;
-	whatHappens: string;
+	whatHappens: readonly string[];
 }
 
 export const TAKEOVER_LEAD =
 	"Only continue if this session has ended on the machine it ran on. If it's still open in a terminal, exit it first. AgentPulse checks the machine too, but can't always tell.";
-export const TAKEOVER_WHAT_HAPPENS =
-	"Codex will run on that machine. Commands and file changes ask for your approval here, and writes stay inside this directory. These settings stay with the session, even if you reopen it elsewhere later. Anyone who can already send prompts to your sessions, including API keys you've issued, can send them to this one. You can stop it from here, but a stopped session can't be taken over again.";
+/** What the session will run under, one short paragraph each so a phone can read them. */
+export const TAKEOVER_WHAT_HAPPENS: readonly string[] = [
+	"Codex will run on the machine you choose. Commands and file changes will ask for your approval here, and writes stay inside the directory below.",
+	"These limits stay with the session, even if the take-over fails partway.",
+	"Anyone who can already send prompts to your sessions, including API keys you've issued, can send them to this one.",
+	"You can stop it from here, but a stopped session can't be taken over again.",
+];
+
+/** The session's own report of where it ran is shown short: it is whatever the sender chose to say. */
+const REPORTED_HOST_MAX_CHARS = 60;
+
+function reportedHostNote(reported: string | null, chosen: string | null): string {
+	const name = cleanHostText(reported, REPORTED_HOST_MAX_CHARS);
+	if (name === null) return "This session didn't report a machine name.";
+	const note = `This session reported running on ${name}. AgentPulse can't verify that, so make sure it's right.`;
+	const picked = chosen?.trim();
+	return picked && picked.toLowerCase() !== name.toLowerCase()
+		? `${note} You chose ${picked}, but this session reported ${name}.`
+		: note;
+}
 
 export function takeoverDialogLines(input: TakeoverDialogInput): TakeoverDialogLines {
 	const adminNote =
@@ -243,9 +262,7 @@ export function takeoverDialogLines(input: TakeoverDialogInput): TakeoverDialogL
 		title: `Take over ${input.sessionName}?`,
 		lead: TAKEOVER_LEAD,
 		adminNote,
-		reportedHostNote: input.reportedHost?.trim()
-			? `This session's events named ${input.reportedHost.trim()}. That name isn't verified, so check it yourself.`
-			: "This session didn't report a machine name.",
+		reportedHostNote: reportedHostNote(input.reportedHost, input.hostName),
 		directory: `Directory: ${input.cwd?.trim() || "not reported"}`,
 		teamNote: input.team
 			? `AgentPulse checks who reported this session, not who typed in it. If people share one account on ${where}, check that this is your session first.`

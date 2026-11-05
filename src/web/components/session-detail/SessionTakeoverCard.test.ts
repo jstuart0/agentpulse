@@ -101,9 +101,26 @@ describe("TakeoverCardBody", () => {
 			}),
 		);
 		expect(out).toMatch(
-			/role="alert"[^>]*>[^<]*studio can&#x27;t find this session&#x27;s history/,
+			/role="alert"[^>]*>(<span>)?[^<]*studio can&#x27;t find this session&#x27;s history/,
 		);
 		expect(out).toContain("Take over…");
+	});
+
+	test("a command in a host's sentence is drawn as code, the rest as plain text, with normal word breaking", () => {
+		const out = html(
+			createElement(TakeoverCardBody, {
+				view: {
+					kind: "eligible",
+					text: "t",
+					failure: "run `codex app-server daemon stop` on studio and try again.",
+					hostsState: "ready",
+				},
+				onOpen: noop,
+			}),
+		);
+		expect(out).toMatch(/<code[^>]*break-normal[^>]*>codex app-server daemon stop<\/code>/);
+		expect(out).not.toContain("`");
+		expect(out).toContain("text-sm text-red-700");
 	});
 
 	test("hosts still loading shows no button; hosts that failed offer a retry", () => {
@@ -166,7 +183,7 @@ describe("TakeoverDialogFields", () => {
 		reportedHostNote: "This session didn't report a machine name.",
 		directory: "Directory: /work/repo",
 		teamNote: null,
-		whatHappens: "Codex will run on that machine.",
+		whatHappens: ["Codex will run on that machine."],
 	};
 	const render = (over: Record<string, unknown> = {}) =>
 		html(
@@ -231,7 +248,7 @@ describe("TakeoverDialogDescription", () => {
 		reportedHostNote: "x",
 		directory: "Directory: /w",
 		teamNote: null,
-		whatHappens: "Codex will run on that machine.",
+		whatHappens: ["Codex will run on that machine."],
 	};
 	test("the limits and the lead come first, in the region the dialog is described by", () => {
 		const out = html(createElement(TakeoverDialogDescription, { lines }));

@@ -66,6 +66,7 @@ import {
 	queuePosition,
 	requestHeading,
 	secondsLeft,
+	showsAvailabilityHint,
 	signedDiffLines,
 	statsText,
 	teamNotOwnerHeading,
@@ -320,9 +321,10 @@ export function CodexApprovalCard({ session, announce }: Props) {
 		}
 	});
 
-	const hint = sessionIsLive(session)
-		? availabilityHint(session.managedSession?.providerCapabilitySnapshot, host)
-		: null;
+	const hint =
+		sessionIsLive(session) && showsAvailabilityHint(session.managedSession)
+			? availabilityHint(session.managedSession?.providerCapabilitySnapshot, host)
+			: null;
 	const hintNode = hint ? (
 		<p className="mx-3 mt-2 text-xs leading-relaxed text-muted-foreground md:mx-6 md:mt-3">
 			{hint}
