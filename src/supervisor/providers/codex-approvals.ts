@@ -17,7 +17,14 @@
 import { randomUUID } from "node:crypto";
 import { resolve as resolvePath } from "node:path";
 import {
+	CLAUDE_HOST_DECLINE_MESSAGE,
+	CLAUDE_PERSON_DECLINE_MESSAGE,
+	CLAUDE_PERSON_STOP_MESSAGE,
+} from "../../shared/claude-approvals.js";
+import {
 	type ApprovalDecision,
+	CLAUDE_APPROVALS_SERVER_FEATURE,
+	CLAUDE_DECLINE_EVIDENCE_WAIT_MS,
 	CODEX_APPROVALS_SERVER_FEATURE,
 	CODEX_APPROVAL_LIMITS,
 	CODEX_APPROVAL_TTL_MS,
@@ -31,8 +38,16 @@ import {
 	TRACKER_OUTCOME_TABLE,
 	type TrackerOutcome,
 } from "../../shared/codex-approvals.js";
+import type { ClaudeForkMode } from "../../shared/session-resume.js";
 import type { ReportGate } from "../services/report-gate.js";
 import { SupervisorRequestError, classifyReportFailure } from "../services/report-resilience.js";
+import { buildClaudeReportBody, parseClaudeRequest } from "./claude-approval-params.js";
+import type {
+	ClaudeApprovalContext,
+	ClaudeApprovalPort,
+	ClaudeToolResultInfo,
+} from "./claude-stream.js";
+import { allowResponse, denyResponse } from "./claude-wire.js";
 import {
 	type BufferedChange,
 	COMMAND_APPROVAL_METHOD,
@@ -52,6 +67,18 @@ import {
 	type RpcClient,
 	type RpcTimers,
 } from "./codex-rpc.js";
+
+/**
+ * The part of a connection the tracker uses. A Codex app-server's `RpcClient` is one; a takeover fork's
+ * requests arrive through its runtime's approval port instead, and the tracker holds no client for them.
+ */
+export type ApprovalClient = Pick<
+	RpcClient,
+	"isClosed" | "respond" | "respondError" | "onServerRequest" | "onNotification" | "onClose"
+>;
+
+/** Whose requests a runtime's state holds: they differ in how they are read, answered and confirmed. */
+export type ApprovalDialect = "codex" | "claude";
 
 /** An approval that arrives before the protocol verdict is held this long, then declined. */
 export const VERDICT_WAIT_MS = 5_000;
@@ -74,6 +101,16 @@ type MethodSpec = {
 	/** Approvals can be held for the verdict; the rest are answered the moment they arrive. */
 	approval: boolean;
 	answer: Answer;
+	/** Who asked, for the warning. Absent means Codex. */
+	agent?: "Claude";
+};
+
+/** The one thing a takeover fork asks: to use a tool. Answered through the runtime's port, never from this table. */
+const CLAUDE_SPEC: MethodSpec = {
+	label: "to use a tool",
+	approval: true,
+	agent: "Claude",
+	answer: { kind: "result", result: { behavior: "deny", message: CLAUDE_HOST_DECLINE_MESSAGE } },
 };
 
 const METHOD_NOT_FOUND: Answer = {
@@ -184,7 +221,8 @@ export type RefusalReason =
 	| "too_many_pending"
 	| "session_stopping"
 	| "identity_conflict"
-	| "session_not_owned";
+	| "session_not_owned"
+	| "decided_elsewhere";
 
 const REASON_TAIL: Partial<Record<RefusalReason, string>> = {
 	approvals_not_enabled: "Approvals can't be answered from AgentPulse for this session.",
@@ -200,6 +238,7 @@ const REASON_TAIL: Partial<Record<RefusalReason, string>> = {
 	session_stopping: "The session was being stopped.",
 	identity_conflict: "The request clashed with an earlier one.",
 	session_not_owned: "This host doesn't own the session.",
+	decided_elsewhere: "Something else on this machine decided it first.",
 };
 
 export type ApprovalLaunch = {
@@ -253,11 +292,20 @@ type Held = {
 	reporting: boolean;
 	nextReportAt: number;
 	reportFailures: number;
+	/** A Claude request: the tool call it is for, and the runtime's answer channel for it. */
+	toolUseId: string | null;
+	ctx: ClaudeApprovalContext | null;
+	/** The decline being written is a person's answer (the server's), not the host's own. */
+	personAnswered: boolean;
 };
 
 type State = {
 	handle: ApprovalHandle;
-	client: RpcClient;
+	dialect: ApprovalDialect;
+	/** Null for a takeover fork: its requests and answers go through the runtime's port. */
+	client: ApprovalClient | null;
+	/** A takeover fork's mode and where Claude keeps its projects. */
+	claude: { mode: ClaudeForkMode; configDir: string | null } | null;
 	launch: ApprovalLaunch;
 	verdict: Verdict | null;
 	fenced: boolean;
@@ -270,10 +318,20 @@ type State = {
 export type CodexApprovalTracker = {
 	/** Call before `initialize`: every launch failure after it is covered by the client's close. */
 	attachClient(client: RpcClient, launch: ApprovalLaunch): ApprovalHandle;
+	/**
+	 * A takeover fork's runtime (AGEN-117 T9). `launch.cwd` is the directory the fork was started in. The returned
+	 * port is handed to `startClaudeStream({ approvals })`; the verdict is the protocol gate's, which a started
+	 * runtime has already passed.
+	 */
+	attachClaude(
+		launch: ApprovalLaunch & { cwd: string },
+		options: { mode: ClaudeForkMode; configDir: string | null; verdict: Verdict },
+	): ClaudeApprovalPort & { readonly handle: ApprovalHandle };
 	setVerdict(handle: ApprovalHandle, verdict: Verdict): void;
 	/**
 	 * What the server said it can do (`register` and `heartbeat`). Absent or without `codex_approvals`
-	 * means off: every unanswered request is declined and new ones are declined on arrival.
+	 * (`claude_approvals` for a takeover fork) means off for that agent: every unanswered request is declined
+	 * and new ones are declined on arrival.
 	 */
 	setServerFeatures(features: readonly string[] | null | undefined): void;
 	/**
@@ -316,12 +374,13 @@ const IDLE: Promise<void> = Promise.resolve();
 function warningText(spec: MethodSpec | undefined, reason: RefusalReason): string {
 	if (!spec)
 		return "Codex sent a request AgentPulse doesn't recognize. It was refused automatically.";
+	const who = spec.agent ?? "Codex";
 	if (spec.answer.kind !== "result") {
-		return `Codex asked ${spec.label}. AgentPulse refused it automatically.`;
+		return `${who} asked ${spec.label}. AgentPulse refused it automatically.`;
 	}
-	if (!spec.approval) return `Codex asked ${spec.label}. AgentPulse refused it automatically.`;
+	if (!spec.approval) return `${who} asked ${spec.label}. AgentPulse refused it automatically.`;
 	const tail = REASON_TAIL[reason];
-	return `Codex asked ${spec.label}. AgentPulse declined it automatically.${tail ? ` ${tail}` : ""}`;
+	return `${who} asked ${spec.label}. AgentPulse declined it automatically.${tail ? ` ${tail}` : ""}`;
 }
 
 function reasonForVerdict(verdict: Verdict | null): RefusalReason {
@@ -346,12 +405,16 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 	/** The server's id for a request. Keyed by it, never by Codex's rpc id alone: two runtimes reuse the same ids. */
 	const byApproval = new Map<string, Held>();
 	const byHandle = new WeakMap<ApprovalHandle, State>();
-	let serverEnabled = false;
+	/** What the server said it can do, per agent; a failed report or sync trips the breaker for both. */
+	const featureOn: Record<ApprovalDialect, boolean> = { codex: false, claude: false };
+	const breaker: Record<ApprovalDialect, boolean> = { codex: false, claude: false };
 	let syncing = false;
 	let syncFailures = 0;
 	let nextSyncAtWall = 0;
 
 	const ageOf = (held: Held) => Math.max(monotonic() - held.monoAt, now() - held.wallAt, 0);
+	const enabledFor = (dialect: ApprovalDialect) => !breaker[dialect] && featureOn[dialect];
+	const anyEnabled = () => enabledFor("codex") || enabledFor("claude");
 
 	// ---- the only writers to Codex ----
 
@@ -359,6 +422,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 	function answerFromTable(state: State, id: JsonRpcId, spec: MethodSpec | undefined) {
 		const chosen = spec?.answer ?? METHOD_NOT_FOUND;
 		try {
+			if (!state.client) return;
 			if (chosen.kind === "result") state.client.respond(id, chosen.result);
 			else state.client.respondError(id, chosen.code, chosen.message);
 		} catch {
@@ -371,12 +435,32 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		if (held.sent !== null || held.closedByCodex) return false;
 		let wrote = false;
 		try {
-			wrote = state.client.respond(held.id, { decision });
+			wrote =
+				state.dialect === "claude"
+					? writeClaudeRefusal(held, decision)
+					: (state.client?.respond(held.id, { decision }) ?? false);
 		} catch {
 			// A closed stdin is the child going away.
 		}
 		if (wrote) held.sent = decision;
 		return wrote;
+	}
+
+	/**
+	 * A deny for a Claude request. A person's decline carries the words the evidence check looks for in the
+	 * `tool_result`; every other decline carries the host's own, so a result that has them is known not to be
+	 * a person's. `cancel` also asks Claude to interrupt the turn.
+	 */
+	function writeClaudeRefusal(held: Held, decision: "decline" | "cancel"): boolean {
+		const ctx = held.ctx;
+		if (!ctx || typeof held.id !== "string") return false;
+		return ctx.answer(held.id, denyResponse(denyMessageFor(held, decision), decision === "cancel"));
+	}
+
+	/** The words a deny for this request carries (and so the words its `tool_result` must show). */
+	function denyMessageFor(held: Held, decision: "decline" | "cancel"): string {
+		if (!held.personAnswered) return CLAUDE_HOST_DECLINE_MESSAGE;
+		return decision === "cancel" ? CLAUDE_PERSON_STOP_MESSAGE : CLAUDE_PERSON_DECLINE_MESSAGE;
 	}
 
 	/**
@@ -428,7 +512,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		if (
 			state.disposed ||
 			state.fenced ||
-			!serverEnabled ||
+			!enabledFor(state.dialect) ||
 			(state.verdict?.verdict ?? null) !== "supported"
 		) {
 			declineLocally(held, null, "declined_local");
@@ -436,7 +520,12 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		}
 		let wrote = false;
 		try {
-			wrote = state.client.respond(held.id, { decision: "accept" });
+			// A takeover fork's accept is `allow` with the held input echoed back; it is written here and nowhere else.
+			wrote =
+				state.dialect === "claude"
+					? typeof held.id === "string" &&
+						(held.ctx?.answer(held.id, allowResponse(held.parsed?.claude?.input ?? {})) ?? false)
+					: (state.client?.respond(held.id, { decision: "accept" }) ?? false);
 		} catch {
 			// A closed stdin is the child going away.
 		}
@@ -483,6 +572,16 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 	function afterSend(held: Held) {
 		const sent = held.sent;
 		record(held, "respond_sent", sent);
+		if (held.state.dialect === "claude") {
+			// An accept is confirmed by the call's `tool_result`, however long the tool runs: no clock. A decline is
+			// confirmed by a result that proves nothing ran (T10); silence for this long means something else decided.
+			if (sent === "accept") return;
+			held.resolvedTimer = timers.set(() => {
+				held.resolvedTimer = undefined;
+				if (!held.terminal) decidedElsewhere(held);
+			}, CLAUDE_DECLINE_EVIDENCE_WAIT_MS);
+			return;
+		}
 		held.resolvedTimer = timers.set(() => {
 			held.resolvedTimer = undefined;
 			if (held.terminal) return;
@@ -491,6 +590,11 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 	}
 
 	const lastWarnedAt = new Map<string, number>();
+
+	/** What the warning calls the thing that asked: a takeover fork's request has no entry in Codex's method table. */
+	function specOf(held: Held): MethodSpec | undefined {
+		return held.state.dialect === "claude" ? CLAUDE_SPEC : METHODS[held.method];
+	}
 
 	function warn(state: State, method: string, spec: MethodSpec | undefined, reason: RefusalReason) {
 		const warnKey = JSON.stringify([state.launch.sessionId, spec ? method : "unknown", reason]);
@@ -523,7 +627,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 	) {
 		if (held.terminal || held.sent !== null) return;
 		if (!held.closedByCodex) writeRefusal(held.state, held, "decline");
-		if (reason) warn(held.state, held.method, METHODS[held.method], reason);
+		if (reason) warn(held.state, held.method, specOf(held), reason);
 		record(held, outcome, "decline");
 	}
 
@@ -532,6 +636,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 	function pathsOf(held: Held): string[] {
 		const parsed = held.parsed;
 		if (!parsed) return [];
+		if (parsed.claude) return parsed.claude.excludePaths;
 		const base = parsed.cwd ?? held.state.launch.cwd ?? "";
 		const resolveFrom = (path: string) => (base ? resolvePath(base, path) : path);
 		const paths: string[] = [];
@@ -552,6 +657,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		if (!parsed) return ["unparsed"];
 		const reasons: string[] = [...parsed.declineOnly];
 		if (
+			held.state.dialect === "codex" &&
 			parsed.kind === "file_change" &&
 			(held.state.changes.get(diffKey(parsed.threadId, parsed.itemId))?.length ?? 0) === 0
 		) {
@@ -639,7 +745,9 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 				// stop and other (a 404 after a server rollback, an edge refusal): nothing here can be
 				// answered until a heartbeat says the server can again.
 				declineLocally(held, "server_refused", "declined_local");
-				setServerEnabled(false);
+				// A takeover fork's report failing stops takeover forks only: Codex's own reports and syncs
+				// find out for themselves if the whole server went away.
+				tripBreaker(held.state.dialect === "claude" ? "claude" : "all");
 		}
 	}
 
@@ -657,18 +765,27 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		}
 		if (gate.isOffline()) return;
 		const revision = held.revision;
-		const body = buildReportBody({
-			runtimeEpoch: held.state.handle.epoch,
-			rpcId: held.key,
-			parsed,
-			fallbackCwd: held.state.launch.cwd ?? null,
-			changes:
-				parsed.kind === "file_change"
-					? (held.state.changes.get(diffKey(parsed.threadId, parsed.itemId)) ?? null)
-					: null,
-			ageMs: age,
-			revision,
-		});
+		const body =
+			held.state.dialect === "claude"
+				? buildClaudeReportBody({
+						runtimeEpoch: held.state.handle.epoch,
+						rpcId: held.key,
+						parsed,
+						ageMs: age,
+						revision,
+					})
+				: buildReportBody({
+						runtimeEpoch: held.state.handle.epoch,
+						rpcId: held.key,
+						parsed,
+						fallbackCwd: held.state.launch.cwd ?? null,
+						changes:
+							parsed.kind === "file_change"
+								? (held.state.changes.get(diffKey(parsed.threadId, parsed.itemId)) ?? null)
+								: null,
+						ageMs: age,
+						revision,
+					});
 		held.reporting = true;
 		try {
 			const result = await gate.reportApproval(held.state.launch.sessionId, body);
@@ -690,6 +807,16 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 
 	// ---- the poll (D11) ----
 
+	/**
+	 * What the server is told. `decided_elsewhere` exists only on a server that advertised `claude_approvals`;
+	 * to any other it is `runtime_gone_after_response` with an accept, which every server reads as "may have run" (`runtime_gone` would read "didn't run", which is not known), so a rolled-back parser never rejects a body.
+	 */
+	function wireOutcome(outcome: TrackerOutcome): TrackerOutcome {
+		return outcome === "decided_elsewhere" && !featureOn.claude
+			? "runtime_gone_after_response"
+			: outcome;
+	}
+
 	function syncEntries() {
 		const live: Array<{ sessionId: string; approvalId: string; revision: number }> = [];
 		const resolved: Array<CodexApprovalResolved & { sessionId: string }> = [];
@@ -700,11 +827,13 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 				live.push({ sessionId, approvalId: held.approvalId, revision: held.revision });
 			for (const entry of held.outcomes) {
 				if (!entry.acked) {
+					const outcome = wireOutcome(entry.outcome);
 					resolved.push({
 						sessionId,
 						approvalId: held.approvalId,
-						outcome: entry.outcome,
-						sentDecision: entry.sentDecision,
+						outcome,
+						// The downgrade says "an accept went out and its end is unknown", which every server reads as "may have run".
+						sentDecision: outcome === entry.outcome ? entry.sentDecision : "accept",
 					});
 				}
 			}
@@ -712,14 +841,30 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		return { live, resolved };
 	}
 
-	function setServerEnabled(enabled: boolean) {
-		if (serverEnabled === enabled) return;
-		serverEnabled = enabled;
-		if (enabled) return;
+	/** Declines what is held for an agent that stopped being enabled since `before`. */
+	function declineNewlyDisabled(before: Record<ApprovalDialect, boolean>) {
 		for (const held of [...all]) {
+			const dialect = held.state.dialect;
+			if (!before[dialect] || enabledFor(dialect)) continue;
 			if (held.terminal || held.sent !== null || held.closedByCodex) continue;
 			declineLocally(held, "approvals_not_enabled", "declined_local");
 		}
+	}
+
+	function enabledSnapshot(): Record<ApprovalDialect, boolean> {
+		return { codex: enabledFor("codex"), claude: enabledFor("claude") };
+	}
+
+	/** What the server won't take can't be answered: off for every agent until a heartbeat says otherwise. */
+	function tripBreaker(which: ApprovalDialect | "all" = "all") {
+		const before = enabledSnapshot();
+		if (which === "all") {
+			breaker.codex = true;
+			breaker.claude = true;
+		} else {
+			breaker[which] = true;
+		}
+		declineNewlyDisabled(before);
 	}
 
 	function onSyncFailure(error: unknown) {
@@ -731,7 +876,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 				if (held.terminal || held.sent !== null || held.closedByCodex) continue;
 				declineLocally(held, "server_refused", "declined_local");
 			}
-			setServerEnabled(false);
+			tripBreaker();
 			return;
 		}
 		syncFailures++;
@@ -753,11 +898,13 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 			deliverAccept(held, answer, roundTripMs);
 			return;
 		}
+		held.personAnswered = true;
 		if (writeRefusal(held.state, held, decision)) afterSend(held);
+		else held.personAnswered = false;
 	}
 
 	async function runSync(): Promise<void> {
-		if (!gate || syncing || !serverEnabled || gate.isOffline()) return;
+		if (!gate || syncing || !anyEnabled() || gate.isOffline()) return;
 		if (now() < nextSyncAtWall) return;
 		// A session a rule now covers is dropped before anything about it is said.
 		for (const held of [...all]) {
@@ -784,7 +931,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 				const held = byApproval.get(ack.approvalId);
 				if (!held) continue;
 				for (const entry of held.outcomes) {
-					if (entry.outcome === ack.outcome) entry.acked = true;
+					if (wireOutcome(entry.outcome) === ack.outcome) entry.acked = true;
 				}
 				pruneIfDone(held);
 			}
@@ -829,17 +976,27 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 	function proceed(held: Held) {
 		const state = held.state;
 		if (held.terminal) return;
-		if (!gate || !serverEnabled) {
+		if (!gate || !enabledFor(state.dialect)) {
 			declineLocally(held, "approvals_not_enabled", "declined_local");
 			return;
 		}
-		const parsed = parseApprovalParams(held.method, held.params);
+		const parsed =
+			state.dialect === "claude" && held.ctx && state.claude
+				? parseClaudeRequest(held.params, {
+						threadId: state.launch.sessionId,
+						turnId: held.ctx.turnId,
+						cwd: state.launch.cwd ?? "",
+						configDir: state.claude.configDir,
+						inputStable: held.ctx.inputStable,
+					})
+				: parseApprovalParams(held.method, held.params);
 		if (!parsed) {
 			declineLocally(held, "malformed_request", "declined_local");
 			return;
 		}
 		held.parsed = parsed;
 		if (
+			state.dialect === "codex" &&
 			parsed.kind === "file_change" &&
 			!state.changes.has(diffKey(parsed.threadId, parsed.itemId))
 		) {
@@ -878,10 +1035,12 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		earlier: Held,
 		call: JsonRpcServerRequest,
 		spec: MethodSpec,
+		writeDecline: () => boolean = () =>
+			state.client?.respond(call.id, { decision: "decline" }) ?? false,
 	) {
 		let wrote = false;
 		try {
-			wrote = state.client.respond(call.id, { decision: "decline" });
+			wrote = writeDecline();
 		} catch {
 			// A closed stdin is the child going away.
 		}
@@ -954,6 +1113,9 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 			reporting: false,
 			nextReportAt: 0,
 			reportFailures: 0,
+			toolUseId: null,
+			ctx: null,
+			personAnswered: false,
 		};
 		all.add(held);
 		state.requests.set(held.key, held);
@@ -1063,11 +1225,163 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		}
 	}
 
+	// ---- a takeover fork's requests (AGEN-117 T9, T10) ----
+
+	/**
+	 * Something other than a person decided this call: a cancel from Claude (a rule, a hook, an interrupt)
+	 * or a `tool_result` that isn't proof of our own deny. Whether it ran is unknowable here; the row says
+	 * so. Nothing more may be written for it.
+	 */
+	function decidedElsewhere(held: Held) {
+		if (held.terminal) return;
+		held.closedByCodex = true;
+		if (held.toolUseId !== null) held.ctx?.markDecidedElsewhere(held.toolUseId);
+		record(held, "decided_elsewhere", held.sent);
+		if (held.approvalId === null && !held.reporting) {
+			warn(held.state, held.method, CLAUDE_SPEC, "decided_elsewhere");
+		}
+	}
+
+	function denyUnheld(ctx: ClaudeApprovalContext, id: string) {
+		try {
+			ctx.answer(id, denyResponse(CLAUDE_HOST_DECLINE_MESSAGE));
+		} catch {
+			// A closed stdin is the child going away.
+		}
+	}
+
+	function onClaudeRequest(state: State, call: JsonRpcServerRequest, ctx: ClaudeApprovalContext) {
+		if (state.disposed || typeof call.id !== "string") return;
+		const id = call.id;
+		const spec = CLAUDE_SPEC;
+		if (state.fenced) {
+			denyUnheld(ctx, id);
+			warn(state, call.method, spec, "fenced");
+			return;
+		}
+		if (pendingCount() >= maxOpen) {
+			denyUnheld(ctx, id);
+			warn(state, call.method, spec, "over_capacity");
+			return;
+		}
+		if (state.verdict && state.verdict.verdict !== "supported") {
+			denyUnheld(ctx, id);
+			warn(state, call.method, spec, reasonForVerdict(state.verdict));
+			return;
+		}
+		const key = keyOf(id);
+		const earlier = state.requests.get(key);
+		if (earlier && idStillOpen(earlier)) {
+			refuseRepeatedId(state, earlier, call, spec, () =>
+				ctx.answer(id, denyResponse(CLAUDE_HOST_DECLINE_MESSAGE)),
+			);
+			return;
+		}
+		const params = call.params as { tool_use_id?: unknown } | undefined;
+		const held: Held = {
+			state,
+			key,
+			id,
+			method: call.method,
+			params: call.params,
+			parsed: null,
+			monoAt: monotonic(),
+			wallAt: now(),
+			revision: 1,
+			reportedRevision: 0,
+			approvalId: null,
+			sent: null,
+			closedByCodex: false,
+			terminal: false,
+			terminalAtWall: 0,
+			outcomes: [],
+			waiting: null,
+			verdictDeadline: 0,
+			verdictTimer: undefined,
+			diffTimer: undefined,
+			resolvedTimer: undefined,
+			reporting: false,
+			nextReportAt: 0,
+			reportFailures: 0,
+			toolUseId: typeof params?.tool_use_id === "string" ? params.tool_use_id : null,
+			ctx,
+			personAnswered: false,
+		};
+		all.add(held);
+		state.requests.set(held.key, held);
+		proceed(held);
+	}
+
+	/**
+	 * Claude cancelled a request. Before our answer that is "decided elsewhere". After our accept, or after a
+	 * "decline and stop" (whose own interrupt Claude follows with a cancel), nothing changes. After a plain
+	 * decline a person gave, a cancel before the proof is something else deciding.
+	 */
+	function onClaudeCancel(state: State, requestId: string) {
+		if (state.disposed) return;
+		const held = state.requests.get(keyOf(requestId));
+		if (!held || held.terminal || held.closedByCodex) return;
+		if (held.sent === null || (held.sent === "decline" && held.personAnswered))
+			decidedElsewhere(held);
+	}
+
+	function heldForToolUse(state: State, toolUseId: string): Held | undefined {
+		for (const held of state.requests.values()) {
+			if (held.toolUseId === toolUseId) return held;
+		}
+		return undefined;
+	}
+
+	/**
+	 * A `tool_result` for a call. For our accept it is the confirmation. For our deny it is the confirmation only
+	 * when it proves the harness refused the call on a person's word: `non_execution_kind` set, a `user_reject`
+	 * source, and the exact text we denied with. Anything else, including a result for a call still waiting for a
+	 * person, means something else decided (a failed Bash that ran has `is_error` and no `non_execution_kind`).
+	 */
+	function onClaudeResult(state: State, toolUseId: string, info?: ClaudeToolResultInfo) {
+		if (state.disposed) return;
+		const held = heldForToolUse(state, toolUseId);
+		if (!held || held.terminal) return;
+		if (held.sent === null) {
+			if (!held.closedByCodex) decidedElsewhere(held);
+			return;
+		}
+		if (held.sent === "accept") {
+			record(held, "resolved_after_response", "accept");
+			return;
+		}
+		const expected = denyMessageFor(held, held.sent);
+		const proven =
+			info !== undefined &&
+			info.nonExecutionKind !== null &&
+			info.decisionSource === "user_reject" &&
+			info.content === expected;
+		if (proven) record(held, "resolved_after_response", held.sent);
+		else decidedElsewhere(held);
+	}
+
+	/** The turn ended: nothing held for it can still be answered. */
+	function onClaudeTurnEnded(state: State) {
+		for (const held of [...state.requests.values()]) {
+			if (held.terminal) continue;
+			if (held.sent === null) {
+				if (held.closedByCodex) continue;
+				held.closedByCodex = true;
+				record(held, "resolved_before_response", null);
+			} else if (held.sent === "accept") {
+				record(held, "resolved_timeout", "accept");
+			} else {
+				record(held, "resolved_before_response", held.sent);
+			}
+		}
+	}
+
 	// ---- runtime lifecycle ----
 
 	function disposeState(state: State) {
 		if (state.disposed) return;
-		const clientOpen = !state.client.isClosed;
+		// A takeover fork's process is gone when its runtime disposes: nothing is written, whatever the state.
+		const clientOpen = state.client !== null && !state.client.isClosed;
 		state.disposed = true;
 		for (const stop of state.unsubscribe) stop();
 		states.delete(state);
@@ -1085,6 +1399,14 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		state.changes.clear();
 	}
 
+	function fenceState(state: State) {
+		state.fenced = true;
+		for (const held of [...state.requests.values()]) {
+			if (held.terminal || held.sent !== null || held.closedByCodex) continue;
+			declineLocally(held, "fenced", "declined_local");
+		}
+	}
+
 	function pendingCount(): number {
 		let open = 0;
 		for (const held of all) if (!held.terminal && held.sent === null && !held.closedByCodex) open++;
@@ -1096,7 +1418,9 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 			const handle: ApprovalHandle = { sessionId: launch.sessionId, epoch: randomUUID() };
 			const state: State = {
 				handle,
+				dialect: "codex",
 				client,
+				claude: null,
 				launch,
 				verdict: null,
 				fenced: false,
@@ -1111,6 +1435,34 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 			state.unsubscribe.push(client.onNotification((n) => onNotification(state, n)));
 			state.unsubscribe.push(client.onClose(() => disposeState(state)));
 			return handle;
+		},
+
+		attachClaude(launch, options) {
+			const handle: ApprovalHandle = { sessionId: launch.sessionId, epoch: randomUUID() };
+			const state: State = {
+				handle,
+				dialect: "claude",
+				client: null,
+				claude: { mode: options.mode, configDir: options.configDir },
+				launch,
+				verdict: options.verdict,
+				fenced: false,
+				disposed: false,
+				requests: new Map(),
+				changes: new Map(),
+				unsubscribe: [],
+			};
+			states.add(state);
+			byHandle.set(handle, state);
+			return {
+				handle,
+				onToolRequest: (call, ctx) => onClaudeRequest(state, call, ctx),
+				cancel: (requestId) => onClaudeCancel(state, requestId),
+				toolResult: (toolUseId, info) => onClaudeResult(state, toolUseId, info),
+				turnEnded: () => onClaudeTurnEnded(state),
+				fence: () => fenceState(state),
+				dispose: () => disposeState(state),
+			};
 		},
 
 		setVerdict(handle, verdict) {
@@ -1131,9 +1483,14 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		},
 
 		setServerFeatures(features) {
-			setServerEnabled(
-				Array.isArray(features) && features.includes(CODEX_APPROVALS_SERVER_FEATURE),
-			);
+			const before = enabledSnapshot();
+			breaker.codex = false;
+			breaker.claude = false;
+			featureOn.codex =
+				Array.isArray(features) && features.includes(CODEX_APPROVALS_SERVER_FEATURE);
+			featureOn.claude =
+				Array.isArray(features) && features.includes(CLAUDE_APPROVALS_SERVER_FEATURE);
+			declineNewlyDisabled(before);
 		},
 
 		tick() {
@@ -1152,12 +1509,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 
 		fence(sessionId) {
 			for (const state of states) {
-				if (state.handle.sessionId !== sessionId) continue;
-				state.fenced = true;
-				for (const held of [...state.requests.values()]) {
-					if (held.terminal || held.sent !== null || held.closedByCodex) continue;
-					declineLocally(held, "fenced", "declined_local");
-				}
+				if (state.handle.sessionId === sessionId) fenceState(state);
 			}
 		},
 

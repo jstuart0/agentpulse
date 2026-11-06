@@ -118,7 +118,8 @@ export class ClaudeLink implements RpcLink {
 	private readonly controlTimeoutMs: number;
 	private readonly newRequestId: (kind: "init" | "req") => string;
 	private readonly pending = new Map<string, PendingControl>();
-	private readonly openRequestIds = new Set<string>();
+	/** Open `can_use_tool` request ids, and whether the request's `input` occurs byte-for-byte in the line it came in. */
+	private readonly openRequestIds = new Map<string, boolean>();
 	private readonly messageListeners = new Set<(message: ClaudeMessage) => void>();
 	private readonly closeListeners = new Set<(error?: Error) => void>();
 	private writeChain: Promise<void> = Promise.resolve();
@@ -246,7 +247,7 @@ export class ClaudeLink implements RpcLink {
 		}
 		switch (message.type) {
 			case "control_request":
-				this.handleControlRequest(message);
+				this.handleControlRequest(message, line);
 				return;
 			case "control_cancel_request":
 				this.handleCancel(message);
@@ -269,7 +270,16 @@ export class ClaudeLink implements RpcLink {
 		}
 	}
 
-	private handleControlRequest(message: ClaudeMessage) {
+	/**
+	 * True when the request's `input` read back as JSON text occurs in the raw line: echoing the parsed object as
+	 * `updatedInput` then says exactly what Claude sent. False for a number that doesn't survive a round trip
+	 * (`1.0`, 2^53+1), pretty-printed text, or an escape the stringifier writes differently. Unknown id: false.
+	 */
+	requestInputStable(requestId: string): boolean {
+		return this.openRequestIds.get(requestId) === true;
+	}
+
+	private handleControlRequest(message: ClaudeMessage, line: string) {
 		const requestId = message.request_id;
 		const body = isRecord(message.request) ? message.request : null;
 		if (typeof requestId !== "string" || requestId === "" || !body) {
@@ -285,7 +295,13 @@ export class ClaudeLink implements RpcLink {
 			this.duplicates++;
 			return;
 		}
-		this.openRequestIds.add(requestId);
+		let stable = false;
+		try {
+			stable = line.includes(JSON.stringify(body.input));
+		} catch {
+			stable = false;
+		}
+		this.openRequestIds.set(requestId, stable);
 		this.client.receive(
 			`${JSON.stringify({ id: requestId, method: CLAUDE_CAN_USE_TOOL, params: body })}\n`,
 		);

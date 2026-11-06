@@ -206,12 +206,13 @@ export function isTakenOver(
 export function overviewOriginField(
 	takenOver: boolean,
 	launch: { requestedByUserId: string | null; metadata: Record<string, unknown> | null },
-): { label: "Launched by" | "Taken over by"; userId: string } | null {
+	agentType?: string | null,
+): { label: "Launched by" | "Taken over by" | "Continued by"; userId: string } | null {
 	if (takenOver) {
 		const bound = launch.metadata?.boundByUserId;
-		return typeof bound === "string" && bound !== ""
-			? { label: "Taken over by", userId: bound }
-			: null;
+		// A Claude Code session is continued in a new session, never taken over (AGEN-117).
+		const label = agentType === "claude_code" ? "Continued by" : "Taken over by";
+		return typeof bound === "string" && bound !== "" ? { label, userId: bound } : null;
 	}
 	return launch.requestedByUserId
 		? { label: "Launched by", userId: launch.requestedByUserId }
@@ -219,8 +220,14 @@ export function overviewOriginField(
 }
 
 /** The Launch tab's one-line summary: a taken-over session was never launched, so its carrier row isn't "completed". */
-export function launchSummaryLine(takenOver: boolean, status: string, modeLabel: string): string {
-	return takenOver ? "Taken over · Codex" : `${status} · ${modeLabel}`;
+export function launchSummaryLine(
+	takenOver: boolean,
+	status: string,
+	modeLabel: string,
+	agentType?: string | null,
+): string {
+	if (!takenOver) return `${status} · ${modeLabel}`;
+	return agentType === "claude_code" ? "Continued · Claude" : "Taken over · Codex";
 }
 
 export type SentencePart = { code: boolean; text: string };

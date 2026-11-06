@@ -3,6 +3,7 @@ import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cleanHostText } from "../../shared/clean-host-text.js";
 import {
+	CLAUDE_APPROVALS_SERVER_FEATURE,
 	CODEX_APPROVALS_SERVER_FEATURE,
 	CODEX_APPROVAL_LIMITS,
 } from "../../shared/codex-approvals.js";
@@ -242,7 +243,11 @@ supervisorsAdminRouter.post("/supervisors/:id/revoke", async (c) => {
 const supervisorsAgentRouter = new Hono();
 
 /** What this server can do for a supervisor (D14). Sent on register and heartbeat; absent means off. */
-const SERVER_FEATURES = [CODEX_APPROVALS_SERVER_FEATURE, CLAUDE_TURN_CONTROL] as const;
+const SERVER_FEATURES = [
+	CODEX_APPROVALS_SERVER_FEATURE,
+	CLAUDE_APPROVALS_SERVER_FEATURE,
+	CLAUDE_TURN_CONTROL,
+] as const;
 
 /**
  * A supervisor registered again, so its previous process (and the app-servers it ran) is gone: its open

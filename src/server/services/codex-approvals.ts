@@ -34,6 +34,7 @@ import {
 } from "drizzle-orm";
 import {
 	APPROVAL_DECISIONS,
+	APPROVAL_REQUEST_KINDS,
 	APPROVAL_RESOLVED_EVENT_TYPE,
 	type ApprovalAnswerRefusal,
 	type ApprovalClosedReason,
@@ -45,6 +46,7 @@ import {
 	CODEX_APPROVAL_LIMITS,
 	CODEX_APPROVAL_TTL_MS,
 	CODEX_CLOSED_VISIBLE_MS,
+	CODEX_DECIDED_ELSEWHERE_VISIBLE_MS,
 	CODEX_NEW_ROW_GRACE_MS,
 	CODEX_OUTCOME_UNKNOWN_AFTER_MS,
 	type ClaudePeerTurnNotice,
@@ -88,7 +90,13 @@ import {
 	canReadSession,
 	mayAnswerApproval,
 } from "./authorization.js";
-import { buildPresentation, buildPreview } from "./codex-approval-presentation.js";
+import {
+	type BuiltPresentation,
+	type PresentationAgent,
+	buildPresentation,
+	buildPreview,
+	touchesAgentConfig,
+} from "./codex-approval-presentation.js";
 import { type ClosedApproval, closeApproval } from "./codex-approvals-close.js";
 import type { InsertPlan } from "./event-dedup.js";
 import { applyApprovalWait, persistEvents, reconcileApprovalWait } from "./event-processor.js";
@@ -232,6 +240,8 @@ function outcomeOfClosed(
 			return "turn_ended";
 		case "runtime_gone":
 			return "codex_shut_down";
+		case "decided_elsewhere":
+			return "decided_elsewhere";
 		case "session_stopped":
 			return decision === "accept" ? "approved_then_stopped" : "session_stopped";
 		default:
@@ -280,6 +290,10 @@ export interface OpenedApproval {
 	sessionId: string;
 	requestKind: ApprovalRequestKind;
 	fileCount: number;
+	/** Whose request: the session's agent, from its row. */
+	agent: PresentationAgent;
+	/** A `claude_tool` request's tool (`WebFetch` or `Read`). */
+	tool: string | null;
 }
 
 // ── side effects, after commit ──────────────────────────────────────────────
@@ -301,6 +315,8 @@ function resolvedWord(reason: ApprovalClosedReason, decision: ApprovalDecision |
 			return "not delivered";
 		case "outcome_unknown":
 			return "unknown";
+		case "decided_elsewhere":
+			return "may have run";
 		case "interrupted":
 		case "runtime_gone":
 			return "ended";
@@ -358,15 +374,24 @@ function logEffectFailure(kind: string, sessionId: string): void {
 	console.error(JSON.stringify({ kind, level: "error", sessionId }));
 }
 
+/** The timeline line for a request opening: fixed words and counts, never anything the agent wrote. */
+export function openedWords(
+	opened: Pick<OpenedApproval, "requestKind" | "fileCount" | "agent" | "tool">,
+): string {
+	const who = opened.agent === "claude" ? "Claude" : "Codex";
+	if (opened.requestKind === "command") return `${who} asks to run a command`;
+	if (opened.requestKind === "claude_tool") {
+		return opened.tool === "Read" ? `${who} asks to read a file` : `${who} asks to fetch a URL`;
+	}
+	return `${who} asks to change ${opened.fileCount} ${opened.fileCount === 1 ? "file" : "files"}`;
+}
+
 /** A request opened: the timeline line (fixed words only), the wait, the dashboard refresh. */
 export async function runApprovalOpenedEffects(
 	opened: OpenedApproval,
 	deps?: ApprovalDeps,
 ): Promise<void> {
-	const content =
-		opened.requestKind === "command"
-			? "Codex asks to run a command"
-			: `Codex asks to change ${opened.fileCount} ${opened.fileCount === 1 ? "file" : "files"}`;
+	const content = openedWords(opened);
 	try {
 		await writeApprovalEvent(
 			opened.sessionId,
@@ -452,7 +477,7 @@ export function parseApprovalReport(body: unknown): CodexApprovalReportRequest |
 	const b = body as Record<string, unknown>;
 	if (b.v !== 1) return null;
 	if (!isBoundedString(b.runtimeEpoch, ID_MAX) || !isBoundedString(b.rpcId, ID_MAX)) return null;
-	if (b.requestKind !== "command" && b.requestKind !== "file_change") return null;
+	if (!(APPROVAL_REQUEST_KINDS as readonly unknown[]).includes(b.requestKind)) return null;
 	if (!isBoundedString(b.threadId, ID_MAX) || !isBoundedString(b.turnId, ID_MAX)) return null;
 	if (!isBoundedString(b.itemId, ID_MAX)) return null;
 	if (b.providerApprovalId !== null && !isBoundedString(b.providerApprovalId, ID_MAX)) return null;
@@ -480,6 +505,17 @@ export function parseApprovalReport(body: unknown): CodexApprovalReportRequest |
 	const cwd = optionalString(b.cwd, textLimit);
 	const reason = optionalString(b.reason, textLimit);
 	const grantRoot = optionalString(b.grantRoot, textLimit);
+	const tool = optionalString(b.tool, 64);
+	const target = optionalString(b.target, textLimit);
+	const blockedPath = optionalString(b.blockedPath, textLimit);
+	if (
+		(tool === undefined && b.tool !== undefined) ||
+		(target === undefined && b.target !== undefined) ||
+		(blockedPath === undefined && b.blockedPath !== undefined)
+	) {
+		return null;
+	}
+	if (b.requestKind === "claude_tool" && tool !== "WebFetch" && tool !== "Read") return null;
 	if (
 		(command === undefined && b.command !== undefined) ||
 		(cwd === undefined && b.cwd !== undefined) ||
@@ -511,7 +547,7 @@ export function parseApprovalReport(body: unknown): CodexApprovalReportRequest |
 		v: 1,
 		runtimeEpoch: b.runtimeEpoch,
 		rpcId: b.rpcId,
-		requestKind: b.requestKind,
+		requestKind: b.requestKind as ApprovalRequestKind,
 		threadId: b.threadId,
 		turnId: b.turnId,
 		itemId: b.itemId,
@@ -525,6 +561,9 @@ export function parseApprovalReport(body: unknown): CodexApprovalReportRequest |
 		changes,
 		truncated: b.truncated,
 		declineOnly,
+		...(tool !== undefined ? { tool } : {}),
+		...(target !== undefined ? { target } : {}),
+		...(blockedPath !== undefined ? { blockedPath } : {}),
 	};
 }
 
@@ -644,7 +683,8 @@ export async function recordApprovalRequest(
 	deps?: ApprovalDeps,
 ): Promise<RecordedApproval> {
 	const nowMs = clockOf(deps);
-	const built = buildPresentation(report);
+	let built!: BuiltPresentation;
+	let agent: PresentationAgent = "codex";
 	const expiresAtMs = nowMs + CODEX_APPROVAL_TTL_MS - clampAgeMs(report.ageMs);
 	const sink: { opened: OpenedApproval | null; closed: ClosedApproval[]; conflict: boolean } = {
 		opened: null,
@@ -656,14 +696,22 @@ export async function recordApprovalRequest(
 	try {
 		result = await withTransaction(async (tx): Promise<RecordedApproval> => {
 			const [session] = await tx
-				.select({ sessionId: sessions.sessionId })
+				.select({ sessionId: sessions.sessionId, launchAgentType: launchRequests.agentType })
 				.from(sessions)
+				.leftJoin(launchRequests, eq(launchRequests.launchCorrelationId, sessions.sessionId))
 				.where(eq(sessions.sessionId, sessionId))
 				.limit(1);
 			if (!session) throw new ApprovalRefusal("session_unknown");
 			if ((await resolveSessionOwner(tx, sessionId)) !== supervisorId) {
 				throw new ApprovalRefusal("session_not_owned");
 			}
+			// By the launch's agent type, never the session row's: a hook can create a row under a launch's id and choose its type (AGEN-91).
+			agent = session.launchAgentType === "claude_code" ? "claude" : "codex";
+			// A Claude-only kind from a session that isn't Claude's is a malformed report, not a card.
+			if (report.requestKind === "claude_tool" && agent !== "claude") {
+				throw new ApprovalRefusal("invalid_body");
+			}
+			built = buildPresentation(report, agent);
 			if (await sessionHasActiveStop(tx, sessionId)) throw new ApprovalRefusal("session_stopping");
 
 			const sameRequest = and(
@@ -754,6 +802,8 @@ export async function recordApprovalRequest(
 				requestKind: report.requestKind,
 				fileCount:
 					built.presentation.requestKind === "file_change" ? built.presentation.changes.length : 0,
+				agent,
+				tool: built.presentation.requestKind === "claude_tool" ? built.presentation.tool : null,
 			};
 			return { created: true, response: reportResponse(row, nowMs) };
 		});
@@ -1061,10 +1111,18 @@ function toSummary(row: ApprovalRow, nowMs: number, withPreview: boolean): Codex
 async function readAccess(
 	caller: ApprovalCaller,
 	sessionId: string,
-): Promise<{ mode: InstanceModeName; ownerUserId: string | null | undefined }> {
+): Promise<{
+	mode: InstanceModeName;
+	ownerUserId: string | null | undefined;
+	agentType: string | null;
+}> {
 	const db = getDb();
 	const [session] = await db
-		.select({ ownerUserId: sessions.ownerUserId, storedMode: storedModeColumn })
+		.select({
+			ownerUserId: sessions.ownerUserId,
+			agentType: sessions.agentType,
+			storedMode: storedModeColumn,
+		})
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
 		.limit(1);
@@ -1074,7 +1132,7 @@ async function readAccess(
 	if (!canReadSession({ ...caller.actor, mode }, { ownerUserId })) {
 		throw new ApprovalRefusal("not_owner");
 	}
-	return { mode, ownerUserId };
+	return { mode, ownerUserId, agentType: session?.agentType ?? null };
 }
 
 /**
@@ -1092,6 +1150,7 @@ export async function listApprovalsForSession(
 	const { mode, ownerUserId } = await readAccess(caller, sessionId);
 	const db = getDb();
 	const visibleSince = iso(nowMs - CODEX_CLOSED_VISIBLE_MS);
+	const elsewhereSince = iso(nowMs - CODEX_DECIDED_ELSEWHERE_VISIBLE_MS);
 	const rows: ApprovalRow[] = await db
 		.select()
 		.from(codexApprovals)
@@ -1105,6 +1164,10 @@ export async function listApprovalsForSession(
 						or(
 							gte(codexApprovals.closedAt, visibleSince),
 							eq(codexApprovals.closedReason, "outcome_unknown"),
+							and(
+								eq(codexApprovals.closedReason, "decided_elsewhere"),
+								gte(codexApprovals.closedAt, elsewhereSince),
+							),
 						),
 					),
 				),
@@ -1176,7 +1239,7 @@ export async function getApprovalDetail(
 	deps?: ApprovalDeps,
 ): Promise<CodexApprovalDetail> {
 	const nowMs = clockOf(deps);
-	await readAccess(caller, sessionId);
+	const { agentType } = await readAccess(caller, sessionId);
 	const [row] = await getDb()
 		.select()
 		.from(codexApprovals)
@@ -1185,10 +1248,15 @@ export async function getApprovalDetail(
 	if (!row) throw new ApprovalRefusal("approval_not_found");
 	const approval = toSummary(row, nowMs, true);
 	const open = approval.state !== "closed";
+	const presentation = open ? parsePresentation(row) : null;
 	return {
 		v: 1,
 		approval,
-		presentation: open ? parsePresentation(row) : null,
+		presentation,
+		// Beside the presentation (so outside the hash), for a Claude session only.
+		...(presentation && agentType === "claude_code"
+			? { touchesAgentConfig: touchesAgentConfig(presentation) }
+			: {}),
 		reasonText: open ? row.reasonText : null,
 	};
 }
@@ -1338,6 +1406,8 @@ function reasonForUnansweredRow(outcome: TrackerOutcome): ApprovalClosedReason {
 	switch (outcome) {
 		case "resolved_before_response":
 			return "interrupted";
+		case "decided_elsewhere":
+			return "decided_elsewhere";
 		case "runtime_gone":
 		case "runtime_gone_after_response":
 			return "runtime_gone";

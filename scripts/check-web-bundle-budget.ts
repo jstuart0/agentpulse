@@ -17,6 +17,11 @@
  * CodexApprovalCard 9,385 and left every other limit where it was: index 118,191, SessionDetailPage 20,855, DashboardPage 26,393. The review of that card (ruby's phase 6 findings: the double-tap guards, the changed-request line, the per-file diff flags, the outcome in the dialog) is what raised its own limit to 12,000 (measured 11,626); the card has never shipped, and the limit exists to catch growth. The review measured index 118,196 and SessionDetailPage 20,926. AGEN-91 (the Codex prompt box: its states and copy, the send/follow hook, the failed-turn row, and the session-action access moved here from index) took SessionDetailPage to 23,943 and moved its limit to 24,500, and gave index back 130 bytes (118,271). AGEN-115 (taking a Codex session over and resuming one: the attempt, the labels, the Resume button and every refusal's sentence on the session page; the card, dialog and machine list as their own lazy chunk) measured
  * SessionDetailPage 25,321, SessionTakeoverCard 4,939 and index 118,384 (the two api methods and one error sentence), and moved the page limit to 25,900, the index limit to 118,600 and added the card's at 5,400. No chunk may carry zod (the
  * validating schema is server-only).
+ * AGEN-117 P4 (the approval card learns a takeover fork of a Claude Code session: its two request kinds, the
+ * write and decided-elsewhere copy, the peer-message notice and the focus rule for a row that closes itself)
+ * took CodexApprovalCard from 11,641 to 13,475 and moved its limit to 13,600. SessionDetailPage was already at
+ * 27,721 at the start of P4 (the P3 composer and fork routing; the limit was not moved then); P4 adds 21 bytes
+ * and the limit is re-based to 27,900 so the check can pass again and go on catching growth.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -40,9 +45,9 @@ export interface Finding {
 }
 
 export const BUDGETS: Budget[] = [
-	{ chunk: "SessionDetailPage", maxGzip: 25_900, measured: 25_321 },
+	{ chunk: "SessionDetailPage", maxGzip: 27_900, measured: 27_742 },
 	{ chunk: "SessionSummaryTab", maxGzip: 12_500, measured: 11_582 },
-	{ chunk: "CodexApprovalCard", maxGzip: 12_000, measured: 11_626 },
+	{ chunk: "CodexApprovalCard", maxGzip: 13_600, measured: 13_475 },
 	{ chunk: "SessionTakeoverCard", maxGzip: 5_400, measured: 4_939 },
 	{ chunk: "DashboardPage", maxGzip: 27_200, measured: 26_341 },
 	{ chunk: "index", maxGzip: 118_600, measured: 118_384 },

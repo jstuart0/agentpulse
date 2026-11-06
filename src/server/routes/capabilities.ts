@@ -123,6 +123,12 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		value: true,
 	},
 	{
+		// The same for a takeover fork of a Claude Code session (AGEN-117): the same routes carry its requests.
+		name: "claudeApprovals",
+		proof: { kind: "route", method: "GET", path: "/sessions/:sessionId/approvals" },
+		value: true,
+	},
+	{
 		// `stuck` and `risky` pushes from the health job; it runs only while AI is active, beside push.
 		name: "healthPush",
 		proof: { kind: "route", method: "GET", path: "/ai/inbox" },

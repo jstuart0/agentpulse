@@ -49,12 +49,12 @@ describe("CodexApprovalCard (AGEN-87)", () => {
 		expect(row?.maxGzip).toBeGreaterThan(0);
 	});
 
-	test("the entry chunk grew at most 200 B over its AGEN-87 base (the two take-over api methods and one error sentence, AGEN-115); the session page's limit is the one AGEN-115 re-based (25,900)", () => {
+	test("the entry chunk grew at most 200 B over its AGEN-87 base (the two take-over api methods and one error sentence, AGEN-115); the session page's limit is the one AGEN-117 P4 re-based (27,900: P3's composer and fork routing had taken it to 27,721 without moving it)", () => {
 		const index = BUDGETS.find((b) => b.chunk === "index");
 		const page = BUDGETS.find((b) => b.chunk === "SessionDetailPage");
 		expect(index?.measured as number).toBeLessThanOrEqual(base.index + 200);
 		expect(index?.maxGzip as number).toBeLessThanOrEqual(118_600);
-		expect(page?.maxGzip as number).toBeLessThanOrEqual(25_900);
+		expect(page?.maxGzip as number).toBeLessThanOrEqual(27_900);
 	});
 
 	test("the take-over card is a lazy chunk with a row of its own (AGEN-115), and the page's limit rose once for it", () => {
@@ -62,8 +62,9 @@ describe("CodexApprovalCard (AGEN-87)", () => {
 		expect(takeover?.maxGzip).toBe(5_400);
 	});
 
-	test("the card's own limit rose once, to 12,000, for the phase 6 review, and no further", () => {
-		expect(row?.maxGzip).toBe(12_000);
+	test("the card's own limit rose twice: to 12,000 for the AGEN-87 phase 6 review, and to 13,600 for AGEN-117 P4 (the Claude request kinds, copy, peer notice and focus rule), and no further", () => {
+		expect(row?.maxGzip).toBe(13_600);
+		expect(row?.measured as number).toBeLessThanOrEqual(13_475);
 	});
 });
 

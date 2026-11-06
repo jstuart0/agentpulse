@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from "react";
 import type {
 	ApprovalDecision,
 	CodexApprovalDetail,
@@ -18,6 +18,8 @@ import { useUsersStore } from "../../stores/users-store.js";
 import { ConfirmDialog } from "../ConfirmDialog.js";
 import {
 	ARM_AFTER_MS,
+	type ApprovalAgent,
+	type ApprovalForkMode,
 	CANNOT_ACCEPT_TEXT,
 	CHECK_FAILED_TEXT,
 	type FrozenConfirm,
@@ -27,10 +29,10 @@ import {
 	NEXT_REQUEST_LINE,
 	NON_ASCII_HINT,
 	OUTSIDE_LABEL,
-	REVISION_CHANGED_LINE,
 	STILL_OPEN_TEXT,
-	STOP_CONFIRM_BODY,
 	STOP_CONFIRM_TITLE,
+	agentName,
+	agentOfSession,
 	approvalHeadingId,
 	approvalOutcomeFocusId,
 	arrivalAnnouncement,
@@ -47,6 +49,7 @@ import {
 	detailMatchesRow,
 	diffDeltaLabel,
 	filesSummary,
+	forkModeOf,
 	freezeConfirm,
 	hostLabel,
 	hostOfflineText,
@@ -63,16 +66,25 @@ import {
 	outcomeTimeSource,
 	outsideCwdText,
 	outsideFirst,
+	peerTurnLines,
 	queuePosition,
 	requestHeading,
+	revisionChangedLine,
 	secondsLeft,
 	showsAvailabilityHint,
 	signedDiffLines,
 	statsText,
+	stopConfirmBody,
 	teamNotOwnerHeading,
 	teamNotOwnerLine,
 	twoMinuteAnnouncement,
+	writeKindNote,
 } from "./codex-approval-view.js";
+
+/** Whose requests the card is showing, and the mode a fork runs in: read by every part of the card that names an agent. */
+const AgentContext = createContext<{ agent: ApprovalAgent; mode?: ApprovalForkMode }>({
+	agent: "codex",
+});
 
 interface Props {
 	session: Session;
@@ -177,6 +189,8 @@ export function CodexApprovalCard({ session, announce }: Props) {
 		dismiss,
 		applyAnswered,
 	} = useCodexApprovals(session);
+	const agent = agentOfSession(session.agentType);
+	const mode = forkModeOf(session.metadata);
 	const ownership = useOwnershipUi();
 	const viewerUserId = useUserStore((s) => s.userId);
 	const directory = useUsersStore((s) => s.byId);
@@ -223,10 +237,12 @@ export function CodexApprovalCard({ session, announce }: Props) {
 					fileCount: first.preview?.fileCount ?? 0,
 					declinesAt: clock(data.fetchedAtWall + first.expiresInSeconds * 1000),
 					pendingCount: rows.pending.length,
+					agent,
+					...(first.preview?.tool ? { tool: first.preview.tool } : {}),
 				}),
 			);
 		}
-	}, [rows.pending, data.fetchedAtWall, sayAssertive]);
+	}, [rows.pending, data.fetchedAtWall, sayAssertive, agent]);
 	useEffect(() => {
 		if (!current) return;
 		const before = previousLeft.current[current.id];
@@ -251,11 +267,13 @@ export function CodexApprovalCard({ session, announce }: Props) {
 						host,
 						clockOf(outcomeTimeSource(row.outcome, row)),
 						row.decision,
+						agent,
+						mode,
 					),
 				);
 			}
 		}
-	}, [rows, host, sayPolite]);
+	}, [rows, host, sayPolite, agent, mode]);
 
 	// The clock reached zero: the server decides what that meant, so ask it (once per request).
 	const zeroFetched = useRef(new Set<string>());
@@ -321,9 +339,38 @@ export function CodexApprovalCard({ session, announce }: Props) {
 		}
 	});
 
+	// When a request closes by itself (the server's row, a cancel, the turn ending) while focus was inside the
+	// card, the focused button is gone: land on the outcome line instead of letting focus fall to the page.
+	const sectionRef = useRef<HTMLElement | null>(null);
+	const focusWasInside = useRef(false);
+	const previousPending = useRef<string[]>([]);
+	useEffect(() => {
+		const ids = rows.pending.map((r) => r.id);
+		const closed = previousPending.current.filter((id) => !ids.includes(id));
+		previousPending.current = ids;
+		if (closed.length === 0 || focusAfter.current !== null || !focusWasInside.current) return;
+		const lost = document.activeElement === null || document.activeElement === document.body;
+		if (!lost) return;
+		const target =
+			document.getElementById(approvalOutcomeFocusId(closed[0] as string)) ??
+			(current ? document.getElementById(approvalHeadingId(current.id)) : null);
+		if (target) requestAnimationFrame(() => target.focus());
+	}, [rows.pending, current]);
+
+	const peerLines = peerTurnLines(data.list?.peerTurn, host);
+	const peerNode = peerLines ? (
+		<output className="mx-3 mt-2 block space-y-1 text-sm text-foreground md:mx-6 md:mt-3">
+			{peerLines.map((line) => (
+				<p key={line} className="break-words">
+					{line}
+				</p>
+			))}
+		</output>
+	) : null;
+
 	const hint =
 		sessionIsLive(session) && showsAvailabilityHint(session.managedSession)
-			? availabilityHint(session.managedSession?.providerCapabilitySnapshot, host)
+			? availabilityHint(session.managedSession?.providerCapabilitySnapshot, host, agent)
 			: null;
 	const hintNode = hint ? (
 		<p className="mx-3 mt-2 text-xs leading-relaxed text-muted-foreground md:mx-6 md:mt-3">
@@ -343,11 +390,11 @@ export function CodexApprovalCard({ session, announce }: Props) {
 				{hasPendingCodexApproval(session) ? (
 					<section
 						data-codex-approval=""
-						aria-label="Codex approval"
+						aria-label={`${agentName(agent)} approval`}
 						className="mx-3 mt-2 rounded-lg border border-border bg-card p-3 md:mx-6 md:mt-3"
 					>
 						<h2 className="text-sm font-semibold text-foreground">
-							{teamNotOwnerHeading(ownerName)}
+							{teamNotOwnerHeading(ownerName, agent)}
 						</h2>
 						<p className="mt-1 text-sm text-muted-foreground">{teamNotOwnerLine(ownerName)}</p>
 					</section>
@@ -363,6 +410,7 @@ export function CodexApprovalCard({ session, announce }: Props) {
 		return (
 			<div className="flex-shrink-0">
 				{region}
+				{peerNode}
 				{hintNode}
 			</div>
 		);
@@ -396,6 +444,7 @@ export function CodexApprovalCard({ session, announce }: Props) {
 				declinesAt,
 				reason: approval.notApprovableReason,
 				grantRoot: grantRootOf(detail?.presentation ?? null),
+				agent,
 			});
 			if (!view.stale) return { ok: false, message: view.text, settled: false, needsCheck: false };
 			const list = await refresh(true);
@@ -509,8 +558,10 @@ export function CodexApprovalCard({ session, announce }: Props) {
 	}
 
 	const headingFor = (row: CodexApprovalSummary) => approvalHeadingId(row.id);
-	const mayHaveRun = rows.settled.filter((r) => r.outcome === "may_have_run");
-	const otherSettled = rows.settled.filter((r) => r.outcome !== "may_have_run");
+	const mustSee = (r: CodexApprovalSummary) =>
+		r.outcome === "may_have_run" || r.outcome === "decided_elsewhere";
+	const mayHaveRun = rows.settled.filter(mustSee);
+	const otherSettled = rows.settled.filter((r) => !mustSee(r));
 	const renderSettled = (row: CodexApprovalSummary) => (
 		<SettledRow
 			key={row.id}
@@ -524,90 +575,102 @@ export function CodexApprovalCard({ session, announce }: Props) {
 	);
 
 	return (
-		<div className="flex-shrink-0">
-			{region}
-			<section
-				data-codex-approval=""
-				aria-label="Codex approval"
-				className="mx-3 mt-2 space-y-2 rounded-lg border border-primary/40 bg-card p-3 md:mx-6 md:mt-3"
-			>
-				{showFailed ? (
-					<div className="space-y-2">
-						<p role="alert" className="text-sm text-foreground">
-							Codex is asking for approval, but AgentPulse couldn't load it.
-						</p>
-						<button
-							type="button"
-							onClick={() => void refresh(true)}
-							className={`${BUTTON} border border-border text-foreground hover:bg-accent`}
-						>
-							Try again
-						</button>
-					</div>
-				) : null}
+		<AgentContext.Provider value={{ agent, mode }}>
+			<div className="flex-shrink-0">
+				{region}
+				{peerNode}
+				<section
+					ref={sectionRef}
+					onFocusCapture={() => {
+						focusWasInside.current = true;
+					}}
+					onBlurCapture={(event) => {
+						if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+							focusWasInside.current = false;
+						}
+					}}
+					data-codex-approval=""
+					aria-label={`${agentName(agent)} approval`}
+					className="mx-3 mt-2 space-y-2 rounded-lg border border-primary/40 bg-card p-3 md:mx-6 md:mt-3"
+				>
+					{showFailed ? (
+						<div className="space-y-2">
+							<p role="alert" className="text-sm text-foreground">
+								{agentName(agent)} is asking for approval, but AgentPulse couldn't load it.
+							</p>
+							<button
+								type="button"
+								onClick={() => void refresh(true)}
+								className={`${BUTTON} border border-border text-foreground hover:bg-accent`}
+							>
+								Try again
+							</button>
+						</div>
+					) : null}
 
-				{mayHaveRun.map(renderSettled)}
+					{mayHaveRun.map(renderSettled)}
 
-				{current && swappedFrom && rows.settled.some((r) => r.id === swappedFrom) ? (
-					<p className="text-sm text-muted-foreground">{NEXT_REQUEST_LINE}</p>
-				) : null}
+					{current && swappedFrom && rows.settled.some((r) => r.id === swappedFrom) ? (
+						<p className="text-sm text-muted-foreground">{NEXT_REQUEST_LINE}</p>
+					) : null}
 
-				{current ? (
-					<PendingCard
-						key={current.id}
-						approval={current}
-						index={position.index}
-						total={position.total}
-						ctx={listCtx}
+					{current ? (
+						<PendingCard
+							key={current.id}
+							approval={current}
+							index={position.index}
+							total={position.total}
+							ctx={listCtx}
+							host={host}
+							detail={detailMatchesRow(detail, current) ? detail : null}
+							detailFailed={detailFailed}
+							onRetryDetail={retryDetail}
+							secondsRemaining={left}
+							declinesAt={declinesAt}
+							headingId={headingFor(current)}
+							actionError={actionError}
+							declining={declining}
+							announce={sayPolite}
+							onCheckAgain={() => void checkDeclineAgain(current.id)}
+							onApprove={(loaded) => openApprove(current, loaded)}
+							onDecline={() => void decline(current, "decline")}
+							onStop={() => {
+								setActionError(null);
+								setDialog({
+									kind: "stop",
+									approvalId: current.id,
+									error: null,
+									busy: false,
+									needsCheck: false,
+								});
+							}}
+						/>
+					) : null}
+
+					{otherSettled.map(renderSettled)}
+				</section>
+
+				{hintNode}
+
+				{dialog && dialogId ? (
+					<DialogFor
+						dialog={dialog}
+						row={dialogRow}
 						host={host}
-						detail={detailMatchesRow(detail, current) ? detail : null}
-						detailFailed={detailFailed}
-						onRetryDetail={retryDetail}
-						secondsRemaining={left}
+						owner={ownerName}
+						showOwner={
+							ownership.ownerGatesSessionActions && ownerId !== null && ownerId !== viewerUserId
+						}
 						declinesAt={declinesAt}
-						headingId={headingFor(current)}
-						actionError={actionError}
-						declining={declining}
-						announce={sayPolite}
-						onCheckAgain={() => void checkDeclineAgain(current.id)}
-						onApprove={(loaded) => openApprove(current, loaded)}
-						onDecline={() => void decline(current, "decline")}
-						onStop={() => {
-							setActionError(null);
-							setDialog({
-								kind: "stop",
-								approvalId: current.id,
-								error: null,
-								busy: false,
-								needsCheck: false,
-							});
-						}}
+						secondsRemaining={left}
+						fallbackFocusId={approvalOutcomeFocusId(dialogId)}
+						onConfirm={() => void confirmDialog()}
+						onCheckAgain={() => void checkDialogAgain()}
+						onCancel={() => setDialog(null)}
 					/>
 				) : null}
-
-				{otherSettled.map(renderSettled)}
-			</section>
-
-			{hintNode}
-
-			{dialog && dialogId ? (
-				<DialogFor
-					dialog={dialog}
-					row={dialogRow}
-					host={host}
-					owner={ownerName}
-					showOwner={
-						ownership.ownerGatesSessionActions && ownerId !== null && ownerId !== viewerUserId
-					}
-					declinesAt={declinesAt}
-					secondsRemaining={left}
-					fallbackFocusId={approvalOutcomeFocusId(dialogId)}
-					onConfirm={() => void confirmDialog()}
-					onCheckAgain={() => void checkDialogAgain()}
-					onCancel={() => setDialog(null)}
-				/>
-			) : null}
-		</div>
+			</div>
+		</AgentContext.Provider>
 	);
 }
 
@@ -640,6 +703,7 @@ interface PendingProps {
 
 function PendingCard(props: PendingProps) {
 	const { approval, ctx, host, detail, secondsRemaining, declinesAt, announce } = props;
+	const { agent } = useContext(AgentContext);
 	const [expanded, setExpanded] = useState(false);
 	const [openFiles, setOpenFiles] = useState<Record<string, boolean>>({});
 	const [armed, disarm] = useDisarm(ARM_AFTER_MS);
@@ -652,8 +716,8 @@ function PendingCard(props: PendingProps) {
 		seenVersion.current = version;
 		setChanged(true);
 		disarm();
-		announce(REVISION_CHANGED_LINE);
-	}, [version, disarm, announce]);
+		announce(revisionChangedLine(agent));
+	}, [version, disarm, announce, agent]);
 	const state = cardStateOf(ctx, approval);
 	const offers = offersOf(state, approval.canCancel);
 	const preview = approval.preview;
@@ -670,7 +734,7 @@ function PendingCard(props: PendingProps) {
 					tabIndex={-1}
 					className={`text-sm font-semibold text-foreground ${FOCUS_TARGET}`}
 				>
-					{requestHeading(approval)}
+					{requestHeading(approval, agent)}
 				</h2>
 				{props.total > 1 ? (
 					<span className="flex-shrink-0 text-xs text-muted-foreground">
@@ -686,7 +750,7 @@ function PendingCard(props: PendingProps) {
 			</p>
 
 			{changed ? (
-				<p className="text-sm font-semibold text-foreground">{REVISION_CHANGED_LINE}</p>
+				<p className="text-sm font-semibold text-foreground">{revisionChangedLine(agent)}</p>
 			) : null}
 
 			{state === "host_offline" ? (
@@ -695,7 +759,7 @@ function PendingCard(props: PendingProps) {
 			{state === "host_gone" ? <p className="text-sm text-foreground">{HOST_GONE_TEXT}</p> : null}
 			{state === "not_approvable" ? (
 				<p className="break-words text-sm text-foreground">
-					{notApprovableText(approval.notApprovableReason, host, grantRootOf(presentation))}
+					{notApprovableText(approval.notApprovableReason, host, grantRootOf(presentation), agent)}
 				</p>
 			) : null}
 			{state === "cannot_accept" ? (
@@ -704,6 +768,8 @@ function PendingCard(props: PendingProps) {
 
 			{answerable ? (
 				<RequestBody
+					host={host}
+					touchesAgentConfig={detail?.touchesAgentConfig === true}
 					approval={approval}
 					presentation={presentation}
 					outsideFlags={outsideFlags}
@@ -718,7 +784,7 @@ function PendingCard(props: PendingProps) {
 			{answerable && preview?.nonAscii ? (
 				<p className="text-xs font-medium text-foreground">{NON_ASCII_HINT}</p>
 			) : null}
-			{answerable && preview?.pathOutsideCwd ? (
+			{answerable && preview?.pathOutsideCwd && approval.requestKind !== "claude_tool" ? (
 				<p className="text-sm font-semibold text-red-700 dark:text-red-400">
 					{outsideCwdText(cwd)}
 				</p>
@@ -727,7 +793,7 @@ function PendingCard(props: PendingProps) {
 			{answerable && detail?.reasonText ? (
 				<details className="text-xs text-muted-foreground">
 					<summary className={`min-h-[44px] cursor-pointer py-2 ${SHRINK} md:py-0`}>
-						Codex says:
+						{agent === "claude" ? "Claude's description, not checked:" : "Codex says:"}
 					</summary>
 					<p className="mt-1 whitespace-pre-wrap break-words">{detail.reasonText}</p>
 				</details>
@@ -832,6 +898,8 @@ function CommandLines({ text }: { text: string }) {
 }
 
 function RequestBody({
+	host,
+	touchesAgentConfig,
 	approval,
 	presentation,
 	outsideFlags,
@@ -841,6 +909,8 @@ function RequestBody({
 	openFiles,
 	onToggleFile,
 }: {
+	host: string | null;
+	touchesAgentConfig: boolean;
 	approval: CodexApprovalSummary;
 	presentation: CodexApprovalPresentation | null;
 	outsideFlags: boolean[] | null;
@@ -851,6 +921,28 @@ function RequestBody({
 	onToggleFile: (key: string, open: boolean) => void;
 }) {
 	const preview = approval.preview;
+	const { agent } = useContext(AgentContext);
+	const configNote =
+		touchesAgentConfig && agent === "claude" ? (
+			<p className="text-sm font-semibold text-foreground">
+				This changes instructions or hooks that Claude sessions on {hostLabel(host)} can load later,
+				with no card.
+			</p>
+		) : null;
+	if (presentation?.requestKind === "claude_tool") {
+		const read = presentation.tool === "Read";
+		return (
+			<div className="space-y-1">
+				<p className="break-words text-sm text-foreground">
+					{read ? "Claude asks to read " : "Claude asks to fetch "}
+					<span className="font-mono">{presentation.target ?? ""}</span>
+				</p>
+				{read ? null : (
+					<p className="text-xs font-medium text-foreground">A URL can carry data out.</p>
+				)}
+			</div>
+		);
+	}
 	if (presentation?.requestKind === "file_change") {
 		const flags =
 			outsideFlags && outsideFlags.length === presentation.changes.length ? outsideFlags : null;
@@ -858,6 +950,7 @@ function RequestBody({
 		const defaults = defaultDiffsOpen(order.map((i) => presentation.changes[i] as never));
 		return (
 			<div className="space-y-1">
+				{configNote}
 				{order.map((i, position) => {
 					const change = presentation.changes[i] as (typeof presentation.changes)[number];
 					const key = `${i}:${change.path}`;
@@ -883,6 +976,11 @@ function RequestBody({
 									</span>
 								) : null}
 							</summary>
+							{agent === "claude" && writeKindNote(change.kind) ? (
+								<p className="px-2 pt-1 text-xs text-muted-foreground">
+									{writeKindNote(change.kind)}
+								</p>
+							) : null}
 							<pre
 								// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be reachable by keyboard
 								tabIndex={0}
@@ -908,6 +1006,16 @@ function RequestBody({
 		const cut = capped && !expanded && lines > CAPPED_LINES;
 		return (
 			<div className="space-y-1">
+				{configNote}
+				{agent === "claude" ? (
+					<p className="text-xs text-muted-foreground">
+						Started in {presentation.cwd ?? "the session's directory"}. Claude's shell may have
+						moved since.
+						{presentation.blockedPath
+							? ` Claude says it would touch ${presentation.blockedPath}.`
+							: ""}
+					</p>
+				) : null}
 				<p className="text-xs text-muted-foreground">{commandStats(command)}</p>
 				<pre
 					{...(cut ? { tabIndex: 0, role: "region", "aria-label": "Command" } : {})}
@@ -971,13 +1079,16 @@ function SettledRow({
 	onDismiss: () => void;
 }) {
 	if (!row.outcome) return null;
+	const { agent, mode } = useContext(AgentContext);
 	const text = outcomeLine(
 		row.outcome,
 		host,
 		clockOf(outcomeTimeSource(row.outcome, row)),
 		row.decision,
+		agent,
+		mode,
 	);
-	const risky = row.outcome === "may_have_run";
+	const risky = row.outcome === "may_have_run" || row.outcome === "decided_elsewhere";
 	return (
 		<div
 			className={
@@ -1041,6 +1152,7 @@ function DialogFor({
 	onCancel: () => void;
 }) {
 	const bodyId = useId();
+	const { agent, mode } = useContext(AgentContext);
 	const checkAgain = dialog.needsCheck ? (
 		<button
 			type="button"
@@ -1067,7 +1179,7 @@ function DialogFor({
 				onConfirm={onConfirm}
 				onCancel={onCancel}
 			>
-				<p>{STOP_CONFIRM_BODY}</p>
+				<p>{stopConfirmBody(agent)}</p>
 				{checkAgain}
 			</ConfirmDialog>
 		);
@@ -1077,7 +1189,7 @@ function DialogFor({
 	// the list say nothing reliable about it: no line about what happened until the server's row does.
 	const event =
 		dialog.busy || dialog.needsCheck ? null : midConfirmEvent(frozen, row, secondsRemaining);
-	const view = event ? midConfirmView(event, row, host, clockOf) : null;
+	const view = event ? midConfirmView(event, row, host, clockOf, agent, mode) : null;
 	const presentation = frozen.presentation;
 	const files = presentation.requestKind === "file_change" ? presentation.changes : [];
 	const copy = confirmCopy({
@@ -1086,6 +1198,10 @@ function DialogFor({
 		host,
 		declinesAt,
 		owner: showOwner ? owner : null,
+		...(presentation.requestKind === "claude_tool" ? { tool: presentation.tool } : {}),
+		...(presentation.requestKind === "file_change" && files.length === 1
+			? { writeKind: (files[0] as { kind: string }).kind }
+			: {}),
 	});
 	const summary = filesSummary(files, frozen.outsideCwd);
 	const outside =
@@ -1124,6 +1240,11 @@ function DialogFor({
 					</p>
 					{tail.label ? <p>{tail.label}</p> : null}
 					<pre className={PRE_CLASS}>{tail.text}</pre>
+					{presentation.cwd ? <p className="break-words">In {presentation.cwd}</p> : null}
+				</div>
+			) : presentation.requestKind === "claude_tool" ? (
+				<div className="space-y-2" id={bodyId}>
+					<p className="break-words font-mono">{presentation.target ?? ""}</p>
 					{presentation.cwd ? <p className="break-words">In {presentation.cwd}</p> : null}
 				</div>
 			) : (

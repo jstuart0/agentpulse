@@ -62,6 +62,7 @@ describe("the vendored closed sets equal the shared ones", () => {
 		for (const content of [SHARED, MCP]) {
 			expect(content).toContain('requestKind: "command";');
 			expect(content).toContain('requestKind: "file_change";');
+			expect(content).toContain('requestKind: "claude_tool";');
 		}
 	});
 });
@@ -124,7 +125,9 @@ function walkFixture(name: string, body: Json, problems: string[]) {
 			const kind =
 				presentation.requestKind === "command"
 					? "CodexApprovalCommandPresentation"
-					: "CodexApprovalFileChangePresentation";
+					: presentation.requestKind === "claude_tool"
+						? "CodexApprovalClaudeToolPresentation"
+						: "CodexApprovalFileChangePresentation";
 			checkKeys(`${name}.presentation`, presentation, kind, problems);
 			for (const [i, c] of ((presentation.changes as unknown[]) ?? []).entries()) {
 				checkKeys(

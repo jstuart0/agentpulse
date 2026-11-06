@@ -193,7 +193,8 @@ async function codexSession(host: Host, over: { managedState?: string } = {}) {
 async function claudeSession(host: Host) {
 	const sessionId = `p2c-${++counter}-${crypto.randomUUID().slice(0, 6)}`;
 	sessionsUsed.push(sessionId);
-	await harness.seedApprovalSession({ sessionId, supervisorId: host.id });
+	// The launch is Claude's too: the fixture's default launch is Codex's, as a managed Codex session has.
+	await harness.seedApprovalSession({ sessionId, supervisorId: host.id, agentType: "claude_code" });
 	await getDb()
 		.update(sessions)
 		.set({ agentType: "claude_code" })

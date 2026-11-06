@@ -15,6 +15,7 @@
  */
 import type {
 	ApprovalDecision,
+	ClaudePeerTurnNotice,
 	CodexApprovalDetail,
 	CodexApprovalHost,
 	CodexApprovalOutcome,
@@ -42,6 +43,30 @@ function plural(n: number, one: string, many: string): string {
 	return `${n} ${n === 1 ? one : many}`;
 }
 
+// ── whose requests these are ────────────────────────────────────────────────
+
+/**
+ * The agent a card speaks about. Every function that names one takes it as its last parameter and defaults to
+ * Codex, so a Codex session reads exactly as it did. A takeover fork of a Claude Code session is `claude`.
+ */
+export type ApprovalAgent = "codex" | "claude";
+/** The mode the fork runs in, from its stored `forkPermissionBranch`: what applied to this session. */
+export type ApprovalForkMode = "ask" | "restricted";
+
+export function agentOfSession(agentType: string | null | undefined): ApprovalAgent {
+	return agentType === "claude_code" ? "claude" : "codex";
+}
+
+export function forkModeOf(
+	metadata: Record<string, unknown> | null | undefined,
+): ApprovalForkMode | undefined {
+	const value = metadata?.forkPermissionBranch;
+	return value === "ask" || value === "restricted" ? value : undefined;
+}
+
+const AGENT_NAME: Record<ApprovalAgent, string> = { codex: "Codex", claude: "Claude" };
+export const agentName = (agent: ApprovalAgent = "codex"): string => AGENT_NAME[agent];
+
 // ── availability on a managed Codex session ─────────────────────────────────
 
 /**
@@ -53,9 +78,12 @@ function plural(n: number, one: string, many: string): string {
 export function availabilityHint(
 	snapshot: Record<string, unknown> | null | undefined,
 	host: string | null | undefined,
+	agent: ApprovalAgent = "codex",
 ): string | null {
 	const name = hostLabel(host);
 	const value = snapshot?.agentpulseApprovals;
+	// A takeover fork's host proved Claude Code's version before it started, and says nothing in a snapshot.
+	if (agent === "claude") return null;
 	switch (value) {
 		case undefined:
 		case null:
@@ -132,8 +160,11 @@ export const HOST_GONE_TEXT =
 export const CANNOT_ACCEPT_TEXT =
 	"Nobody owns this session, so only an admin can approve this. You can decline it.";
 
-export function teamNotOwnerHeading(owner: string | null | undefined): string {
-	return `Codex is asking ${ownerLabelOr(owner)} for approval.`;
+export function teamNotOwnerHeading(
+	owner: string | null | undefined,
+	agent: ApprovalAgent = "codex",
+): string {
+	return `${agentName(agent)} is asking ${ownerLabelOr(owner)} for approval.`;
 }
 export function teamNotOwnerLine(owner: string | null | undefined): string {
 	const name = ownerLabelOr(owner);
@@ -142,7 +173,10 @@ export function teamNotOwnerLine(owner: string | null | undefined): string {
 
 // ── not approvable ──────────────────────────────────────────────────────────
 
-const NOT_APPROVABLE_COPY: Record<NotApprovableReason, (ctx: { root: string }) => string> = {
+const NOT_APPROVABLE_COPY: Record<
+	NotApprovableReason,
+	(ctx: { root: string; name: string; host: string }) => string
+> = {
 	redacted: () =>
 		"AgentPulse hid something that looks like a secret, so you can't see exactly what would run.",
 	invisible_chars: () =>
@@ -152,17 +186,28 @@ const NOT_APPROVABLE_COPY: Record<NotApprovableReason, (ctx: { root: string }) =
 	lookalike_text: () =>
 		"This has characters that look like other characters or don't draw at all, so what you read may not be what would run.",
 	too_long: () => "This is too long to review in full here.",
-	no_diff: () => "Codex didn't share the changes, so there's nothing to review.",
-	no_command: () => "Codex didn't say what it would run, so there's nothing to review.",
-	no_cwd: () => "Codex didn't say which directory this would run in.",
-	write_stdin: () => "Codex wants to type into a running process. AgentPulse doesn't approve that.",
-	network: () =>
-		"Codex is asking for network access, which is a different question from running this. AgentPulse doesn't grant that.",
-	grant_root: ({ root }) =>
-		`Codex is asking to write anywhere under ${root} for the rest of the session. AgentPulse doesn't grant that.`,
+	no_diff: ({ name }) => `${name} didn't share the changes, so there's nothing to review.`,
+	no_command: ({ name }) => `${name} didn't say what it would run, so there's nothing to review.`,
+	no_cwd: ({ name }) => `${name} didn't say which directory this would run in.`,
+	write_stdin: ({ name }) =>
+		`${name} wants to type into a running process. AgentPulse doesn't approve that.`,
+	network: ({ name }) =>
+		`${name} is asking for network access, which is a different question from running this. AgentPulse doesn't grant that.`,
+	grant_root: ({ root, name }) =>
+		`${name} is asking to write anywhere under ${root} for the rest of the session. AgentPulse doesn't grant that.`,
 	unknown_param: () =>
 		"This request includes something AgentPulse doesn't recognize, so it can't show what approving would mean.",
-	accept_not_offered: () => "Codex isn't offering approval for this one.",
+	accept_not_offered: ({ name }) => `${name} isn't offering approval for this one.`,
+	unknown_tool: () =>
+		"AgentPulse hasn't seen this tool, so it can't show what approving would mean.",
+	requires_interaction: () =>
+		"This tool needs someone at the machine to work with it, which AgentPulse can't do.",
+	symlink_target: ({ host }) => `This path points somewhere else on ${host}.`,
+	input_not_stable: () =>
+		"AgentPulse can't be sure it would send this back exactly as it arrived, so it can't show what approving would mean.",
+	agent_memory: () => "Claude can't save memories in this session.",
+	path_not_absolute: () =>
+		"This path isn't a full path, so AgentPulse can't tell which file it means.",
 };
 
 const GRANT_ROOT_FALLBACK = "a directory";
@@ -171,11 +216,17 @@ const GRANT_ROOT_FALLBACK = "a directory";
 export function notApprovableReasonCopy(
 	reason: NotApprovableReason | null,
 	grantRoot?: string | null,
+	agent: ApprovalAgent = "codex",
+	host?: string | null,
 ): string {
 	if (reason === null || !Object.hasOwn(NOT_APPROVABLE_COPY, reason)) {
 		return "AgentPulse can't show this in a way that's safe to approve.";
 	}
-	return NOT_APPROVABLE_COPY[reason]({ root: grantRoot?.trim() || GRANT_ROOT_FALLBACK });
+	return NOT_APPROVABLE_COPY[reason]({
+		root: grantRoot?.trim() || GRANT_ROOT_FALLBACK,
+		name: agentName(agent),
+		host: hostLabel(host),
+	});
 }
 
 /** The card's text for a row that can only be declined: the reason, then what to do about it. */
@@ -183,8 +234,14 @@ export function notApprovableText(
 	reason: NotApprovableReason | null,
 	host: string | null | undefined,
 	grantRoot?: string | null,
+	agent: ApprovalAgent = "codex",
 ): string {
-	return `${notApprovableReasonCopy(reason, grantRoot)} You can only decline it here. If you want it done, run it yourself on ${hostLabel(host)}.`;
+	const why = `${notApprovableReasonCopy(reason, grantRoot, agent, host)} You can only decline it here.`;
+	// A Claude fork's reasons are mostly about what AgentPulse won't do for Claude (memories, tools it hasn't seen),
+	// where "run it yourself" would be advice to bypass them.
+	return agent === "claude"
+		? why
+		: `${why} If you want it done, run it yourself on ${hostLabel(host)}.`;
 }
 
 // ── outcomes ────────────────────────────────────────────────────────────────
@@ -193,6 +250,8 @@ interface OutcomeCtx {
 	host: string;
 	time: string | null;
 	decision: ApprovalDecision | null;
+	agent: ApprovalAgent;
+	mode?: ApprovalForkMode;
 }
 
 /** The first words of the line for an answer that may have run. The card draws them in bold. */
@@ -215,21 +274,34 @@ const OUTCOME_LINES: Record<CodexApprovalOutcome, (ctx: OutcomeCtx) => string> =
 		`You approved this, but it didn't reach ${host} in time, so it was declined. Nothing ran.`,
 	answer_withdrawn: () =>
 		"This was approved, but the approver's access ended before it was sent, so it was declined. Nothing ran.",
-	revision_changed: () =>
-		"Codex changed what it's asking after you approved, so it was declined. Nothing ran.",
+	revision_changed: ({ agent }) =>
+		`${agentName(agent)} changed what it's asking after you approved, so it was declined. Nothing ran.`,
 	may_have_run: ({ host }) =>
 		`${MAY_HAVE_RUN_LEAD} Approved, but ${host} never confirmed. Check the machine before asking again.`,
 	turn_ended: ({ decision }) =>
 		decision === "accept"
 			? "You approved this, but the turn ended before it was sent. Nothing ran."
 			: "The turn ended before this was answered. Nothing ran.",
-	codex_shut_down: ({ decision }) =>
-		decision === "accept"
+	codex_shut_down: ({ decision, agent }) => {
+		// The outcome keeps its stored name (a rename would break every client that decodes it); a Claude
+		// fork says it stopped running.
+		if (agent === "claude") {
+			return decision === "accept"
+				? "You approved this, but Claude stopped running before it was sent. That request didn't run."
+				: "Claude stopped running before this was answered. That request didn't run.";
+		}
+		return decision === "accept"
 			? "You approved this, but Codex shut down before it was sent. Nothing ran."
-			: "Codex shut down before this was answered. Nothing ran.",
+			: "Codex shut down before this was answered. Nothing ran.";
+	},
 	session_stopped: () => "The session stopped before this was answered. Nothing ran.",
 	approved_then_stopped: () =>
 		"You approved this, but the session was stopped before it was sent. Nothing ran.",
+	// A rule, a hook or the harness decided before the person did; whether it ran is unknown (AGEN-117 T10).
+	decided_elsewhere: ({ host, mode }) =>
+		mode === "restricted"
+			? `${MAY_HAVE_RUN_LEAD} Something on ${host} answered before you did. Check the machine before asking again.`
+			: `${MAY_HAVE_RUN_LEAD} Something on ${host} answered before you did, most likely a rule or hook in your Claude settings. Check the machine before asking again.`,
 };
 
 export function outcomeLine(
@@ -237,8 +309,13 @@ export function outcomeLine(
 	host: string | null | undefined,
 	time: string | null,
 	decision: ApprovalDecision | null = null,
+	agent: ApprovalAgent = "codex",
+	mode?: ApprovalForkMode,
 ): string {
-	return OUTCOME_LINES[outcome]({ host: hostLabel(host), time, decision });
+	// An outcome this build doesn't know (a newer server) still reads whole, and claims nothing about what ran.
+	if (!Object.hasOwn(OUTCOME_LINES, outcome))
+		return "This request has closed. Check the machine before asking again.";
+	return OUTCOME_LINES[outcome]({ host: hostLabel(host), time, decision, agent, mode });
 }
 
 /** Which timestamp an outcome line quotes: when it was answered, or when the time ran out. */
@@ -301,12 +378,19 @@ export function crossedTwoMinutes(previous: number, now: number): boolean {
 
 export function requestHeading(
 	approval: Pick<CodexApprovalSummary, "requestKind" | "preview">,
+	agent: ApprovalAgent = "codex",
 ): string {
-	if (approval.requestKind === "command") return "Codex asks to run a command";
+	const name = agentName(agent);
+	if (approval.requestKind === "command") return `${name} asks to run a command`;
+	if (approval.requestKind === "claude_tool") {
+		const target = approval.preview?.target;
+		const verb = approval.preview?.tool === "Read" ? "read" : "fetch";
+		return target ? `${name} asks to ${verb} ${target}` : `${name} asks to ${verb} something`;
+	}
 	const n = approval.preview?.fileCount ?? 0;
 	return n > 0
-		? `Codex asks to change ${plural(n, "file", "files")}`
-		: "Codex asks to change files";
+		? `${name} asks to change ${plural(n, "file", "files")}`
+		: `${name} asks to change files`;
 }
 
 /** `{host} · …/{dir}`: one truncated line for a phone. The full path is in the dialog. */
@@ -389,7 +473,24 @@ const KIND_WORDS: Record<string, string> = {
 	add: "New file",
 	update: "Edit",
 	delete: "Delete",
+	// A takeover fork's Write: over an existing file, or with no way to tell (the check on the machine failed).
+	write: "Replace",
+	write_unchecked: "Write",
 };
+
+/** What a Claude Write does to its file, in a sentence, for the card under the path. Null for any other kind. */
+export function writeKindNote(kind: string): string | null {
+	switch (kind.trim()) {
+		case "write":
+			return "Replaces this file. What it replaces isn't shown.";
+		case "add":
+			return "New file.";
+		case "write_unchecked":
+			return "Writes this file, replacing it if it exists.";
+		default:
+			return null;
+	}
+}
 
 export function kindWord(kind: string): string {
 	const k = kind.trim();
@@ -415,7 +516,8 @@ export function signedDiffLines(kind: string, diff: string): string[] {
 	const body = diff.endsWith("\n") ? diff.slice(0, -1) : diff;
 	const lines = body.split("\n");
 	const k = kind.trim();
-	if (k === "add") return lines.map((line) => `+${line}`);
+	if (k === "add" || k === "write" || k === "write_unchecked")
+		return lines.map((line) => `+${line}`);
 	if (k === "delete") return lines.map((line) => `-${line}`);
 	return lines.map((line) => (/^[+\- @\\]/.test(line) || line === "" ? line : `?${line}`));
 }
@@ -568,19 +670,28 @@ export function midConfirmView(
 	row: Pick<CodexApprovalSummary, "outcome" | "decision" | "answeredAt" | "expiresAt"> | null,
 	host: string | null | undefined,
 	time: (stored: string | null) => string | null,
+	agent: ApprovalAgent = "codex",
+	mode?: ApprovalForkMode,
 ): MidConfirmView {
 	switch (event) {
 		case "time_up":
 			return { text: TIME_UP_TEXT, cancelLabel: "Close" };
 		case "revision_changed":
 			return {
-				text: "Codex changed what it's asking. Nothing was sent. Review the new version.",
+				text: `${agentName(agent)} changed what it's asking. Nothing was sent. Review the new version.`,
 				cancelLabel: "Back",
 			};
 		case "closed":
 			return {
 				text: row?.outcome
-					? outcomeLine(row.outcome, host, time(outcomeTimeSource(row.outcome, row)), row.decision)
+					? outcomeLine(
+							row.outcome,
+							host,
+							time(outcomeTimeSource(row.outcome, row)),
+							row.decision,
+							agent,
+							mode,
+						)
 					: CLOSED_TEXT,
 				cancelLabel: "Close",
 			};
@@ -605,6 +716,10 @@ export function confirmCopy(input: {
 	host: string | null | undefined;
 	declinesAt: string | null;
 	owner?: string | null;
+	/** A Claude request's tool, for a `claude_tool` card. */
+	tool?: string;
+	/** The kind of the one file a Claude Write changes (`write`, `add`, `write_unchecked`), for its title. */
+	writeKind?: string | null;
 }): ConfirmCopy {
 	const named = Boolean(input.host?.trim());
 	const host = hostLabel(input.host);
@@ -623,6 +738,38 @@ export function confirmCopy(input: {
 			closing,
 		};
 	}
+	if (input.requestKind === "claude_tool") {
+		const read = input.tool === "Read";
+		return {
+			title: read ? "Let Claude read this file?" : `Fetch this URL from ${host}?`,
+			confirmLabel: read ? "Allow reading it" : "Fetch it",
+			cancelLabel: "Back",
+			closing: read
+				? ["Claude will see what's in it. Runs once.", ...closing.slice(1)]
+				: ["A URL can carry data out. Runs once.", ...closing.slice(1)],
+		};
+	}
+	if (
+		input.writeKind === "write" ||
+		input.writeKind === "add" ||
+		input.writeKind === "write_unchecked"
+	) {
+		const [title, confirmLabel] =
+			input.writeKind === "write"
+				? [`Replace this file on ${host}?`, "Replace it"]
+				: input.writeKind === "add"
+					? [`Create this file on ${host}?`, "Create it"]
+					: [`Write this file on ${host}?`, "Write it"];
+		return { title, confirmLabel, cancelLabel: "Back", closing };
+	}
+	if (input.fileCount <= 0) {
+		return {
+			title: `Change files on ${host}?`,
+			confirmLabel: "Change files",
+			cancelLabel: "Back",
+			closing,
+		};
+	}
 	const files = plural(input.fileCount, "file", "files");
 	return {
 		title: `Change ${files} on ${host}?`,
@@ -634,6 +781,8 @@ export function confirmCopy(input: {
 
 export const STOP_CONFIRM_TITLE = "Decline and stop this turn?";
 export const STOP_CONFIRM_BODY = "Codex stops what it's doing.";
+export const stopConfirmBody = (agent: ApprovalAgent = "codex"): string =>
+	`${agentName(agent)} stops what it's doing.`;
 
 /** The body of an answer: only an accept carries the hash, and it is the frozen one. */
 export function decisionBody(
@@ -684,7 +833,11 @@ export function updateKept(
 ): Map<string, CodexApprovalSummary> {
 	const next = new Map(kept);
 	for (const row of rows) {
-		if (row.outcome === "may_have_run" && !dismissed.has(row.id)) next.set(row.id, row);
+		if (
+			(row.outcome === "may_have_run" || row.outcome === "decided_elsewhere") &&
+			!dismissed.has(row.id)
+		)
+			next.set(row.id, row);
 		else if (next.has(row.id)) next.delete(row.id);
 	}
 	for (const id of dismissed) next.delete(id);
@@ -733,12 +886,18 @@ export function arrivalAnnouncement(input: {
 	fileCount: number;
 	declinesAt: string | null;
 	pendingCount: number;
+	agent?: ApprovalAgent;
+	/** A `claude_tool` request's tool: spoken without its target, which can be a long URL or path. */
+	tool?: string;
 }): string {
 	if (input.pendingCount > 1) return `${input.pendingCount} requests need an answer.`;
+	const name = agentName(input.agent ?? "codex");
 	const asks =
 		input.requestKind === "command"
-			? "Codex asks to run a command."
-			: `Codex asks to change ${plural(input.fileCount, "file", "files")}.`;
+			? `${name} asks to run a command.`
+			: input.requestKind === "claude_tool"
+				? `${name} asks to ${input.tool === "Read" ? "read a file" : "fetch a URL"}.`
+				: `${name} asks to change ${plural(input.fileCount, "file", "files")}.`;
 	return input.declinesAt ? `${asks} Declines at ${input.declinesAt}.` : asks;
 }
 
@@ -750,6 +909,8 @@ export const approvalOutcomeFocusId = (id: string): string => `codex-approval-ou
 export const approvalHeadingId = (id: string): string => `codex-approval-heading-${id}`;
 
 export const REVISION_CHANGED_LINE = "Codex changed what it's asking. Read it again.";
+export const revisionChangedLine = (agent: ApprovalAgent = "codex"): string =>
+	`${agentName(agent)} changed what it's asking. Read it again.`;
 export const NEXT_REQUEST_LINE = "Next request. The last one is shown below.";
 export const CHECK_FAILED_TEXT =
 	"AgentPulse couldn't confirm your answer went through, and couldn't check either. Check again before answering.";
@@ -810,4 +971,23 @@ export function showsAvailabilityHint(
 ): boolean {
 	const state = managedSession?.managedState;
 	return state !== "pending" && state !== "degraded";
+}
+
+// ── a message something else sent the session ───────────────────────────────
+
+/**
+ * The lines for a fork that was stopped because something other than AgentPulse sent it a message (T3): the
+ * owner's or an admin's read only, since that is who the server returns the notice to. The text is whatever
+ * the server kept after redaction, or, if redaction changed anything, nothing but the reason it is hidden.
+ */
+export function peerTurnLines(
+	peer: ClaudePeerTurnNotice | undefined | null,
+	host: string | null | undefined,
+): string[] | null {
+	if (!peer) return null;
+	const lead = `Something else on ${hostLabel(host)} sent this session a message, so AgentPulse stopped it.`;
+	if (peer.hidden || peer.text === null) {
+		return [lead, "AgentPulse is hiding it because it may hold a secret."];
+	}
+	return [lead, `The message: ${peer.text}`];
 }

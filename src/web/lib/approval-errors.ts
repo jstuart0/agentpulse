@@ -7,6 +7,8 @@
  */
 import type { ApprovalAnswerRefusal, NotApprovableReason } from "../../shared/codex-approvals.js";
 import {
+	type ApprovalAgent,
+	agentName,
 	hostLabel,
 	notApprovableReasonCopy,
 	ownerLabelOr,
@@ -21,6 +23,8 @@ export interface ErrorCtx {
 	declinesAt: string | null;
 	reason: NotApprovableReason | null;
 	grantRoot?: string | null;
+	/** Whose request this was; absent means Codex. */
+	agent?: ApprovalAgent;
 }
 
 type ApprovalErrorCode = ApprovalAnswerRefusal | "bad_origin";
@@ -40,16 +44,16 @@ const ERROR_COPY: Record<ApprovalErrorCode, (ctx: ErrorCtx) => string> = {
 		"Time ran out before your answer arrived. It was declined automatically, and nothing ran.",
 	presentation_hash_required: () =>
 		"AgentPulse couldn't tell which version you reviewed. Nothing was sent. Reload and review it again.",
-	not_approvable: ({ reason, grantRoot }) =>
-		`${notApprovableReasonCopy(reason, grantRoot)} You can only decline it here.`,
+	not_approvable: ({ reason, grantRoot, agent, host }) =>
+		`${notApprovableReasonCopy(reason, grantRoot, agent, host)} You can only decline it here.`,
 	host_offline: ({ host, declinesAt }) =>
 		`${hostLabel(host)} is offline, so your answer can't reach it. Nothing was sent.${
 			declinesAt ? ` You can answer if it's back before ${declinesAt}.` : ""
 		}`,
 	host_gone: () =>
 		"This session's host was removed from AgentPulse, so it can't be answered here. Nothing was sent.",
-	presentation_changed: () =>
-		"Codex changed what it's asking after you opened it. Nothing was sent. Review the new version.",
+	presentation_changed: ({ agent }) =>
+		`${agentName(agent)} changed what it's asking after you opened it. Nothing was sent. Review the new version.`,
 	session_stopped: () => "This session was stopped, so nothing was sent.",
 };
 

@@ -297,8 +297,11 @@ export function SummaryField({
 export function EmbeddedLaunchPanel({
 	launchId,
 	takenOver = false,
+	agentType,
 }: {
 	launchId: string;
+	/** The session's agent, for the words of a continued Claude session. */
+	agentType?: string | null;
 	/** The session was taken over, not launched: its carrier row is not a finished launch. */
 	takenOver?: boolean;
 }) {
@@ -349,7 +352,7 @@ export function EmbeddedLaunchPanel({
 				<div>
 					<div className="text-sm font-semibold text-foreground">Launch</div>
 					<div className="mt-1 text-xs text-muted-foreground">
-						{launchSummaryLine(takenOver, launch.status, modeLabel)}
+						{launchSummaryLine(takenOver, launch.status, modeLabel, agentType)}
 					</div>
 				</div>
 				<Link

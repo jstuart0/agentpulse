@@ -16,9 +16,9 @@ import type { ScopeFlags, ToolContext } from "../server.js";
 const CONFIRMATION_PORTABILITY_NOTE =
 	"This is a state-changing action. The requires-confirmation hint is honored only by MCP hosts that implement it (e.g. Claude Code's UI); other clients (scripted, or hosts without the gate) will execute it without prompting.";
 
-/** The one message for a server that predates managed Codex approvals. */
+/** The one message for a server that predates managed-session approvals (Codex, and a continued Claude Code session). */
 export const APPROVALS_UNSUPPORTED_MESSAGE =
-	"This AgentPulse server doesn't support Codex approvals. Upgrade the server to read or decline them.";
+	"This AgentPulse server doesn't support approvals for managed sessions. Upgrade the server to read or decline them.";
 
 /**
  * A server without the routes answers a bare 404 (no `error` code). One with them always
@@ -48,7 +48,7 @@ export function registerApprovalTools(ctx: ToolContext, flags: ScopeFlags): void
 		{
 			name: "list_pending_approvals",
 			description:
-				"List the command and file-change approvals a managed Codex session is waiting on (open ones only: pending, or answered and waiting for the host). Each carries a short preview (the command's start and last lines, or the file paths), the presentationHash, whether it is approvable, how long it has left, and the host's state. Previews are cut to 4 KiB; the full text is in the dashboard. This tool can read and decline but never accept: accepting is for a signed-in person in the dashboard, who sees the whole command first.",
+				"List the approvals a managed session (Codex, or a Claude Code session continued in AgentPulse) is waiting on: commands, file changes and, for Claude, web fetches and reads outside its directory (open ones only: pending, or answered and waiting for the host). Each carries a short preview (the command's start and last lines, the file paths, or the URL or path), the presentationHash, whether it is approvable, how long it has left, and the host's state. Previews are cut to 4 KiB; the full text is in the dashboard. This tool can read and decline but never accept: accepting is for a signed-in person in the dashboard, who sees the whole command first.",
 			inputSchema: { session_id: z.string() },
 		},
 		async (args, client) => {
@@ -64,7 +64,7 @@ export function registerApprovalTools(ctx: ToolContext, flags: ScopeFlags): void
 		ctx,
 		{
 			name: "decline_approval",
-			description: `Decline one pending Codex approval so the command is not run or the files are not written. Declining is always safe for the machine; the agent is told it was refused and may try something else. It needs the host to be connected (an offline or removed host refuses the call: the request expires on its own and is declined then). Single-item only. There is no accept tool: only a signed-in person can accept, in the dashboard. ${CONFIRMATION_PORTABILITY_NOTE}`,
+			description: `Decline one pending approval so the command is not run, the files are not written and nothing is fetched or read. Declining is always safe for the machine; the agent is told it was refused and may try something else. It needs the host to be connected (an offline or removed host refuses the call: the request expires on its own and is declined then). Single-item only. There is no accept tool: only a signed-in person can accept, in the dashboard. ${CONFIRMATION_PORTABILITY_NOTE}`,
 			inputSchema: { session_id: z.string(), approval_id: z.string() },
 		},
 		async (args, client) => {

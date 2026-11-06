@@ -159,6 +159,7 @@ export function SessionCard({ session, intelligence, ownerChip }: SessionCardPro
 			? codexApprovalNoteOtherOwner(
 					ownerChip?.kind === "user" ? ownerChip.text : null,
 					viewerIsAdmin,
+					session.agentType,
 				)
 			: null;
 	const modeStyle = getSessionMode(session);

@@ -148,6 +148,19 @@ export type ClaudeApprovalContext = {
 	answer(requestId: string, body: unknown): boolean;
 	/** The tracker saw something else decide this call before the person did. */
 	markDecidedElsewhere(toolUseId: string): void;
+	/** The running prompt's action id: the approval row's turn. */
+	turnId: string;
+	/** The request's `input` occurs unchanged in the line it came in on, so echoing it back says what Claude sent. */
+	inputStable: boolean;
+};
+
+/** What a `tool_result` line said about how its call was decided and how it ended (T10's evidence). */
+export type ClaudeToolResultInfo = {
+	isError: boolean;
+	nonExecutionKind: string | null;
+	decisionSource: string | null;
+	/** The result's text when it is a string or text blocks; null otherwise. */
+	content: string | null;
 };
 
 export interface ClaudeApprovalPort {
@@ -156,7 +169,7 @@ export interface ClaudeApprovalPort {
 	/** Claude cancelled a request (something else decided, or an interrupt). */
 	cancel(requestId: string): void;
 	/** A `tool_result` for a call arrived. */
-	toolResult(toolUseId: string): void;
+	toolResult(toolUseId: string, info?: ClaudeToolResultInfo): void;
 	/** The turn ended: nothing held for it can still be answered. */
 	turnEnded(): void;
 	/** Stop is about to wait: no answer may be issued after this. */
@@ -288,6 +301,18 @@ export type ClaudeStreamOptions = {
 
 const isRecord = (value: unknown): value is Record<string, any> =>
 	!!value && typeof value === "object" && !Array.isArray(value);
+
+/** A `tool_result`'s text: a string, or the text blocks of an array joined; null for anything else. */
+function resultText(content: unknown): string | null {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return null;
+	const parts: string[] = [];
+	for (const block of content) {
+		if (isRecord(block) && block.type === "text" && typeof block.text === "string")
+			parts.push(block.text);
+	}
+	return parts.length > 0 ? parts.join("\n") : null;
+}
 
 function forHostLog(value: unknown): string {
 	const text = typeof value === "string" ? value : value instanceof Error ? value.message : "";
@@ -715,7 +740,12 @@ export class ClaudeStreamRuntime {
 				const source = isRecord(meta.permission_decision) ? meta.permission_decision.source : null;
 				call.decisionSource = typeof source === "string" ? source : null;
 			}
-			this.port?.toolResult(call.toolUseId);
+			this.port?.toolResult(call.toolUseId, {
+				isError: call.isError,
+				nonExecutionKind: call.nonExecutionKind,
+				decisionSource: call.decisionSource,
+				content: resultText(block.content),
+			});
 			void this.reportEventsSafely("tool-row", [this.rowEvent(callRowText(call), "call")]);
 		}
 	}
@@ -836,6 +866,8 @@ export class ClaudeStreamRuntime {
 				const target = turn.calls.get(id);
 				if (target) target.decidedElsewhere = true;
 			},
+			turnId: turn.actionId,
+			inputStable: this.proc.link.requestInputStable(requestId),
 		};
 		// The approval path throwing, in step or later, is a decline by its own id: never an error reply (the model
 		// would read its text) and never a dead runtime.

@@ -55,7 +55,7 @@ import { useStopConfirm } from "../hooks/useStopConfirm.js";
 import { useStopFollow } from "../hooks/useStopFollow.js";
 import { api } from "../lib/api.js";
 import {
-	CHUNK_LOAD_FAILED_COPY,
+	chunkLoadFailedCopy,
 	hasPendingCodexApproval,
 	showsApprovalCard,
 } from "../lib/codex-approval-wait.js";
@@ -137,7 +137,7 @@ const CodexApprovalCard = lazy(() =>
 			default: ({ session }: { session: Session }) =>
 				hasPendingCodexApproval(session) ? (
 					<div role="alert" className="mx-3 mt-2 flex flex-wrap items-center gap-2 md:mx-6">
-						<p className="text-sm text-foreground">{CHUNK_LOAD_FAILED_COPY}</p>
+						<p className="text-sm text-foreground">{chunkLoadFailedCopy(session.agentType)}</p>
 						<button
 							type="button"
 							onClick={() => window.location.reload()}
@@ -341,6 +341,7 @@ export function SessionDetailPage() {
 	// request knows; the session itself doesn't.
 	const launchRequestId = session?.managedSession?.launchRequestId ?? null;
 	const takenOver = isTakenOver(session?.managedSession);
+	const agentType = session?.agentType;
 	const [origin, setOrigin] = useState<ReturnType<typeof overviewOriginField>>(null);
 	useEffect(() => {
 		setOrigin(null);
@@ -349,7 +350,7 @@ export function SessionDetailPage() {
 		api
 			.getLaunch(launchRequestId)
 			.then((res) => {
-				if (!cancelled) setOrigin(overviewOriginField(takenOver, res.launchRequest));
+				if (!cancelled) setOrigin(overviewOriginField(takenOver, res.launchRequest, agentType));
 			})
 			.catch(() => {
 				// No launch details: the field simply isn't shown.
@@ -357,7 +358,7 @@ export function SessionDetailPage() {
 		return () => {
 			cancelled = true;
 		};
-	}, [showOwnerFields, launchRequestId, takenOver]);
+	}, [showOwnerFields, launchRequestId, takenOver, agentType]);
 	const originUserId = origin?.userId ?? null;
 	useEffect(() => {
 		if (showOwnerFields) noteUnknownUser(originUserId);
@@ -968,6 +969,7 @@ export function SessionDetailPage() {
 					<EmbeddedLaunchPanel
 						launchId={session.managedSession.launchRequestId}
 						takenOver={takenOver}
+						agentType={session.agentType}
 					/>
 				) : (
 					<div className="p-6 text-sm text-muted-foreground">

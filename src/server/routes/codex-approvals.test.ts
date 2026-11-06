@@ -63,13 +63,16 @@ afterAll(() => {
 });
 
 let counter = 0;
-async function seedSession(ownerUserId: string | null) {
+async function seedSession(
+	ownerUserId: string | null,
+	agentType: "codex_cli" | "claude_code" = "codex_cli",
+) {
 	counter++;
 	const sessionId = `p4-session-${counter}-${crypto.randomUUID().slice(0, 6)}`;
 	const supervisorId = `p4-host-${counter}-${crypto.randomUUID().slice(0, 6)}`;
 	sessionsUsed.push(sessionId);
 	hostsUsed.push(supervisorId);
-	await harness.seedApprovalSession({ sessionId, supervisorId, ownerUserId });
+	await harness.seedApprovalSession({ sessionId, supervisorId, ownerUserId, agentType });
 	return { sessionId, supervisorId };
 }
 
@@ -93,6 +96,20 @@ async function openApproval(
 	if (!row) throw new Error("approval row missing");
 	return { id: response.approvalId, hash: row.presentationHash, row };
 }
+
+/** The request each agent's session asks about: a Codex command, or a Claude web fetch. */
+const requestFor = (
+	agent: "codex_cli" | "claude_code",
+): Parameters<typeof harness.commandReport>[0] =>
+	agent === "claude_code"
+		? {
+				requestKind: "claude_tool",
+				command: undefined,
+				tool: "WebFetch",
+				target: "https://example.com/docs",
+				reason: "summarise",
+			}
+		: {};
 
 async function rowOf(id: string) {
 	const [row] = await getDb().select().from(codexApprovals).where(eq(codexApprovals.id, id));
@@ -836,12 +853,17 @@ describe("scope classification and the host credential", () => {
 		});
 	}
 
-	for (const mode of ["solo", "team"] as const) {
-		test(`${mode}: observe, ingest and respond keys are 403 insufficient_scope on all three routes, and nothing changes`, async () => {
+	for (const [mode, agent] of [
+		["solo", "codex_cli"],
+		["team", "codex_cli"],
+		["solo", "claude_code"],
+		["team", "claude_code"],
+	] as const) {
+		test(`${mode}, ${agent}: observe, ingest and respond keys are 403 insufficient_scope on all three routes, and nothing changes`, async () => {
 			const t = await team();
 			if (mode === "solo") await clearInstanceSettings();
-			const ctx = await seedSession(mode === "team" ? t.alice.id : null);
-			const a = await openApproval(ctx);
+			const ctx = await seedSession(mode === "team" ? t.alice.id : null, agent);
+			const a = await openApproval(ctx, requestFor(agent));
 			const before = JSON.stringify(await rowOf(a.id));
 			const keys = {
 				observe: await seedKey("p4-observe", ["observe"], null),
@@ -856,11 +878,13 @@ describe("scope classification and the host credential", () => {
 						const res = await hit(route, bearerHeaders(key.key), a, decision);
 						expect({
 							mode,
+							agent,
 							name,
 							route: `${route.method} ${route.path}`,
 							status: res.status,
 						}).toEqual({
 							mode,
+							agent,
 							name,
 							route: `${route.method} ${route.path}`,
 							status: 403,
@@ -873,11 +897,11 @@ describe("scope classification and the host credential", () => {
 			expect(await harness.auditRows(ctx.sessionId)).toHaveLength(0);
 		});
 
-		test(`${mode}: a host credential, even the owning host's own, can't reach any route (401)`, async () => {
+		test(`${mode}, ${agent}: a host credential, even the owning host's own, can't reach any route (401)`, async () => {
 			const t = await team();
 			if (mode === "solo") await clearInstanceSettings();
-			const ctx = await seedSession(mode === "team" ? t.alice.id : null);
-			const a = await openApproval(ctx);
+			const ctx = await seedSession(mode === "team" ? t.alice.id : null, agent);
+			const a = await openApproval(ctx, requestFor(agent));
 			const before = JSON.stringify(await rowOf(a.id));
 			const credential = await createSupervisorCredential(ctx.supervisorId, "p4-credential");
 			const forms = [
@@ -900,11 +924,11 @@ describe("scope classification and the host credential", () => {
 			expect(await harness.auditRows(ctx.sessionId)).toHaveLength(0);
 		});
 
-		test(`${mode}: no credential at all is 401 on all three routes`, async () => {
+		test(`${mode}, ${agent}: no credential at all is 401 on all three routes`, async () => {
 			const t = await team();
 			if (mode === "solo") await clearInstanceSettings();
-			const ctx = await seedSession(mode === "team" ? t.alice.id : null);
-			const a = await openApproval(ctx);
+			const ctx = await seedSession(mode === "team" ? t.alice.id : null, agent);
+			const a = await openApproval(ctx, requestFor(agent));
 			for (const route of await reachableRoutes(ctx.sessionId, a.id)) {
 				const res = await hit(route, new Headers(), a);
 				expect(res.status).toBe(401);
@@ -924,6 +948,23 @@ describe("scope classification and the host credential", () => {
 		expect(list.status).toBe(200);
 		expect(detail.status).toBe(200);
 		expect(((await list.json()) as CodexApprovalList).viewer.canAccept).toBe(false);
+	});
+
+	test("a claude_tool row's list carries its tool and target on the wire, for a manage key", async () => {
+		const t = await team();
+		const ctx = await seedSession(t.alice.id, "claude_code");
+		await openApproval(ctx, requestFor("claude_code"));
+		const key = await seedKey("p4-manage-wire", ["manage"], t.alice.id);
+		const res = await app.request(base(ctx.sessionId), { headers: bearerHeaders(key.key) });
+		const list = (await res.json()) as CodexApprovalList;
+		expect(list.approvals[0]).toMatchObject({ requestKind: "claude_tool" });
+		expect(list.approvals[0]?.preview).toEqual({
+			cwd: "/work/project",
+			tool: "WebFetch",
+			target: "https://example.com/docs",
+			pathOutsideCwd: false,
+			nonAscii: false,
+		});
 	});
 
 	test("both mounts answer", async () => {

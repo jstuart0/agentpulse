@@ -40,7 +40,7 @@ import { launchRequests, supervisors } from "../db/schema/index.js";
 export async function seedOwnedLaunch(
 	sessionId: string,
 	supervisorId: string,
-	opts?: { status?: string; host?: "live" | "none" },
+	opts?: { status?: string; host?: "live" | "none"; agentType?: string },
 ): Promise<{ launchId: string }> {
 	const status = opts?.status ?? "completed";
 	if (opts?.host !== "none") await seedLiveHostIfAbsent(supervisorId);
@@ -48,7 +48,7 @@ export async function seedOwnedLaunch(
 		.insert(launchRequests)
 		.values({
 			launchCorrelationId: sessionId,
-			agentType: "claude_code",
+			agentType: opts?.agentType ?? "claude_code",
 			cwd: "/tmp/owned-launch-fixture",
 			// Headless, not the column's terminal default: a Stop on a terminal launch is refused at enqueue
 			// (nothing can stop it), and most callers of this fixture queue a Stop to test something else.

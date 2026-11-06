@@ -135,6 +135,7 @@ describe("GET /capabilities", () => {
 				askThreadsList: true,
 				compactToolOutcome: true,
 				codexApprovals: true,
+				claudeApprovals: true,
 			});
 			expect(body.pushEvents).toEqual(["ask_reply"]);
 			expect(Object.keys(body.ai).sort()).toEqual(["active", "build", "provider", "vectorSearch"]);

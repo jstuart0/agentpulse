@@ -235,7 +235,13 @@ describe("copy", () => {
 			(o) => !outcomeLine(o, "H", "T").includes("Nothing ran"),
 		);
 		expect(mayRun.map(String).sort()).toEqual(
-			["approved_sent", "may_have_run", "sending_accept", "sending_decline"].sort(),
+			[
+				"approved_sent",
+				"decided_elsewhere",
+				"may_have_run",
+				"sending_accept",
+				"sending_decline",
+			].sort(),
 		);
 	});
 

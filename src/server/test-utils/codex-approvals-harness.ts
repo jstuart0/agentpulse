@@ -66,6 +66,8 @@ export async function seedApprovalSession(input: {
 	ownerUserId?: string | null;
 	hostName?: string;
 	host?: "live" | "none";
+	/** The session and its launch: Codex by default, as a managed Codex session is. */
+	agentType?: "codex_cli" | "claude_code";
 }): Promise<SeededApprovalSession> {
 	// Destructured, not read as a property: the ownership drift guard counts property reads of the host id.
 	const { supervisorId = "approval-host" } = input;
@@ -73,13 +75,14 @@ export async function seedApprovalSession(input: {
 		.insert(sessions)
 		.values({
 			sessionId: input.sessionId,
-			agentType: "codex_cli",
+			agentType: input.agentType ?? "codex_cli",
 			ownerUserId: input.ownerUserId ?? null,
 			cwd: "/work/project",
 		})
 		.onConflictDoNothing();
 	const { launchId } = await seedOwnedLaunch(input.sessionId, supervisorId, {
 		host: input.host ?? "live",
+		agentType: input.agentType ?? "codex_cli",
 	});
 	await getDb()
 		.insert(managedSessions)

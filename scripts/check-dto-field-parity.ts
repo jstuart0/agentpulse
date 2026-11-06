@@ -39,6 +39,7 @@ const INTERFACES = [
 	"CodexApprovalPresentationChange",
 	"CodexApprovalCommandPresentation",
 	"CodexApprovalFileChangePresentation",
+	"CodexApprovalClaudeToolPresentation",
 	"CodexApprovalDetail",
 	"CodexApprovalDecisionResponse",
 	// AGEN-117: the notice on the approvals list for a continued session stopped by a stranger's message.
@@ -59,6 +60,7 @@ const SHARED_SOURCE_OVERRIDES: Partial<Record<(typeof INTERFACES)[number], strin
 	CodexApprovalPresentationChange: CODEX_APPROVALS_SOURCE,
 	CodexApprovalCommandPresentation: CODEX_APPROVALS_SOURCE,
 	CodexApprovalFileChangePresentation: CODEX_APPROVALS_SOURCE,
+	CodexApprovalClaudeToolPresentation: CODEX_APPROVALS_SOURCE,
 	CodexApprovalDetail: CODEX_APPROVALS_SOURCE,
 	CodexApprovalDecisionResponse: CODEX_APPROVALS_SOURCE,
 	ClaudePeerTurnNotice: CODEX_APPROVALS_SOURCE,

@@ -108,6 +108,8 @@ function serializePreview(preview: CodexApprovalPreview | null): CodexApprovalPr
 			: {}),
 		pathOutsideCwd: preview.pathOutsideCwd,
 		nonAscii: preview.nonAscii,
+		...(preview.tool !== undefined ? { tool: preview.tool } : {}),
+		...(preview.target !== undefined ? { target: preview.target } : {}),
 	};
 }
 
@@ -140,6 +142,19 @@ function serializePresentation(
 			v: 1,
 			requestKind: "command",
 			command: p.command,
+			cwd: p.cwd,
+			reason: p.reason,
+			grantRoot: p.grantRoot,
+			// A Claude Bash request only; a Codex row never has the key, so its response is unchanged.
+			...(p.blockedPath !== undefined ? { blockedPath: p.blockedPath } : {}),
+		};
+	}
+	if (p.requestKind === "claude_tool") {
+		return {
+			v: 1,
+			requestKind: "claude_tool",
+			tool: p.tool,
+			target: p.target,
 			cwd: p.cwd,
 			reason: p.reason,
 			grantRoot: p.grantRoot,
@@ -181,6 +196,10 @@ export function serializeApprovalDetail(detail: CodexApprovalDetail): CodexAppro
 		// Beside the presentation, never in it: the hash covers the presentation as the person read it.
 		...(presentation?.requestKind === "file_change"
 			? { outsideCwd: changesOutsideCwd(presentation) }
+			: {}),
+		// Claude only (the service sets it): a request touching a file later sessions load with no card.
+		...(detail.touchesAgentConfig !== undefined
+			? { touchesAgentConfig: detail.touchesAgentConfig }
 			: {}),
 		reasonText: detail.reasonText,
 	};

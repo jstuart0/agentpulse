@@ -38,6 +38,23 @@ export interface ParsedApproval {
 	grantRoot: string | null;
 	/** Why this request can be declined here but never approved, in the order found. */
 	declineOnly: NotApprovableReason[];
+	/** A takeover fork's request (AGEN-117): absent for Codex. Read only by the Claude dialect. */
+	claude?: ClaudeParsedExtras;
+}
+
+/** What a Claude `can_use_tool` request carries beyond the Codex-shaped fields. */
+export interface ClaudeParsedExtras {
+	tool: string;
+	/** A `claude_tool` request's URL or path. */
+	target: string | null;
+	/** A Bash request's `blocked_path`, as given. */
+	blockedPath: string | null;
+	/** The edits a Write, Edit or NotebookEdit makes, built from the input (never from the model's description). */
+	changes: BufferedChange[];
+	/** The held input, echoed unchanged as `updatedInput` when a person accepts. */
+	input: Record<string, unknown>;
+	/** Every path the exclude rules must judge: the directory, the named path and where it really points. */
+	excludePaths: string[];
 }
 
 /** One changed file as Codex's `fileChange` item states it. */
