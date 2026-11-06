@@ -62,6 +62,8 @@ import {
 	HostOfflineError,
 	HostUpgradeRequiredError,
 	ManagedStateNotContinuableError,
+	NothingToStopError,
+	StopNotSupportedError,
 	listControlActionsForSession,
 	queuePromptAction,
 	queueStopAction,
@@ -926,7 +928,9 @@ function hostRefusalResponse(c: Context, error: unknown) {
 		error instanceof HostOfflineError ||
 		error instanceof HostGoneError ||
 		error instanceof HostUpgradeRequiredError ||
-		error instanceof ManagedStateNotContinuableError
+		error instanceof ManagedStateNotContinuableError ||
+		error instanceof NothingToStopError ||
+		error instanceof StopNotSupportedError
 	) {
 		return c.json({ error: error.code, message: error.message }, 409);
 	}
@@ -943,7 +947,13 @@ sessionsRouter.post("/sessions/:sessionId/stop", async (c: Context) => {
 	} catch (error) {
 		const hostRefusal = hostRefusalResponse(c, error);
 		if (hostRefusal) return hostRefusal;
-		return c.json({ error: error instanceof Error ? error.message : "Unable to queue stop" }, 400);
+		if (error instanceof ControlBusyError) {
+			// A code, as the other stop refusals are; the old sentence stays in `message` for a client that prints it.
+			return c.json({ error: "control_busy", message: error.message }, 400);
+		}
+		// An unexpected failure: the detail goes to the log, never into the response.
+		console.error("[sessions] stop could not be queued:", error);
+		return c.json({ error: "Unable to queue stop" }, 400);
 	}
 });
 

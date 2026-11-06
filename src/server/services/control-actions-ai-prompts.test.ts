@@ -164,6 +164,10 @@ describe("the human queue functions keep their contract", () => {
 			queue.queuePromptAction(sessionId, "go", HUMAN),
 		]);
 		expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
+		// The loser lost the lock. It was not turned away earlier (an older host, a missing launch), which
+		// would leave this test passing without any contention at all.
+		const rejected = outcomes.find((o) => o.status === "rejected") as PromiseRejectedResult;
+		expect(rejected.reason).toBeInstanceOf(queue.ControlBusyError);
 		const rows = await getDb()
 			.select()
 			.from(controlActions)

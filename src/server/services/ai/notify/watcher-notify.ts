@@ -117,19 +117,23 @@ function newEvidence(bundle: EvidenceBundle, after: number) {
 /** The note for a turn that failed to finish: whatever the model thought of the evidence, it didn't finish. */
 const FAILED_TURN_NOTE = "The last turn didn't finish. Open the session to see what happened.";
 
-const FAILED_TURN_EVENT_TYPES: ReadonlySet<string> = new Set([
-	"HeadlessPromptFailed",
-	"HeadlessTaskFailed",
+/** The note for a turn a person ended by stopping the session: it didn't finish either (AGEN-110). */
+const STOPPED_TURN_NOTE = "This session was stopped before the turn finished.";
+
+/** Trigger events that end a turn without it finishing, and the fixed note each gets. */
+const UNFINISHED_TURN_NOTES: ReadonlyMap<string, string> = new Map([
+	["HeadlessPromptFailed", FAILED_TURN_NOTE],
+	["HeadlessTaskFailed", FAILED_TURN_NOTE],
+	["ManagedSessionStopped", STOPPED_TURN_NOTE],
 ]);
 
 function failedTurnWording<T extends { verdict: string; why: string }>(
 	trigger: NotifyTrigger,
 	answer: T,
 ): T {
-	if (!FAILED_TURN_EVENT_TYPES.has(trigger.eventType ?? "") || answer.verdict !== "finished") {
-		return answer;
-	}
-	return { ...answer, verdict: "needs_you", why: FAILED_TURN_NOTE };
+	const note = UNFINISHED_TURN_NOTES.get(trigger.eventType ?? "");
+	if (note === undefined || answer.verdict !== "finished") return answer;
+	return { ...answer, verdict: "needs_you", why: note };
 }
 
 export async function runNotify(

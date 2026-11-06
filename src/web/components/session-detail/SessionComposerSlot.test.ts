@@ -193,6 +193,43 @@ describe("ComposerBody states", () => {
 	const body = (over: Partial<ComposerBodyProps> = {}) =>
 		html(createElement(ComposerBody, { ...base, ...over }));
 
+	test("while a stop is on its way the line replaces the notice at every width, the box is read-only (not disabled) and Send is off", () => {
+		for (const m of [mode, headless]) {
+			const out = body({
+				mode: m,
+				notice: "A notice that stopping replaces",
+				stoppingNotice: "Stopping Codex on studio…",
+			});
+			expect(out).toContain("Stopping Codex on studio…");
+			expect(out).not.toContain("A notice that stopping replaces");
+			expect(out).toMatch(/<textarea[^>]*readonly/i);
+			expect(out).not.toMatch(/<textarea[^>]*disabled/i);
+			expect(out).toMatch(/<button[^>]*disabled=""[^>]*>Send (prompt|task)<\/button>/);
+			// The line sits in its own block, not in the md-only hint or side text.
+			expect(out).toMatch(
+				/<div id="[^"]*" class="text-\[11px\] text-amber-700[^"]*">Stopping Codex on studio…<\/div>/,
+			);
+		}
+	});
+
+	test("with no stop the same body is unchanged: the notice shows, the box is writable", () => {
+		const out = body({ notice: "A plain notice" });
+		expect(out).toContain("A plain notice");
+		expect(out).not.toMatch(/<textarea[^>]*readonly/i);
+	});
+
+	test("through the slot: a stopping line reaches the box", () => {
+		const out = html(
+			createElement(SessionComposerSlot, {
+				session: session("claude_code", "headless"),
+				onSubmitted: async () => {},
+				stoppingText: "Stopping Claude on studio…",
+			}),
+		);
+		expect(out).toContain("Stopping Claude on studio…");
+		expect(out).toMatch(/<textarea[^>]*readonly/i);
+	});
+
 	test("while the host starts the turn: read-only text, 'Sending…', Send aria-disabled, and the wait said aloud", () => {
 		const out = body({ phase: { step: "following" } });
 		expect(out).toMatch(/<textarea[^>]*readonly/i);

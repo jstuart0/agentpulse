@@ -91,6 +91,14 @@ export async function getManagedSession(sessionId: string) {
 }
 
 /**
+ * Agents whose host reports when a turn is over, so a terminal or idle report can end the working state
+ * without waiting for a hook (AGEN-110: a stopped Claude session, which no Stop hook will ever reach).
+ */
+function endsWithManagedRuntime(agentType: string | null | undefined): boolean {
+	return agentType === "codex_cli" || agentType === "claude_code";
+}
+
+/**
  * A state report that says the managed session has ended: `status` completed or
  * failed, or a managed state of stopped, completed or failed. Mirrors the
  * supervisor gate's isTerminalReport. `degraded` is not terminal (a rename that
@@ -124,8 +132,9 @@ function withoutServerOwnedMetadata(
  * Keys of a session's metadata only the server writes. `permissionWait` is the record of what the session
  * is blocked on, from hook events and approval rows. `managedResumeAt` fences a resumed session against a
  * stale or forged `SessionEnd` and is never cleared (AGEN-115, D14): a supervisor can neither set nor clear it.
+ * `endedByEvent` is the hook terminal latch (D21); the server sets it for a stopped Claude row (AGEN-110).
  */
-const SERVER_OWNED_METADATA_KEYS = ["permissionWait", "managedResumeAt"] as const;
+const SERVER_OWNED_METADATA_KEYS = ["permissionWait", "managedResumeAt", "endedByEvent"] as const;
 
 // Test seam (AGEN-115): runs after a report's open-action check and before its writes, so a test can land a
 // settle of the same action in that window.
@@ -171,6 +180,39 @@ async function inTransactionOf<T>(
 	return alreadyInside ? fn(db) : withTransaction(fn);
 }
 
+/**
+ * A stopped Claude row holds the hook terminal latch (D21's `endedByEvent`, 30 s) so a hook from the dying
+ * process can't reopen it, and a LIVE report that starts a new run on a stopped row (a managed prompt) lifts
+ * it, so the new run's own Stop hook isn't held. A replay (an outbox resend of something older) never lifts
+ * it: it says nothing about a run starting now. The hook path already sets, honours and exempts
+ * `UserPromptSubmit` and `SessionStart` from it; this is the managed path's half. Claude only, judged by the
+ * launch's agent type (what the host was asked to run) before the session row's, which a hook can create
+ * first with a type of its choosing. Codex hooks post under the thread id and never reach the session row.
+ * The launch is read only when a change is on the table, so an ordinary report costs nothing extra.
+ */
+async function claudeStopLatchChange(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	input: ManagedSessionStateInput,
+	existingManaged: { managedState: string } | undefined,
+	existingSession: { agentType: string | null } | undefined,
+	replay: boolean,
+): Promise<"set" | "clear" | null> {
+	const change: "set" | "clear" | null =
+		input.managedState === "stopped"
+			? "set"
+			: existingManaged?.managedState === "stopped" && !isTerminalStateReport(input) && !replay
+				? "clear"
+				: null;
+	if (change === null || !existingSession) return null;
+	const [launch] = await db
+		.select({ agentType: launchRequests.agentType })
+		.from(launchRequests)
+		.where(eq(launchRequests.launchCorrelationId, input.sessionId))
+		.limit(1);
+	return (launch?.agentType ?? existingSession.agentType) === "claude_code" ? change : null;
+}
+
 async function writeManagedSessionState(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	db: any,
@@ -201,16 +243,17 @@ async function writeManagedSessionState(
 	if (input.cwd !== undefined) sessionUpdates.cwd = input.cwd;
 	if (input.model !== undefined) sessionUpdates.model = input.model;
 
-	// A Codex runtime reporting idle means its turn is over (completed, failed to start, or the
-	// runtime closed), whatever event did or didn't arrive. Folded into the update this function
+	// A Codex or Claude host reporting idle means its turn is over (completed, failed to start, or the
+	// runtime closed), whatever event did or didn't arrive; for a stopped Claude session no Stop hook will
+	// ever come, so this is the only thing that ends the turn. Folded into the update this function
 	// already makes, so it costs no statement. A repeat after a Completed event moves nothing:
 	// the completion is stamped only if the session was still working.
 	// A terminal report ends the session, so a turn can't still be running (the excluded closing report included).
-	if (isTerminalStateReport(input) && existingSession?.agentType === "codex_cli") {
+	if (isTerminalStateReport(input) && endsWithManagedRuntime(existingSession?.agentType)) {
 		sessionUpdates.isWorking = false;
 		sessionUpdates.currentTurnStartedAt = null;
 	}
-	if (input.status === "idle" && existingSession?.agentType === "codex_cli") {
+	if (input.status === "idle" && endsWithManagedRuntime(existingSession?.agentType)) {
 		sessionUpdates.isWorking = false;
 		sessionUpdates.currentTurnStartedAt = null;
 		if (existingSession.isWorking) sessionUpdates.lastAgentTurnCompletedAt = timestamp;
@@ -265,7 +308,14 @@ async function writeManagedSessionState(
 	} else {
 		await inTransactionOf(db, inTx, async (tx) => {
 			const updates: Record<string, unknown> = { ...sessionUpdates };
-			if (supervisorMetadata) {
+			const latch = await claudeStopLatchChange(
+				tx,
+				input,
+				existingManaged,
+				existingSession,
+				options.replay === true,
+			);
+			if (supervisorMetadata || latch !== null) {
 				// Late read-modify-write inside the transaction: re-read metadata
 				// immediately before writing so a concurrent writer's keys (e.g.
 				// applyPermissionWaitTransition's permissionWait) aren't clobbered
@@ -276,10 +326,19 @@ async function writeManagedSessionState(
 					.from(sessions)
 					.where(eq(sessions.sessionId, input.sessionId))
 					.limit(1);
-				updates.metadata = {
+				const { endedByEvent: heldLatch, ...rest } = {
 					...(fresh?.metadata ?? {}),
 					...supervisorMetadata,
-				};
+				} as Record<string, unknown>;
+				// The latch is the server's: set when a Claude row is reported stopped, lifted when a new run
+				// starts on it, and otherwise left exactly as the row had it.
+				const merged: Record<string, unknown> =
+					latch === "set"
+						? { ...rest, endedByEvent: { at: timestamp } }
+						: latch === "clear" || heldLatch === undefined
+							? rest
+							: { ...rest, endedByEvent: heldLatch };
+				updates.metadata = merged;
 			}
 			await tx.update(sessions).set(updates).where(eq(sessions.sessionId, input.sessionId));
 		});
@@ -596,12 +655,16 @@ function turnChangeOf(event: TurnBoundaryEvent, late: boolean): TurnChange | nul
  * The last relevant event in the batch wins. A late report (an outbox replay) can end a turn but
  * never start one. `db` is the receipt transaction's `tx` when there is one.
  *
+ * Claude's own hooks own its working state, so a Claude row is touched only by `ManagedSessionStopped`
+ * (AGEN-110): a stopped process will never send the Stop hook, so the host's stop event clears the working
+ * flag and the turn start.
+ *
  * Statements: none for a batch with no relevant event (a Claude prompt or completion lacks the
  * marker, so no agent-type read is needed to decide that); one guarded UPDATE otherwise. That
- * includes ManagedSessionStopped, which carries no marker: on a Claude row it costs the one UPDATE
- * and changes nothing. The guard keeps a marker on another agent's row from changing anything, and
- * it reads the launch's agent type (what the host was asked to run) before the session row's, which
- * a hook can create first with a type of its choosing.
+ * includes ManagedSessionStopped, which carries no marker and clears working on either agent's row.
+ * The guard keeps a Codex marker on a Claude row from changing anything, and it reads the launch's
+ * agent type (what the host was asked to run) before the session row's, which a hook can create first
+ * with a type of its choosing.
  */
 export async function applyManagedTurnBoundaries(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
@@ -634,13 +697,15 @@ export async function applyManagedTurnBoundaries(
 						// A sent prompt acknowledges whatever came before it; the launch turn has nothing before it.
 						...(last === "start" ? { lastUserAcknowledgedAt: now } : {}),
 					};
+	// A stop is reported by the host for either agent; every other change carries the Codex marker.
+	const agents = last === "stopped" ? sql`in ('codex_cli', 'claude_code')` : sql`= 'codex_cli'`;
 	await db
 		.update(sessions)
 		.set(updates)
 		.where(
 			and(
 				eq(sessions.sessionId, sessionId),
-				sql`coalesce((select ${launchRequests.agentType} from ${launchRequests} where ${launchRequests.launchCorrelationId} = ${sessions.sessionId}), ${sessions.agentType}) = 'codex_cli'`,
+				sql`coalesce((select ${launchRequests.agentType} from ${launchRequests} where ${launchRequests.launchCorrelationId} = ${sessions.sessionId}), ${sessions.agentType}) ${agents}`,
 			),
 		);
 }

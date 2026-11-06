@@ -7,4 +7,10 @@
 # process, since config.ts computes them once into a plain object at
 # first import. See src/server/db/test-env-defaults.ts for the values.
 [test]
-preload = ["./src/server/db/test-env-defaults.ts"]
+#
+# Loaded second, after the env defaults: src/supervisor/test-utils/refuse-foreign-signals.ts limits the stop
+# ladder's two default killers so no test can signal a process it did not start (D10). The killer by pid
+# refuses every pid. The killer by process group allows only a group led by a live direct child of the test
+# process, or one whose leader has exited but was a direct child when groupReach was handed it (a grandchild
+# outliving it); pid 1, the parent and any invented pid are refused. It throws if the seams are missing.
+preload = ["./src/server/db/test-env-defaults.ts", "./src/supervisor/test-utils/refuse-foreign-signals.ts"]

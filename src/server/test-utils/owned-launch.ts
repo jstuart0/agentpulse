@@ -8,7 +8,7 @@
  * inventory). One shared construction of "owned launch" instead of three
  * hand-rolled `launch_requests` inserts drifting on required columns.
  */
-import { CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
+import { CLAUDE_STOP, CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
 import { getDb } from "../db/client.js";
 import { launchRequests, supervisors } from "../db/schema/index.js";
 
@@ -47,6 +47,9 @@ export async function seedOwnedLaunch(
 			launchCorrelationId: sessionId,
 			agentType: "claude_code",
 			cwd: "/tmp/owned-launch-fixture",
+			// Headless, not the column's terminal default: a Stop on a terminal launch is refused at enqueue
+			// (nothing can stop it), and most callers of this fixture queue a Stop to test something else.
+			requestedLaunchMode: "headless",
 			requestedSupervisorId: supervisorId,
 			claimedBySupervisorId: supervisorId,
 			status,
@@ -83,9 +86,9 @@ async function seedLiveHostIfAbsent(supervisorId: string): Promise<void> {
 				launchModes: ["headless", "interactive_terminal", "managed_codex"],
 				os: "linux",
 				terminalSupport: ["terminal"],
-				// A fixture host takes Codex follow-ups; a test about an older supervisor seeds its own. (supervisor-fixture.ts's
+				// A fixture host takes Codex follow-ups and Claude stops; a test about an older supervisor seeds its own. (supervisor-fixture.ts's
 				// seedSupervisor differs on purpose: its default host is an older one, with no features.)
-				features: [CODEX_FOLLOW_UP_PROMPTS],
+				features: [CODEX_FOLLOW_UP_PROMPTS, CLAUDE_STOP],
 				executables: {
 					claude: {
 						available: true,

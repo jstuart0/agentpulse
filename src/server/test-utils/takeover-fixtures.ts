@@ -2,7 +2,7 @@
  * Fixtures for the take-over and resume suites (AGEN-115): a host that advertises everything a takeover needs,
  * an observed Codex session, a degraded launched one, and the actors. Not a test file.
  */
-import { CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
+import { CLAUDE_STOP, CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
 import { HOST_RESTARTED_SYNC_ERROR } from "../../shared/managed-messages.js";
 import { RESUMES_SESSIONS } from "../../shared/session-resume.js";
 import type { Actor } from "../auth/actor.js";
@@ -22,7 +22,7 @@ export const TAKEOVER_CAPABILITIES = {
 	launchModes: ["headless", "interactive_terminal", "managed_codex"],
 	os: "linux",
 	terminalSupport: ["terminal"],
-	features: [CODEX_FOLLOW_UP_PROMPTS, ENFORCES_LAUNCH_PRIVILEGES, RESUMES_SESSIONS],
+	features: [CODEX_FOLLOW_UP_PROMPTS, CLAUDE_STOP, ENFORCES_LAUNCH_PRIVILEGES, RESUMES_SESSIONS],
 	executables: {
 		claude: { available: true, command: "claude", resolvedPath: "/usr/bin/claude", source: "auto" },
 		codex: { available: true, command: "codex", resolvedPath: "/usr/bin/codex", source: "auto" },

@@ -30,7 +30,13 @@ function repoRoot(): string {
 
 async function main() {
 	const root = repoRoot();
-	const violations = await collectTestSeamViolations(root, [`${root}src`]);
+	// `src` holds the seams; `bin` and the MCP package are shipped code that could import one. `scripts/` is
+	// left out on purpose: its dev tools legitimately load test fixtures.
+	const violations = await collectTestSeamViolations(root, [
+		`${root}src`,
+		`${root}bin`,
+		`${root}packages/agentpulse-mcp/src`,
+	]);
 
 	if (violations.length > 0) {
 		console.error(

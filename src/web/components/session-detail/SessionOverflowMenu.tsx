@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Session, SessionEvent } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
@@ -10,6 +10,12 @@ interface SessionOverflowMenuProps {
 	displayName: string;
 	allEvents: SessionEvent[];
 	canStop: boolean;
+	/** The menu item's words: "Stop turn" for a launched Claude, "Stop session" for Codex. */
+	stopLabel: string;
+	/** Why Stop is off for this viewer or host (not the owner, host offline), shown under the disabled item. */
+	stopDisabledReason?: string | null;
+	/** A stop is on its way: the item is off, with no sentence (the composer says it). */
+	stopping?: boolean;
 	onJumpTop: () => void;
 	onJumpBottom: () => void;
 	onStop: () => void;
@@ -24,6 +30,9 @@ export function SessionOverflowMenu({
 	displayName,
 	allEvents,
 	canStop,
+	stopLabel,
+	stopDisabledReason = null,
+	stopping = false,
 	onJumpTop,
 	onJumpBottom,
 	onStop,
@@ -112,8 +121,10 @@ export function SessionOverflowMenu({
 					)}
 					{canStop && (
 						<MenuItem
-							label="Stop session"
+							label={stopLabel}
 							tone="danger"
+							disabledReason={stopDisabledReason}
+							disabled={stopDisabledReason !== null || stopping}
 							onClick={() => {
 								onStop();
 								setOpen(false);
@@ -130,21 +141,36 @@ function MenuItem({
 	label,
 	onClick,
 	tone = "default",
+	disabled = false,
+	disabledReason = null,
 }: {
 	label: string;
 	onClick: () => void;
 	tone?: "default" | "danger";
+	disabled?: boolean;
+	/** The reason this item is off, said under it. */
+	disabledReason?: string | null;
 }) {
+	const reasonId = useId();
 	return (
-		<button
-			type="button"
-			role="menuitem"
-			onClick={onClick}
-			className={`block w-full text-left px-3 py-1.5 hover:bg-muted ${
-				tone === "danger" ? "text-red-300" : "text-foreground"
-			}`}
-		>
-			{label}
-		</button>
+		<>
+			<button
+				type="button"
+				role="menuitem"
+				onClick={onClick}
+				disabled={disabled}
+				aria-describedby={disabledReason ? reasonId : undefined}
+				className={`block w-full text-left px-3 py-1.5 hover:bg-muted disabled:opacity-50 disabled:hover:bg-transparent ${
+					tone === "danger" ? "text-red-700 dark:text-red-300" : "text-foreground"
+				}`}
+			>
+				{label}
+			</button>
+			{disabledReason ? (
+				<p id={reasonId} className="px-3 pb-1.5 text-[11px] text-muted-foreground">
+					{disabledReason}
+				</p>
+			) : null}
+		</>
 	);
 }

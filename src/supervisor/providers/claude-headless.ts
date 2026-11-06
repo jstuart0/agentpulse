@@ -4,6 +4,12 @@ import {
 } from "../../shared/launch-privileges.js";
 import type { LaunchRequest } from "../../shared/types.js";
 import { loadSupervisorConfig } from "../config.js";
+import {
+	type DescendantReachOptions,
+	type LadderTimings,
+	descendantReach,
+	runStopLadder,
+} from "../process-stop.js";
 import { disposeRuntimesAndExit } from "../services/fatal-exit.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
 import type {
@@ -31,7 +37,7 @@ import {
 } from "./claude-shared.js";
 
 type HeadlessLaunchMetadata = LaunchMetadata & {
-	executionState: "running" | "completed" | "failed";
+	executionState: "running" | "completed" | "failed" | "stopped";
 	output: {
 		assistantPreview: string;
 		stderrPreview: string;
@@ -50,58 +56,116 @@ type HeadlessLaunchResult = {
 	monitor: Promise<void>;
 };
 
-// D9/F41: every claude child this process has spawned and not yet reaped,
-// keyed by a unique per-launch token (not sessionId — promptClaudeHeadlessSession
-// can run a second prompt against the same session after the first
-// completes, and a fresh registration must not collide with a stale one).
-// disposeAllHeadlessRuntimes() is the fatal-401 cleanup path's onFatal
-// (mirrors codex-managed.ts's disposeAllManagedCodexRuntimes): before this
-// campaign's D7 added a process.exit(1) path, there was no exit path that
-// could orphan a still-running child; D9 closes that regression.
-const activeRuntimes = new Map<string, ReturnType<typeof Bun.spawn>>();
+// D9/F41: every claude child this process has spawned and not yet reaped, by the session it runs for.
+// A set per session id, because a lapsed control lock can let a second prompt spawn while the first
+// still runs; each child leaves the registry only by its own handle, so one's exit can never drop
+// the other from disposal or from the count. disposeAllHeadlessRuntimes() is the fatal-401 cleanup
+// path's onFatal (mirrors codex-managed.ts's disposeAllManagedCodexRuntimes): before this campaign's D7
+// added a process.exit(1) path, there was no exit path that could orphan a still-running child; D9
+// closes that regression.
+type HeadlessProc = ReturnType<typeof Bun.spawn>;
+const activeRuntimes = new Map<string, Set<HeadlessProc>>();
+
+/** Children a person asked to stop (AGEN-110): their exit is a cancellation, not a failure. */
+const stoppedProcs = new WeakSet<HeadlessProc>();
+
+function registerRuntime(sessionId: string, proc: HeadlessProc): void {
+	const procs = activeRuntimes.get(sessionId) ?? new Set<HeadlessProc>();
+	procs.add(proc);
+	activeRuntimes.set(sessionId, procs);
+}
+
+function unregisterRuntime(sessionId: string, proc: HeadlessProc): void {
+	const procs = activeRuntimes.get(sessionId);
+	if (!procs) return;
+	procs.delete(proc);
+	if (procs.size === 0) activeRuntimes.delete(sessionId);
+}
+
+/** Production waits: SIGTERM, then SIGKILL (no stdin to close; headless Claude runs with stdin ignored). */
+const HEADLESS_STOP_TIMINGS: LadderTimings = { termMs: 2_000, killMs: 1_000 };
 
 /**
- * SIGTERM, then SIGKILL after `graceMs` if the child hasn't exited by then.
- * `graceMs` is a parameter (not a fixed sleep) so tests can drive the
- * SIGKILL branch quickly instead of waiting out a production-sized grace.
+ * The ladder for one headless child. Its tool processes call `setsid`, so a group signal would miss
+ * them: the reach is the child's descendants by process table, plus the child itself by its handle.
  */
-async function killProcessWithGrace(
-	proc: ReturnType<typeof Bun.spawn>,
-	graceMs: number,
-): Promise<void> {
-	try {
-		proc.kill("SIGTERM");
-	} catch (err) {
-		console.error("[claude-headless] SIGTERM failed during fatal shutdown:", err);
-	}
-	const exited = await Promise.race([
-		proc.exited.then(() => true),
-		Bun.sleep(graceMs).then(() => false),
-	]);
-	if (exited) return;
-	try {
-		proc.kill("SIGKILL");
-	} catch (err) {
-		console.error("[claude-headless] SIGKILL failed during fatal shutdown:", err);
-	}
+async function stopLadderFor(
+	proc: HeadlessProc,
+	timings: LadderTimings,
+	reachOptions: Pick<DescendantReachOptions, "table" | "tableTimeoutMs"> = {},
+): Promise<{ gone: boolean; checked: boolean }> {
+	let exited = false;
+	void proc.exited.then(
+		() => {
+			exited = true;
+		},
+		() => {
+			exited = true;
+		},
+	);
+	const reach = descendantReach(
+		{
+			pid: proc.pid,
+			hasExited: () => exited,
+			kill: (signal) => {
+				proc.kill(signal);
+			},
+		},
+		reachOptions,
+	);
+	const gone = await runStopLadder({ reach, ...timings });
+	return { gone, checked: reach.treeChecked?.() ?? true };
 }
 
 /** How many headless Claude children this supervisor is running; the keep-alive rule reads it. */
 export function headlessRuntimeCount(): number {
-	return activeRuntimes.size;
+	let total = 0;
+	for (const procs of activeRuntimes.values()) total += procs.size;
+	return total;
 }
 
 /**
- * Terminate every headless claude child this process still holds. Used as
- * the onFatal callback for a 401 credential rejection (D7/D9) — before
- * process.exit(1), every spawned child gets SIGTERM, then SIGKILL after
- * `graceMs` for any that don't exit in time. Default grace (2s) is a
- * production value; tests pass a short override.
+ * Terminate every headless claude child this process still holds, and the tool processes under them.
+ * Used as the onFatal callback for a 401 credential rejection (D7/D9) — before process.exit(1), every
+ * spawned child gets SIGTERM, then SIGKILL after `graceMs` for any that don't exit in time. Default
+ * grace (2s) is a production value; tests pass a short override.
  */
-export async function disposeAllHeadlessRuntimes(graceMs = 2_000): Promise<void> {
-	const procs = [...activeRuntimes.values()];
+export async function disposeAllHeadlessRuntimes(
+	graceMs = HEADLESS_STOP_TIMINGS.termMs,
+	killMs = Math.min(HEADLESS_STOP_TIMINGS.killMs, graceMs),
+): Promise<void> {
+	const procs = [...activeRuntimes.values()].flatMap((set) => [...set]);
 	activeRuntimes.clear();
-	await Promise.all(procs.map((proc) => killProcessWithGrace(proc, graceMs)));
+	await Promise.all(procs.map((proc) => stopLadderFor(proc, { termMs: graceMs, killMs })));
+}
+
+/**
+ * Stops the headless children running for a session (AGEN-110): SIGTERM, then SIGKILL, to each child and
+ * to the tool processes it started. `hadChild` is whether anything was registered (the host reports
+ * `stopped` either way); `gone` is false only when something is still there after SIGKILL; `unchecked` is
+ * true when the process table never answered while a child lived, so the tool processes under it were never
+ * looked for and "gone" is only an answer about the child itself. A child stopped here reports its launch
+ * `cancelled` and the session `stopped` when it exits, never `failed`. After a supervisor restart an orphan
+ * isn't reachable: nothing records it. Stated limit. `reachOptions` lets a test give the reach its own table.
+ */
+export async function stopHeadlessClaude(
+	sessionId: string,
+	timings: Partial<LadderTimings> = {},
+	reachOptions: Pick<DescendantReachOptions, "table" | "tableTimeoutMs"> = {},
+): Promise<{ hadChild: boolean; gone: boolean; unchecked: boolean }> {
+	const procs = [...(activeRuntimes.get(sessionId) ?? [])];
+	if (procs.length === 0) return { hadChild: false, gone: true, unchecked: false };
+	for (const proc of procs) stoppedProcs.add(proc);
+	const results = await Promise.all(
+		procs.map((proc) =>
+			stopLadderFor(proc, { ...HEADLESS_STOP_TIMINGS, ...timings }, reachOptions),
+		),
+	);
+	return {
+		hadChild: true,
+		gone: results.every((result) => result.gone),
+		unchecked: results.some((result) => !result.checked),
+	};
 }
 
 function createHeadlessMetadata(
@@ -168,8 +232,7 @@ export async function streamHeadlessClaude(opts: {
 
 	// D9/F41: register this child so a fatal 401 (below) can kill it instead
 	// of orphaning it when the process exits.
-	const runtimeKey = crypto.randomUUID();
-	activeRuntimes.set(runtimeKey, proc);
+	registerRuntime(sessionId, proc);
 
 	// F25/D6/F31/D9: in-session reporting (reportState/reportEvents) now
 	// carries an ownership guard and can reject mid-stream (403
@@ -281,9 +344,10 @@ export async function streamHeadlessClaude(opts: {
 	const monitor = (async () => {
 		const [exitCode] = await Promise.all([proc.exited, stdoutTask, stderrTask]);
 		// The child has exited on its own — no longer eligible for the fatal
-		// cleanup path to kill.
-		activeRuntimes.delete(runtimeKey);
-		metadata.executionState = exitCode === 0 ? "completed" : "failed";
+		// cleanup path to kill. Only this child leaves: another for the same session stays.
+		unregisterRuntime(sessionId, proc);
+		const stopped = stoppedProcs.has(proc);
+		metadata.executionState = stopped ? "stopped" : exitCode === 0 ? "completed" : "failed";
 		metadata.completedAt = new Date().toISOString();
 		metadata.exitCode = exitCode;
 		metadata.durationMs =
@@ -304,8 +368,8 @@ export async function streamHeadlessClaude(opts: {
 					agentType: "claude_code",
 					cwd,
 					model: model ?? null,
-					status: exitCode === 0 ? "completed" : "failed",
-					managedState: exitCode === 0 ? "completed" : "failed",
+					status: stopped || exitCode === 0 ? "completed" : "failed",
+					managedState: stopped ? "stopped" : exitCode === 0 ? "completed" : "failed",
 					providerSessionId: sessionId,
 					correlationSource: "launch_correlation_id",
 					providerCapabilitySnapshot: configCapabilities,
@@ -317,34 +381,38 @@ export async function streamHeadlessClaude(opts: {
 					},
 				}),
 			);
-			await reportInSession("reportEvents", () =>
-				callbacks.reportEvents([
-					{
-						eventType:
-							exitCode === 0
-								? `${opts.completionEvent.success}`
-								: opts.completionEvent.failurePrefix,
-						category: "system_event",
-						content:
-							exitCode === 0
-								? opts.completionEvent.success === "HeadlessTaskCompleted"
-									? "Headless Claude task completed."
-									: "Headless follow-up task completed."
-								: metadata.output.stderrPreview || `Claude exited with code ${exitCode}`,
-						rawPayload:
-							exitCode === 0
-								? opts.startEvent.rawPayload
-								: { ...(opts.completionEvent.failurePayload ?? {}), exitCode },
-					},
-				]),
-			);
+			// A stop reports its own event (ManagedSessionStopped, from the stop action); a signal's exit
+			// code is not a failure to describe.
+			if (!stopped) {
+				await reportInSession("reportEvents", () =>
+					callbacks.reportEvents([
+						{
+							eventType:
+								exitCode === 0
+									? `${opts.completionEvent.success}`
+									: opts.completionEvent.failurePrefix,
+							category: "system_event",
+							content:
+								exitCode === 0
+									? opts.completionEvent.success === "HeadlessTaskCompleted"
+										? "Headless Claude task completed."
+										: "Headless follow-up task completed."
+									: metadata.output.stderrPreview || `Claude exited with code ${exitCode}`,
+							rawPayload:
+								exitCode === 0
+									? opts.startEvent.rawPayload
+									: { ...(opts.completionEvent.failurePayload ?? {}), exitCode },
+						},
+					]),
+				);
+			}
 		}
 
 		await reportProgress({
-			status: exitCode === 0 ? "completed" : "failed",
+			status: stopped ? "cancelled" : exitCode === 0 ? "completed" : "failed",
 			pid: proc.pid,
 			error:
-				exitCode === 0
+				stopped || exitCode === 0
 					? null
 					: metadata.output.stderrPreview || `Claude exited with code ${exitCode}`,
 			providerLaunchMetadata: metadata,

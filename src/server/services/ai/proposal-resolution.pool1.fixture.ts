@@ -81,8 +81,9 @@ result.refusalCommits = !refused.ok && refused.code === "prompt_not_deliverable"
 const queued = await world();
 await queuePromptAction(queued.sessionId, "Look at the failing test", USER);
 const stopped = await world();
-await queueStopAction(stopped.sessionId, USER);
-result.humanQueue = true;
+// The stop must reach the control lock (a live host that advertises claude_stop), not be turned away.
+const stopAction = await queueStopAction(stopped.sessionId, USER);
+result.humanQueue = stopAction.actionType === "stop" && stopAction.status === "queued";
 
 // What the client really opened, not what the environment asked for.
 result.poolMax = (

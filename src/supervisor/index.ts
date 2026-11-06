@@ -15,6 +15,7 @@ import {
 	launchClaudeInteractiveRequest,
 	promptClaudeHeadlessSession,
 	promptClaudeInteractiveSession,
+	stopHeadlessClaude,
 } from "./providers/claude.js";
 import { wireCodexApprovals } from "./providers/codex-approvals-wiring.js";
 import {
@@ -348,6 +349,7 @@ async function main() {
 			hasManagedCodexRuntime,
 			promptClaudeHeadlessSession,
 			promptClaudeInteractiveSession,
+			stopHeadlessClaude,
 		},
 		executeCleanupWorkArea,
 	});

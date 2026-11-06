@@ -122,6 +122,8 @@ async function seedManaged(sessionId: string, opts: { connected?: boolean } = {}
 			version: "1",
 			status: "connected",
 			enrollmentState: "active",
+			// A current supervisor for Claude stops; it has no Codex follow-up feature on purpose.
+			capabilities: { version: 1, features: ["claude_stop"] } as never,
 			// Liveness is the heartbeat lease, not the stored status.
 			heartbeatLeaseExpiresAt: new Date(
 				Date.now() + (opts.connected === false ? -60_000 : 60_000),
@@ -129,6 +131,11 @@ async function seedManaged(sessionId: string, opts: { connected?: boolean } = {}
 		})
 		.onConflictDoNothing();
 	const { launchId } = await seedOwnedLaunch(sessionId, SUPERVISOR);
+	// Headless: a stop on a terminal launch is refused at enqueue, and the stop tests below need the lock.
+	await getDb()
+		.update(launchRequests)
+		.set({ requestedLaunchMode: "headless" })
+		.where(eq(launchRequests.id, launchId));
 	const now = new Date().toISOString();
 	await getDb().insert(managedSessions).values({
 		sessionId,

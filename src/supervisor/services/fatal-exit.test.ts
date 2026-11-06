@@ -77,4 +77,42 @@ describe("disposeRuntimesAndExit", () => {
 		expect(took).toBeGreaterThanOrEqual(70);
 		expect(took).toBeLessThan(2_000);
 	});
+
+	test("exit is called within the bound when the headless shutdown never settles (a hung ps)", async () => {
+		const codex = await import("../providers/codex-managed.js");
+		const headless = await import("../providers/claude-headless.js");
+		const exit = spyOn(process, "exit").mockImplementation((() => {
+			throw new Error("exit called");
+		}) as never);
+		spies.push(
+			spyOn(codex, "disposeAllManagedCodexRuntimes").mockImplementation(async () => {}),
+			spyOn(headless, "disposeAllHeadlessRuntimes").mockImplementation(
+				() => new Promise<void>(() => {}),
+			),
+			exit,
+		);
+		const began = Date.now();
+		await expect(disposeRuntimesAndExit({ headlessBoundMs: 80 })).rejects.toThrow("exit called");
+		const took = Date.now() - began;
+		expect(exit).toHaveBeenCalledWith(1);
+		expect(took).toBeGreaterThanOrEqual(70);
+		expect(took).toBeLessThan(2_000);
+	});
+
+	test("a headless shutdown that throws still reaches the exit", async () => {
+		const codex = await import("../providers/codex-managed.js");
+		const headless = await import("../providers/claude-headless.js");
+		const exit = spyOn(process, "exit").mockImplementation((() => {
+			throw new Error("exit called");
+		}) as never);
+		spies.push(
+			spyOn(codex, "disposeAllManagedCodexRuntimes").mockImplementation(async () => {}),
+			spyOn(headless, "disposeAllHeadlessRuntimes").mockImplementation(async () => {
+				throw new Error("boom");
+			}),
+			exit,
+		);
+		await expect(disposeRuntimesAndExit()).rejects.toThrow("exit called");
+		expect(exit).toHaveBeenCalledWith(1);
+	});
 });

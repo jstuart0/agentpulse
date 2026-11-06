@@ -28,6 +28,7 @@ import { WorkspaceTabBar, activityTabWorking } from "./WorkspaceTabBar.js";
 import { buildExportMarkdown } from "./export-markdown.js";
 import { controlBlockedReason } from "./host-control-view.js";
 import { launchLinkLabel } from "./session-takeover-view.js";
+import { STOP_NOT_OWNER_REASON, canStopSession, stopControlLabel } from "./stop-view.js";
 
 interface SessionHeaderProps {
 	session: Session;
@@ -52,6 +53,10 @@ interface SessionHeaderProps {
 	/** F95: re-fetch the session (used after a name reset). */
 	onRefresh?: () => Promise<void> | void;
 	onStop: () => void;
+	/** A stop is queued or running: the button is off and the line says so (AGEN-110). */
+	stopping?: boolean;
+	/** False for a viewer who may not change this session (team mode, not the owner or an admin): Stop is off, with the reason. */
+	mayStop?: boolean;
 	/** The one acknowledge-family action available right now (AGEN), or null when none applies (see permissionWaitNote/notOwnerNote for why). */
 	ackAction: { kind: AckActionKind; forOwnerName?: string | null; onClick: () => void } | null;
 	/** Set when a WAITING session is blocked on an outstanding permission prompt — no button can clear it (deriveAckAction). */
@@ -91,6 +96,8 @@ export function SessionHeader(props: SessionHeaderProps) {
 		onRename,
 		onRefresh,
 		onStop,
+		stopping = false,
+		mayStop = true,
 		ackAction,
 		permissionWaitNote,
 		notOwnerNote,
@@ -118,17 +125,24 @@ export function SessionHeader(props: SessionHeaderProps) {
 			? "failed"
 			: rawOpStatus;
 
-	const canStop =
-		session.agentType === "codex_cli" && session.managedSession?.managedState === "managed";
+	const canStop = canStopSession(session);
 	const hostLabel = sessionHostLabel(session);
-	const stopBlockedReason = canStop ? controlBlockedReason(session) : null;
+	const stopBlockedReason = canStop
+		? !mayStop
+			? STOP_NOT_OWNER_REASON
+			: controlBlockedReason(session)
+		: null;
+	// While a stop is on its way the button is simply off; the sentence ("Stopping Claude on ...") is the
+	// composer's, so the page doesn't say it twice.
+	const stopDisabled = stopBlockedReason !== null || stopping;
 
 	return (
 		<div
 			ref={headerRef}
+			id="session-header"
 			data-session-header=""
 			tabIndex={-1}
-			className="sticky top-0 z-10 bg-background border-b border-border flex-shrink-0 focus:outline-none"
+			className="sticky top-0 z-10 bg-background border-b border-border flex-shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
 		>
 			{/* Top row */}
 			<div className="px-3 md:px-6 py-2 md:py-2.5 flex items-center gap-2 md:gap-3">
@@ -259,7 +273,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 							<button
 								type="button"
 								onClick={onStop}
-								disabled={stopBlockedReason !== null}
+								disabled={stopDisabled}
 								aria-describedby={stopBlockedReason ? "stop-blocked-reason" : undefined}
 								className="rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-800 dark:text-red-300 hover:bg-red-500/20 transition-colors disabled:opacity-50 disabled:hover:bg-red-500/10"
 							>
@@ -337,7 +351,10 @@ export function SessionHeader(props: SessionHeaderProps) {
 							session={session}
 							displayName={displayName}
 							allEvents={allEvents}
-							canStop={canStop && stopBlockedReason === null}
+							canStop={canStop}
+							stopLabel={stopControlLabel(session)}
+							stopDisabledReason={stopBlockedReason}
+							stopping={stopping}
 							onJumpTop={onJumpTop}
 							onJumpBottom={onJumpBottom}
 							onStop={onStop}

@@ -1,5 +1,6 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { privilegeCliArgs } from "../../shared/launch-privileges.js";
+import { FINISHED_LAUNCH_STATUSES } from "../../shared/stop-runtime.js";
 import type { LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { launchRequests, sessions } from "../db/schema/index.js";
@@ -260,6 +261,12 @@ export async function updateLaunchDispatchStatus(reported: {
 		.where(eq(launchRequests.id, reported.launchId))
 		.limit(1);
 	if (!row || row.claimedBySupervisorId !== reported.supervisorId) return null;
+
+	// A stop on a session whose launch already finished must not rewrite how it finished: `cancelled`
+	// only ever ends a launch that was still in flight.
+	if (reported.status === "cancelled" && FINISHED_LAUNCH_STATUSES.has(row.status)) {
+		return mapLaunchRequest(row);
+	}
 
 	const mismatch =
 		reported.status === "running" || reported.status === "awaiting_session"

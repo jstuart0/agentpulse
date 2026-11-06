@@ -1,5 +1,6 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { groupReach, runStopLadder } from "../process-stop.js";
 import { resolveCodex } from "./codex-protocol.js";
 
 /** A request got no answer in the time it was given. The request may still have been received. */
@@ -408,25 +409,6 @@ export type StartCodexAppServerOptions = {
 
 const isPosix = () => process.platform !== "win32";
 
-function groupAlive(pid: number): boolean {
-	try {
-		process.kill(-pid, 0);
-		return true;
-	} catch (error) {
-		// EPERM means the group exists and is not ours to signal; only ESRCH means it is empty.
-		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
-}
-
-function signalGroup(child: ChildProcess, signal: NodeJS.Signals) {
-	try {
-		if (isPosix() && child.pid) process.kill(-child.pid, signal);
-		else child.kill(signal);
-	} catch {
-		// Already gone.
-	}
-}
-
 /**
  * Starts `codex app-server` on stdio (no listening socket exists, so nothing else can talk to it) and
  * returns the client plus the one way to stop it. A missing executable, or a child that dies at once,
@@ -507,29 +489,36 @@ export async function startCodexAppServer(
 		);
 	});
 
-	const gone = () => exited && (!posix || !child.pid || !groupAlive(child.pid));
-	async function waitGone(ms: number): Promise<boolean> {
-		const deadline = Date.now() + ms;
-		while (!gone()) {
-			if (Date.now() >= deadline) return false;
-			await Bun.sleep(GONE_POLL_MS);
-		}
-		return true;
-	}
+	// The child leads its own group (detached above), so one group signal reaches it and what it started.
+	const reach = groupReach({
+		pid: child.pid,
+		hasExited: () => exited,
+		kill: (signal) => {
+			child.kill(signal);
+		},
+	});
 
 	let shutdownPromise: Promise<void> | undefined;
 	let running = false;
 	async function runShutdown() {
 		// Stdin first: a well-behaved child leaves on end of file and is never signalled.
-		link.close();
-		client.close();
-		if (await waitGone(timings.stdinCloseMs)) return;
-		signalGroup(child, "SIGTERM");
-		if (await waitGone(timings.termMs)) return;
-		signalGroup(child, "SIGKILL");
-		if (!(await waitGone(timings.killMs))) {
-			log("[codex-rpc] app-server did not exit after SIGKILL");
-		}
+		const left = await runStopLadder({
+			reach,
+			graceful: [
+				{
+					name: "close stdin",
+					act: () => {
+						link.close();
+						client.close();
+					},
+					waitMs: timings.stdinCloseMs,
+				},
+			],
+			termMs: timings.termMs,
+			killMs: timings.killMs,
+			pollMs: GONE_POLL_MS,
+		});
+		if (!left) log("[codex-rpc] app-server did not exit after SIGKILL");
 	}
 	const run = () => {
 		if (!running) {

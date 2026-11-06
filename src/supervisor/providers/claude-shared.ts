@@ -19,7 +19,7 @@ export type LaunchMetadata = {
 };
 
 export type HeadlessProgressUpdate = {
-	status: "running" | "completed" | "failed";
+	status: "running" | "completed" | "failed" | "cancelled";
 	pid?: number | null;
 	error?: string | null;
 	providerLaunchMetadata: Record<string, unknown>;

@@ -441,7 +441,7 @@ async function seedCell(entry: Entry, target: Target): Promise<Cell> {
 					launchModes: ["headless", "interactive_terminal"],
 					os: "linux",
 					terminalSupport: ["xterm"],
-					features: ["enforces_launch_privileges"],
+					features: ["enforces_launch_privileges", "claude_stop"],
 					executables: {
 						claude: { available: true, command: "claude", resolvedPath: "/bin/claude" },
 					},

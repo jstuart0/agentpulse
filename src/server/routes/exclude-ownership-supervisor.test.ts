@@ -246,7 +246,15 @@ for (const mode of ["solo", "team"] as const) {
 				expect(after?.ingestKeyId).toBe(before?.ingestKeyId);
 				expect(after?.cwd).toBe(before?.cwd);
 				expect(after?.displayName).toBe(before?.displayName);
-				expect(after?.metadata).toEqual(before?.metadata);
+				// Nothing but the hook terminal latch (AGEN-110): a Claude session reported stopped holds
+				// `endedByEvent` so a late hook can't reopen it. It is a timestamp of the end the report
+				// already states (the status above), and it carries nothing the session had.
+				const { endedByEvent, ...afterMetadata } = (after?.metadata ?? {}) as Record<
+					string,
+					unknown
+				>;
+				expect(Object.keys((endedByEvent ?? {}) as object)).toEqual(["at"]);
+				expect(afterMetadata).toEqual(before?.metadata ?? {});
 				expect(await eventCount(sessionId)).toBe(eventsBefore);
 
 				if (mode === "team") {

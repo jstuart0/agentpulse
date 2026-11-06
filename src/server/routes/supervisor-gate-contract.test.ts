@@ -74,6 +74,8 @@ async function registerSupervisor(): Promise<{ id: string; credential: string }>
 			version: "1.0.0",
 			enrollmentToken: token,
 			id,
+			// A current supervisor: the session below is a Claude one and the test stops it.
+			capabilities: { version: 1, features: ["claude_stop"] },
 		}),
 	});
 	return {
@@ -135,7 +137,12 @@ describe("a newly excluded managed session", () => {
 			const supervisor = await registerSupervisor();
 			const gate = gateFor(w, supervisor);
 			const sessionId = `gate-${crypto.randomUUID()}`;
-			await seedOwnedLaunch(sessionId, supervisor.id);
+			const { launchId } = await seedOwnedLaunch(sessionId, supervisor.id);
+			// Headless: Stop on a terminal launch is refused at enqueue, and this test queues one.
+			await getDb()
+				.update(launchRequests)
+				.set({ requestedLaunchMode: "headless" })
+				.where(eq(launchRequests.id, launchId));
 
 			gate.noteCwd(sessionId, w.work);
 			await gate.reportState({
@@ -177,7 +184,11 @@ describe("a newly excluded managed session", () => {
 			expect(after?.model).toBe(before?.model);
 			expect(after?.displayName).toBe(before?.displayName);
 			expect(after?.agentType).toBe(before?.agentType);
-			expect(after?.metadata).toEqual(before?.metadata);
+			// Except the hook terminal latch (AGEN-110): a Claude session reported stopped holds `endedByEvent`,
+			// a timestamp of the end the report already states, so a late hook can't reopen it.
+			const { endedByEvent, ...afterMetadata } = (after?.metadata ?? {}) as Record<string, unknown>;
+			expect(Object.keys((endedByEvent ?? {}) as object)).toEqual(["at"]);
+			expect(afterMetadata).toEqual(before?.metadata ?? {});
 			expect(await eventCount(sessionId)).toBe(eventsBefore);
 
 			// the in-flight action ends with the generic failure, which frees the session

@@ -11,6 +11,13 @@ import type { AgentType, LaunchableAgentType, SemanticStatus, SessionStatus } fr
  */
 export const CODEX_FOLLOW_UP_PROMPTS = "codex_follow_up_prompts";
 
+/**
+ * A supervisor feature: this process can stop a launched Claude session (AGEN-110): SIGTERM then SIGKILL to
+ * its child and the tool processes under it. The server withholds a Claude stop from a host without it, so
+ * the old behaviour (an old host calling the Codex stop for a Claude session) is never queued.
+ */
+export const CLAUDE_STOP = "claude_stop";
+
 export const SEMANTIC_STATUSES = [
 	"researching",
 	"implementing",

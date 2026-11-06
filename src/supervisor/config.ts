@@ -2,7 +2,7 @@ import { constants, accessSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { arch, homedir, hostname, platform } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
-import { CODEX_FOLLOW_UP_PROMPTS } from "../shared/constants.js";
+import { CLAUDE_STOP, CODEX_FOLLOW_UP_PROMPTS } from "../shared/constants.js";
 import {
 	tightenPrivateFilePermissionsSync,
 	writePrivateFileSyncNoFollow,
@@ -88,6 +88,7 @@ export function buildDefaultConfig(): SupervisorConfig {
 				CODEX_FOLLOW_UP_PROMPTS,
 				RESUMES_SESSIONS,
 				"headless_claude",
+				CLAUDE_STOP,
 				"enforces_launch_privileges",
 				"offline_outbox",
 			],
@@ -251,6 +252,7 @@ export async function withExecutableCapabilities(
 				"can_run_prelaunch_actions",
 				"can_cleanup_workarea",
 				"headless_claude",
+				CLAUDE_STOP,
 				"enforces_launch_privileges",
 				"offline_outbox",
 				...(git.resolvedPath ? ["can_scaffold_workarea", "can_clone_repo"] : []),

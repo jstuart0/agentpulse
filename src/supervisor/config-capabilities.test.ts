@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CODEX_FOLLOW_UP_PROMPTS } from "../shared/constants.js";
+import { CLAUDE_STOP, CODEX_FOLLOW_UP_PROMPTS } from "../shared/constants.js";
 import { RESUMES_SESSIONS } from "../shared/session-resume.js";
 import { buildDefaultConfig, withExecutableCapabilities } from "./config.js";
 import { installFakeCodex } from "./providers/__fixtures__/fake-codex.js";
@@ -77,5 +77,36 @@ describe("resumes_sessions (AGEN-115, Pattern 8)", () => {
 			"utf8",
 		) as string;
 		expect(text.match(/RESUMES_SESSIONS/g)?.length).toBeGreaterThanOrEqual(3);
+	});
+});
+
+describe("claude_stop (AGEN-110)", () => {
+	test("is the literal the server reads", () => {
+		expect(CLAUDE_STOP).toBe("claude_stop");
+	});
+
+	test("is in the default list", () => {
+		expect(buildDefaultConfig().capabilities.features).toContain("claude_stop");
+	});
+
+	test("is in the detected list whether or not Codex resolved: it is about Claude", async () => {
+		const withCodex = await withExecutableCapabilities({
+			...buildDefaultConfig(),
+			codexCommand: installFakeCodex(scratch),
+		});
+		const without = await withExecutableCapabilities({
+			...buildDefaultConfig(),
+			codexCommand: join(scratch, "no-such-codex"),
+		});
+		expect(withCodex.capabilities.features).toContain("claude_stop");
+		expect(without.capabilities.features).toContain("claude_stop");
+	});
+
+	test("both lists carry it (a source check on config.ts)", () => {
+		const text = require("node:fs").readFileSync(
+			new URL("./config.ts", import.meta.url),
+			"utf8",
+		) as string;
+		expect(text.match(/\bCLAUDE_STOP\b/g)?.length).toBeGreaterThanOrEqual(3);
 	});
 });

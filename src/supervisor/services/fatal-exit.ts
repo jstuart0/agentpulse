@@ -14,18 +14,33 @@ import { disposeAllManagedCodexRuntimes } from "../providers/codex-managed.js";
  */
 export const CODEX_SHUTDOWN_BOUND_MS = 5_000;
 
-export async function disposeRuntimesAndExit(
-	options: { codexBoundMs?: number } = {},
-): Promise<never> {
+/**
+ * How long the exit waits for the headless Claude children: the stop ladder is up to a second of waiting for
+ * the process table (once before the first signal, once per signal), two seconds after SIGTERM and one after
+ * SIGKILL, so ten seconds covers it with room, and a hung `ps` or a child that won't die can't keep a
+ * supervisor with a revoked credential alive.
+ */
+export const HEADLESS_SHUTDOWN_BOUND_MS = 10_000;
+
+/** Resolves `work`, or after `ms` whichever is first. Never rejects. */
+async function within(work: Promise<void>, ms: number): Promise<void> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const bound = new Promise<void>((resolve) => {
-		timer = setTimeout(resolve, options.codexBoundMs ?? CODEX_SHUTDOWN_BOUND_MS);
+		timer = setTimeout(resolve, ms);
 	});
 	try {
-		const codex = disposeAllManagedCodexRuntimes();
-		await Promise.all([Promise.race([codex, bound]), disposeAllHeadlessRuntimes()]);
+		await Promise.race([work.catch(() => {}), bound]);
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+export async function disposeRuntimesAndExit(
+	options: { codexBoundMs?: number; headlessBoundMs?: number } = {},
+): Promise<never> {
+	await Promise.all([
+		within(disposeAllManagedCodexRuntimes(), options.codexBoundMs ?? CODEX_SHUTDOWN_BOUND_MS),
+		within(disposeAllHeadlessRuntimes(), options.headlessBoundMs ?? HEADLESS_SHUTDOWN_BOUND_MS),
+	]);
 	process.exit(1);
 }

@@ -470,7 +470,7 @@ describe("the idle rule", () => {
 		expect((await rowOf(sessionId)).lastAgentTurnCompletedAt).toBe(completed);
 	});
 
-	test("a Claude row is unchanged by an idle report", async () => {
+	test("a Claude row's idle report ends its turn too (AGEN-110: the host is the only one who can say so after a stop)", async () => {
 		const sessionId = await claudeSession(hostA);
 		await getDb()
 			.update(sessions)
@@ -484,8 +484,9 @@ describe("the idle rule", () => {
 			}),
 		);
 		const row = await rowOf(sessionId);
-		expect(row.isWorking).toBe(true);
-		expect(row.lastAgentTurnCompletedAt).toBeNull();
+		expect(row.isWorking).toBe(false);
+		expect(row.currentTurnStartedAt).toBeNull();
+		expect(row.lastAgentTurnCompletedAt).not.toBeNull();
 	});
 
 	test("a status-less degraded report mid-turn does not clear; degraded with status idle does", async () => {
@@ -1282,7 +1283,7 @@ describe("terminal reports", () => {
 		expect((await managedOf(sessionId)).managedState).toBe("stopped");
 	});
 
-	test("any terminal state report clears working on a Codex row (the excluded closing report included); a Claude row is unchanged", async () => {
+	test("any terminal state report clears working on a Codex row (the excluded closing report included) and on a Claude row (AGEN-110)", async () => {
 		const codex = await codexSession(hostA);
 		const claude = await claudeSession(hostA);
 		await ok(await postEvents(hostA, codex, [submitted()]));
@@ -1291,7 +1292,7 @@ describe("terminal reports", () => {
 		await ok(await postState(hostA, claude, { agentType: "claude_code", status: "completed" }));
 		expect((await rowOf(codex)).isWorking).toBe(false);
 		expect((await rowOf(codex)).currentTurnStartedAt).toBeNull();
-		expect((await rowOf(claude)).isWorking).toBe(true);
+		expect((await rowOf(claude)).isWorking).toBe(false);
 	});
 });
 

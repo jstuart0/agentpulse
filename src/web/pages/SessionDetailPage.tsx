@@ -23,6 +23,8 @@ import {
 	ManagedCodexStatus,
 	selectStatusHint,
 } from "../components/session-detail/StatusHints.js";
+import { StopConfirmDialog } from "../components/session-detail/StopConfirmDialog.js";
+import { StopFailureAlert } from "../components/session-detail/StopFailureAlert.js";
 import { SummaryFellBackNotice } from "../components/session-detail/SummaryFellBackNotice.js";
 import {
 	type TimelineMode,
@@ -30,7 +32,6 @@ import {
 	mergeSessionEvents,
 } from "../components/session-detail/TimelineView.js";
 import {
-	hostRefusalMessage,
 	showProviderSyncError,
 	showProviderSyncState,
 } from "../components/session-detail/host-control-view.js";
@@ -40,12 +41,18 @@ import {
 	overviewOriginField,
 	showsStatusHint,
 } from "../components/session-detail/session-takeover-view.js";
+import {
+	canStopSession,
+	stopRequestFailure,
+	stoppingText,
+} from "../components/session-detail/stop-view.js";
 import { useDirectoryInitials } from "../hooks/useDirectoryInitials.js";
 import { useEventReveal } from "../hooks/useEventReveal.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
 import { useResumeAttempt } from "../hooks/useResumeAttempt.js";
 import { useSessionSummaryPage } from "../hooks/useSessionSummaryPage.js";
-import { describeApiError } from "../lib/api-errors.js";
+import { useStopConfirm } from "../hooks/useStopConfirm.js";
+import { useStopFollow } from "../hooks/useStopFollow.js";
 import { api } from "../lib/api.js";
 import {
 	CHUNK_LOAD_FAILED_COPY,
@@ -53,6 +60,7 @@ import {
 	showsApprovalCard,
 } from "../lib/codex-approval-wait.js";
 import { EVENT_LOAD_FAILED_COPY } from "../lib/event-deep-link.js";
+import { focusLandingAfterRender } from "../lib/focus-landing.js";
 import { applyManualRename } from "../lib/name-source.js";
 import { ownerChip } from "../lib/owner-chip.js";
 import { ownerLabel, sessionOwnerText } from "../lib/owner-label.js";
@@ -219,10 +227,15 @@ export function SessionDetailPage() {
 		return () => watchSession(null);
 	}, [sessionId, watchSession]);
 
+	// The session the page is showing now, for a load that finishes after the person has moved on.
+	const shownSessionId = useRef(sessionId);
+	shownSessionId.current = sessionId;
+
 	const loadSessionWorkspace = useCallback(async () => {
 		if (!sessionId) return;
 		try {
 			const data = await api.getSession(sessionId);
+			if (shownSessionId.current !== sessionId) return;
 			setSession(data.session as Session);
 			setEvents(data.events as SessionEvent[]);
 			setEventsLoaded(true);
@@ -230,7 +243,7 @@ export function SessionDetailPage() {
 		} catch (err) {
 			console.error("Failed to fetch session:", err);
 		} finally {
-			setLoading(false);
+			if (shownSessionId.current === sessionId) setLoading(false);
 		}
 	}, [sessionId]);
 
@@ -241,6 +254,15 @@ export function SessionDetailPage() {
 		sessionId,
 		controlActions,
 		hostName: session?.managedSession?.hostName ?? null,
+		reload: loadSessionWorkspace,
+		announce: setLiveAnnouncement,
+	});
+
+	// A stop in flight refreshes the session every couple of seconds; one that fails stays on the page.
+	const stopFollow = useStopFollow({
+		sessionId,
+		session,
+		controlActions,
 		reload: loadSessionWorkspace,
 		announce: setLiveAnnouncement,
 	});
@@ -281,15 +303,25 @@ export function SessionDetailPage() {
 	const directory = useUsersStore((s) => s.byId);
 	const initialsById = useDirectoryInitials(directory);
 	const isAdmin = useViewerIsAdmin();
-	const notesReadOnlyReason =
-		session &&
-		!sessionActionAccess(ownershipFlags, session, {
-			userId: viewerUserId,
-			effectiveRole: isAdmin ? "admin" : "member",
-		}).canEditNotes
-			? NOTES_BLOCKED_REASON
-			: null;
+	const access = session
+		? sessionActionAccess(ownershipFlags, session, {
+				userId: viewerUserId,
+				effectiveRole: isAdmin ? "admin" : "member",
+			})
+		: null;
+	const notesReadOnlyReason = access && !access.canEditNotes ? NOTES_BLOCKED_REASON : null;
+	// Stop is owner-checked on the server like a prompt, so the composer's rule decides whether it is offered.
+	const mayChangeSession = access?.canPrompt ?? true;
 	const [ownerDialogOpen, setOwnerDialogOpen] = useState(false);
+	const stopConfirm = useStopConfirm(sessionId, focusLandingAfterRender);
+	// The session stopped being one Stop applies to (it ended, the host changed): the dialog goes with it.
+	const stopApplies = session !== null && canStopSession(session);
+	useEffect(() => {
+		if (!stopApplies && stopConfirm.open) {
+			stopConfirm.cancel();
+			focusLandingAfterRender();
+		}
+	}, [stopApplies, stopConfirm.open, stopConfirm.cancel]);
 	const noteUnknownUser = useUsersStore((s) => s.noteUnknown);
 	const applySessionUpdate = useSessionStore((s) => s.applySessionUpdate);
 	const ackedTurnKeyRef = useRef<string | null>(null);
@@ -558,19 +590,26 @@ export function SessionDetailPage() {
 	}
 
 	const displayName = session.displayName || session.sessionId.slice(0, 8);
+	const stoppable = session;
 
-	async function handleStop() {
-		if (!sessionId) return;
+	/** Queues the stop. Resolves to the reason it couldn't be, or null once it is queued. */
+	async function performStop(isCurrent: () => boolean): Promise<string | null> {
+		if (!sessionId) return "Couldn't stop the session.";
 		try {
 			await api.stopSession(sessionId);
-			await loadSessionWorkspace();
 		} catch (error) {
 			console.error("Failed to stop session:", error);
-			toast.error(
-				hostRefusalMessage(error, { managedSession: session?.managedSession }) ??
-					describeApiError(error, "Couldn't stop the session."),
-			);
+			return stopRequestFailure(error, stoppable);
 		}
+		// The person left this session before the answer came: nothing below is about the one on screen.
+		if (!isCurrent()) return null;
+		setLiveAnnouncement("Stopping…");
+		try {
+			await loadSessionWorkspace();
+		} catch (error) {
+			console.error("Failed to refresh the session after a stop:", error);
+		}
+		return null;
 	}
 
 	// Manual acknowledge actions for the header. Unlike the auto-acknowledge
@@ -746,7 +785,9 @@ export function SessionDetailPage() {
 				onJumpBottom={jumpTimelineBottom}
 				onRename={(name) => setSession(applyManualRename(session, name))}
 				onRefresh={loadSessionWorkspace}
-				onStop={handleStop}
+				onStop={stopConfirm.request}
+				stopping={stopFollow.stopping}
+				mayStop={mayChangeSession}
 				ackAction={ackAction}
 				headerRef={headerRef}
 				permissionWaitNote={
@@ -934,6 +975,15 @@ export function SessionDetailPage() {
 					</div>
 				)}
 			</div>
+			{stopConfirm.open && (
+				<StopConfirmDialog
+					session={session}
+					busy={stopConfirm.busy}
+					error={stopConfirm.error}
+					onConfirm={() => void stopConfirm.confirm(performStop)}
+					onCancel={stopConfirm.cancel}
+				/>
+			)}
 			{ownerDialogOpen && (
 				<SessionOwnerDialog
 					sessionId={session.sessionId}
@@ -955,6 +1005,7 @@ export function SessionDetailPage() {
 					}}
 				/>
 			)}
+			{stopFollow.failure !== null && <StopFailureAlert text={stopFollow.failure} />}
 			{(() => {
 				switch (bottomSlot(session, attempt)) {
 					case "takeover_progress":
@@ -970,6 +1021,7 @@ export function SessionDetailPage() {
 								attempt={attempt}
 								focusToken={focusToken}
 								onSubmitted={loadSessionWorkspace}
+								stoppingText={stopFollow.stopping ? stoppingText(session) : null}
 							/>
 						);
 					case "takeover":

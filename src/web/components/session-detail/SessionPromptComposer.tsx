@@ -44,6 +44,7 @@ export function SessionComposerSlot({
 	attempt = NO_ATTEMPT,
 	onSubmitted,
 	focusToken = 0,
+	stoppingText = null,
 }: {
 	session: Session;
 	/** Where a resume of this session stands, derived from its control actions by the page. */
@@ -51,6 +52,8 @@ export function SessionComposerSlot({
 	onSubmitted: () => Promise<void>;
 	/** Raised by the page when a take-over or resume has just worked: the box takes focus once it appears. */
 	focusToken?: number;
+	/** A stop is queued or running (AGEN-110): the box is read-only and says why. */
+	stoppingText?: string | null;
 }) {
 	const ui = useOwnershipUi();
 	const userId = useUserStore((s) => s.userId);
@@ -70,6 +73,7 @@ export function SessionComposerSlot({
 			attempt={attempt}
 			onSubmitted={onSubmitted}
 			focusToken={focusToken}
+			stoppingText={stoppingText}
 		/>
 	);
 }
@@ -80,12 +84,14 @@ export function SessionPromptComposer({
 	attempt = NO_ATTEMPT,
 	onSubmitted,
 	focusToken = 0,
+	stoppingText = null,
 }: {
 	session: Session;
 	mode: ComposerMode | null;
 	attempt?: TakeoverAttempt;
 	onSubmitted: () => Promise<void>;
 	focusToken?: number;
+	stoppingText?: string | null;
 }) {
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const focusedFor = useRef(0);
@@ -219,6 +225,7 @@ export function SessionPromptComposer({
 			prompt={prompt}
 			notice={mode.kind === "codex" ? composerNotice(session) : null}
 			sideText={hostBlockedReason ?? interactiveControlReason ?? mode.side}
+			stoppingNotice={stoppingText}
 			unavailable={!interactiveControlReady || hostBlocked}
 			textareaRef={textareaRef}
 			onEdit={edit}
@@ -332,6 +339,11 @@ export interface ComposerBodyProps {
 	prompt: string;
 	notice: string | null;
 	sideText: string | null;
+	/**
+	 * A stop is on its way (AGEN-110): said in place of the usual notice, at every width, and the box stays
+	 * selectable (so the draft can be copied) but takes no more typing and can't send.
+	 */
+	stoppingNotice?: string | null;
 	/** The host or the terminal can't take a prompt right now; the box is off and the side text says why. */
 	unavailable: boolean;
 	textareaRef?: RefObject<HTMLTextAreaElement | null>;
@@ -348,6 +360,7 @@ export function ComposerBody({
 	prompt,
 	notice,
 	sideText,
+	stoppingNotice = null,
 	unavailable,
 	textareaRef,
 	onEdit,
@@ -359,7 +372,8 @@ export function ComposerBody({
 	const alertId = useId();
 	const box = boxState(mode, phase, { posting });
 	const status = composerStatus(mode, phase, justSent);
-	const shownNotice = phase.step === "idle" ? notice : null;
+	const stopping = stoppingNotice !== null;
+	const shownNotice = stopping ? stoppingNotice : phase.step === "idle" ? notice : null;
 	const codex = mode.kind === "codex";
 	const describedBy =
 		[hintId, shownNotice ? noticeId : null, box.alert ? alertId : null].filter(Boolean).join(" ") ||
@@ -389,7 +403,7 @@ export function ComposerBody({
 						value={prompt}
 						onChange={(e) => onEdit(e.target.value)}
 						placeholder={mode.placeholder}
-						readOnly={box.readOnly}
+						readOnly={box.readOnly || stopping}
 						aria-describedby={describedBy}
 						disabled={unavailable}
 						className="min-h-20 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground read-only:opacity-80"
@@ -399,7 +413,7 @@ export function ComposerBody({
 							type="button"
 							onClick={onSubmit}
 							aria-disabled={box.sendDisabled || undefined}
-							disabled={!prompt.trim() || unavailable}
+							disabled={!prompt.trim() || unavailable || stopping}
 							className={`rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 aria-disabled:opacity-50${
 								codex ? " min-h-[44px] md:min-h-0" : ""
 							}`}

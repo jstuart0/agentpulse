@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
-import { CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
+import { CLAUDE_STOP, CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
 import {
+	CLAUDE_STOP_UPGRADE_MESSAGE,
 	CONTROL_TIMEOUT_ERROR,
 	HOST_UPGRADE_REQUIRED_MESSAGE,
 } from "../../shared/managed-messages.js";
@@ -11,6 +12,14 @@ import {
 	SESSION_RESUMED_EVENT_TYPE,
 	resumeFailureMessage,
 } from "../../shared/session-resume.js";
+import {
+	FINISHED_LAUNCH_STATUSES,
+	STOP_NOT_SUPPORTED_MESSAGE,
+	STOP_RUNTIMES,
+	type StopRuntime,
+	TERMINAL_MANAGED_STATES,
+	isClaudeStopRuntime,
+} from "../../shared/stop-runtime.js";
 import type {
 	ControlAction,
 	ControlActionStatus,
@@ -718,8 +727,8 @@ export class HostGoneError extends Error {
  */
 export class HostUpgradeRequiredError extends Error {
 	readonly code = "host_upgrade_required";
-	constructor() {
-		super(HOST_UPGRADE_REQUIRED_MESSAGE);
+	constructor(message: string = HOST_UPGRADE_REQUIRED_MESSAGE) {
+		super(message);
 		this.name = "HostUpgradeRequiredError";
 	}
 }
@@ -740,7 +749,27 @@ export class ManagedStateNotContinuableError extends Error {
 	}
 }
 
+/** A Stop on a session started in a terminal: nothing here can stop it, so nothing is queued (AGEN-110). */
+export class StopNotSupportedError extends Error {
+	readonly code = "stop_not_supported";
+	constructor() {
+		super(STOP_NOT_SUPPORTED_MESSAGE);
+		this.name = "StopNotSupportedError";
+	}
+}
+
+/** The session has ended and its launch has finished: a stop has nothing to act on (AGEN-110). */
+export class NothingToStopError extends Error {
+	readonly code = "nothing_to_stop";
+	constructor() {
+		super("This session has already ended, so there is nothing to stop.");
+		this.name = "NothingToStopError";
+	}
+}
+
 export type EnqueueRefusal =
+	| "stop_not_supported"
+	| "nothing_to_stop"
 	| "not_managed"
 	| "session_missing"
 	| "launch_missing"
@@ -771,17 +800,23 @@ function refusalToError(reason: EnqueueRefusal): Error {
 			return new HostUpgradeRequiredError();
 		case "managed_state":
 			return new ManagedStateNotContinuableError();
+		case "nothing_to_stop":
+			return new NothingToStopError();
+		case "stop_not_supported":
+			return new StopNotSupportedError();
 	}
 }
 
 /**
- * Does this supervisor take a Codex follow-up prompt? Capabilities are the host's own report, so they're
- * read through the same cleaner as everywhere else: a missing, malformed or misspelt list means no.
+ * Does this supervisor advertise `feature` (a Codex follow-up prompt, a Claude stop)? Capabilities are the
+ * host's own report, so they're read through the same cleaner as everywhere else: a missing, malformed or
+ * misspelt list means no.
  */
-async function supervisorTakesCodexPrompts(
+async function supervisorHasFeature(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	db: any,
 	supervisorId: string,
+	feature: string,
 ): Promise<boolean> {
 	const [row] = await db
 		.select({ capabilities: supervisors.capabilities })
@@ -789,22 +824,30 @@ async function supervisorTakesCodexPrompts(
 		.where(eq(supervisors.id, supervisorId))
 		.limit(1);
 	if (!row) return false;
-	return (withCapabilityDefaults(row.capabilities).features ?? []).includes(
-		CODEX_FOLLOW_UP_PROMPTS,
-	);
+	return (withCapabilityDefaults(row.capabilities).features ?? []).includes(feature);
 }
 
 /**
- * Whether the host that owns the session takes Codex prompts. Read on the caller's transaction (a
- * `getDb()` inside `withAdminLock` is forbidden); a session with no owner of record can't.
+ * Does the host that owns the session advertise `feature`? Read on the caller's transaction (the
+ * ordinary handle inside `withAdminLock` is forbidden); a session with no owner of record has no host that does.
  */
-export async function hostTakesCodexPrompts(
+async function hostHasFeature(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	sessionId: string,
+	feature: string,
+): Promise<boolean> {
+	const owner = await resolveSessionOwner(tx, sessionId);
+	return owner !== null && (await supervisorHasFeature(tx, owner, feature));
+}
+
+/** Whether the host that owns the session takes Codex prompts. */
+export function hostTakesCodexPrompts(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	tx: any,
 	sessionId: string,
 ): Promise<boolean> {
-	const owner = await resolveSessionOwner(tx, sessionId);
-	return owner !== null && (await supervisorTakesCodexPrompts(tx, owner));
+	return hostHasFeature(tx, sessionId, CODEX_FOLLOW_UP_PROMPTS);
 }
 
 /**
@@ -873,6 +916,28 @@ export async function takeControlLock(
 }
 
 /**
+ * What the host must stop for a session, from its launch (never the session row, which an ingest key can
+ * create with an agent type of its choosing): `codex`, `claude_stream` (a carrier that took over an
+ * observed session), `claude_headless` or `claude_terminal`. Null when the launch is unknown or the mode
+ * isn't one a stop is defined for; the host then reads the absence as Codex, as it always did.
+ */
+export function stopRuntimeOf(
+	launch: Pick<
+		typeof launchRequests.$inferSelect,
+		"agentType" | "requestedLaunchMode" | "metadata"
+	>,
+): StopRuntime | null {
+	if (launch.agentType === "codex_cli") return STOP_RUNTIMES.codex;
+	if (launch.agentType !== "claude_code") return null;
+	if ((launch.metadata as Record<string, unknown> | null)?.boundObservedSession === true) {
+		return STOP_RUNTIMES.claudeStream;
+	}
+	if (launch.requestedLaunchMode === "headless") return STOP_RUNTIMES.claudeHeadless;
+	if (launch.requestedLaunchMode === "interactive_terminal") return STOP_RUNTIMES.claudeTerminal;
+	return null;
+}
+
+/**
  * Queue a stop on `tx`: every read and write goes through it, no expected
  * outcome throws, and the lock is taken (conditionally) before the action row
  * is written.
@@ -900,8 +965,29 @@ export async function enqueueStopInTx(
 	if (stopLaunch && !(await launchOwnedBySessionOwner(tx, sessionId, stopLaunch))) {
 		return { ok: false, reason: "launch_mismatch" };
 	}
+	const stopRuntime = stopLaunch ? stopRuntimeOf(stopLaunch) : null;
+	const claudeStop = isClaudeStopRuntime(stopRuntime);
+	// Refused before anything else is judged or written: no host read, no lock, no row.
+	if (stopRuntime === STOP_RUNTIMES.claudeTerminal) {
+		return { ok: false, reason: "stop_not_supported" };
+	}
+	// Both rows are already in hand. Only a stop whose managed state AND launch have ended is refused: a
+	// lost final report leaves one of them live, and a Stop is how that session gets repaired (it reads
+	// `stopped` and the launch `cancelled`). Codex is left as it was.
+	if (
+		claudeStop &&
+		stopLaunch &&
+		TERMINAL_MANAGED_STATES.has(managed.managedState) &&
+		FINISHED_LAUNCH_STATUSES.has(stopLaunch.status)
+	) {
+		return { ok: false, reason: "nothing_to_stop" };
+	}
 	const stopHostRefusal = await hostRefusal(tx, sessionId, clock);
 	if (stopHostRefusal) return { ok: false, reason: stopHostRefusal };
+	// Only a Claude launch asks the host anything: a Codex stop costs no extra statement.
+	if (claudeStop && !(await hostHasFeature(tx, sessionId, CLAUDE_STOP))) {
+		return { ok: false, reason: "host_upgrade_required" };
+	}
 
 	const timestamp = nowIso(clock);
 	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp, clock))) {
@@ -921,7 +1007,7 @@ export async function enqueueStopInTx(
 			requestedBy: actor.label,
 			requestedByUserId: actor.userId,
 			status: "queued",
-			metadata: {},
+			metadata: stopRuntime === null ? {} : { runtime: stopRuntime },
 			createdAt: timestamp,
 			updatedAt: timestamp,
 		})
@@ -944,7 +1030,12 @@ export async function queueStopAction(
 	const result = tx
 		? await enqueueStopInTx(tx, input)
 		: await withAdminLock((own) => enqueueStopInTx(own, input));
-	if (!result.ok) throw refusalToError(result.reason);
+	if (!result.ok) {
+		// The only upgrade a stop can need is the Claude one.
+		throw result.reason === "host_upgrade_required"
+			? new HostUpgradeRequiredError(CLAUDE_STOP_UPGRADE_MESSAGE)
+			: refusalToError(result.reason);
+	}
 	if (!tx) await runApprovalClosedEffects(result.fencedApprovals, deps);
 	return result.action;
 }
@@ -1317,13 +1408,29 @@ async function claimRefusalForPrompt(
 		return LAUNCH_MISMATCH_CLAIM_MESSAGE;
 	}
 	if (effective !== "codex_cli") return null;
-	return (await supervisorTakesCodexPrompts(getDb(), supervisorId))
+	return (await supervisorHasFeature(getDb(), supervisorId, CODEX_FOLLOW_UP_PROMPTS))
 		? null
 		: HOST_UPGRADE_REQUIRED_MESSAGE;
 }
 
-/** Fail an unclaimed prompt (an AI prompt past its TTL, or one this host must not take), release its lock and close its audit row. */
-async function failUnclaimedPrompt(action: typeof controlActions.$inferSelect, error: string) {
+/**
+ * Why a queued stop must not be handed to this supervisor, or null: a Claude stop for a host that no longer
+ * advertises `claude_stop` (rolled back, or replaced by an older build since it was queued). Judged from the
+ * action's own runtime, which the server wrote at enqueue; a Codex stop costs nothing extra.
+ */
+async function claimRefusalForStop(
+	action: typeof controlActions.$inferSelect,
+	supervisorId: string,
+): Promise<string | null> {
+	const runtime = (action.metadata as Record<string, unknown> | null)?.runtime;
+	if (typeof runtime !== "string" || !isClaudeStopRuntime(runtime)) return null;
+	return (await supervisorHasFeature(getDb(), supervisorId, CLAUDE_STOP))
+		? null
+		: CLAUDE_STOP_UPGRADE_MESSAGE;
+}
+
+/** Fail an unclaimed action (an AI prompt past its TTL, or a prompt or stop this host must not take), release its lock and close its audit row. */
+async function failUnclaimedAction(action: typeof controlActions.$inferSelect, error: string) {
 	const timestamp = nowIso();
 	await getDb()
 		.update(controlActions)
@@ -1394,13 +1501,21 @@ export async function claimNextControlAction(supervisorId: string) {
 		if (!candidate) return null;
 
 		if (isExpiredAiPrompt(candidate)) {
-			await failUnclaimedPrompt(candidate, "Expired before a supervisor claimed it.");
+			await failUnclaimedAction(candidate, "Expired before a supervisor claimed it.");
 			continue;
 		}
 		if (candidate.actionType === "prompt" && candidate.sessionId) {
 			const refusal = await claimRefusalForPrompt(candidate, launchAgentType, supervisorId);
 			if (refusal) {
-				await failUnclaimedPrompt(candidate, refusal);
+				await failUnclaimedAction(candidate, refusal);
+				continue;
+			}
+		}
+
+		if (candidate.actionType === "stop") {
+			const refusal = await claimRefusalForStop(candidate, supervisorId);
+			if (refusal) {
+				await failUnclaimedAction(candidate, refusal);
 				continue;
 			}
 		}

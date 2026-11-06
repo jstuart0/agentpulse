@@ -56,7 +56,7 @@ export function registerSessionActionTools(ctx: ToolContext, flags: ScopeFlags):
 		ctx,
 		{
 			name: "stop_session",
-			description: `Stop a live agent session's process. ${MANAGED_ONLY_NOTE} ${CONFIRMATION_PORTABILITY_NOTE}`,
+			description: `Stop a live agent session's process. A Claude session started in a terminal can't be stopped this way (the call is refused with stop_not_supported; stop it in that terminal). ${MANAGED_ONLY_NOTE} ${CONFIRMATION_PORTABILITY_NOTE}`,
 			inputSchema: { session_id: z.string() },
 		},
 		async (args, client) => client.stopSession(args.session_id),

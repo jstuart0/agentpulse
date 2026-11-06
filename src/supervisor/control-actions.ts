@@ -20,12 +20,19 @@
  * trusted root, which is inherent to reporting a result at all. With no rules file the
  * bodies are what they always were.
  */
+import {
+	NOTHING_RUNNING_STOP_NOTE,
+	STOPPED_UNCHECKED_NOTE,
+	STOP_FAILED_ERROR,
+} from "../shared/managed-messages.js";
+import { STOP_RUNTIMES } from "../shared/stop-runtime.js";
 import type { ControlAction, ManagedState } from "../shared/types.js";
 import { MANAGED_STATES } from "../shared/types.js";
 import type { LaunchCallbacks } from "./providers/claude-shared.js";
 import type {
 	promptClaudeHeadlessSession,
 	promptClaudeInteractiveSession,
+	stopHeadlessClaude,
 } from "./providers/claude.js";
 import type {
 	hasManagedCodexRuntime,
@@ -43,6 +50,7 @@ export type ControlProviders = {
 	hasManagedCodexRuntime: typeof hasManagedCodexRuntime;
 	promptClaudeHeadlessSession: typeof promptClaudeHeadlessSession;
 	promptClaudeInteractiveSession: typeof promptClaudeInteractiveSession;
+	stopHeadlessClaude: typeof stopHeadlessClaude;
 };
 
 export interface ControlActionDeps {
@@ -53,6 +61,13 @@ export interface ControlActionDeps {
 	/** Runs a `resume` action (see services/session-resume.ts). Absent: this build can't, and says so. */
 	resumeSession?: (action: ControlAction, sessionId: string) => Promise<void>;
 	log?: (line: string) => void;
+}
+
+const STOPPED_EVENT_CONTENT = "Managed session stopped by operator.";
+
+/** A caught value as one line of host log; never sent to the server. */
+function errorText(error: unknown): string {
+	return (error instanceof Error ? error.message : String(error)).slice(0, 300);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -73,6 +88,26 @@ const PROMPT_WORDS = {
 	unknownAgent: "This host can't send prompts to this kind of session.",
 	mismatch: "This session's records don't match how it was launched, so nothing was sent.",
 } as const;
+
+/** The words a failed stop carries. Fixed: nothing about the host or the process is echoed. */
+export const STOP_WORDS = {
+	terminal:
+		"A Claude session running in a terminal can't be stopped from AgentPulse. Close it in the terminal.",
+	unsupported: "This host can't stop this kind of session.",
+	finishing:
+		"A command on this machine is still finishing, so the session can't be stopped yet. Try again when it's done.",
+	failed: STOP_FAILED_ERROR,
+} as const;
+
+/**
+ * What the server says this stop must stop (`metadata.runtime`). Absent is Codex, which is all a server
+ * from before this field ever queued; a value this build doesn't know is not guessed at.
+ */
+function readStopRuntime(action: ControlAction): string | null {
+	const runtime = asRecord(action.metadata)?.runtime;
+	if (runtime === undefined) return STOP_RUNTIMES.codex;
+	return typeof runtime === "string" ? runtime : null;
+}
 
 /** The plain words for why a Codex session in this state can't take a prompt. The raw value is never echoed. */
 function wrongStateMessage(state: ManagedState | null): string {
@@ -97,28 +132,97 @@ export function createControlActionHandler(
 	const report = (action: ControlAction, body: Parameters<ReportGate["reportControlStatus"]>[2]) =>
 		gate.reportControlStatus(action.id, action.sessionId ?? null, body, namedDirectory(action));
 
-	async function stop(action: ControlAction, sessionId: string) {
+	/** The session reads stopped, and the timeline says so in the words given (a stop of nothing doesn't claim a process was stopped). */
+	async function reportStopped(sessionId: string, content = STOPPED_EVENT_CONTENT) {
+		await gate.reportState({
+			sessionId,
+			status: "completed",
+			managedState: "stopped" satisfies ManagedState,
+			providerSyncState: "synced",
+		});
+		await gate.reportEvents(sessionId, [
+			{
+				eventType: "ManagedSessionStopped",
+				category: "system_event",
+				content,
+			},
+		]);
+	}
+
+	const failStop = (action: ControlAction, error: string) =>
+		report(action, { status: "failed", error });
+
+	async function stopCodex(action: ControlAction, sessionId: string) {
 		try {
 			await providers.stopManagedCodexSession(sessionId);
-			await gate.reportState({
-				sessionId,
-				status: "completed",
-				managedState: "stopped" satisfies ManagedState,
-				providerSyncState: "synced",
-			});
-			await gate.reportEvents(sessionId, [
-				{
-					eventType: "ManagedSessionStopped",
-					category: "system_event",
-					content: "Managed session stopped by operator.",
-				},
-			]);
+			await reportStopped(sessionId);
 			await report(action, { status: "succeeded" });
 		} catch (error) {
+			log(`[control-actions] codex stop failed: ${errorText(error)}`);
+			await failStop(action, STOP_WORDS.failed);
+		}
+	}
+
+	/**
+	 * A launched headless Claude: SIGTERM then SIGKILL to the child and its tool processes. With a child, its
+	 * exit path reports the launch cancelled; with none registered (a restart, or a lost final report) the
+	 * launch may still read running, which would hold the session's turn guard, so it is cancelled here.
+	 */
+	async function stopClaudeHeadless(action: ControlAction, sessionId: string) {
+		try {
+			const outcome = await providers.stopHeadlessClaude(sessionId);
+			if (!outcome.gone) {
+				await failStop(action, STOP_WORDS.finishing);
+				return;
+			}
+			if (outcome.hadChild && !outcome.unchecked) {
+				await reportStopped(sessionId);
+				await report(action, { status: "succeeded" });
+				return;
+			}
+			if (outcome.hadChild) {
+				// The child is dead but nothing under it was looked for: the session reads stopped, and says so.
+				await reportStopped(sessionId, STOPPED_UNCHECKED_NOTE);
+				await report(action, {
+					status: "succeeded",
+					metadata: { ...(asRecord(action.metadata) ?? {}), note: STOPPED_UNCHECKED_NOTE },
+				});
+				return;
+			}
+			// Nothing registered under this host's control. The session still reads stopped (a lost final
+			// report mustn't wedge it), but nothing here says a process was stopped.
+			await reportStopped(sessionId, NOTHING_RUNNING_STOP_NOTE);
+			await cancelLaunchOf(action);
 			await report(action, {
-				status: "failed",
-				error: error instanceof Error ? error.message : "Failed to stop managed session",
+				status: "succeeded",
+				metadata: { ...(asRecord(action.metadata) ?? {}), note: NOTHING_RUNNING_STOP_NOTE },
 			});
+		} catch (error) {
+			log(`[control-actions] claude stop failed: ${errorText(error)}`);
+			await failStop(action, STOP_WORDS.failed);
+		}
+	}
+
+	/** Cancels the launch a stop with no child leaves reading `running`. Its own try: the stop is done whether or not this lands. */
+	async function cancelLaunchOf(action: ControlAction) {
+		if (!action.launchRequestId) return;
+		try {
+			await gate.reportLaunchStatus(action.launchRequestId, { status: "cancelled" });
+		} catch (error) {
+			log(`[control-actions] cancelling launch after a stop failed: ${errorText(error)}`);
+		}
+	}
+
+	async function stop(action: ControlAction, sessionId: string) {
+		switch (readStopRuntime(action)) {
+			case STOP_RUNTIMES.codex:
+				return stopCodex(action, sessionId);
+			case STOP_RUNTIMES.claudeHeadless:
+				return stopClaudeHeadless(action, sessionId);
+			case STOP_RUNTIMES.claudeTerminal:
+				return failStop(action, STOP_WORDS.terminal);
+			default:
+				return failStop(action, STOP_WORDS.unsupported);
 		}
 	}
 
