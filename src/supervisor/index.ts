@@ -38,6 +38,7 @@ import {
 	warnIfHomeMismatch,
 } from "./services/exclude-rules-watch.js";
 import { disposeRuntimesAndExit } from "./services/fatal-exit.js";
+import { createFinalReporter } from "./services/final-report.js";
 import {
 	countBridgesBounded,
 	keepAliveLine,
@@ -58,6 +59,7 @@ import {
 	parseRetryAfterMs,
 	setSharedCredentialTripwire,
 } from "./services/report-resilience.js";
+import { createServerFeatures } from "./services/server-features.js";
 import {
 	createSessionResumer,
 	isObserverHeld,
@@ -264,6 +266,10 @@ async function main() {
 	// an accept for exactly that request. The tracker reaches the server only through the gate, and the
 	// server tells it what it can do on registration and on every heartbeat (absent means off).
 	const approvalsWiring = wireCodexApprovals({ gate, serverFeatures: registration.serverFeatures });
+	// The same list for the Claude turn guard's renewals, kept current by every heartbeat.
+	const serverFeatures = createServerFeatures(registration.serverFeatures);
+	// A launch's or prompt's last status, kept and retried until the server answers.
+	const finalReport = createFinalReporter();
 
 	// The interactive terminal bridge holds no credential and opens no connection: it writes its reports to
 	// disk and this drain sends them through the gate.
@@ -329,6 +335,7 @@ async function main() {
 		},
 		executePrelaunchActions,
 		recordThread: (launchRequestId, threadId) => threadRecord.write(launchRequestId, threadId),
+		finalReport,
 	});
 	const resumeSession = createSessionResumer({
 		gate,
@@ -352,6 +359,8 @@ async function main() {
 			stopHeadlessClaude,
 		},
 		executeCleanupWorkArea,
+		serverHas: serverFeatures.has,
+		finalReport,
 	});
 
 	void gate.scan();
@@ -380,13 +389,14 @@ async function main() {
 			// Whether the exclude file on this host is in use, absent or broken, for the Hosts page.
 			// Optional on the wire: a server that predates the field ignores the body.
 			// The last successful answer's features win; a failed heartbeat leaves the last known value alone.
-			await approvalsWiring.applyHeartbeat(
+			const beat = await approvalsWiring.applyHeartbeat(
 				() =>
 					request(`/supervisors/${registration.supervisor.id}/heartbeat`, {
 						method: "POST",
 						body: heartbeatBody(gate.rulesState(), heartbeatOutbox(outbox.summary(), Date.now())),
 					}) as Promise<{ serverFeatures?: string[] } | null>,
 			);
+			serverFeatures.set(beat?.serverFeatures);
 			lastHeartbeatOkAt = Date.now();
 			staleLogged = false;
 			gate.noteServerReachable();

@@ -134,8 +134,12 @@ function captureSpawn() {
 	const calls: string[][] = [];
 	const realSpawn = Bun.spawn.bind(Bun);
 	const spy = spyOn(Bun, "spawn").mockImplementation(((options: { cmd: string[] }) => {
-		// The config's executable-version probe is real; only the agent itself is faked.
-		if (options.cmd.at(-1) === "--version") return realSpawn(options as never);
+		// The config's executable-version probe and a resume's `claude agents` check are real (the fake
+		// answers neither with JSON, which a resume reads as "couldn't check" and goes ahead); only the
+		// agent itself is faked.
+		if (options.cmd.at(-1) === "--version" || options.cmd.at(-2) === "agents") {
+			return realSpawn(options as never);
+		}
 		calls.push([...options.cmd]);
 		return fakeProc();
 	}) as unknown as typeof Bun.spawn);

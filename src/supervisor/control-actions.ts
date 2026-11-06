@@ -20,8 +20,10 @@
  * trusted root, which is inherent to reporting a result at all. With no rules file the
  * bodies are what they always were.
  */
+import { CLAUDE_TURN_CONTROL, CLAUDE_TURN_RENEWAL_MS } from "../shared/constants.js";
 import {
 	NOTHING_RUNNING_STOP_NOTE,
+	STOPPED_BY_PERSON_ERROR,
 	STOPPED_UNCHECKED_NOTE,
 	STOP_FAILED_ERROR,
 } from "../shared/managed-messages.js";
@@ -41,6 +43,7 @@ import type {
 } from "./providers/codex-managed.js";
 import { CodexPromptWithheld } from "./providers/codex-shared.js";
 import { CleanupError, type executeCleanupWorkArea } from "./services/cleanup-workarea.js";
+import { type FinalReporter, sendOnce } from "./services/final-report.js";
 import { type ReportGate, controlRefusalBody } from "./services/report-gate.js";
 import { canonicalSpawnCwd } from "./services/spawn-cwd.js";
 
@@ -60,8 +63,20 @@ export interface ControlActionDeps {
 	executeCleanupWorkArea: typeof executeCleanupWorkArea;
 	/** Runs a `resume` action (see services/session-resume.ts). Absent: this build can't, and says so. */
 	resumeSession?: (action: ControlAction, sessionId: string) => Promise<void>;
+	/** Whether the server said it can do `feature` (registration and every heartbeat). Absent: it said nothing. */
+	serverHas?: (feature: string) => boolean;
+	/** Runs `callback` every `ms` until the returned handle stops it. The default is an unref'd interval. */
+	schedule?: (callback: () => void, ms: number) => { stop(): void };
+	/** Sends a turn's last status until the server answers. Absent: one attempt, as before. */
+	finalReport?: FinalReporter;
 	log?: (line: string) => void;
 }
+
+const defaultSchedule = (callback: () => void, ms: number) => {
+	const timer = setInterval(callback, ms);
+	timer.unref?.();
+	return { stop: () => clearInterval(timer) };
+};
 
 const STOPPED_EVENT_CONTENT = "Managed session stopped by operator.";
 
@@ -127,6 +142,8 @@ export function createControlActionHandler(
 ): (action: ControlAction) => Promise<void> {
 	const { gate, providers } = deps;
 	const log = deps.log ?? ((line: string) => console.log(line));
+	const schedule = deps.schedule ?? defaultSchedule;
+	const finalReport = deps.finalReport ?? sendOnce;
 
 	/** Status results, always through the gate: `succeeded` for a session that is now excluded becomes the generic failure. */
 	const report = (action: ControlAction, body: Parameters<ReportGate["reportControlStatus"]>[2]) =>
@@ -206,8 +223,11 @@ export function createControlActionHandler(
 	/** Cancels the launch a stop with no child leaves reading `running`. Its own try: the stop is done whether or not this lands. */
 	async function cancelLaunchOf(action: ControlAction) {
 		if (!action.launchRequestId) return;
+		const launchId = action.launchRequestId;
 		try {
-			await gate.reportLaunchStatus(action.launchRequestId, { status: "cancelled" });
+			await finalReport(`launch:${launchId}`, () =>
+				gate.reportLaunchStatus(launchId, { status: "cancelled" }),
+			);
 		} catch (error) {
 			log(`[control-actions] cancelling launch after a stop failed: ${errorText(error)}`);
 		}
@@ -266,6 +286,34 @@ export function createControlActionHandler(
 				}`,
 			);
 		}
+	}
+
+	/**
+	 * A running Claude prompt keeps the session's control lock by saying so: `running` at acceptance and
+	 * every 30 s after, only to a server that advertises `claude_turn_control` (an older one would read it as
+	 * a status change). A renewal that fails is logged and the turn goes on: the lock lasts 90 s, so two can
+	 * fail. One request at a time, so a slow server isn't stacked on. The body is the status and nothing else.
+	 */
+	function startRenewals(action: ControlAction) {
+		if (!deps.serverHas?.(CLAUDE_TURN_CONTROL)) {
+			return { accepted: async () => {}, stop: () => {} };
+		}
+		let inFlight = false;
+		const renew = async () => {
+			if (inFlight) return;
+			inFlight = true;
+			try {
+				await report(action, { status: "running" });
+			} catch (error) {
+				log(
+					`[control-actions] couldn't renew the lock of prompt ${action.id}: ${errorText(error)}`,
+				);
+			} finally {
+				inFlight = false;
+			}
+		};
+		const timer = schedule(() => void renew(), CLAUDE_TURN_RENEWAL_MS);
+		return { accepted: renew, stop: () => timer.stop() };
 	}
 
 	async function prompt(action: ControlAction, sessionId: string) {
@@ -347,15 +395,31 @@ export function createControlActionHandler(
 				async () => {},
 				callbacks,
 			);
+			const renewals = startRenewals(action);
+			await renewals.accepted();
 			void response.monitor
 				.then(async () => {
-					await report(action, { status: "succeeded", metadata: response.metadata });
+					renewals.stop();
+					// A child a person's Stop ended is a failed prompt in the Stop's own words; the server has
+					// usually failed it already, and a report for a finished action changes nothing.
+					const stopped = response.metadata.executionState === "stopped";
+					await finalReport(`action:${action.id}`, () =>
+						report(
+							action,
+							stopped
+								? { status: "failed", error: STOPPED_BY_PERSON_ERROR }
+								: { status: "succeeded", metadata: response.metadata },
+						),
+					);
 				})
 				.catch(async (error) => {
-					await report(action, {
-						status: "failed",
-						error: error instanceof Error ? error.message : "Failed to execute prompt",
-					});
+					renewals.stop();
+					await finalReport(`action:${action.id}`, () =>
+						report(action, {
+							status: "failed",
+							error: error instanceof Error ? error.message : "Failed to execute prompt",
+						}),
+					);
 				});
 		} catch (error) {
 			await report(action, {

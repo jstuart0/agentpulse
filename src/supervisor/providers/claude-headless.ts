@@ -2,6 +2,10 @@ import {
 	type ResolvedLaunchPrivileges,
 	privilegeMetadata,
 } from "../../shared/launch-privileges.js";
+import {
+	CLAUDE_SESSION_OPEN_ERROR,
+	CLAUDE_TURN_RUNNING_ERROR,
+} from "../../shared/managed-messages.js";
 import type { LaunchRequest } from "../../shared/types.js";
 import { loadSupervisorConfig } from "../config.js";
 import {
@@ -12,6 +16,7 @@ import {
 } from "../process-stop.js";
 import { disposeRuntimesAndExit } from "../services/fatal-exit.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
+import { listClaudeAgents } from "./claude-agents.js";
 import type {
 	ClaudePromptAction,
 	HeadlessProgressUpdate,
@@ -487,6 +492,35 @@ export async function launchClaudeHeadlessRequest(
 	});
 }
 
+/** This supervisor already runs a Claude process for the session: a second one would write to the same conversation. */
+function refuseIfTurnRunning(sessionId: string): void {
+	if ((activeRuntimes.get(sessionId)?.size ?? 0) > 0) throw new Error(CLAUDE_TURN_RUNNING_ERROR);
+}
+
+/**
+ * Refuses a resume of a conversation Claude Code lists as open somewhere (a terminal, a background agent, an
+ * orphan `-p` left by a supervisor that restarted). No registered child of ours exists for the id by now, so
+ * any listing is someone else's. If the listing can't be had (an older Claude Code without the subcommand, a
+ * timeout, an unreadable answer) the resume goes ahead and the host log says so: a launched session has no
+ * version gate, and refusing every prompt on a Claude that can't answer would break it for good.
+ */
+async function refuseIfConversationOpen(
+	sessionId: string,
+	executable: string,
+	cwd: string,
+	env: Record<string, string | undefined>,
+): Promise<void> {
+	const listing = await listClaudeAgents({ executable, cwd, env });
+	if (!listing.ok) {
+		// The reason only (a short phrase of ours), never anything `claude agents` printed.
+		console.warn(
+			`[supervisor] claude_agents_check_failed reason="${listing.why}"; resuming without the check`,
+		);
+		return;
+	}
+	if (listing.sessionIds.has(sessionId)) throw new Error(CLAUDE_SESSION_OPEN_ERROR);
+}
+
 export async function promptClaudeHeadlessSession(
 	action: ClaudePromptAction,
 	reportProgress: (update: HeadlessProgressUpdate) => Promise<void>,
@@ -508,10 +542,19 @@ export async function promptClaudeHeadlessSession(
 	);
 
 	const metadata = createHeadlessMetadata(args, executable, privileges);
+	const env = buildActionEnv(action);
+
+	// One Claude process per session. The control lock is the server's guard; this is the host's own, for a
+	// lock that lapsed while a turn kept running (a host that lost its connection for 90 s).
+	refuseIfTurnRunning(action.sessionId);
+	await refuseIfConversationOpen(action.sessionId, executable, action.cwd, env);
+	// The check above waited on a process; another prompt may have spawned meanwhile. Nothing awaits between
+	// this and the spawn, and the child is registered before the stream's first await.
+	refuseIfTurnRunning(action.sessionId);
 	const proc = Bun.spawn({
 		cmd: args,
 		cwd: action.cwd,
-		env: buildActionEnv(action),
+		env,
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",

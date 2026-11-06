@@ -138,12 +138,12 @@ const emptySync = { v: 1, live: [], resolved: [] };
 describe("what register and heartbeat say", () => {
 	test("both register paths and the heartbeat advertise codex_approvals; the heartbeat keeps its own fields", async () => {
 		const first = await enroll("p5-fresh");
-		expect(first.serverFeatures).toEqual(["codex_approvals"]);
+		expect(first.serverFeatures).toEqual(["codex_approvals", "claude_turn_control"]);
 
 		const again = await register({ id: first.id, hostName: "p5-fresh" }, first.token);
 		expect(again.status).toBe(200);
 		const body = (await again.json()) as { supervisor: { id: string }; serverFeatures: string[] };
-		expect(body.serverFeatures).toEqual(["codex_approvals"]);
+		expect(body.serverFeatures).toEqual(["codex_approvals", "claude_turn_control"]);
 		expect(body.supervisor.id).toBe(first.id);
 
 		const beat = await app.request(`/api/v1/supervisors/${first.id}/heartbeat`, {
@@ -154,7 +154,7 @@ describe("what register and heartbeat say", () => {
 			supervisor: { id: string };
 			serverFeatures: string[];
 		};
-		expect(beatBody.serverFeatures).toEqual(["codex_approvals"]);
+		expect(beatBody.serverFeatures).toEqual(["codex_approvals", "claude_turn_control"]);
 		expect(beatBody.supervisor.id).toBe(first.id);
 	});
 
@@ -172,7 +172,7 @@ describe("what register and heartbeat say", () => {
 
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as { supervisorCredential: string; serverFeatures: string[] };
-		expect(body.serverFeatures).toEqual(["codex_approvals"]);
+		expect(body.serverFeatures).toEqual(["codex_approvals", "claude_turn_control"]);
 		hostA = { id: hostA.id, token: body.supervisorCredential };
 		expect((await rowOf(id))?.closedReason).toBe("runtime_gone");
 	});

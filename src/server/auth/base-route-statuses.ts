@@ -44,7 +44,8 @@ export const BASE_ROUTE_STATUSES: ReadonlyArray<readonly [string, readonly numbe
 	["POST /supervisors/:id/managed-sessions/:sessionId/events", [401, 401, 401, 401, 403]],
 	["GET /supervisors/:id/provider-sync", [401, 401, 401, 401, 200]],
 	["POST /supervisors/:id/control-actions/claim", [401, 401, 401, 401, 200]],
-	["POST /supervisors/:id/control-actions/:actionId/status", [401, 401, 401, 401, 404]],
+	// AGEN-117: a status report with no status is 400 (it was 404 for an auth-disabled probe with an empty body).
+	["POST /supervisors/:id/control-actions/:actionId/status", [401, 401, 401, 401, 400]],
 	["GET /health", [503, 503, 503, 503, 503]],
 	["GET /ready", [200, 200, 200, 200, 200]],
 	["POST /hooks", [401, 401, 401, 403, 200]],

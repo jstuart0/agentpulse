@@ -1219,6 +1219,66 @@ describe("delivery", () => {
 		expect(state.ok && state.delivery.state).toBe("unknown");
 	});
 
+	test("a late success after the lock's lapse replaces the timeout: the delivery then reads succeeded, not unknown", async () => {
+		const { updateControlAction } = await import("../control-actions.js");
+		const { proposalId } = await approvedAndQueued("v-late-success");
+		const [action] = await actionsFor("v-late-success");
+		await getDb()
+			.update(controlActions)
+			.set({ status: "running", claimedBySupervisorId: "sup-late" })
+			.where(eq(controlActions.id, action?.id as string));
+		await getDb()
+			.update(managedSessions)
+			.set({ controlLockExpiresAt: new Date(Date.now() - 1_000).toISOString() });
+		const lapsed = await getDeliveryState(proposalId, manageCtx());
+		expect(lapsed.ok && lapsed.delivery.state).toBe("unknown");
+
+		await updateControlAction({
+			actionId: action?.id as string,
+			supervisorId: "sup-late",
+			status: "succeeded",
+		});
+
+		const state = await getDeliveryState(proposalId, manageCtx());
+		expect(state.ok && state.delivery.state).toBe("succeeded");
+	});
+
+	test("a prompt a Stop pre-empted reads failed, and a retry needs confirm like an unknown one: a person just stopped that text", async () => {
+		const { STOPPED_BY_PERSON_ERROR } = await import("../../../shared/managed-messages.js");
+		const { updateControlAction } = await import("../control-actions.js");
+		const { proposalId } = await approvedAndQueued("v-preempted");
+		const [action] = await actionsFor("v-preempted");
+		await getDb()
+			.update(controlActions)
+			.set({
+				status: "failed",
+				error: STOPPED_BY_PERSON_ERROR,
+				claimedBySupervisorId: "sup-pre",
+				finishedAt: new Date().toISOString(),
+			})
+			.where(eq(controlActions.id, action?.id as string));
+		await getDb()
+			.update(managedSessions)
+			.set({ activeControlActionId: null, controlLockExpiresAt: null });
+		const state = await getDeliveryState(proposalId, manageCtx());
+		expect(state.ok && state.delivery.state).toBe("failed");
+
+		// A late report from the host changes nothing about how it ended.
+		await updateControlAction({
+			actionId: action?.id as string,
+			supervisorId: "sup-pre",
+			status: "succeeded",
+		});
+		expect((await actionsFor("v-preempted"))[0]?.status).toBe("failed");
+
+		const refused = await retryDelivery(proposalId, manageCtx());
+		expect(!refused.ok && refused.refusal).toMatchObject({ code: "confirm_required", status: 409 });
+		expect(await actionsFor("v-preempted")).toHaveLength(1);
+
+		const confirmed = await retryDelivery(proposalId, manageCtx(), { confirm: true });
+		expect(confirmed.ok && confirmed.state).toBe("queued");
+	});
+
 	test("a delivery row carrying a recorded terminal state reads back as that state", async () => {
 		await seedSession("v-4");
 		const plain = await seedHitl("v-4");

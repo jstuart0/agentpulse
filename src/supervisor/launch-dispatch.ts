@@ -21,6 +21,7 @@ import type {
 	launchClaudeInteractiveRequest,
 } from "./providers/claude.js";
 import type { launchManagedCodexRequest } from "./providers/codex-managed.js";
+import { type FinalReporter, sendOnce } from "./services/final-report.js";
 import { PrelaunchError, type executePrelaunchActions } from "./services/prelaunch-actions.js";
 import { LAUNCH_REFUSED_CODE, type ReportGate } from "./services/report-gate.js";
 import { assertCwdTrusted, canonicalSpawnCwd } from "./services/spawn-cwd.js";
@@ -40,6 +41,8 @@ export interface LaunchDispatchDeps {
 	bridgeSpool?: { admit(sessionId: string): void };
 	/** The supervisor's record of the Codex threads it starts (recovery's proof). */
 	recordThread?: (launchRequestId: string, threadId: string) => void;
+	/** Sends a headless launch's last status until the server answers. Absent: one attempt, as before. */
+	finalReport?: FinalReporter;
 	/** The host's own log: the only place the reason for a refusal is written. */
 	log?: (line: string) => void;
 	warn?: (line: string) => void;
@@ -51,6 +54,7 @@ export function createLaunchDispatcher(
 	const { gate, providers } = deps;
 	const log = deps.log ?? ((line: string) => console.log(line));
 	const warn = deps.warn ?? ((line: string) => console.warn(line));
+	const finalReport = deps.finalReport ?? sendOnce;
 
 	/** Why this host will not start anything in the launch's directory, or null. Specifics are for the local log only. */
 	function refusalReason(launch: LaunchRequest): string | null {
@@ -241,12 +245,16 @@ export function createLaunchDispatcher(
 				const result = await providers.launchClaudeHeadless(
 					spawnLaunch,
 					async (update) => {
-						await gate.reportLaunchStatus(launch.id, {
-							status: update.status,
-							pid: update.pid ?? null,
-							error: update.error ?? null,
-							providerLaunchMetadata: update.providerLaunchMetadata,
-						});
+						const report = () =>
+							gate.reportLaunchStatus(launch.id, {
+								status: update.status,
+								pid: update.pid ?? null,
+								error: update.error ?? null,
+								providerLaunchMetadata: update.providerLaunchMetadata,
+							});
+						// The turn's end is the report that frees the session's turn guard: it is kept and retried.
+						if (update.status === "running") await report();
+						else await finalReport(`launch:${launch.id}`, report);
 					},
 					callbacks,
 				);

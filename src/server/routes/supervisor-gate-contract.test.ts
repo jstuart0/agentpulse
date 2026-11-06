@@ -218,7 +218,7 @@ describe("a session that was never reported", () => {
 			const supervisor = await registerSupervisor();
 			const gate = gateFor(w, supervisor);
 			const sessionId = `gate-${crypto.randomUUID()}`;
-			await seedOwnedLaunch(sessionId, supervisor.id);
+			await seedOwnedLaunch(sessionId, supervisor.id, { status: "running" });
 			w.writeRules([join(w.home, "work")]);
 
 			gate.noteCwd(sessionId, w.work);

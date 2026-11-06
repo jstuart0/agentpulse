@@ -6,6 +6,9 @@ name: Codex approvals (Postgres)
 # Postgres before the merge. ingest-latency.test.ts rides along because the hook path's statement budget
 # is the first thing a change to the shared tables or db client moves. The take-over suites (AGEN-115) ride
 # along too: their concurrency cases lean on row locks and unique inserts, which SQLite can pass vacuously.
+# So do the Claude turn guard and Stop suites (AGEN-117): the conditional lock statement, the guarded expiry
+# and the Stop that takes the lock from a running prompt are Postgres-visible, and a barrier test that was
+# skipped proves nothing, so a separate step fails the job if any of them reports a skip.
 
 on:
   pull_request:
@@ -18,6 +21,12 @@ on:
       - "src/server/services/session-binding*"
       - "src/server/services/session-resume-lifecycle*"
       - "src/server/services/control-actions.ts"
+      - "src/server/services/control-actions-claude*"
+      - "src/server/services/launch-dispatch*"
+      - "src/server/routes/supervisor-claude-turn*"
+      - "src/server/routes/supervisors.ts"
+      - "src/server/test-utils/owned-launch.ts"
+      - "src/shared/managed-messages.ts"
       - "src/server/services/managed-session-state.ts"
       - "src/server/services/session-owner-admin.ts"
       - ".github/workflows/codex-approvals-postgres.yml"
@@ -84,3 +93,19 @@ jobs:
           src/server/routes/session-bind-route.test.ts
           src/server/services/session-resume-lifecycle.test.ts
           src/server/services/managed-turn-state.test.ts
+
+      - name: Claude turn guard and Stop (Postgres backend; a skipped test fails the job)
+        env:
+          AGENTPULSE_TEST_BACKEND: postgres
+          AGENTPULSE_TEST_PG_URL: postgres://agentpulse_test:agentpulse_test@localhost:5432/agentpulse_test
+          DATABASE_URL: postgres://agentpulse_test:agentpulse_test@localhost:5432/agentpulse_test
+        shell: bash
+        run: |
+          bun test \
+            src/server/services/control-actions-claude-turn.test.ts \
+            src/server/services/control-actions-claude-stop.test.ts \
+            src/server/routes/supervisor-claude-turn-monitor.test.ts 2>&1 | tee claude-turn.log
+          if grep -Eq '^ *[1-9][0-9]* skip' claude-turn.log; then
+            echo "A Claude turn guard test was skipped on Postgres." >&2
+            exit 1
+          fi

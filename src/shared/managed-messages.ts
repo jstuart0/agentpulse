@@ -46,3 +46,18 @@ export const STOP_FAILED_ERROR =
  */
 export const STOPPED_UNCHECKED_NOTE =
 	"Claude stopped, but AgentPulse couldn't check for commands it started; some may still be running.";
+
+/** The `error` a Claude prompt carries when a person's Stop pre-empted it (AGEN-117 T12). Fixed. */
+export const STOPPED_BY_PERSON_ERROR = "Stopped by a person.";
+
+/** The `error` a Claude prompt or headless launch carries when its host's supervisor restarted mid-turn. Fixed. */
+export const HOST_RESTARTED_TURN_ERROR =
+	"The host's supervisor restarted, so this turn ended without a result.";
+
+/** Why a host refuses to start a second Claude process for a session that already has one. Fixed: nothing about the process is echoed. */
+export const CLAUDE_TURN_RUNNING_ERROR =
+	"Claude is still working on the last prompt, so nothing was sent. Try again when it finishes.";
+
+/** Why a headless resume is refused: `claude agents` lists the session, so another Claude may be writing to it. */
+export const CLAUDE_SESSION_OPEN_ERROR =
+	"This conversation is still open on this machine, in a terminal or as a background agent, so nothing was sent. Close it there, then try again.";

@@ -1,9 +1,10 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import { privilegeCliArgs } from "../../shared/launch-privileges.js";
+import { HOST_RESTARTED_TURN_ERROR } from "../../shared/managed-messages.js";
 import { FINISHED_LAUNCH_STATUSES } from "../../shared/stop-runtime.js";
 import type { LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { launchRequests, sessions } from "../db/schema/index.js";
+import { launchRequests, managedSessions, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { requestWsRevalidation } from "../ws/revalidation.js";
 import { applyAskInitiatedWatcher } from "./ai/auto-watcher.js";
@@ -13,7 +14,11 @@ import { ENFORCES_LAUNCH_PRIVILEGES } from "./launch-compatibility.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { attachManagedSessionToLaunch } from "./managed-session-state.js";
 import { dispatchEvent } from "./push/dispatch.js";
-import { findLaunchRowByCorrelationId } from "./session-ownership.js";
+import {
+	findLaunchRowByCorrelationId,
+	ownerLaunchJoin,
+	sessionOwnedBy,
+} from "./session-ownership.js";
 import { getSupervisor } from "./supervisor-registry.js";
 
 const PENDING_LAUNCH_STATUSES: readonly LaunchRequestStatus[] = [
@@ -142,10 +147,17 @@ async function transitionLaunchStatus(
 				.where(eq(launchRequests.id, launchId))
 				.limit(1)
 		)[0]?.status;
+	// A launch that has finished stays as it finished: the write names the statuses it may leave, so a late
+	// or replayed report can't reopen it, and nothing is announced for a write that changed no row.
 	const [updated] = await getDb()
 		.update(launchRequests)
 		.set(updates)
-		.where(eq(launchRequests.id, launchId))
+		.where(
+			and(
+				eq(launchRequests.id, launchId),
+				notInArray(launchRequests.status, [...FINISHED_LAUNCH_STATUSES]),
+			),
+		)
 		.returning();
 	if (updated && prior !== updates.status && ANNOUNCED_LAUNCH_STATUSES.has(updates.status)) {
 		void dispatchEvent({
@@ -262,9 +274,9 @@ export async function updateLaunchDispatchStatus(reported: {
 		.limit(1);
 	if (!row || row.claimedBySupervisorId !== reported.supervisorId) return null;
 
-	// A stop on a session whose launch already finished must not rewrite how it finished: `cancelled`
-	// only ever ends a launch that was still in flight.
-	if (reported.status === "cancelled" && FINISHED_LAUNCH_STATUSES.has(row.status)) {
+	// A launch that has finished must not be rewritten: not by a stop's `cancelled`, and not by a late or
+	// replayed report of any other status. The write below is also guarded, so a race loses the same way.
+	if (FINISHED_LAUNCH_STATUSES.has(row.status)) {
 		return mapLaunchRequest(row);
 	}
 
@@ -327,6 +339,73 @@ export async function updateLaunchDispatchStatus(reported: {
 	}
 
 	return updated ? mapLaunchRequest(updated) : null;
+}
+
+/**
+ * A supervisor registered again, so the process that ran its headless Claude launches is gone: a launch of
+ * this host still `running` is a first turn nobody is running, and while it reads `running` it holds the
+ * session's turn guard shut. Each fails with fixed words. This is bookkeeping, not a verdict on the work: the
+ * session is NOT marked failed (no failed state, no push, no alert rule), because the turn may have finished
+ * and its report still be in an outbox. The host's headless Claude sessions stop reading as working, like
+ * Codex's after a restart. Rows are the host's by session ownership, so a session handed to another host
+ * is not touched. Returns how many launches failed.
+ */
+export async function failRunningHeadlessLaunchesOfRestartedHost(
+	supervisorId: string,
+): Promise<number> {
+	return withTransaction(async (tx) => {
+		const owned = and(
+			sessionOwnedBy(supervisorId),
+			eq(launchRequests.agentType, "claude_code"),
+			eq(launchRequests.requestedLaunchMode, "headless"),
+		);
+		const running: Array<{ id: string }> = await tx
+			.select({ id: launchRequests.id })
+			.from(launchRequests)
+			.leftJoin(managedSessions, ownerLaunchJoin)
+			.where(and(owned, eq(launchRequests.status, "running")));
+		const timestamp = new Date().toISOString();
+		if (running.length > 0) {
+			await tx
+				.update(launchRequests)
+				.set({
+					status: "failed",
+					error: HOST_RESTARTED_TURN_ERROR,
+					dispatchFinishedAt: timestamp,
+					updatedAt: timestamp,
+				})
+				.where(
+					and(
+						inArray(
+							launchRequests.id,
+							running.map((row) => row.id),
+						),
+						eq(launchRequests.status, "running"),
+					),
+				);
+		}
+		const working: Array<{ sessionId: string; endedAt: string | null }> = await tx
+			.select({ sessionId: managedSessions.sessionId, endedAt: sessions.endedAt })
+			.from(managedSessions)
+			.innerJoin(sessions, eq(sessions.sessionId, managedSessions.sessionId))
+			.leftJoin(launchRequests, ownerLaunchJoin)
+			.where(and(owned, eq(sessions.isWorking, true)));
+		const ids = working.map((row) => row.sessionId);
+		if (ids.length > 0) {
+			await tx
+				.update(sessions)
+				.set({ isWorking: false, currentTurnStartedAt: null })
+				.where(inArray(sessions.sessionId, ids));
+			const live = working.filter((row) => row.endedAt === null).map((row) => row.sessionId);
+			if (live.length > 0) {
+				await tx
+					.update(sessions)
+					.set({ lastAgentTurnCompletedAt: timestamp })
+					.where(inArray(sessions.sessionId, live));
+			}
+		}
+		return running.length;
+	});
 }
 
 export async function findPendingLaunchForObservedSession(sessionId: string) {

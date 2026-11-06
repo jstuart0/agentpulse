@@ -9,11 +9,12 @@
  *                                  "group" (the child stays in this process's group) or "none"
  *   FAKE_CLAUDE_IGNORE_TERM        "1": ignores SIGTERM
  *   FAKE_CLAUDE_CHILD_IGNORE_TERM  "1": the child ignores SIGTERM too
+ *   FAKE_CLAUDE_EXIT_FILE          exits 0 once this file exists (a turn that ends when the test says so)
  *
  * Nothing here reads a real Claude config or talks to a model.
  */
 import { spawn } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 
 const log = process.env.FAKE_CLAUDE_LOG;
 const write = (entry: Record<string, unknown>) => {
@@ -42,3 +43,10 @@ if (childMode !== "none") {
 
 // Output stays open and quiet, like a running turn.
 setInterval(() => {}, 1000);
+
+const exitFile = process.env.FAKE_CLAUDE_EXIT_FILE;
+if (exitFile) {
+	setInterval(() => {
+		if (existsSync(exitFile)) process.exit(0);
+	}, 20);
+}

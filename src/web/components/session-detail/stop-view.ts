@@ -96,7 +96,7 @@ export function stoppingText(session: Pick<Session, "agentType" | "managedSessio
 export const STOP_NOT_OWNER_REASON = "Only the owner or an admin can stop this session.";
 
 const CONTROL_BUSY_REASON = (agent: string) =>
-	`${agent} is still handling the last request, so it couldn't be stopped yet. Try again in a moment.`;
+	`${agent} is still handling the last request, so it couldn't be stopped yet. Try again when it finishes its current turn.`;
 
 const NOTHING_TO_STOP_REASON = "This session has already ended, so there is nothing to stop.";
 

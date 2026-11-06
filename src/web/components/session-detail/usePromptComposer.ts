@@ -15,7 +15,8 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const IDLE: SendPhase = { step: "idle" };
 
 export interface PromptComposerOptions {
-	session: Pick<Session, "sessionId" | "isWorking" | "managedSession">;
+	session: Pick<Session, "sessionId" | "isWorking" | "managedSession"> &
+		Partial<Pick<Session, "agentType">>;
 	mode: ComposerMode | null;
 	/** Refreshes the page's view of the session; may reject, which never reaches the person. */
 	onSubmitted: () => Promise<void>;

@@ -1,9 +1,16 @@
-import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
-import { CLAUDE_STOP, CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
+import { and, asc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import {
+	CLAUDE_STOP,
+	CLAUDE_TURN_CONTROL,
+	CLAUDE_TURN_MAX_AGE_MS,
+	CODEX_FOLLOW_UP_PROMPTS,
+} from "../../shared/constants.js";
 import {
 	CLAUDE_STOP_UPGRADE_MESSAGE,
 	CONTROL_TIMEOUT_ERROR,
+	HOST_RESTARTED_TURN_ERROR,
 	HOST_UPGRADE_REQUIRED_MESSAGE,
+	STOPPED_BY_PERSON_ERROR,
 } from "../../shared/managed-messages.js";
 import {
 	RESUMES_SESSIONS,
@@ -33,7 +40,7 @@ import type {
 import type { Actor } from "../auth/actor.js";
 import { OwnerDisabledError, OwnerNotFoundError } from "../auth/owner-state.js";
 import { config } from "../config.js";
-import { isInsideTransaction, withAdminLock } from "../db/admin-lock.js";
+import { awaitSeamInsideAdminLock, isInsideTransaction, withAdminLock } from "../db/admin-lock.js";
 import { afterCommit } from "../db/after-commit.js";
 import { getDb } from "../db/client.js";
 import {
@@ -150,10 +157,18 @@ async function assertLaunchOwnedBySessionOwner(
 	}
 }
 
+/** Test seam for the expiry: runs once the lock is read as expired, before anything is written. */
+interface ExpireStaleLockSeam {
+	afterLapseRead?: () => Promise<void>;
+}
+
 /**
  * Fails a managed session's active control action once its lock has expired,
- * and clears the lock, but only if that very action still holds it: a stale
- * expiry must never clear a lock a newer action took. Takes the handle to write
+ * and clears the lock, but only if that very action still holds it and nobody
+ * has renewed it since it was read: a stale expiry must never clear a lock a
+ * newer action took, nor one a running turn's host has just renewed. The lock
+ * is released first, by a statement naming the expiry that was read, and the
+ * action fails only if that release took a row. Takes the handle to write
  * through: a request passes `getDb()`, a dispatch transaction passes its own
  * `tx` (every statement of a locked body must go through it).
  */
@@ -162,6 +177,7 @@ export async function expireStaleControlLock(
 	db: any,
 	sessionId: string,
 	clock: Clock = Date.now,
+	seam: ExpireStaleLockSeam = {},
 ) {
 	const [managed] = await db
 		.select()
@@ -170,6 +186,7 @@ export async function expireStaleControlLock(
 		.limit(1);
 	if (!managed?.activeControlActionId || !managed.controlLockExpiresAt) return;
 	if (new Date(managed.controlLockExpiresAt).getTime() > clock()) return;
+	await awaitSeamInsideAdminLock(seam.afterLapseRead, undefined);
 
 	const [action] = await db
 		.select()
@@ -192,7 +209,47 @@ export async function expireStaleControlLock(
 		return;
 	}
 
+	// The release and the action's failure commit together (the guarded order is kept inside).
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	const settle = (handle: any) => releaseAndFailLapsedAction(handle, managed, action, clock);
+	if (isInsideTransaction() || db !== getDb()) {
+		await settle(db);
+	} else {
+		await withTransaction(settle);
+	}
+}
+
+/**
+ * The lapsed lock's release, then the action's failure. The release names the expiry that was read: a renewal
+ * that landed since moved it, takes no row, and the action is left running with its lock.
+ */
+async function releaseAndFailLapsedAction(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	managed: typeof managedSessions.$inferSelect,
+	action: typeof controlActions.$inferSelect | undefined,
+	clock: Clock,
+) {
+	const holderId = managed.activeControlActionId as string;
 	const timestamp = nowIso(clock);
+	const released = await db
+		.update(managedSessions)
+		.set({
+			activeControlActionId: null,
+			controlLockExpiresAt: null,
+			updatedAt: timestamp,
+		})
+		.where(
+			and(
+				eq(managedSessions.sessionId, managed.sessionId),
+				eq(managedSessions.activeControlActionId, holderId),
+				// The expiry that was read: a renewal that landed since moved it, and keeps the lock.
+				eq(managedSessions.controlLockExpiresAt, managed.controlLockExpiresAt as string),
+			),
+		)
+		.returning({ sessionId: managedSessions.sessionId });
+	if (released.length === 0) return;
+
 	await db
 		.update(controlActions)
 		.set({
@@ -203,10 +260,7 @@ export async function expireStaleControlLock(
 		})
 		// Only an action still in flight: one that reported success in the meantime stays succeeded.
 		.where(
-			and(
-				eq(controlActions.id, managed.activeControlActionId),
-				inArray(controlActions.status, ["queued", "running"]),
-			),
+			and(eq(controlActions.id, holderId), inArray(controlActions.status, ["queued", "running"])),
 		);
 
 	// An AI prompt no supervisor ever claimed was never delivered: its audit row
@@ -214,20 +268,6 @@ export async function expireStaleControlLock(
 	if (action && isUnclaimedAiPrompt(action)) {
 		await markAuditExpiredUnclaimed(db, action.id);
 	}
-
-	await db
-		.update(managedSessions)
-		.set({
-			activeControlActionId: null,
-			controlLockExpiresAt: null,
-			updatedAt: timestamp,
-		})
-		.where(
-			and(
-				eq(managedSessions.sessionId, sessionId),
-				eq(managedSessions.activeControlActionId, managed.activeControlActionId),
-			),
-		);
 }
 
 // ── resume actions: how they end (AGEN-115, D10, D14) ───────────────────────
@@ -891,7 +931,9 @@ export async function promptNeedsHostUpgrade(
  * Takes the session's control lock for `controlActionId`, but only if nobody
  * holds it. One conditional statement, so two callers that both saw the lock
  * free can't both take it: the loser updates no row and must not insert an
- * action.
+ * action. With `claudeTurn` the same statement also refuses while the session's
+ * headless launch is still `running`: that launch is the session's first turn,
+ * and it holds no lock of its own.
  */
 export async function takeControlLock(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
@@ -900,7 +942,12 @@ export async function takeControlLock(
 	controlActionId: string,
 	timestamp: string,
 	clock: Clock = Date.now,
+	guard: { claudeTurn?: boolean } = {},
 ): Promise<boolean> {
+	// The session's launch is found by its correlation id, the same key the owner-of-record join uses. A launch
+	// still `running` after the ceiling is a report that never came, not a turn: it stops blocking.
+	const firstTurnCutoff = new Date(clock() - CLAUDE_TURN_MAX_AGE_MS).toISOString();
+	const noFirstTurnRunning = sql`NOT EXISTS (SELECT 1 FROM ${launchRequests} WHERE ${launchRequests.launchCorrelationId} = ${sessionId} AND ${launchRequests.status} = 'running' AND ${launchRequests.requestedLaunchMode} = 'headless' AND ${launchRequests.updatedAt} > ${firstTurnCutoff})`;
 	const taken = await tx
 		.update(managedSessions)
 		.set({
@@ -909,10 +956,111 @@ export async function takeControlLock(
 			updatedAt: timestamp,
 		})
 		.where(
-			and(eq(managedSessions.sessionId, sessionId), isNull(managedSessions.activeControlActionId)),
+			and(
+				eq(managedSessions.sessionId, sessionId),
+				isNull(managedSessions.activeControlActionId),
+				guard.claudeTurn ? noFirstTurnRunning : undefined,
+			),
 		)
 		.returning({ sessionId: managedSessions.sessionId });
 	return taken.length > 0;
+}
+
+/**
+ * Is the session's headless launch still running its first turn (and recent enough to be believed)? The
+ * advisory twin of the predicate inside `takeControlLock`, for readers that ask before queueing.
+ */
+export async function hasRunningFirstTurn(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	sessionId: string,
+	clock: Clock = Date.now,
+): Promise<boolean> {
+	const cutoff = new Date(clock() - CLAUDE_TURN_MAX_AGE_MS).toISOString();
+	const [row] = await db
+		.select({ id: launchRequests.id })
+		.from(launchRequests)
+		.where(
+			and(
+				eq(launchRequests.launchCorrelationId, sessionId),
+				eq(launchRequests.status, "running"),
+				eq(launchRequests.requestedLaunchMode, "headless"),
+				sql`${launchRequests.updatedAt} > ${cutoff}`,
+			),
+		)
+		.limit(1);
+	return Boolean(row);
+}
+
+/** The action holding a session's lock, if it is a Claude prompt a host is running (the only holder a Stop may pre-empt). */
+async function runningClaudePrompt(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	actionId: string,
+): Promise<boolean> {
+	const [holder] = await tx
+		.select({
+			actionType: controlActions.actionType,
+			status: controlActions.status,
+			agentType: jsonExtractText(controlActions.metadata, "$.agentType"),
+		})
+		.from(controlActions)
+		.where(eq(controlActions.id, actionId))
+		.limit(1);
+	return (
+		holder?.actionType === "prompt" &&
+		holder.status === "running" &&
+		holder.agentType === "claude_code"
+	);
+}
+
+/**
+ * A Stop takes the lock from the Claude prompt that holds it: one conditional statement that names the
+ * holder it read and re-checks, in the same statement, that the holder is still a running Claude prompt;
+ * and, in the same transaction, the prompt fails with fixed words. A holder that changed since it was read
+ * (it finished, or another action took the lock) matches no row and the Stop is `control_busy`. The prompt's
+ * later reports change nothing: a finished action is never written again.
+ *
+ * An AI prompt pre-empted here keeps its `ai_dispatch_audit` row at `sent`: the table's triggers allow no
+ * other close for it, and it was claimed, so "expired_unclaimed" would be false. Readers of the audit trail
+ * should treat `sent` with a failed action "Stopped by a person." as stopped before it finished.
+ */
+async function preemptRunningClaudePrompt(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	sessionId: string,
+	holderId: string,
+	controlActionId: string,
+	timestamp: string,
+	clock: Clock,
+): Promise<boolean> {
+	const holderIsRunningClaudePrompt = sql`EXISTS (SELECT 1 FROM ${controlActions} WHERE ${controlActions.id} = ${holderId} AND ${controlActions.actionType} = 'prompt' AND ${controlActions.status} = 'running' AND ${jsonExtractText(controlActions.metadata, "$.agentType")} = 'claude_code')`;
+	const taken = await tx
+		.update(managedSessions)
+		.set({
+			activeControlActionId: controlActionId,
+			controlLockExpiresAt: lockExpiryIso(clock),
+			updatedAt: timestamp,
+		})
+		.where(
+			and(
+				eq(managedSessions.sessionId, sessionId),
+				eq(managedSessions.activeControlActionId, holderId),
+				holderIsRunningClaudePrompt,
+			),
+		)
+		.returning({ sessionId: managedSessions.sessionId });
+	if (taken.length === 0) return false;
+	await tx
+		.update(controlActions)
+		.set({
+			status: "failed",
+			error: STOPPED_BY_PERSON_ERROR,
+			finishedAt: timestamp,
+			updatedAt: timestamp,
+		})
+		.where(and(eq(controlActions.id, holderId), eq(controlActions.status, "running")));
+	return true;
 }
 
 /**
@@ -945,7 +1093,14 @@ export function stopRuntimeOf(
 export async function enqueueStopInTx(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	tx: any,
-	input: { sessionId: string; actor: Actor; controlActionId: string; now?: Clock },
+	input: {
+		sessionId: string;
+		actor: Actor;
+		controlActionId: string;
+		now?: Clock;
+		/** Test seam: runs after the lock's holder was read and before the Stop tries to take the lock from it. */
+		afterHolderRead?: (tx: DbHandle) => Promise<void>;
+	},
 ): Promise<
 	| { ok: true; action: ControlAction; fencedApprovals: ClosedApproval[] }
 	| { ok: false; reason: EnqueueRefusal }
@@ -959,7 +1114,18 @@ export async function enqueueStopInTx(
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
 	if (!managed) return { ok: false, reason: "not_managed" };
-	if (managed.activeControlActionId) return { ok: false, reason: "control_busy" };
+	// A held lock refuses the Stop, unless the holder is a Claude prompt a host that advertises
+	// `claude_turn_control` is running: that one the Stop takes the lock from (below, in one statement).
+	const holderId: string | null = managed.activeControlActionId ?? null;
+	if (
+		holderId &&
+		!(
+			(await runningClaudePrompt(tx, holderId)) &&
+			(await hostHasFeature(tx, sessionId, CLAUDE_TURN_CONTROL))
+		)
+	) {
+		return { ok: false, reason: "control_busy" };
+	}
 
 	const stopLaunch = await resolveManagedLaunch(tx, sessionId, managed.launchRequestId);
 	if (stopLaunch && !(await launchOwnedBySessionOwner(tx, sessionId, stopLaunch))) {
@@ -990,7 +1156,21 @@ export async function enqueueStopInTx(
 	}
 
 	const timestamp = nowIso(clock);
-	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp, clock))) {
+	if (holderId) {
+		await awaitSeamInsideAdminLock(input.afterHolderRead, tx);
+		// Only a Claude stop pre-empts a Claude prompt; anything else the holder turned out to be is busy.
+		const preempted =
+			claudeStop &&
+			(await preemptRunningClaudePrompt(
+				tx,
+				sessionId,
+				holderId,
+				controlActionId,
+				timestamp,
+				clock,
+			));
+		if (!preempted) return { ok: false, reason: "control_busy" };
+	} else if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp, clock))) {
 		return { ok: false, reason: "control_busy" };
 	}
 	// The Stop fence for Codex approvals: no accept is issued after this commits. It runs
@@ -1106,7 +1286,12 @@ export async function enqueuePromptInTx(
 	if (managed.activeControlActionId) return { ok: false, reason: "control_busy" };
 
 	const timestamp = nowIso();
-	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp))) {
+	// A Claude prompt also waits for the session's first turn: a running headless launch holds no lock.
+	if (
+		!(await takeControlLock(tx, sessionId, controlActionId, timestamp, Date.now, {
+			claudeTurn: !isCodex,
+		}))
+	) {
 		return { ok: false, reason: "control_busy" };
 	}
 	const [action] = await tx
@@ -1541,13 +1726,21 @@ export async function claimNextControlAction(supervisorId: string) {
 	return null;
 }
 
-export async function updateControlAction(input: {
-	actionId: string;
-	supervisorId: string;
-	status: Exclude<ControlActionStatus, "queued">;
-	error?: string | null;
-	metadata?: Record<string, unknown> | null;
-}) {
+/** Test seam for a status report: runs once the action is read, before anything is written. */
+interface UpdateControlActionSeam {
+	afterActionRead?: () => Promise<void>;
+}
+
+export async function updateControlAction(
+	input: {
+		actionId: string;
+		supervisorId: string;
+		status: Exclude<ControlActionStatus, "queued">;
+		error?: string | null;
+		metadata?: Record<string, unknown> | null;
+	},
+	seam: UpdateControlActionSeam = {},
+) {
 	const [current] = await getDb()
 		.select()
 		.from(controlActions)
@@ -1595,20 +1788,61 @@ export async function updateControlAction(input: {
 		return fresh ? mapControlAction(fresh) : null;
 	}
 
+	await awaitSeamInsideAdminLock(seam.afterActionRead, undefined);
 	const timestamp = nowIso();
+
+	// A `running` report is a renewal (AGEN-117 T12): the host is still working. It moves the lock's expiry
+	// of the action that holds it and nothing else: never the action's metadata, error or finish time, and
+	// never the status of an action that has finished.
+	if (input.status === "running") {
+		await getDb()
+			.update(controlActions)
+			.set({ updatedAt: timestamp })
+			.where(and(eq(controlActions.id, current.id), eq(controlActions.status, "running")));
+		if (current.sessionId && (await mayRenewLock(current))) {
+			// A renewal can't carry the lock past the ceiling, counted from when the action was queued (an
+			// unclaimed action's lock lapses in 90 s, so the claim is within moments of it).
+			const queuedAt = parseDbTimestamp(current.createdAt) ?? Date.now();
+			const ceiling = queuedAt + CLAUDE_TURN_MAX_AGE_MS;
+			const expiry = Math.min(Date.now() + 90_000, ceiling);
+			await getDb()
+				.update(managedSessions)
+				.set({ controlLockExpiresAt: new Date(expiry).toISOString(), updatedAt: timestamp })
+				.where(
+					and(
+						eq(managedSessions.sessionId, current.sessionId),
+						eq(managedSessions.activeControlActionId, current.id),
+					),
+				);
+		}
+		return mapControlAction(await readControlAction(current.id, current));
+	}
+
 	const [updated] = await getDb()
 		.update(controlActions)
 		.set({
 			status: input.status,
 			error: input.error ?? null,
 			metadata: input.metadata ?? current.metadata,
-			finishedAt: input.status === "running" ? null : timestamp,
+			finishedAt: timestamp,
 			updatedAt: timestamp,
 		})
-		.where(eq(controlActions.id, input.actionId))
+		// Only an action still in flight, or one the lock's lapse failed (the host was alive and slow, or an old
+		// host that never renews, so its word on how the turn ended is the truth). An action a Stop pre-empted,
+		// a restart failed or anything else that finished is never written again.
+		.where(
+			and(
+				eq(controlActions.id, input.actionId),
+				or(
+					inArray(controlActions.status, ["queued", "running"]),
+					and(eq(controlActions.status, "failed"), eq(controlActions.error, CONTROL_TIMEOUT_ERROR)),
+				),
+			),
+		)
 		.returning();
+	if (!updated) return mapControlAction(await readControlAction(current.id, current));
 
-	if (current.sessionId && input.status !== "running") {
+	if (current.sessionId) {
 		await getDb()
 			.update(managedSessions)
 			.set({
@@ -1638,5 +1872,82 @@ export async function updateControlAction(input: {
 		}
 	}
 
-	return updated ? mapControlAction(updated) : null;
+	return mapControlAction(updated);
+}
+
+/**
+ * Only a Claude prompt, on a host that advertises `claude_turn_control`, keeps its lock by saying it is still
+ * running. Any other `running` report (a stop, a resume, a cleanup, a Codex prompt, an old host) is a no-op
+ * for the lock: those end by their own report or by the lock's lapse.
+ */
+async function mayRenewLock(current: typeof controlActions.$inferSelect): Promise<boolean> {
+	// The reporter has already been checked to be the claimant.
+	if (
+		current.actionType !== "prompt" ||
+		!current.launchRequestId ||
+		!current.claimedBySupervisorId
+	) {
+		return false;
+	}
+	const [launch] = await getDb()
+		.select({ agentType: launchRequests.agentType })
+		.from(launchRequests)
+		.where(eq(launchRequests.id, current.launchRequestId))
+		.limit(1);
+	if (launch?.agentType !== "claude_code") return false;
+	return supervisorHasFeature(getDb(), current.claimedBySupervisorId, CLAUDE_TURN_CONTROL);
+}
+
+/** The action as it is now; `fallback` if the row vanished since it was read. */
+async function readControlAction(
+	id: string,
+	fallback: typeof controlActions.$inferSelect,
+): Promise<typeof controlActions.$inferSelect> {
+	const [row] = await getDb()
+		.select()
+		.from(controlActions)
+		.where(eq(controlActions.id, id))
+		.limit(1);
+	return row ?? fallback;
+}
+
+/**
+ * A supervisor registered again, so the process that ran its Claude prompts is gone: the host's `running`
+ * Claude prompts fail with fixed words and their locks are released, so the session isn't held for a turn
+ * nobody is running. Queued prompts are left for the new process to claim; other action types and Codex
+ * prompts (settled with the Codex sessions) are not touched. Returns how many prompts failed.
+ */
+export async function failRunningClaudePromptsOfRestartedHost(
+	supervisorId: string,
+): Promise<number> {
+	return withTransaction(async (tx) => {
+		const running: Array<{ id: string }> = await tx
+			.select({ id: controlActions.id })
+			.from(controlActions)
+			.where(
+				and(
+					eq(controlActions.actionType, "prompt"),
+					eq(controlActions.status, "running"),
+					eq(controlActions.claimedBySupervisorId, supervisorId),
+					eq(jsonExtractText(controlActions.metadata, "$.agentType"), "claude_code"),
+				),
+			);
+		if (running.length === 0) return 0;
+		const ids = running.map((row) => row.id);
+		const timestamp = nowIso();
+		await tx
+			.update(controlActions)
+			.set({
+				status: "failed",
+				error: HOST_RESTARTED_TURN_ERROR,
+				finishedAt: timestamp,
+				updatedAt: timestamp,
+			})
+			.where(and(inArray(controlActions.id, ids), eq(controlActions.status, "running")));
+		await tx
+			.update(managedSessions)
+			.set({ activeControlActionId: null, controlLockExpiresAt: null, updatedAt: timestamp })
+			.where(inArray(managedSessions.activeControlActionId, ids));
+		return ids.length;
+	});
 }

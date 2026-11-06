@@ -33,6 +33,9 @@ export const COMPOSER_FAILED_FALLBACK =
 	"The host couldn't take the prompt. Your text is back here.";
 export const COMPOSER_BUSY =
 	"Another action on this session is still going. Your text is here. Send it when that finishes.";
+/** A Claude prompt holds the session's lock for the whole turn (AGEN-117 T12), so the usual "busy" is a turn in progress. */
+export const COMPOSER_BUSY_CLAUDE =
+	"Claude is still working on this session. Your text is here. Send it when it finishes.";
 export const COMPOSER_STATUS_WAITING = "Waiting for the host to start this turn.";
 export const COMPOSER_STATUS_SENT = "Prompt sent.";
 const NOTICE_APPROVAL_FIRST =
@@ -267,7 +270,7 @@ export function composerStatus(
 /** A refusal or error from the POST itself, as the sentence to show and whether it ends in "start a new session". */
 export function describeSendFailure(
 	error: unknown,
-	session: Pick<Session, "managedSession">,
+	session: Pick<Session, "managedSession"> & Partial<Pick<Session, "agentType">>,
 ): { reason: string; startNew: boolean } {
 	const refusal = hostRefusalMessage(error, session);
 	if (refusal !== null) {
@@ -281,7 +284,10 @@ export function describeSendFailure(
 		error instanceof ApiError &&
 		(error.body as { reason?: unknown } | null)?.reason === "control_busy"
 	) {
-		return { reason: COMPOSER_BUSY, startNew: false };
+		return {
+			reason: session.agentType === "claude_code" ? COMPOSER_BUSY_CLAUDE : COMPOSER_BUSY,
+			startNew: false,
+		};
 	}
 	return {
 		reason: describeApiError(error, "Couldn't send the prompt. Try again."),

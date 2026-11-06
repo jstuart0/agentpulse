@@ -6,6 +6,7 @@ import {
 	CODEX_APPROVALS_SERVER_FEATURE,
 	CODEX_APPROVAL_LIMITS,
 } from "../../shared/codex-approvals.js";
+import { CLAUDE_TURN_CONTROL } from "../../shared/constants.js";
 import { DELIVERY_ID_HEADER, REPLAY_HEADER } from "../../shared/hook-headers.js";
 import { privilegeCliArgs } from "../../shared/launch-privileges.js";
 import {
@@ -48,9 +49,17 @@ import {
 	recordApprovalRequest,
 	syncApprovals,
 } from "../services/codex-approvals.js";
-import { claimNextControlAction, updateControlAction } from "../services/control-actions.js";
+import {
+	claimNextControlAction,
+	failRunningClaudePromptsOfRestartedHost,
+	updateControlAction,
+} from "../services/control-actions.js";
 import { parseDeliveryId } from "../services/event-dedup.js";
-import { claimNextLaunchRequest, updateLaunchDispatchStatus } from "../services/launch-dispatch.js";
+import {
+	claimNextLaunchRequest,
+	failRunningHeadlessLaunchesOfRestartedHost,
+	updateLaunchDispatchStatus,
+} from "../services/launch-dispatch.js";
 import { associateObservedSession } from "../services/launch-dispatch.js";
 import { cleanMachineName } from "../services/machine-name.js";
 import {
@@ -233,7 +242,7 @@ supervisorsAdminRouter.post("/supervisors/:id/revoke", async (c) => {
 const supervisorsAgentRouter = new Hono();
 
 /** What this server can do for a supervisor (D14). Sent on register and heartbeat; absent means off. */
-const SERVER_FEATURES = [CODEX_APPROVALS_SERVER_FEATURE] as const;
+const SERVER_FEATURES = [CODEX_APPROVALS_SERVER_FEATURE, CLAUDE_TURN_CONTROL] as const;
 
 /**
  * A supervisor registered again, so its previous process (and the app-servers it ran) is gone: its open
@@ -263,6 +272,25 @@ async function degradeRestartedHostSessions(supervisorId: string): Promise<void>
 		});
 	} catch {
 		console.error("[supervisors] could not degrade a restarted host's Codex sessions");
+	}
+}
+
+/**
+ * The same registration, for the host's Claude turns: a headless launch still `running` and a Claude prompt
+ * still `running` belong to a process that is gone, and each would hold its session's turn guard shut. They
+ * fail with fixed words so the session can take a prompt again without waiting on anything. A failure here
+ * must not fail the registration either.
+ */
+async function failRestartedHostClaudeTurns(supervisorId: string): Promise<void> {
+	try {
+		await failRunningHeadlessLaunchesOfRestartedHost(supervisorId);
+	} catch {
+		console.error("[supervisors] could not free a restarted host's headless launches");
+	}
+	try {
+		await failRunningClaudePromptsOfRestartedHost(supervisorId);
+	} catch {
+		console.error("[supervisors] could not free a restarted host's Claude prompts");
 	}
 }
 
@@ -385,6 +413,7 @@ supervisorsAgentRouter.post("/supervisors/register", registerBodyLimit, async (c
 			: await enrollSupervisor(registrationInput, enrollmentCreatedByUserId);
 		await closeRestartedHostApprovals(registered.supervisor.id);
 		await degradeRestartedHostSessions(registered.supervisor.id);
+		await failRestartedHostClaudeTurns(registered.supervisor.id);
 		return c.json({ ...registered, serverFeatures: SERVER_FEATURES });
 	} catch (err) {
 		if (err instanceof OwnerDisabledError) {
@@ -720,8 +749,8 @@ supervisorsAgentRouter.post(
 			error?: string | null;
 			metadata?: Record<string, unknown> | null;
 		}>();
-		// A body with no status at all keeps its old answer (the recorded pre-team behaviour); a present one must be a real status.
-		if (body.status !== undefined && !["running", "succeeded", "failed"].includes(body.status)) {
+		// A report names its status, and it must be a real one.
+		if (!["running", "succeeded", "failed"].includes(body.status)) {
 			return c.json({ error: "invalid_status" }, 400);
 		}
 		const action = await updateControlAction({

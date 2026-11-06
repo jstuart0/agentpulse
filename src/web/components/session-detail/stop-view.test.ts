@@ -97,10 +97,10 @@ describe("a stop the server refused", () => {
 
 	test("control_busy says the agent is still handling the last request, in the agent's name", () => {
 		expect(stopRefusalMessage(refused(400, "control_busy"), claude)).toBe(
-			"Claude is still handling the last request, so it couldn't be stopped yet. Try again in a moment.",
+			"Claude is still handling the last request, so it couldn't be stopped yet. Try again when it finishes its current turn.",
 		);
 		expect(stopRefusalMessage(refused(400, "control_busy"), codex)).toBe(
-			"Codex is still handling the last request, so it couldn't be stopped yet. Try again in a moment.",
+			"Codex is still handling the last request, so it couldn't be stopped yet. Try again when it finishes its current turn.",
 		);
 	});
 

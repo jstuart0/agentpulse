@@ -22,7 +22,10 @@
  * control action carrying it, and the state a caller sees is that action's own status.
  */
 import { and, eq } from "drizzle-orm";
-import { CONTROL_TIMEOUT_ERROR } from "../../../shared/managed-messages.js";
+import {
+	CONTROL_TIMEOUT_ERROR,
+	STOPPED_BY_PERSON_ERROR,
+} from "../../../shared/managed-messages.js";
 import type { HitlReplyKind } from "../../../shared/types.js";
 import type { Actor } from "../../auth/actor.js";
 import { scopesIncludeManage } from "../../auth/route-scope-policy.js";
@@ -520,12 +523,19 @@ export async function retryDelivery(
 	if (previous && previous.status !== "failed") {
 		return failure(refuse("not_failed", 409, { error: "not_failed" }));
 	}
-	if (previous?.error === CONTROL_TIMEOUT_ERROR && options.confirm !== true) {
-		// It may have run: sending again could do the work twice, so the person has to say so.
+	if (
+		(previous?.error === CONTROL_TIMEOUT_ERROR || previous?.error === STOPPED_BY_PERSON_ERROR) &&
+		options.confirm !== true
+	) {
+		// It may have run (a lapse), or a person just stopped that very text (a Stop that took the lock):
+		// sending again could do the work twice or undo the Stop, so the person has to say so.
 		return failure(
 			refuse("confirm_required", 409, {
 				error: "confirm_required",
-				message: "The first attempt may have run. Retry with confirm: true to send it again.",
+				message:
+					previous?.error === STOPPED_BY_PERSON_ERROR
+						? "A person stopped this prompt. Retry with confirm: true to send it again."
+						: "The first attempt may have run. Retry with confirm: true to send it again.",
 			}),
 		);
 	}

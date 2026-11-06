@@ -113,7 +113,7 @@ const ERROR_TABLE: ReadonlyArray<{
 					? String((body as { reason?: unknown }).reason)
 					: "";
 			if (reason === "control_busy") {
-				return "AgentPulse is busy: another action is already running on that session, so the prompt was NOT sent and the request is still open. Retryable: wait a few seconds and call decide_hitl again.";
+				return "AgentPulse is busy: another action is already running on that session, so the prompt was NOT sent and the request is still open. Retryable: wait until that action, or the agent's current turn, finishes, then call decide_hitl again.";
 			}
 			if (reason === "host_upgrade_required") {
 				return "AgentPulse can't type into that session: its host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there. The prompt was NOT sent and the request is still open; decline it, or start a new session.";

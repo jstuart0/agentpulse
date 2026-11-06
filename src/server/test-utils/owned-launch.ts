@@ -29,17 +29,20 @@ import { launchRequests, supervisors } from "../db/schema/index.js";
  * refused for a host that is offline or gone. Pass `host: "none"` for a test
  * that needs the missing-host case.
  *
- * Status defaults to "running", which `findPendingLaunchForObservedSession`
+ * Status defaults to "completed", which `findPendingLaunchForObservedSession`
  * ignores. That keeps `associateObservedSession` a no-op against this
  * fixture, so seeding ownership doesn't also trigger launch-attachment
- * side effects the caller didn't ask for.
+ * side effects the caller didn't ask for. It is not "running" because a
+ * headless Claude launch that is still running is the session's first turn
+ * (AGEN-117 T12), and the session then takes no prompt: most callers queue one.
+ * A test about the first turn passes `status: "running"`.
  */
 export async function seedOwnedLaunch(
 	sessionId: string,
 	supervisorId: string,
 	opts?: { status?: string; host?: "live" | "none" },
 ): Promise<{ launchId: string }> {
-	const status = opts?.status ?? "running";
+	const status = opts?.status ?? "completed";
 	if (opts?.host !== "none") await seedLiveHostIfAbsent(supervisorId);
 	const [row] = await getDb()
 		.insert(launchRequests)

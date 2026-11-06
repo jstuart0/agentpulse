@@ -18,6 +18,24 @@ export const CODEX_FOLLOW_UP_PROMPTS = "codex_follow_up_prompts";
  */
 export const CLAUDE_STOP = "claude_stop";
 
+/**
+ * A supervisor feature: a Claude prompt holds the session's control lock for the whole turn. The host reports
+ * `running` at acceptance and every 30 s after (a renewal), and the server lets a Stop pre-empt a running
+ * Claude prompt. A host without it keeps the plain 90 s lock, and a Stop during its prompt is `control_busy`.
+ * The server advertises the same name in `serverFeatures`: a host sends renewals only to a server that does.
+ */
+export const CLAUDE_TURN_CONTROL = "claude_turn_control";
+
+/** How often a host renews the lock of a Claude prompt it is running. The lock lasts 90 s, so two renewals can fail. */
+export const CLAUDE_TURN_RENEWAL_MS = 30_000;
+
+/**
+ * The longest a Claude turn is believed to hold a session shut: past this, a `running` headless launch no
+ * longer blocks a prompt, and a lock renewal can't carry a prompt's lock any further. The host's kill timer
+ * for a turn is 5 hours; this is an hour more.
+ */
+export const CLAUDE_TURN_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
 export const SEMANTIC_STATUSES = [
 	"researching",
 	"implementing",

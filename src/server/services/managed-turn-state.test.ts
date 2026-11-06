@@ -832,7 +832,9 @@ describe("a restarted host's Codex sessions", () => {
 		expect((await managedOf(otherHost)).managedState).toBe("managed");
 		expect((await rowOf(otherHost)).isWorking).toBe(true);
 		expect((await managedOf(claude)).managedState).toBe("managed");
-		expect((await rowOf(claude)).isWorking).toBe(true);
+		// Its managed state is left alone, but a restarted host's headless Claude turn is gone too (AGEN-117 P2),
+		// so it no longer reads as working.
+		expect((await rowOf(claude)).isWorking).toBe(false);
 
 		const deliverable = await promptDeliverability(live);
 		expect(deliverable).toMatchObject({ deliverable: false, reason: "managed_state" });
@@ -1311,12 +1313,19 @@ describe("the launch decides what is Codex, not the session row", () => {
 
 		await register({ id: hostA.id, hostName: "p2-host-a" }, hostA.token);
 		expect((await managedOf(sessionId)).managedState).toBe("managed");
-		expect((await rowOf(sessionId)).isWorking).toBe(true);
+		// Not degraded, but its headless turn died with the host's process (AGEN-117 P2).
+		expect((await rowOf(sessionId)).isWorking).toBe(false);
 		expect(
 			(await getDb().select().from(controlActions).where(eq(controlActions.id, action.id)))[0]
 				?.status,
 		).toBe("queued");
 
+		// A marked turn end on a Claude launch is ignored: the flag the registration cleared is set again by hand
+		// and must survive it.
+		await getDb()
+			.update(sessions)
+			.set({ isWorking: true })
+			.where(eq(sessions.sessionId, sessionId));
 		await ok(await postEvents(hostA, sessionId, [turnEnd()]));
 		expect((await rowOf(sessionId)).isWorking).toBe(true);
 	});

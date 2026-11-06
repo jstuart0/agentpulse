@@ -39,7 +39,7 @@ export function promptDeliveryNotice(
 		case "host_upgrade_required":
 			return "This session's host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there.";
 		case "control_busy":
-			return "AgentPulse is already sending something to this session. Try again in a moment.";
+			return "This session is busy: AgentPulse is already sending something to it, or Claude is working on its current turn. Try again when that finishes.";
 	}
 }
 

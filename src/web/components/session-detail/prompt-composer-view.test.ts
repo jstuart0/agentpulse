@@ -10,6 +10,7 @@ import {
 	COMPOSER_BLOCKED_NOT_READY,
 	COMPOSER_BLOCKED_RESTARTED,
 	COMPOSER_BUSY,
+	COMPOSER_BUSY_CLAUDE,
 	COMPOSER_FAILED_FALLBACK,
 	COMPOSER_UNKNOWN_OUTCOME,
 	FOLLOW_DEADLINE_MS,
@@ -432,6 +433,33 @@ describe("describeSendFailure", () => {
 		expect(describeSendFailure(new Error("boom"), session).reason).toBe(
 			"Couldn't send the prompt. Try again.",
 		);
+	});
+});
+
+describe("describeSendFailure: a Claude session's lock is held for a turn", () => {
+	const session = { managedSession: { hostName: "studio" } } as Pick<Session, "managedSession">;
+	const busy = new ApiError(
+		400,
+		"Another control action is already in progress for this session.",
+		{
+			error: "Another control action is already in progress for this session.",
+			reason: "control_busy",
+		},
+	);
+	test("a Claude session says Claude is still working, and keeps the text", () => {
+		const claude = { ...session, agentType: "claude_code" } as never;
+		expect(describeSendFailure(busy, claude)).toEqual({
+			reason: COMPOSER_BUSY_CLAUDE,
+			startNew: false,
+		});
+		expect(COMPOSER_BUSY_CLAUDE).toBe(
+			"Claude is still working on this session. Your text is here. Send it when it finishes.",
+		);
+	});
+
+	test("a Codex session keeps the usual sentence", () => {
+		const codex = { ...session, agentType: "codex_cli" } as never;
+		expect(describeSendFailure(busy, codex).reason).toBe(COMPOSER_BUSY);
 	});
 });
 
