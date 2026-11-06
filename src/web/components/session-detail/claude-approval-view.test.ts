@@ -6,6 +6,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
 	CODEX_APPROVAL_OUTCOMES,
 	type CodexApprovalSummary,
@@ -18,12 +20,14 @@ import {
 	codexApprovalNoteOtherOwner,
 	showsApprovalCard,
 } from "../../lib/codex-approval-wait.js";
+import { PeerTurnNotice } from "./CodexApprovalCard.js";
 import {
 	MAY_HAVE_RUN_LEAD,
 	agentOfSession,
 	arrivalAnnouncement,
 	availabilityHint,
 	confirmCopy,
+	focusAfterClose,
 	forkModeOf,
 	kindWord,
 	midConfirmView,
@@ -387,5 +391,79 @@ describe("a value this build doesn't know still reads whole", () => {
 		expect(notApprovableText("path_not_absolute", HOST, null, "claude")).toBe(
 			"This path isn't a full path, so AgentPulse can't tell which file it means. You can only decline it here.",
 		);
+	});
+});
+
+// ── P4-T7: the two things the harness could not drive, split so they can be held without a DOM ──────────
+
+describe("focus when a request closes by itself (the card's effect, as a pure plan)", () => {
+	const base = {
+		previousPendingIds: ["a1", "a2"],
+		pendingIds: ["a2"],
+		focusWasInside: true,
+		landingRequested: false,
+		focusLost: true,
+		currentId: "a2",
+	};
+
+	test("a request that closed under the person's focus lands on its outcome line, with the next heading as the fallback", () => {
+		expect(focusAfterClose(base)).toEqual({
+			outcomeId: "codex-approval-outcome-a1",
+			fallbackHeadingId: "codex-approval-heading-a2",
+		});
+		expect(focusAfterClose({ ...base, pendingIds: [], currentId: null })).toEqual({
+			outcomeId: "codex-approval-outcome-a1",
+			fallbackHeadingId: null,
+		});
+	});
+
+	test("nothing moves when nothing closed, when focus wasn't in the card, when an answer asked for a landing, or when focus is still somewhere real", () => {
+		expect(focusAfterClose({ ...base, pendingIds: ["a1", "a2"] })).toBeNull();
+		expect(focusAfterClose({ ...base, focusWasInside: false })).toBeNull();
+		expect(focusAfterClose({ ...base, landingRequested: true })).toBeNull();
+		expect(focusAfterClose({ ...base, focusLost: false })).toBeNull();
+	});
+
+	test("with two closed at once the first closed is the one landed on", () => {
+		expect(
+			focusAfterClose({ ...base, previousPendingIds: ["a1", "a2", "a3"], pendingIds: ["a3"] })
+				?.outcomeId,
+		).toBe("codex-approval-outcome-a1");
+	});
+
+	test("the card uses the plan and keeps no copy of the rule", () => {
+		const card = readFileSync(join(import.meta.dir, "CodexApprovalCard.tsx"), "utf8");
+		expect(card).toContain("focusAfterClose({");
+		expect(card).not.toMatch(/filter\(\(id\) => !ids\.includes\(id\)\)/);
+	});
+});
+
+describe("the notice for a message something else sent the session", () => {
+	const html = (lines: readonly string[]) =>
+		renderToStaticMarkup(createElement(PeerTurnNotice, { lines }));
+
+	test("each line is its own paragraph inside one status region, as text", () => {
+		const out = html(
+			peerTurnLines({ text: "<img src=x onerror=alert(1)>", hidden: false }, HOST) ?? [],
+		);
+		expect(out).toContain("<output");
+		expect(out.match(/<p /g)).toHaveLength(2);
+		expect(out).toContain(
+			"Something else on build-host sent this session a message, so AgentPulse stopped it.",
+		);
+		expect(out).toContain("The message: &lt;img src=x onerror=alert(1)&gt;");
+		expect(out).not.toContain("<img");
+	});
+
+	test("a message redaction changed is never shown, only that it is hidden", () => {
+		const out = html(peerTurnLines({ text: null, hidden: true }, HOST) ?? []);
+		expect(out).toContain("AgentPulse is hiding it because it may hold a secret.");
+		expect(out).not.toContain("The message:");
+	});
+
+	test("the card renders the notice from the approvals list's `peerTurn` and from nothing else", () => {
+		const card = readFileSync(join(import.meta.dir, "CodexApprovalCard.tsx"), "utf8");
+		expect(card).toMatch(/peerTurnLines\(data\.list\?\.peerTurn, host\)/);
+		expect(card).toContain("<PeerTurnNotice lines={peerLines} />");
 	});
 });

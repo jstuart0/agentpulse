@@ -5,6 +5,7 @@
  * lives. A name outside the six (impossible under `--tools`, but a model chooses the names it calls) is
  * never printed.
  */
+import { TURN_REFUSED_PREFIX, TURN_UNASKED_PREFIX } from "../../shared/claude-fork-copy.js";
 import type { ClaudeForkMode } from "../../shared/session-resume.js";
 import { CLAUDE_FORK_TOOLS } from "./claude-argv.js";
 
@@ -103,12 +104,12 @@ export function unaskedTurnText(
 ): string | null {
 	const names = calls.filter((c) => callRowKind(c) === "unasked").map((c) => c.name);
 	const list = countedNames(names);
-	return list ? `Ran without asking you this turn: ${list}. ${UNASKED_TAIL[mode]}` : null;
+	return list ? `${TURN_UNASKED_PREFIX} ${list}. ${UNASKED_TAIL[mode]}` : null;
 }
 
 /** The line for calls the harness refused on its own account (a config rule, not a person), or null. */
 export function refusedTurnText(calls: readonly ToolCallRecord[]): string | null {
 	const names = calls.filter((c) => callRowKind(c) === "refused").map((c) => c.name);
 	const list = countedNames(names);
-	return list ? `Claude tried this and was refused: ${list}.` : null;
+	return list ? `${TURN_REFUSED_PREFIX} ${list}.` : null;
 }

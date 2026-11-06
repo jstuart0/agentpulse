@@ -43,6 +43,8 @@ on:
       - "src/server/routes/claude-fork*"
       - "src/server/services/ai/proposal-resolution.ts"
       - "src/server/services/session-owner-admin.ts"
+      - "src/server/services/session-detail*"
+      - "src/server/services/session-dto.ts"
       - ".github/workflows/codex-approvals-postgres.yml"
 
 concurrency:
@@ -107,6 +109,7 @@ jobs:
           src/server/routes/session-bind-route.test.ts
           src/server/services/session-resume-lifecycle.test.ts
           src/server/services/managed-turn-state.test.ts
+          src/server/services/session-detail-fork.test.ts
 
       - name: Claude turn guard and Stop (Postgres backend; a skipped test fails the job)
         env:

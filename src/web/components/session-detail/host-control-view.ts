@@ -11,6 +11,7 @@ import { HOST_UPGRADE_REQUIRED_MESSAGE } from "../../../shared/managed-messages.
 import type { HostControl, Session } from "../../../shared/types.js";
 import { ApiError } from "../../lib/api.js";
 import { hasPendingCodexApproval } from "../../lib/codex-approval-wait.js";
+import { forkInfo } from "../../lib/fork-session.js";
 import { parseDate } from "../../lib/utils.js";
 
 export type HostRefusalCode =
@@ -70,12 +71,16 @@ const ARCHIVE_CLAUSE = " You can archive it.";
  * an approval open on the session, archiving isn't the next step, so that clause is left off.
  */
 export function hostControlHint(
-	session: Pick<Session, "hostControl" | "managedSession"> & Partial<Pick<Session, "metadata">>,
+	session: Pick<Session, "hostControl" | "managedSession"> &
+		Partial<Pick<Session, "metadata" | "forkedFromSessionId">>,
 	formatTime: (iso: string) => string = defaultFormatTime,
 ): string | null {
 	const host = hostControlOf(session);
 	if (host === null || host.state === "live") return null;
-	const archive = hasPendingCodexApproval(session) ? "" : ARCHIVE_CLAUSE;
+	// A continued session on an offline host may still have a process, so archiving it is refused until it is
+	// ended (a removed host lifts that). Don't point at a button that won't work.
+	const refusesArchive = host.state === "offline" && forkInfo(session) !== null;
+	const archive = hasPendingCodexApproval(session) || refusesArchive ? "" : ARCHIVE_CLAUSE;
 	if (host.state === "gone") {
 		return REFUSALS.host_gone(hostNameOf(session)).replace(ARCHIVE_CLAUSE, archive);
 	}
@@ -87,10 +92,14 @@ export function hostControlHint(
 /** The sentence for a refused stop, prompt or retry; null for any other error, which keeps its usual text. */
 export function hostRefusalMessage(
 	error: unknown,
-	session: Pick<Session, "managedSession">,
+	session: Pick<Session, "managedSession"> & Partial<Pick<Session, "agentType">>,
 ): string | null {
 	if (!(error instanceof ApiError) || error.status !== 409 || error.code === null) return null;
 	if (!Object.hasOwn(REFUSALS, error.code)) return null;
+	// The stored upgrade sentence is about Codex prompts; a Claude session's host lacks the Claude feature.
+	if (error.code === "host_upgrade_required" && session.agentType === "claude_code") {
+		return `${hostNameOf(session)} is running an older supervisor that can't continue Claude sessions. Update it, then try again.`;
+	}
 	return REFUSALS[error.code as HostRefusalCode](hostNameOf(session));
 }
 

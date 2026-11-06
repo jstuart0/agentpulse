@@ -43,6 +43,7 @@ import { listClaudeAgentEntries } from "../providers/claude-agents.js";
 import { forkArgv, inPlaceArgv } from "../providers/claude-argv.js";
 import { type LoginProbe, createLoginProbe, pickForkMode } from "../providers/claude-login-mode.js";
 import {
+	CLAUDE_VERSION_RANGE_TEXT,
 	type ClaudeBinary,
 	claudeProtocolVerdict,
 	resolveClaude,
@@ -59,6 +60,7 @@ import {
 } from "../providers/claude-stream.js";
 import type { ApprovalLaunch, CodexApprovalTracker } from "../providers/codex-approvals.js";
 import type { Verdict } from "../providers/codex-protocol.js";
+import { parseVersion } from "../providers/version-range.js";
 import type { ClaudeForkRecord } from "./claude-fork-record.js";
 import { findSourceDirectory } from "./claude-source-dir.js";
 import type { ReportGate } from "./report-gate.js";
@@ -107,6 +109,8 @@ class Refusal extends Error {
 	constructor(
 		readonly kind: ResumeFailureKind,
 		readonly detail?: string,
+		/** The Claude Code version and the tested range, for the one refusal whose words print them. */
+		readonly version?: { found: string; range: string },
 	) {
 		super(kind);
 	}
@@ -313,7 +317,18 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 			throw new Refusal("rejected", "claude can't be resolved");
 		}
 		const verdict = verdictOf(resolved.binary, resolved.serverUrl);
-		if (verdict.verdict !== "supported") throw new Refusal(kindOfVerdict(verdict), verdict.reason);
+		if (verdict.verdict !== "supported") {
+			const kind = kindOfVerdict(verdict);
+			// Only a version the binary really printed (it was parsed) is shown, with the range tested.
+			const found = parseVersion(resolved.binary.version) ? resolved.binary.version : null;
+			throw new Refusal(
+				kind,
+				verdict.reason,
+				kind === "unsupported_claude" && found
+					? { found, range: CLAUDE_VERSION_RANGE_TEXT }
+					: undefined,
+			);
+		}
 		return { binary: resolved.binary, verdict };
 	}
 
@@ -701,6 +716,7 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 		kind: ResumeFailureKind,
 		detail?: string,
 		mode?: ClaudeForkMode,
+		version?: { found: string; range: string },
 	): Promise<void> {
 		log(
 			`[supervisor] resume ${action.id} refused: ${kind}${detail ? ` (${detail.slice(0, 200)})` : ""}`,
@@ -708,7 +724,17 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 		const words =
 			gate.rulesState() !== "none"
 				? RESUME_REFUSED_MESSAGE[resumeKind](deps.hostName)
-				: resumeFailureMessage(kind, deps.hostName, resumeKind, "claude_code", mode);
+				: resumeFailureMessage(
+						kind,
+						deps.hostName,
+						resumeKind,
+						"claude_code",
+						mode,
+						isRecord(action.metadata) && typeof action.metadata.sourceName === "string"
+							? action.metadata.sourceName
+							: null,
+						version,
+					);
 		try {
 			await gate.refuseResume(action.id, words);
 		} catch (error) {
@@ -731,7 +757,7 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 				if (error instanceof Refusal) {
 					const mode =
 						resumeKind === "recovery" ? deps.forkRecord.lookup(sessionId)?.mode : undefined;
-					return refuseWith(action, resumeKind, error.kind, error.detail, mode);
+					return refuseWith(action, resumeKind, error.kind, error.detail, mode, error.version);
 				}
 				return refuseWith(
 					action,

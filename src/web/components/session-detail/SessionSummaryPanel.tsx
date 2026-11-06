@@ -31,6 +31,7 @@ import { SummarySections } from "./SummarySections.js";
 export interface SessionSummaryPanelProps {
 	sessionId: string;
 	agentType: string | null;
+	continued?: boolean;
 	load: SummaryLoad;
 	/** Polling gave up: the last view stays, with Retry beside the action. */
 	lostContact: boolean;
@@ -240,6 +241,7 @@ function StoredBody(
 				stored={stored}
 				sessionId={props.sessionId}
 				agentType={props.agentType}
+				continued={props.continued}
 				clock={clock}
 			/>
 			<Footer view={props.view} clock={clock} />

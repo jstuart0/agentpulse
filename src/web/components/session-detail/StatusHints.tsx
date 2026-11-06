@@ -1,6 +1,12 @@
+import { useState } from "react";
+import { Link } from "react-router-dom";
 import { AGENT_METADATA } from "../../../shared/constants.js";
 import type { AgentType, Session } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
+import { focusLandingAfterRender } from "../../lib/focus-landing.js";
+import { forkInfo, forkSourceOf } from "../../lib/fork-session.js";
+import { HostSentence } from "./HostSentence.js";
+import { forkStatusView } from "./fork-status-view.js";
 import { hostControlHint } from "./host-control-view.js";
 import { isTakenOver } from "./session-takeover-view.js";
 
@@ -35,13 +41,18 @@ export function AgentObserveOnlyHint({ agentType }: { agentType: AgentType }) {
 export type StatusHintSelection =
 	| { component: "ManagedCodexStatus"; managedSession: NonNullable<Session["managedSession"]> }
 	| { component: "ManagedClaudeStatus"; managedSession: NonNullable<Session["managedSession"]> }
+	| { component: "ManagedForkStatus"; managedSession: NonNullable<Session["managedSession"]> }
 	| { component: "CodexStatusHint"; displayName: string }
 	| { component: "AgentObserveOnlyHint"; agentType: AgentType };
 
 export function selectStatusHint(
-	session: Pick<Session, "agentType" | "managedSession">,
+	session: Pick<Session, "agentType" | "managedSession"> &
+		Partial<Pick<Session, "forkedFromSessionId" | "metadata">>,
 	displayName: string,
 ): StatusHintSelection {
+	if (session.agentType === "claude_code" && session.managedSession && forkInfo(session)) {
+		return { component: "ManagedForkStatus", managedSession: session.managedSession };
+	}
 	if (session.agentType === "codex_cli" && session.managedSession) {
 		return { component: "ManagedCodexStatus", managedSession: session.managedSession };
 	}
@@ -176,6 +187,85 @@ export function ManagedCodexStatus({
 				)}
 			</div>
 		</div>
+	);
+}
+
+/**
+ * The block under the header of a continued Claude session: what it continues and where, which settings apply
+ * (from the stored mode, before any prompt), and the way back to the original. On a phone it is one line that
+ * can be dismissed, with the settings behind a disclosure, so the timeline keeps its room; the first row of the
+ * timeline and the prompt box's own "What waits for you" say the same things.
+ */
+export function ManagedForkStatus({ session }: { session: Session }) {
+	const [dismissed, setDismissed] = useState(false);
+	const fork = forkInfo(session);
+	if (!fork) return null;
+	const view = forkStatusView({
+		fork,
+		source: forkSourceOf(session),
+		machine: session.managedSession?.hostName,
+		managedState: session.managedSession?.managedState,
+	});
+	const link =
+		view.link.kind === "link" ? (
+			<Link
+				to={`/sessions/${encodeURIComponent(view.link.sourceId)}`}
+				className="inline-flex min-h-[44px] items-center underline underline-offset-2 md:min-h-0"
+			>
+				{view.link.text}
+			</Link>
+		) : (
+			<span>{view.link.text}</span>
+		);
+	return (
+		<>
+			{/* A phone: one line that opens to the settings and the way back; dismissing removes the block. */}
+			<div
+				data-fork-status=""
+				className={`mx-3 mt-2 rounded-lg border border-sky-500/20 bg-sky-500/5 px-3 py-1 md:mx-6 md:mt-3 md:py-2.5 ${dismissed ? "hidden md:block" : ""}`}
+			>
+				<div className="flex items-start gap-2 md:hidden">
+					<details className="min-w-0 flex-1 text-[11px] text-muted-foreground">
+						<summary className="flex min-h-[44px] cursor-pointer items-center">
+							<span className="truncate text-foreground">{view.line}</span>
+						</summary>
+						{view.modeLine ? (
+							<p className="pb-1 leading-relaxed [overflow-wrap:anywhere]">
+								<HostSentence text={view.modeLine} />
+							</p>
+						) : null}
+						<p className="[overflow-wrap:anywhere]">{link}</p>
+					</details>
+					<button
+						type="button"
+						onClick={() => {
+							setDismissed(true);
+							// The button is about to go: focus lands on the session header, never on the page.
+							focusLandingAfterRender();
+						}}
+						aria-label="Dismiss this note"
+						className="min-h-[44px] min-w-[44px] flex-shrink-0 text-muted-foreground"
+					>
+						<span aria-hidden="true">×</span>
+					</button>
+				</div>
+				<div className="hidden md:block">
+					<p className="text-xs font-medium text-foreground">{view.heading}</p>
+					<p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{view.line}</p>
+					{view.modeLine ? (
+						<p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+							<HostSentence text={view.modeLine} />
+						</p>
+					) : null}
+					<p className="mt-1 text-[11px] text-muted-foreground [overflow-wrap:anywhere]">{link}</p>
+				</div>
+			</div>
+			{view.endedLine ? (
+				<p className="mx-3 mt-2 text-[11px] leading-relaxed text-foreground md:mx-6">
+					{view.endedLine}
+				</p>
+			) : null}
+		</>
 	);
 }
 

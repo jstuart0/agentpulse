@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Session, SupervisorRecord } from "../../../shared/types.js";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../../hooks/useOwnershipUi.js";
 import { api } from "../../lib/api.js";
 import { ownerLabel } from "../../lib/owner-label.js";
@@ -10,6 +11,17 @@ import { useUserStore } from "../../stores/user-store.js";
 import { useUsersStore } from "../../stores/users-store.js";
 import { ConfirmDialog } from "../ConfirmDialog.js";
 import { HostSentence } from "./HostSentence.js";
+import {
+	CLAUDE_BUSY_LABEL,
+	CLAUDE_PICK_MACHINE_FIRST,
+	CLAUDE_RESUME_COMMAND_LEAD,
+	type ClaudeDialogLines,
+	claudeConfirmLabel,
+	claudeContinuedAs,
+	claudeCopyCommandLabel,
+	claudeDialogLines,
+	claudeResumeCommand,
+} from "./claude-takeover-copy.js";
 import { type TakeoverAttempt, bindRefusalMessage } from "./session-takeover-view.js";
 import {
 	type BindHostOption,
@@ -47,6 +59,7 @@ export function TakeoverCardBody({
 	onRetryHosts?: () => void;
 }) {
 	if (view.kind === "hidden") return null;
+	if (view.kind === "continued") return <ContinuedAs view={view} />;
 	const loading = view.kind === "eligible" && view.hostsState === "loading";
 	return (
 		<section
@@ -77,7 +90,7 @@ export function TakeoverCardBody({
 						aria-haspopup="dialog"
 						className={`self-start ${BUTTON_CLASS}`}
 					>
-						Take over…
+						{view.entryLabel}
 					</button>
 				) : null}
 				{view.kind === "eligible" && view.hostsState === "error" ? (
@@ -91,6 +104,55 @@ export function TakeoverCardBody({
 							Try again
 						</button>
 					</div>
+				) : null}
+			</div>
+		</section>
+	);
+}
+
+/**
+ * The slot on an observed Claude session while its fork is open: the way to the fork, and the command that
+ * opens the original in a terminal again (after a fork, `claude --continue` there lands on the fork).
+ */
+export function ContinuedAs({
+	view,
+}: {
+	view: Extract<TakeoverCardView, { kind: "continued" }>;
+}) {
+	const { copy } = useCopyFeedback();
+	const command = claudeResumeCommand(view.sourceId);
+	const leadId = useId();
+	return (
+		<section id={TAKEOVER_SLOT_ID} tabIndex={-1} className={SLOT_CLASS}>
+			<div className="flex flex-col gap-2">
+				<Link
+					to={`/sessions/${encodeURIComponent(view.forkId)}`}
+					className={`min-h-[44px] self-start py-2 text-sm font-medium text-primary underline underline-offset-2 md:min-h-0 md:py-0 ${WRAP}`}
+				>
+					{claudeContinuedAs(view.forkName)}
+				</Link>
+				{command ? (
+					<>
+						<p id={leadId} className={`text-xs text-muted-foreground ${WRAP}`}>
+							{CLAUDE_RESUME_COMMAND_LEAD}
+						</p>
+						<div className="flex flex-wrap items-center gap-2">
+							<code
+								aria-describedby={leadId}
+								className={`rounded bg-muted px-2 py-1 font-mono text-xs text-foreground ${WRAP}`}
+							>
+								{command}
+							</code>
+							<button
+								type="button"
+								aria-label={claudeCopyCommandLabel(view.sourceName)}
+								onClick={() => void copy(command, "Command copied")}
+								className="min-h-[44px] rounded-md border border-border px-3 text-sm font-medium text-foreground hover:bg-accent md:min-h-0 md:py-1.5"
+							>
+								Copy
+							</button>
+						</div>
+					</>
 				) : null}
 			</div>
 		</section>
@@ -123,20 +185,48 @@ export function TakeoverDialogDescription({ lines }: { lines: TakeoverDialogLine
 	);
 }
 
+/** The Claude dialog's description: each paragraph, its lead-in in bold. */
+export function ClaudeDialogDescription({ lines }: { lines: ClaudeDialogLines }) {
+	return (
+		<>
+			{lines.paragraphs.map((paragraph) => (
+				<p key={paragraph.text} className={WRAP}>
+					{paragraph.label ? <strong className="font-semibold">{paragraph.label} </strong> : null}
+					<HostSentence text={paragraph.text} />
+				</p>
+			))}
+		</>
+	);
+}
+
 /** The dialog's form: which machine, and the facts to check it by. No machine is chosen for the person. */
 export function TakeoverDialogFields({
 	options,
 	hostId,
 	onHost,
 	lines,
+	placeholder = "Choose a machine",
+	directory,
+	ownerLine = null,
+	autoFocus = false,
 }: {
 	options: readonly BindHostOption[];
 	hostId: string;
 	onHost: (id: string) => void;
-	lines: TakeoverDialogLines;
+	lines: Pick<TakeoverDialogLines, "reportedHostNote" | "directory" | "teamNote">;
+	/** What the empty choice says. */
+	placeholder?: string;
+	/** Overrides the directory line (the Claude dialog words it itself). */
+	directory?: string;
+	/** Who the new session will belong to, when the dialog says so. */
+	ownerLine?: string | null;
+	/** The select takes the dialog's initial focus. */
+	autoFocus?: boolean;
 }) {
 	const selectId = useId();
 	const noteId = useId();
+	const directoryId = useId();
+	const ownerId = useId();
 	return (
 		<>
 			<div>
@@ -147,10 +237,13 @@ export function TakeoverDialogFields({
 					id={selectId}
 					value={hostId}
 					onChange={(e) => onHost(e.target.value)}
-					aria-describedby={noteId}
+					aria-describedby={[noteId, directoryId, ownerLine ? ownerId : null]
+						.filter(Boolean)
+						.join(" ")}
+					data-autofocus={autoFocus ? "" : undefined}
 					className="mt-1 min-h-[44px] w-full rounded-md border border-input bg-background px-3 py-2 text-base md:text-sm text-foreground md:min-h-0"
 				>
-					<option value="">Choose a machine</option>
+					<option value="">{placeholder}</option>
 					{options.map((option) => (
 						<option key={option.id} value={option.id} disabled={option.disabled}>
 							{option.label}
@@ -161,7 +254,14 @@ export function TakeoverDialogFields({
 					{lines.reportedHostNote}
 				</p>
 			</div>
-			<p className="break-all font-mono text-xs text-foreground">{lines.directory}</p>
+			<p id={directoryId} className="break-all font-mono text-xs text-foreground">
+				{directory ?? lines.directory}
+			</p>
+			{ownerLine ? (
+				<p id={ownerId} className={`text-xs text-foreground ${WRAP}`}>
+					{ownerLine}
+				</p>
+			) : null}
 			{lines.teamNote ? (
 				<p className={`text-xs text-muted-foreground ${WRAP}`}>{lines.teamNote}</p>
 			) : null}
@@ -247,6 +347,7 @@ export function SessionTakeoverCard({
 				isAdmin,
 				session,
 				now,
+				agent: session.agentType === "claude_code" ? "claude_code" : "codex_cli",
 			}),
 		};
 	}, [hostsState, ui, viewerUserId, isAdmin, session, now]);
@@ -268,6 +369,13 @@ export function SessionTakeoverCard({
 	const team = ui.showHostOwner;
 	const assignee =
 		team && sessionOwner === null ? (chosenRecord?.ownerUserId ?? viewerUserId) : null;
+	const assigneeName =
+		assignee !== null && assignee !== undefined
+			? ownerLabel(directory[assignee], assignee, { selfId: viewerUserId, style: "you" }).replace(
+					/^You$/,
+					"you",
+				)
+			: null;
 	const lines = takeoverDialogLines({
 		sessionName,
 		owner: sessionOwner !== null && sessionOwner !== viewerUserId ? sessionOwner : null,
@@ -275,13 +383,7 @@ export function SessionTakeoverCard({
 			sessionOwner !== null
 				? ownerLabel(directory[sessionOwner], sessionOwner, { selfId: viewerUserId })
 				: null,
-		assigneeName:
-			assignee !== null && assignee !== undefined
-				? ownerLabel(directory[assignee], assignee, { selfId: viewerUserId, style: "you" }).replace(
-						/^You$/,
-						"you",
-					)
-				: null,
+		assigneeName,
 		reportedHost: session.reportedHost ?? null,
 		hostName: chosen?.name ?? null,
 		cwd: session.cwd ?? null,
@@ -289,14 +391,44 @@ export function SessionTakeoverCard({
 		viewerIsAdmin: isAdmin,
 	});
 
+	const claude = session.agentType === "claude_code";
+	const claudeLines = claude
+		? claudeDialogLines({
+				sessionName,
+				machine: chosen?.name ?? null,
+				cwd: session.cwd ?? null,
+				ownerName: !team
+					? null
+					: sessionOwner !== null
+						? ownerLabel(directory[sessionOwner], sessionOwner, {
+								selfId: viewerUserId,
+								style: "you",
+							}).replace(/^You$/, "you")
+						: assigneeName,
+				endedFork:
+					session.continuedIn && !session.continuedIn.live
+						? (session.continuedIn.name ?? "the earlier session")
+						: null,
+			})
+		: null;
+
 	async function confirm() {
 		if (!chosen || busy) return;
 		setBusy(true);
 		setError(null);
 		try {
+			// The answer names a carrier launch that exists only once the host has settled (a read of it before
+			// then is a 404, and after a failure it never exists), so nothing reads the answer here: the page
+			// learns the outcome from the session's control actions and, on success, from `continuedIn`.
 			await api.bindSession(session.sessionId, { targetSupervisorId: chosen.id });
 		} catch (failure) {
-			setError(bindRefusalMessage(failure, { host: chosen.name, kind: "takeover" }));
+			setError(
+				bindRefusalMessage(failure, {
+					host: chosen.name,
+					kind: "takeover",
+					agent: claude ? "claude_code" : "codex_cli",
+				}),
+			);
 			setBusy(false);
 			return;
 		}
@@ -311,7 +443,15 @@ export function SessionTakeoverCard({
 	}
 
 	if (submittedTo !== null && attempt.state === "none") {
-		return <TakeoverProgress text={`Asking ${submittedTo} to take over this session…`} />;
+		return (
+			<TakeoverProgress
+				text={
+					claude
+						? takeoverProgress("takeover", submittedTo, "", Date.now(), "claude_code")
+						: `Asking ${submittedTo} to take over this session…`
+				}
+			/>
+		);
 	}
 	const view = takeoverCardView({
 		session,
@@ -337,11 +477,17 @@ export function SessionTakeoverCard({
 			/>
 			{open ? (
 				<ConfirmDialog
-					title={lines.title}
-					confirmLabel={takeoverConfirmLabel(chosen?.name ?? null)}
-					busyLabel="Taking over…"
+					title={claudeLines?.title ?? lines.title}
+					confirmLabel={
+						claude
+							? claudeConfirmLabel(chosen?.name ?? null)
+							: takeoverConfirmLabel(chosen?.name ?? null)
+					}
+					busyLabel={claude ? CLAUDE_BUSY_LABEL : "Taking over…"}
 					armAfterMs={700}
-					focusCancel
+					focusCancel={!claude}
+					focusFields={claude}
+					fieldsFirst={claude}
 					busy={busy}
 					confirmDisabled={chosen === null}
 					error={error}
@@ -357,10 +503,18 @@ export function SessionTakeoverCard({
 								setError(null);
 							}}
 							lines={lines}
+							placeholder={claude ? CLAUDE_PICK_MACHINE_FIRST : undefined}
+							directory={claudeLines?.directory}
+							ownerLine={claudeLines?.ownerLine ?? null}
+							autoFocus={claude}
 						/>
 					}
 				>
-					<TakeoverDialogDescription lines={lines} />
+					{claudeLines ? (
+						<ClaudeDialogDescription lines={claudeLines} />
+					) : (
+						<TakeoverDialogDescription lines={lines} />
+					)}
 				</ConfirmDialog>
 			) : null}
 		</>
@@ -390,9 +544,10 @@ export function SessionTakeoverProgress({
 		<TakeoverProgress
 			text={takeoverProgress(
 				attempt.kind,
-				session.managedSession?.hostName ?? null,
+				attempt.hostName ?? session.managedSession?.hostName ?? null,
 				attempt.startedAt,
 				now,
+				attempt.agent,
 			)}
 		/>
 	);

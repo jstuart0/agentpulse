@@ -80,6 +80,8 @@ describe("takeoverAttempt: derived from resume actions, never card state", () =>
 				state: "in_flight",
 				actionId: "a",
 				kind: "takeover",
+				agent: "codex_cli",
+				hostName: null,
 				startedAt: new Date(NOW - 5_000).toISOString(),
 			});
 		}
@@ -103,6 +105,7 @@ describe("takeoverAttempt: derived from resume actions, never card state", () =>
 			state: "failed",
 			actionId: "a",
 			kind: "takeover",
+			agent: "codex_cli",
 			reason: sentence,
 		});
 	});
@@ -159,9 +162,11 @@ function probe(over: Partial<Session> = {}): Session {
 }
 
 describe("takeoverEligibility: display only, the server decides", () => {
-	test("never for Claude, Copilot, an archived session, or one AgentPulse already runs", () => {
+	test("never for Copilot, an archived session, or one AgentPulse already runs; Claude is eligible like Codex (AGEN-117)", () => {
+		expect(takeoverEligibility(probe({ agentType: "claude_code" }), NOW)).toEqual({
+			kind: "eligible",
+		});
 		for (const over of [
-			{ agentType: "claude_code" },
 			{ agentType: "copilot_cli" },
 			{ isArchived: true },
 			{ managed: true },
@@ -501,7 +506,7 @@ describe("refusals in the dialog: every code the routes can answer has a sentenc
 			"This session's ID isn't in a form AgentPulse can resume, so it can't be taken over.",
 		);
 		expect(refuse("agent_not_supported")).toBe(
-			"AgentPulse can only take over Codex sessions for now.",
+			"AgentPulse can take over Codex and Claude Code sessions, but not sessions from other tools.",
 		);
 		expect(refuse("cwd_unknown")).toBe(
 			"This session never reported a directory, so it can't be taken over.",
@@ -670,7 +675,7 @@ describe("takeoverCardView: which card, and with what words", () => {
 	});
 
 	test("hidden for a session that can't be taken over, and for a viewer who may not and isn't told", () => {
-		expect(takeoverCardView(input({ session: probe({ agentType: "claude_code" }) }))).toEqual({
+		expect(takeoverCardView(input({ session: probe({ agentType: "copilot_cli" }) }))).toEqual({
 			kind: "hidden",
 		});
 		expect(
@@ -691,10 +696,19 @@ describe("takeoverCardView: which card, and with what words", () => {
 			text: "Started outside AgentPulse. Once it has ended, a connected machine can take it over so you can send prompts here.",
 			failure: null,
 			hostsState: "ready",
+			entryLabel: "Take over…",
 		});
 		expect(
 			takeoverCardView(
-				input({ attempt: { state: "failed", actionId: "x", kind: "takeover", reason: "no" } }),
+				input({
+					attempt: {
+						state: "failed",
+						actionId: "x",
+						kind: "takeover",
+						agent: "codex_cli",
+						reason: "no",
+					},
+				}),
 			),
 		).toMatchObject({ kind: "eligible", failure: "no" });
 	});
@@ -820,6 +834,8 @@ describe("bottomSlot: what sits where the prompt box would", () => {
 		state: "in_flight" as const,
 		actionId: "a",
 		kind,
+		agent: "codex_cli" as const,
+		hostName: null,
 		startedAt: new Date(NOW).toISOString(),
 	});
 	const none = { state: "none" as const };
@@ -889,10 +905,12 @@ describe("labels on a taken-over session", () => {
 });
 
 describe("attemptAnnouncement: what a screen reader hears when an attempt ends", () => {
-	const flight = (kind: ResumeKind) => ({
+	const flight = (kind: ResumeKind, agent: "codex_cli" | "claude_code" = "codex_cli") => ({
 		state: "in_flight" as const,
 		actionId: "a",
 		kind,
+		agent,
+		hostName: null,
 		startedAt: new Date(NOW).toISOString(),
 	});
 	const none = { state: "none" as const };
@@ -911,6 +929,7 @@ describe("attemptAnnouncement: what a screen reader hears when an attempt ends",
 			state: "failed" as const,
 			actionId: "a",
 			kind: "takeover" as const,
+			agent: "codex_cli" as const,
 			reason: "no go",
 		};
 		expect(attemptAnnouncement(flight("takeover"), failed, "studio")).toBe("no go");
@@ -923,6 +942,7 @@ describe("attemptAnnouncement: what a screen reader hears when an attempt ends",
 			state: "failed" as const,
 			actionId: "a",
 			kind: "takeover" as const,
+			agent: "codex_cli" as const,
 			reason: "x",
 		};
 		expect(attemptAnnouncement(none, failed, "studio")).toBeNull();

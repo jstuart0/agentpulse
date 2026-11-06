@@ -524,6 +524,34 @@ export interface Session {
 	 * fields above.
 	 */
 	operationalStatus?: OperationalStatus;
+	/**
+	 * Set on a session AgentPulse created by continuing an observed Claude Code session (AGEN-117): the id of
+	 * the session it was forked from. Read from the session's own metadata with a shape check by mapSessionDto.
+	 * Absent on every other session, on card rows and from an older server.
+	 */
+	forkedFromSessionId?: string;
+	/**
+	 * Set with `forkedFromSessionId`: the permission mode the host picked for this fork from the login Claude
+	 * Code reported (AGEN-117 D11). `restricted`: the person's own Claude settings are not used. `ask`: they
+	 * still apply. Picked per fork, never per build. Every sentence about what applies follows it.
+	 */
+	forkPermissionBranch?: "ask" | "restricted";
+	/**
+	 * On the observed session a fork was made from: the newest fork, with its name and whether it is still live
+	 * (pending, managed or degraded). Detail response only; absent when none, when the fork was deleted, and
+	 * from an older server.
+	 */
+	continuedIn?: { sessionId: string; name: string | null; live: boolean };
+	/**
+	 * On a continued session, detail response only: the observed session it was forked from, by name, and
+	 * whether that session is still there (`available`), archived, or `deleted`. Absent from an older server,
+	 * which a client reads as "can't tell", never as deleted.
+	 */
+	continuedFrom?: {
+		sessionId: string;
+		name: string | null;
+		state: "available" | "archived" | "deleted";
+	};
 }
 
 export type HostControlState = "live" | "offline" | "gone";

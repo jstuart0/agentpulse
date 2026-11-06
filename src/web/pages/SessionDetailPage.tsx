@@ -21,6 +21,7 @@ import {
 	HostControlHint,
 	ManagedClaudeStatus,
 	ManagedCodexStatus,
+	ManagedForkStatus,
 	selectStatusHint,
 } from "../components/session-detail/StatusHints.js";
 import { StopConfirmDialog } from "../components/session-detail/StopConfirmDialog.js";
@@ -31,12 +32,16 @@ import {
 	getVisibleEvents,
 	mergeSessionEvents,
 } from "../components/session-detail/TimelineView.js";
+import { FORK_CLAUDE_MD_NOT_LOADED } from "../components/session-detail/fork-status-view.js";
 import {
 	showProviderSyncError,
 	showProviderSyncState,
 } from "../components/session-detail/host-control-view.js";
 import {
+	type ContinuedArrival,
 	bottomSlot,
+	continuedArrivalAnnouncement,
+	continuedNavigation,
 	isTakenOver,
 	overviewOriginField,
 	showsStatusHint,
@@ -61,6 +66,7 @@ import {
 } from "../lib/codex-approval-wait.js";
 import { EVENT_LOAD_FAILED_COPY } from "../lib/event-deep-link.js";
 import { focusLandingAfterRender } from "../lib/focus-landing.js";
+import { forkInfo, forkSourceOf } from "../lib/fork-session.js";
 import { applyManualRename } from "../lib/name-source.js";
 import { ownerChip } from "../lib/owner-chip.js";
 import { ownerLabel, sessionOwnerText } from "../lib/owner-label.js";
@@ -257,6 +263,27 @@ export function SessionDetailPage() {
 		reload: loadSessionWorkspace,
 		announce: setLiveAnnouncement,
 	});
+
+	// A continued Claude session has just been set up: move to it, and say so there (AGEN-117). The attempt
+	// ends and the session's `continuedIn` arrive in one refresh, so the page never moves on a stale read.
+	const previousAttempt = useRef(attempt);
+	useEffect(() => {
+		const move = continuedNavigation(previousAttempt.current, attempt, session);
+		previousAttempt.current = attempt;
+		if (move) navigate(move.to, { state: { continuedArrival: move.arrival } });
+	}, [attempt, session, navigate]);
+	const location = useLocation();
+	const [arrivalToken, setArrivalToken] = useState(0);
+	const arrival = (location.state as { continuedArrival?: ContinuedArrival } | null)
+		?.continuedArrival;
+	useEffect(() => {
+		if (!arrival || !session || session.sessionId !== sessionId) return;
+		setLiveAnnouncement(
+			continuedArrivalAnnouncement(arrival, session.managedSession?.managedState === "managed"),
+		);
+		setArrivalToken((token) => token + 1);
+		navigate(location.pathname + location.search, { replace: true, state: null });
+	}, [arrival, session, sessionId, navigate, location.pathname, location.search]);
 
 	// A stop in flight refreshes the session every couple of seconds; one that fails stays on the page.
 	const stopFollow = useStopFollow({
@@ -490,7 +517,7 @@ export function SessionDetailPage() {
 
 	const liveEvents = ((sessionId && liveEventsMap.get(sessionId)) || []) as SessionEvent[];
 	const allEvents = mergeSessionEvents([...events].reverse(), liveEvents);
-	const eventHash = /^#event-(\d+)$/.exec(useLocation().hash);
+	const eventHash = /^#event-(\d+)$/.exec(location.hash);
 	const reveal = useEventReveal({
 		sessionId,
 		tab: workspaceTab,
@@ -820,6 +847,8 @@ export function SessionDetailPage() {
 								);
 							case "ManagedClaudeStatus":
 								return <ManagedClaudeStatus managedSession={sel.managedSession} />;
+							case "ManagedForkStatus":
+								return <ManagedForkStatus key={session.sessionId} session={session} />;
 							case "CodexStatusHint":
 								return <CodexStatusHint displayName={sel.displayName} />;
 							case "AgentObserveOnlyHint":
@@ -927,6 +956,7 @@ export function SessionDetailPage() {
 						<SessionSummaryTab
 							sessionId={session.sessionId}
 							agentType={session.agentType}
+							continued={forkInfo(session) !== null}
 							summary={summary}
 							meta={{
 								name: displayName,
@@ -954,7 +984,11 @@ export function SessionDetailPage() {
 						readOnlyReason={notesReadOnlyReason}
 					/>
 				) : workspaceTab === "instructions" ? (
-					<ClaudeMdPanel session={session} readOnlyReason={notesReadOnlyReason} />
+					forkInfo(session) ? (
+						<p className="p-4 text-sm text-muted-foreground md:p-6">{FORK_CLAUDE_MD_NOT_LOADED}</p>
+					) : (
+						<ClaudeMdPanel session={session} readOnlyReason={notesReadOnlyReason} />
+					)
 				) : workspaceTab === "ai" ? (
 					<Suspense
 						fallback={
@@ -963,7 +997,11 @@ export function SessionDetailPage() {
 							</div>
 						}
 					>
-						<AiPanel sessionId={session.sessionId} agentType={session.agentType} />
+						<AiPanel
+							sessionId={session.sessionId}
+							agentType={session.agentType}
+							fork={forkInfo(session) !== null}
+						/>
 					</Suspense>
 				) : session.managedSession?.launchRequestId ? (
 					<EmbeddedLaunchPanel
@@ -980,6 +1018,9 @@ export function SessionDetailPage() {
 			{stopConfirm.open && (
 				<StopConfirmDialog
 					session={session}
+					fork={
+						forkInfo(session) ? { name: displayName, source: forkSourceOf(session) } : undefined
+					}
 					busy={stopConfirm.busy}
 					error={stopConfirm.error}
 					onConfirm={() => void stopConfirm.confirm(performStop)}
@@ -1021,13 +1062,14 @@ export function SessionDetailPage() {
 							<SessionComposerSlot
 								session={session}
 								attempt={attempt}
-								focusToken={focusToken}
+								focusToken={focusToken + arrivalToken}
 								onSubmitted={loadSessionWorkspace}
 								stoppingText={stopFollow.stopping ? stoppingText(session) : null}
+								onEnd={stopConfirm.request}
 							/>
 						);
 					case "takeover":
-						return session.agentType === "codex_cli" ? (
+						return session.agentType === "codex_cli" || session.agentType === "claude_code" ? (
 							<Suspense fallback={null}>
 								<SessionTakeoverCard
 									key={session.sessionId}

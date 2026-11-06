@@ -66,7 +66,7 @@ describe("the page's wiring of the dialog", () => {
 
 	test("the dialog's own words and weight are held by stop-confirm-dialog.test.ts, which calls the component", () => {
 		const dialog = code("components/session-detail/StopConfirmDialog.tsx");
-		expect(dialog).toMatch(/stopConfirmCopy\(session\)/);
+		expect(dialog).toMatch(/stopConfirmCopy\(session, fork\)/);
 	});
 
 	test("the hook is keyed by the session, so Back with the dialog open can't leave it over another one", () => {

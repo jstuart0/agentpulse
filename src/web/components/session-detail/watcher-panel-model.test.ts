@@ -43,8 +43,11 @@ describe("promptDeliveryNotice", () => {
 		);
 	});
 
-	test("an observed Claude session isn't told to take it over, which it can't be", () => {
+	test("an observed Claude session is told it can be continued in a new session (AGEN-117); another tool's is told nothing more", () => {
 		expect(promptDeliveryNotice(true, no("observed"), "claude_code")).toBe(
+			"AgentPulse didn't start this session, so it can't type into it. Continue will suggest prompts for you to copy. To send them from here, continue the session in a new session.",
+		);
+		expect(promptDeliveryNotice(true, no("observed"), "copilot_cli")).toBe(
 			"AgentPulse didn't launch this session, so it can't type into it. Continue will suggest prompts for you to copy.",
 		);
 	});

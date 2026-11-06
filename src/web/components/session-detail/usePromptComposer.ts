@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { Session } from "../../../shared/types.js";
 import { api } from "../../lib/api.js";
+import { forkInfo, forkSourceOf } from "../../lib/fork-session.js";
 import {
 	type ComposerMode,
 	type SendPhase,
@@ -17,7 +18,12 @@ const IDLE: SendPhase = { step: "idle" };
 
 export interface PromptComposerOptions {
 	session: Pick<Session, "sessionId" | "isWorking" | "managedSession"> &
-		Partial<Pick<Session, "agentType">>;
+		Partial<
+			Pick<
+				Session,
+				"agentType" | "forkedFromSessionId" | "forkPermissionBranch" | "metadata" | "continuedFrom"
+			>
+		>;
 	mode: ComposerMode | null;
 	/** Refreshes the page's view of the session; may reject, which never reaches the person. */
 	onSubmitted: () => Promise<void>;
@@ -103,7 +109,12 @@ export function usePromptComposer({
 				signal: controller.signal,
 				until: followModeOf(mode) ?? "settle",
 			});
-			const settled = settleFollow(result);
+			const settled = settleFollow(
+				result,
+				forkInfo(session)
+					? { machine: session.managedSession?.hostName, source: forkSourceOf(session) }
+					: undefined,
+			);
 			if (!alive.current || settled === null) return;
 			setPhase(settled.phase);
 			if (settled.clearDraft) {

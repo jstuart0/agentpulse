@@ -18,11 +18,13 @@ import { SummaryLabsPointer } from "./SummaryLabsPointer.js";
 import { WatcherHitlCard } from "./WatcherHitlCard.js";
 import { WatcherModeSwitches } from "./WatcherModeSwitches.js";
 import { WatcherReports } from "./WatcherReports.js";
-import { autoConfirmationPoints } from "./watcher-panel-model.js";
+import { FORK_AI_LINE, autoConfirmationPoints } from "./watcher-panel-model.js";
 
 interface AiPanelProps {
 	sessionId: string;
 	agentType?: string;
+	/** A continued Claude session: the watcher only suggests, and `auto` is not offered. */
+	fork?: boolean;
 }
 
 /** The AI tab: a line about Session summaries while they're off, above whatever the tab itself shows. */
@@ -37,7 +39,7 @@ export function AiPanel(props: AiPanelProps) {
 	);
 }
 
-function AiWatcherPanel({ sessionId, agentType }: AiPanelProps) {
+function AiWatcherPanel({ sessionId, agentType, fork = false }: AiPanelProps) {
 	const featureActive = useAiStatusStore((s) => s.status?.active ?? null);
 	const [providers, setProviders] = useState<AiProvider[]>([]);
 	const [config, setConfig] = useState<AiWatcherConfig | null>(null);
@@ -318,8 +320,11 @@ function AiWatcherPanel({ sessionId, agentType }: AiPanelProps) {
 							>
 								<option value="ask_always">Always ask</option>
 								<option value="ask_on_risk">Ask on risky actions</option>
-								<option value="auto">Send fixed nudges automatically…</option>
+								<option value="auto" disabled={fork}>
+									Send fixed nudges automatically…
+								</option>
 							</select>
+							{fork && <div className="mt-1 text-[11px] text-muted-foreground">{FORK_AI_LINE}</div>}
 							{config.policy === "auto" && agentType === "codex_cli" && (
 								<div className="mt-1 text-[11px] text-muted-foreground">
 									On a Codex session this still asks a person.

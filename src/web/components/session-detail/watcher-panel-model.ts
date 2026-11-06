@@ -26,10 +26,14 @@ export function promptDeliveryNotice(
 	if (!continueEnabled || delivery === null || delivery.deliverable) return null;
 	switch (delivery.reason) {
 		case "observed":
-			// Only a Codex session can be taken over, so only its notice points at that way in.
-			return agentType === "codex_cli"
-				? "AgentPulse didn't start this session, so it can't type into it. Continue will suggest prompts for you to copy. To send them from here, take the session over."
-				: "AgentPulse didn't launch this session, so it can't type into it. Continue will suggest prompts for you to copy.";
+			// A Codex session can be taken over and a Claude Code one continued in a new session; no other can.
+			if (agentType === "codex_cli") {
+				return "AgentPulse didn't start this session, so it can't type into it. Continue will suggest prompts for you to copy. To send them from here, take the session over.";
+			}
+			if (agentType === "claude_code") {
+				return "AgentPulse didn't start this session, so it can't type into it. Continue will suggest prompts for you to copy. To send them from here, continue the session in a new session.";
+			}
+			return "AgentPulse didn't launch this session, so it can't type into it. Continue will suggest prompts for you to copy.";
 		case "supervisor_offline":
 			return "The machine running this session isn't connected right now, so AgentPulse can't type into it. Continue will suggest prompts; reconnect the machine to send them.";
 		case "host_gone":
@@ -57,6 +61,10 @@ export function autoCounter(
 		? { text: `Auto cap reached, ${used} of ${max}`, capReached: true }
 		: { text: `Automatic sends: ${used} of ${max}`, capReached: false };
 }
+
+/** On a continued Claude session the watcher can suggest, but only a person ever sends (the server refuses `auto` there). */
+export const FORK_AI_LINE =
+	"AgentPulse can suggest prompts here. A person sends them, so automatic sending isn't available.";
 
 export const AUTO_COUNTER_NOTE = "Approving a suggestion yourself doesn't count.";
 

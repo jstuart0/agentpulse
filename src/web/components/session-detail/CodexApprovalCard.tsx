@@ -49,6 +49,7 @@ import {
 	detailMatchesRow,
 	diffDeltaLabel,
 	filesSummary,
+	focusAfterClose,
 	forkModeOf,
 	freezeConfirm,
 	hostLabel,
@@ -177,6 +178,22 @@ type FocusRequest = { kind: "answered"; approvalId: string } | { kind: "header" 
  * is on screen at a time ("1 of 3"), oldest first, so a tap can't land on a card that just moved.
  * Everything the agent wrote is drawn as text, wrapped, never as markup.
  */
+/**
+ * What a continued Claude session was stopped for when something other than AgentPulse sent it a message
+ * (AGEN-117 T3): the lines come from `peerTurnLines` and are plain text nodes, whatever they hold.
+ */
+export function PeerTurnNotice({ lines }: { lines: readonly string[] }) {
+	return (
+		<output className="mx-3 mt-2 block space-y-1 text-sm text-foreground md:mx-6 md:mt-3">
+			{lines.map((line) => (
+				<p key={line} className="break-words">
+					{line}
+				</p>
+			))}
+		</output>
+	);
+}
+
 export function CodexApprovalCard({ session, announce }: Props) {
 	const {
 		data,
@@ -346,27 +363,24 @@ export function CodexApprovalCard({ session, announce }: Props) {
 	const previousPending = useRef<string[]>([]);
 	useEffect(() => {
 		const ids = rows.pending.map((r) => r.id);
-		const closed = previousPending.current.filter((id) => !ids.includes(id));
+		const plan = focusAfterClose({
+			previousPendingIds: previousPending.current,
+			pendingIds: ids,
+			focusWasInside: focusWasInside.current,
+			landingRequested: focusAfter.current !== null,
+			focusLost: document.activeElement === null || document.activeElement === document.body,
+			currentId: current?.id ?? null,
+		});
 		previousPending.current = ids;
-		if (closed.length === 0 || focusAfter.current !== null || !focusWasInside.current) return;
-		const lost = document.activeElement === null || document.activeElement === document.body;
-		if (!lost) return;
+		if (plan === null) return;
 		const target =
-			document.getElementById(approvalOutcomeFocusId(closed[0] as string)) ??
-			(current ? document.getElementById(approvalHeadingId(current.id)) : null);
+			document.getElementById(plan.outcomeId) ??
+			(plan.fallbackHeadingId ? document.getElementById(plan.fallbackHeadingId) : null);
 		if (target) requestAnimationFrame(() => target.focus());
 	}, [rows.pending, current]);
 
 	const peerLines = peerTurnLines(data.list?.peerTurn, host);
-	const peerNode = peerLines ? (
-		<output className="mx-3 mt-2 block space-y-1 text-sm text-foreground md:mx-6 md:mt-3">
-			{peerLines.map((line) => (
-				<p key={line} className="break-words">
-					{line}
-				</p>
-			))}
-		</output>
-	) : null;
+	const peerNode = peerLines ? <PeerTurnNotice lines={peerLines} /> : null;
 
 	const hint =
 		sessionIsLive(session) && showsAvailabilityHint(session.managedSession)

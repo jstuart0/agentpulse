@@ -269,6 +269,18 @@ export interface Session {
 	 * src/shared's OperationalStatus type.
 	 */
 	operationalStatus?: "waiting" | "working" | "idle" | "error" | "completed";
+	/** On a session AgentPulse made by continuing an observed Claude Code session: the id it was forked from. Absent otherwise and from an older server. */
+	forkedFromSessionId?: string;
+	/** With `forkedFromSessionId`: the mode the host picked for this fork from its Claude login, per fork. `restricted` ignores the person's own Claude settings; `ask` leaves them in force. */
+	forkPermissionBranch?: "ask" | "restricted";
+	/** On the observed session a fork was made from, detail response only: the newest fork, its name and whether it is still live. */
+	continuedIn?: { sessionId: string; name: string | null; live: boolean };
+	/** On a continued session, detail response only: the observed session it was forked from, by name, and whether it is still there, archived or deleted. Absent from an older server ("can't tell"). */
+	continuedFrom?: {
+		sessionId: string;
+		name: string | null;
+		state: "available" | "archived" | "deleted";
+	};
 }
 
 export interface SessionEvent {

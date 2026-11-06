@@ -600,6 +600,22 @@ export async function bindObservedSession(
 	return { action: committed.action, launchRequestId: committed.launchRequestId };
 }
 
+/** The name of the observed session a fork came from, for the sentences that point back to it; null if it is gone or unnamed. */
+async function forkSourceName(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	fork: SessionRow,
+): Promise<string | null> {
+	const sourceId = (fork.metadata as { forkedFromSessionId?: unknown } | null)?.forkedFromSessionId;
+	if (typeof sourceId !== "string" || sourceId === "") return null;
+	const [row]: Array<{ displayName: string | null }> = await tx
+		.select({ displayName: sessions.displayName })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sourceId))
+		.limit(1);
+	return row?.displayName ?? null;
+}
+
 /**
  * Recovery of a fork (AGEN-117 T13), in `queueSessionResume`'s lock: the same `resume` action, on N, which
  * the host runs under the mode its own record stored (nothing here names one, and nothing re-picks it).
@@ -658,6 +674,7 @@ async function queueClaudeRecovery(
 		),
 		boundByUserId: actor.userId,
 		sessionName: fresh.displayName,
+		sourceName: await forkSourceName(tx, fresh),
 	});
 	const [row] = await tx
 		.insert(controlActions)

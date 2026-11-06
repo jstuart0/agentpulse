@@ -3,6 +3,7 @@
  * One module, so the server that writes a refusal, the supervisor that reports a failure and the clients
  * that print either hold the same names and the same sentences.
  */
+import { ORIGINAL_SESSION_FALLBACK, forkSentenceName } from "./claude-fork-copy.js";
 import type { ApprovalPolicy, SandboxMode } from "./types.js";
 
 /** The supervisor feature that says a host can run a `resume` action. Added to its capability lists in the phase where the handler lands. */
@@ -186,6 +187,8 @@ export interface ClaudeResumeActionMetadata {
 	expectedEnforcedArgs: string[];
 	boundByUserId?: string | null;
 	sessionName?: string;
+	/** Recovery only: the observed session N was forked from, by name, for the few sentences that point back to it. */
+	sourceName?: string;
 	/** Takeover only. */
 	forkSessionId?: string;
 	carrierLaunchId?: string;
@@ -198,18 +201,24 @@ export interface ClaudeResumeActionMetadata {
 }
 
 export function buildClaudeResumeActionMetadata(
-	input: Omit<ClaudeResumeActionMetadata, "agentType" | "assignOwner" | "sessionName"> & {
+	input: Omit<
+		ClaudeResumeActionMetadata,
+		"agentType" | "assignOwner" | "sessionName" | "sourceName"
+	> & {
 		assignOwner?: boolean;
 		sessionName?: string | null;
+		sourceName?: string | null;
 	},
 ): ClaudeResumeActionMetadata {
-	const { assignOwner, sessionName, ...rest } = input;
+	const { assignOwner, sessionName, sourceName, ...rest } = input;
 	const name = typeof sessionName === "string" && sessionName.trim() !== "" ? sessionName : "";
+	const source = typeof sourceName === "string" && sourceName.trim() !== "" ? sourceName : "";
 	return {
 		...rest,
 		agentType: "claude_code",
 		...(assignOwner ? { assignOwner: true as const } : {}),
 		...(name !== "" ? { sessionName: name } : {}),
+		...(source !== "" ? { sourceName: source } : {}),
 	};
 }
 
@@ -232,7 +241,18 @@ const STILL_HELD = (host: string, done: string): string =>
 
 const SAYS_RESUMED_ABOUT_RETRY = "Start a new session for this work.";
 
-type Words = (host: string) => string;
+/** A sentence for a failure; the second argument is the observed session's name, for the few that mention it. */
+type Words = (
+	host: string,
+	sourceName?: string | null,
+	version?: ClaudeVersionNote | null,
+) => string;
+
+/** The Claude Code version a host found and the range AgentPulse has tested, for the version refusal's words. */
+export interface ClaudeVersionNote {
+	found: string;
+	range: string;
+}
 type KindWords = Record<CodexFailureKind, Words>;
 
 const WAITING_ON_REPORTS: Words = (host) =>
@@ -323,8 +343,8 @@ const CLAUDE_TAKEOVER_WORDS: Record<ResumeFailureKind, Words> = {
 		`Claude Code has no login the supervisor on ${host} can use, so nothing was started. ${CLAUDE_TERMINAL_LOGIN} Give the supervisor's environment either a subscription token, made with \`claude setup-token\` and set as \`CLAUDE_CODE_OAUTH_TOKEN\`, or an API key set as \`ANTHROPIC_API_KEY\`. Then restart the supervisor and try again.`,
 	ownership_changed: (host) =>
 		`Who owns this session or ${host} changed while it was starting, so nothing was started. Try again.`,
-	branch_changed: () =>
-		"This session started under different rules than AgentPulse uses now, so it can't be resumed. End it and continue the original again.",
+	branch_changed: (_host, sourceName) =>
+		`This session started under different rules than AgentPulse uses now, so it can't be resumed. End it and continue ${forkSentenceName(sourceName, ORIGINAL_SESSION_FALLBACK)} again.`,
 	liveness_unknown: (host) =>
 		`AgentPulse couldn't check whether this session is open on ${host}, so it didn't start. Try again.`,
 	host_busy: (host) =>
@@ -332,8 +352,10 @@ const CLAUDE_TAKEOVER_WORDS: Record<ResumeFailureKind, Words> = {
 	source_changed: () =>
 		"Your terminal's conversation changed while this was starting, so AgentPulse stopped. It may have been you, or this version of Claude Code may have written to it. Check that conversation before trying again.",
 	settle_conflict: () => "AgentPulse couldn't set this up, so nothing was started. Try again.",
-	unsupported_claude: (host) =>
-		`Claude Code on ${host} is outside what AgentPulse has tested. Nothing was started. Change the Claude Code version there, or update AgentPulse.`,
+	unsupported_claude: (host, _name, version) =>
+		version
+			? `Claude Code ${version.found} on ${host} is outside what AgentPulse has tested (${version.range}). Nothing was started. Change the Claude Code version there, or update AgentPulse.`
+			: `Claude Code on ${host} is outside what AgentPulse has tested. Nothing was started. Change the Claude Code version there, or update AgentPulse.`,
 	insecure_transport: (host) =>
 		`${host} doesn't reach AgentPulse over https, so it can't answer approvals. Nothing was started.`,
 	unsupported_platform: () => "AgentPulse can do this only on macOS so far.",
@@ -375,14 +397,16 @@ export function resumeFailureMessage(
 	resumeKind: ResumeKind,
 	agent: "codex_cli" | "claude_code" = "codex_cli",
 	mode?: ClaudeForkMode,
+	sourceName?: string | null,
+	version?: ClaudeVersionNote | null,
 ): string {
 	if (agent === "claude_code") {
 		if (resumeKind === "recovery") {
 			if (kind === "claude_not_logged_in") return claudeRecoveryNotLoggedIn(host, mode);
 			const override = CLAUDE_RECOVERY_OVERRIDES[kind];
-			if (override) return override(host);
+			if (override) return override(host, sourceName, version);
 		}
-		return CLAUDE_TAKEOVER_WORDS[kind](host);
+		return CLAUDE_TAKEOVER_WORDS[kind](host, sourceName, version);
 	}
 	const table = resumeKind === "takeover" ? TAKEOVER_WORDS : RECOVERY_WORDS;
 	// A kind only a Claude resume can have is, on a Codex one, the generic refusal.
@@ -412,9 +436,13 @@ export const hostCannotRunCodexMessage = (host: string, kind: ResumeKind = "take
 		: `${host} can't run Codex sessions: Codex isn't set up there, or it doesn't support managed Codex sessions. Choose another machine.`;
 
 /** A host that is current enough but has no usable Claude Code, or predates Claude takeover. */
-export const hostCannotRunClaudeMessage = (host: string, kind: ResumeKind = "takeover"): string =>
+export const hostCannotRunClaudeMessage = (
+	host: string,
+	kind: ResumeKind = "takeover",
+	sourceName?: string | null,
+): string =>
 	kind === "recovery"
-		? `${host} can't continue Claude sessions: Claude Code isn't set up there, or its supervisor is out of date. Fix that on ${host}, or end this session and continue the original on another machine.`
+		? `${host} can't continue Claude sessions: Claude Code isn't set up there, or its supervisor is out of date. Fix that on ${host}, or end this session and continue ${forkSentenceName(sourceName, ORIGINAL_SESSION_FALLBACK)} on another machine.`
 		: `${host} can't continue Claude sessions: Claude Code isn't set up there, isn't on macOS, or its supervisor is out of date. Choose another machine.`;
 
 /** The timeline event the server writes when a resume succeeds. Server-only: hooks and supervisors can't write it. */
@@ -426,7 +454,3 @@ export const SESSION_RESUMED_CONTENT: Readonly<Record<ResumeKind, string>> = {
 	recovery:
 		"AgentPulse resumed this session. Any turn that was running when its process ended didn't finish.",
 };
-
-/** N's first timeline row after a Claude takeover: fixed words, no session content. */
-export const SESSION_FORKED_CONTENT =
-	"AgentPulse continued an earlier conversation here, in a new session. The original is unchanged.";

@@ -249,12 +249,12 @@ describe("ComposerBody states", () => {
 
 	test("a failed send: editable text, the reason in role=alert, and the way to a new session when it asks for one", () => {
 		const out = body({ phase: { step: "failed", reason: "Host said no.", startNew: false } });
-		expect(out).toMatch(/<div[^>]*role="alert"[^>]*>Host said no\.<\/div>/);
+		expect(out).toMatch(/<div[^>]*role="alert"[^>]*>(<span>)?Host said no\.(<\/span>)?<\/div>/);
 		expect(out).not.toMatch(/<textarea[^>]*readonly/i);
 		expect(out).not.toContain("Go to Templates");
 		const upgrade = body({ phase: { step: "failed", reason: "Update it.", startNew: true } });
 		expect(upgrade).toMatch(
-			/role="alert"[^>]*>Update it\. <a[^>]*href="\/templates"[^>]*>Go to Templates<\/a>/,
+			/role="alert"[^>]*>(<span>)?Update it\.(<\/span>)? <a[^>]*href="\/templates"[^>]*>Go to Templates<\/a>/,
 		);
 	});
 

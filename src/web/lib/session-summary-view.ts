@@ -274,9 +274,15 @@ export const CLAIM_ONLY_SECTION_NOTE =
 	"Most of these are the agent's claim only. The recorded activity doesn't confirm them.";
 export const CODEX_CLAIM_ONLY_LINE =
 	"Codex often records no result for a command, so its commands can't confirm a claim.";
+/** A continued Claude session keeps no tool results (AGEN-117 T18), so nothing in it can confirm a claim. */
+export const FORK_CLAIM_ONLY_LINE =
+	"This session doesn't record tool results, so its commands can't confirm a claim.";
 
 /** The wording for "agent's claim only"; `extra` is the additional line a Codex session gets. */
-export function claimOnlyCopy(agentType: string | null | undefined): {
+export function claimOnlyCopy(
+	agentType: string | null | undefined,
+	continued = false,
+): {
 	label: string;
 	help: string;
 	sectionNote: string;
@@ -288,7 +294,12 @@ export function claimOnlyCopy(agentType: string | null | undefined): {
 		help: CLAIM_ONLY_HELP,
 		sectionNote: CLAIM_ONLY_SECTION_NOTE,
 		summaryLine: CLAIM_ONLY_SUMMARY_LINE,
-		extra: agentType === "codex_cli" ? CODEX_CLAIM_ONLY_LINE : null,
+		extra:
+			agentType === "codex_cli"
+				? CODEX_CLAIM_ONLY_LINE
+				: continued && agentType === "claude_code"
+					? FORK_CLAIM_ONLY_LINE
+					: null,
 	};
 }
 

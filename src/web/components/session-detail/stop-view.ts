@@ -6,23 +6,39 @@
  * Stop ends different things. A Codex session's stop closes its thread, and a launched Claude session's stop
  * ends the turn it is running (the next prompt starts a new process), so the words differ.
  */
+import { forkSentenceName } from "../../../shared/claude-fork-copy.js";
 import { cleanHostText } from "../../../shared/clean-host-text.js";
 import { CONTROL_TIMEOUT_ERROR } from "../../../shared/managed-messages.js";
 import { STOP_NOT_SUPPORTED, STOP_NOT_SUPPORTED_MESSAGE } from "../../../shared/stop-runtime.js";
 import type { ControlAction, Session } from "../../../shared/types.js";
 import { describeApiError } from "../../lib/api-errors.js";
 import { ApiError } from "../../lib/api.js";
+import {
+	type ForkSource,
+	KEEP_WORKING_GONE,
+	continueAgain,
+	isFork,
+	sourceUnavailable,
+} from "../../lib/fork-session.js";
 import { parseDate } from "../../lib/utils.js";
 import { hostNameOf, hostRefusalMessage } from "./host-control-view.js";
 
 /** Claude states with a process this host can stop. A terminal launch has none, so it offers no button. */
 const CLAUDE_STOPPABLE_STATES: ReadonlySet<string> = new Set(["headless", "managed"]);
 
-export function canStopSession(session: Pick<Session, "agentType" | "managedSession">): boolean {
+type ForkAware = Partial<Pick<Session, "forkedFromSessionId" | "metadata">>;
+
+export function canStopSession(
+	session: Pick<Session, "agentType" | "managedSession"> & ForkAware,
+): boolean {
 	const state = session.managedSession?.managedState;
 	if (state === undefined) return false;
 	if (session.agentType === "codex_cli") return state === "managed";
-	if (session.agentType === "claude_code") return CLAUDE_STOPPABLE_STATES.has(state);
+	if (session.agentType === "claude_code") {
+		// A continued session can be ended while its process is gone too: the host checks nothing still runs.
+		if (state === "degraded" && isFork(session)) return true;
+		return CLAUDE_STOPPABLE_STATES.has(state);
+	}
 	return false;
 }
 
@@ -54,9 +70,25 @@ const CLAUDE_IDLE_COPY: StopConfirmCopy = {
 	confirmLabel: "Stop",
 };
 
+/** Ending a continued session: it can't be continued afterwards, and the original is how to carry on. */
+function forkEndCopy(name: string, source: ForkSource): StopConfirmCopy {
+	const carryOn = sourceUnavailable(source)
+		? KEEP_WORKING_GONE
+		: `To keep working, ${continueAgain(source).replace(/ again$/, "")}; that starts from your terminal's conversation and won't include what happened here.`;
+	return {
+		title: `End ${forkSentenceName(name, "this session")}?`,
+		body: `Claude stops now and this session can't be continued. Anything it left running in the background may keep running. Files already changed stay changed. ${carryOn}`,
+		confirmLabel: "End session",
+	};
+}
+
 export function stopConfirmCopy(
-	session: Pick<Session, "agentType"> & Partial<Pick<Session, "isWorking">>,
+	session: Pick<Session, "agentType"> & Partial<Pick<Session, "isWorking">> & ForkAware,
+	fork?: { name: string; source: ForkSource },
 ): StopConfirmCopy {
+	if (session.agentType === "claude_code" && isFork(session)) {
+		return forkEndCopy(fork?.name ?? "this session", fork?.source ?? { state: "unknown" });
+	}
 	if (session.agentType !== "claude_code") return CODEX_COPY;
 	return session.isWorking === false ? CLAUDE_IDLE_COPY : CLAUDE_LAUNCHED_COPY;
 }
@@ -77,8 +109,9 @@ function agentName(session: Pick<Session, "agentType">): string {
 }
 
 /** The label of the stop control where there's no room for a sentence (the overflow menu). */
-export function stopControlLabel(session: Pick<Session, "agentType">): string {
-	return session.agentType === "claude_code" ? "Stop turn" : "Stop session";
+export function stopControlLabel(session: Pick<Session, "agentType"> & ForkAware): string {
+	if (session.agentType === "claude_code") return isFork(session) ? "End session" : "Stop turn";
+	return "Stop session";
 }
 
 /** The host's name as the host reported it, or null when it is blank (no "on ..." is better than a made-up one). */

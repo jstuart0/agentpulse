@@ -6,6 +6,8 @@ import { SessionSummaryPanel } from "./SessionSummaryPanel.js";
 export interface SessionSummaryTabProps {
 	sessionId: string;
 	agentType: string | null;
+	/** A continued Claude session: it keeps no tool results, which changes what can confirm a claim. */
+	continued?: boolean;
 	/** The page-level hook's result: the page mounts it once so a generation outlives a tab switch. */
 	summary: UseSessionSummary;
 	meta?: { name: string | null; branch: string | null; cwd: string | null };
@@ -16,6 +18,7 @@ export interface SessionSummaryTabProps {
 export function SessionSummaryTab({
 	sessionId,
 	agentType,
+	continued,
 	summary,
 	meta,
 	announce,
@@ -26,6 +29,7 @@ export function SessionSummaryTab({
 		<SessionSummaryPanel
 			sessionId={sessionId}
 			agentType={agentType}
+			continued={continued}
 			load={summary.load}
 			lostContact={summary.lostContact}
 			refusal={summary.refusal}

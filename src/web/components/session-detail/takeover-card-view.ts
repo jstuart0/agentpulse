@@ -5,11 +5,31 @@
  */
 import { cleanHostText } from "../../../shared/clean-host-text.js";
 import { SESSION_END_TIMEOUT_MS, SESSION_IDLE_TIMEOUT_MS } from "../../../shared/constants.js";
-import { RESUMES_SESSIONS, type ResumeKind } from "../../../shared/session-resume.js";
+import {
+	CLAUDE_TAKEOVER,
+	RESUMES_SESSIONS,
+	type ResumeKind,
+} from "../../../shared/session-resume.js";
 import { parseStoredTimestamp } from "../../../shared/timestamp.js";
 import type { Session, SupervisorRecord } from "../../../shared/types.js";
 import type { OwnershipUi } from "../../lib/ownership-ui.js";
-import { TAKEOVER_NOT_ADMIN, type TakeoverAttempt } from "./session-takeover-view.js";
+import {
+	CLAUDE_CARD_ELIGIBLE,
+	CLAUDE_ENTRY_BUTTON,
+	CLAUDE_HOST_SUFFIX,
+	CLAUDE_NOT_ADMIN,
+	CLAUDE_NO_HOST_SOLO,
+	CLAUDE_NO_HOST_TEAM,
+	CLAUDE_QUIET_WAIT,
+	claudeHostReason,
+	claudeProgress,
+	claudeStaleWorking,
+} from "./claude-takeover-copy.js";
+import {
+	type ResumeAgent,
+	TAKEOVER_NOT_ADMIN,
+	type TakeoverAttempt,
+} from "./session-takeover-view.js";
 
 /** A session working or waiting is taken to have crashed once it has been silent this long (the server's sweep). */
 const CRASHED_AFTER_MS = 2 * SESSION_END_TIMEOUT_MS;
@@ -35,11 +55,14 @@ export function takeoverProgress(
 	host: string | null,
 	startedAt: string,
 	now: number,
+	agent: ResumeAgent = "codex_cli",
 ): string {
 	const name = host?.trim() || THE_HOST;
 	const started = parseStoredTimestamp(startedAt);
-	if (started !== null && now - started >= STILL_WAITING_AFTER_MS)
-		return TAKEOVER_STILL_WAITING(name);
+	const waiting = started !== null && now - started >= STILL_WAITING_AFTER_MS;
+	// A continued Claude session starts a new one; a recovery of one resumes it, in the Codex words.
+	if (agent === "claude_code" && kind === "takeover") return claudeProgress(host, waiting);
+	if (waiting) return TAKEOVER_STILL_WAITING(name);
 	return kind === "takeover"
 		? `Asking ${name} to take over this session…`
 		: `Asking ${name} to resume this session…`;
@@ -78,7 +101,7 @@ function hasOutstandingPermissionWait(metadata: Session["metadata"] | undefined)
  */
 export function takeoverEligibility(session: EligibilitySession, now: number): TakeoverEligibility {
 	if (
-		session.agentType !== "codex_cli" ||
+		(session.agentType !== "codex_cli" && session.agentType !== "claude_code") ||
 		session.isArchived ||
 		session.managed === true ||
 		session.managedSession
@@ -99,7 +122,12 @@ export function takeoverEligibility(session: EligibilitySession, now: number): T
 
 // ── The machines ────────────────────────────────────────────────────────────
 
-export type BindHostReason = "offline" | "needs_update" | "directory";
+export type BindHostReason =
+	| "offline"
+	| "needs_update"
+	| "directory"
+	| "unsupported_os"
+	| "needs_claude";
 
 export interface BindHostOption {
 	id: string;
@@ -114,6 +142,8 @@ const REASON_SUFFIX: Record<BindHostReason, string> = {
 	offline: "offline",
 	needs_update: "needs a supervisor update",
 	directory: "doesn't allow this directory",
+	unsupported_os: CLAUDE_HOST_SUFFIX.unsupported_os,
+	needs_claude: CLAUDE_HOST_SUFFIX.needs_claude,
 };
 
 function segmentsOf(path: string): { windows: boolean; segments: string[] } | null {
@@ -155,6 +185,8 @@ export interface BindableHostsContext {
 	isAdmin: boolean;
 	session: { ownerUserId?: string | null; cwd?: string | null };
 	now: number;
+	/** Which agent the session is: a Claude session needs a host that advertises `claude_takeover` and runs macOS. */
+	agent?: ResumeAgent;
 }
 
 /**
@@ -178,13 +210,17 @@ export function bindableHosts(
 			if (!ctx.isAdmin && (ctx.viewerUserId === null || owner !== ctx.viewerUserId)) continue;
 			if (sessionOwner !== null && owner !== null && sessionOwner !== owner) continue;
 		}
+		const claude = ctx.agent === "claude_code";
 		const reason: BindHostReason | null = !leaseIsLive(host, ctx.now)
 			? "offline"
-			: !(host.capabilities?.features ?? []).includes(RESUMES_SESSIONS)
-				? "needs_update"
-				: !insideTrustedRoots(ctx.session.cwd, host.trustedRoots ?? [])
-					? "directory"
-					: null;
+			: claude
+				? (claudeHostReason(host, CLAUDE_TAKEOVER) ??
+					(insideTrustedRoots(ctx.session.cwd, host.trustedRoots ?? []) ? null : "directory"))
+				: !(host.capabilities?.features ?? []).includes(RESUMES_SESSIONS)
+					? "needs_update"
+					: !insideTrustedRoots(ctx.session.cwd, host.trustedRoots ?? [])
+						? "directory"
+						: null;
 		options.push({
 			id: host.id,
 			name: host.hostName,
@@ -284,7 +320,10 @@ export type HostsLoad =
 	| { state: "ready"; options: BindHostOption[]; usable: number };
 
 export interface TakeoverCardInput {
-	session: EligibilitySession & Pick<Session, "ownerUserId">;
+	session: EligibilitySession &
+		Pick<Session, "ownerUserId" | "sessionId"> &
+		Partial<Pick<Session, "displayName">> &
+		Partial<Pick<Session, "continuedIn">>;
 	attempt: TakeoverAttempt;
 	/** `sessionBindAccess` for this viewer. */
 	canBind: boolean;
@@ -304,10 +343,32 @@ export type TakeoverCardView =
 			text: string;
 			failure: string | null;
 			hostsState: "loading" | "error" | "ready";
+			/** The button that opens the dialog. */
+			entryLabel: string;
+	  }
+	/** A Claude session whose fork is still open: the way to it, and the command that opens the original. */
+	| {
+			kind: "continued";
+			forkId: string;
+			forkName: string | null;
+			sourceId: string;
+			/** The observed session's own name, for the Copy button's label. */
+			sourceName: string | null;
 	  };
 
 /** Which card the observed session gets, and with what words. Nothing here grants anything. */
 export function takeoverCardView(input: TakeoverCardInput): TakeoverCardView {
+	const claude = input.session.agentType === "claude_code";
+	const fork = input.session.continuedIn;
+	if (claude && fork?.live && !input.session.isArchived) {
+		return {
+			kind: "continued",
+			forkId: fork.sessionId,
+			forkName: fork.name,
+			sourceId: input.session.sessionId,
+			sourceName: input.session.displayName ?? null,
+		};
+	}
 	const eligibility = takeoverEligibility(input.session, input.now);
 	if (eligibility.kind === "unavailable") return { kind: "hidden" };
 	const failure =
@@ -317,26 +378,37 @@ export function takeoverCardView(input: TakeoverCardInput): TakeoverCardView {
 	if (!input.canBind) {
 		const unowned = (input.session.ownerUserId ?? null) === null;
 		return input.team && !input.viewerIsAdmin && unowned && eligibility.kind === "eligible"
-			? { kind: "info", text: TAKEOVER_NOT_ADMIN, failure: null }
+			? { kind: "info", text: claude ? CLAUDE_NOT_ADMIN : TAKEOVER_NOT_ADMIN, failure: null }
 			: { kind: "hidden" };
 	}
 	if (eligibility.kind === "quiet_wait")
-		return { kind: "info", text: TAKEOVER_QUIET_WAIT, failure };
+		return { kind: "info", text: claude ? CLAUDE_QUIET_WAIT : TAKEOVER_QUIET_WAIT, failure };
 	if (eligibility.kind === "stale_working") {
+		const heard = input.formatTime(eligibility.lastHeardAt);
 		return {
 			kind: "info",
-			text: `AgentPulse last heard from this session at ${input.formatTime(eligibility.lastHeardAt)}. If it crashed, you can take it over about an hour after that.`,
+			text: claude
+				? claudeStaleWorking(heard)
+				: `AgentPulse last heard from this session at ${heard}. If it crashed, you can take it over about an hour after that.`,
 			failure,
 		};
 	}
 	if (input.hosts.state === "ready" && input.hosts.options.length === 0) {
 		const memberInTeam = input.team && !input.viewerIsAdmin;
+		const solo = claude ? CLAUDE_NO_HOST_SOLO : TAKEOVER_NO_HOST_SOLO;
+		const teamText = claude ? CLAUDE_NO_HOST_TEAM : TAKEOVER_NO_HOST_TEAM;
 		return {
 			kind: "no_host",
-			text: memberInTeam ? TAKEOVER_NO_HOST_TEAM : TAKEOVER_NO_HOST_SOLO,
+			text: memberInTeam ? teamText : solo,
 			setupLink: !memberInTeam,
 			failure,
 		};
 	}
-	return { kind: "eligible", text: TAKEOVER_ELIGIBLE, failure, hostsState: input.hosts.state };
+	return {
+		kind: "eligible",
+		text: claude ? CLAUDE_CARD_ELIGIBLE : TAKEOVER_ELIGIBLE,
+		failure,
+		hostsState: input.hosts.state,
+		entryLabel: claude ? CLAUDE_ENTRY_BUTTON : "Take over…",
+	};
 }

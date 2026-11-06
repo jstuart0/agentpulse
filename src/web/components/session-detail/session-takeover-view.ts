@@ -9,6 +9,7 @@
  *
  * The user-facing word is "take over" (an observed session) and "resume" (a managed one whose process is gone).
  */
+import { forkSentenceName } from "../../../shared/claude-fork-copy.js";
 import { cleanHostText } from "../../../shared/clean-host-text.js";
 import {
 	END_SESSION_FIRST_MESSAGE,
@@ -16,6 +17,7 @@ import {
 	TAKEOVER_IN_PROGRESS_MESSAGE,
 	hostCannotRunClaudeMessage,
 	hostCannotRunCodexMessage,
+	resumeAgentOf,
 	resumeFailureMessage,
 } from "../../../shared/session-resume.js";
 import type { ControlAction, Session } from "../../../shared/types.js";
@@ -27,15 +29,30 @@ export const TAKEOVER_NOT_ADMIN = "Only an admin can take over a session with no
 
 // ── The attempt ─────────────────────────────────────────────────────────────
 
+/** Which agent a take-over or resume is about: its words differ (a Claude session is continued in a new one). */
+export type ResumeAgent = "codex_cli" | "claude_code";
+
 export type TakeoverAttempt =
 	| { state: "none" }
-	| { state: "in_flight"; actionId: string; kind: ResumeKind; startedAt: string }
-	| { state: "failed"; actionId: string; kind: ResumeKind; reason: string };
+	| {
+			state: "in_flight";
+			actionId: string;
+			kind: ResumeKind;
+			agent: ResumeAgent;
+			/** The machine the action names (a Claude takeover has no managed row yet to say it); null when none. */
+			hostName: string | null;
+			startedAt: string;
+	  }
+	| { state: "failed"; actionId: string; kind: ResumeKind; agent: ResumeAgent; reason: string };
 
 function kindOf(action: ControlAction): ResumeKind {
 	return (action.metadata as { resumeKind?: unknown } | null)?.resumeKind === "recovery"
 		? "recovery"
 		: "takeover";
+}
+
+function hostNameOfAction(action: ControlAction): string | null {
+	return cleanHostText((action.metadata as { hostName?: unknown } | null)?.hostName, 80);
 }
 
 function byAge(a: ControlAction, b: ControlAction): number {
@@ -56,7 +73,14 @@ export function takeoverAttempt(actions: readonly ControlAction[]): TakeoverAtte
 	const resumes = actions.filter((a) => a.actionType === "resume").sort(byAge);
 	const open = resumes.filter((a) => a.status === "queued" || a.status === "running").pop();
 	if (open) {
-		return { state: "in_flight", actionId: open.id, kind: kindOf(open), startedAt: open.createdAt };
+		return {
+			state: "in_flight",
+			actionId: open.id,
+			kind: kindOf(open),
+			agent: resumeAgentOf(open.metadata),
+			hostName: hostNameOfAction(open),
+			startedAt: open.createdAt,
+		};
 	}
 	const newest = resumes[resumes.length - 1];
 	if (newest?.status === "failed") {
@@ -64,6 +88,7 @@ export function takeoverAttempt(actions: readonly ControlAction[]): TakeoverAtte
 			state: "failed",
 			actionId: newest.id,
 			kind: kindOf(newest),
+			agent: resumeAgentOf(newest.metadata),
 			reason: cleanHostText(newest.error) ?? TAKEOVER_FAILURE_FALLBACK,
 		};
 	}
@@ -83,10 +108,51 @@ export function attemptAnnouncement(
 	if (previous.state !== "in_flight") return null;
 	if (next.state === "failed") return next.reason;
 	if (next.state !== "none") return null;
-	const host = hostName?.trim();
+	// A continued Claude session opens in a new session: the page moves there and says so itself.
+	if (previous.agent === "claude_code" && previous.kind === "takeover") return null;
+	const host = (hostName ?? previous.hostName)?.trim();
 	return previous.kind === "takeover"
 		? `${host || "The host"} took over this session. You can send a prompt now.`
 		: `Session resumed on ${host || "the host"}. You can send a prompt now.`;
+}
+
+/** What the new session's page is told when a person arrives from the one they continued. */
+export interface ContinuedArrival {
+	sourceName: string | null;
+	host: string | null;
+}
+
+/**
+ * Where the page goes when a continued Claude session has just been set up: the attempt that was in flight
+ * ended without failing, and the observed session now names a live fork. Nothing before then (a reload of a
+ * session that already has a fork shows the link instead of moving the person), and nothing on failure.
+ */
+export function continuedNavigation(
+	previous: TakeoverAttempt,
+	next: TakeoverAttempt,
+	session:
+		| (Pick<Session, "sessionId"> & Partial<Pick<Session, "continuedIn" | "displayName">>)
+		| null,
+): { to: string; arrival: ContinuedArrival } | null {
+	if (previous.state !== "in_flight" || previous.agent !== "claude_code") return null;
+	if (previous.kind !== "takeover" || next.state !== "none") return null;
+	const fork = session?.continuedIn;
+	if (!fork?.live) return null;
+	return {
+		to: `/sessions/${encodeURIComponent(fork.sessionId)}`,
+		arrival: { sourceName: session?.displayName ?? null, host: previous.hostName },
+	};
+}
+
+/**
+ * Spoken on the new session's page, once, when the person has just been brought there. "You can send a prompt
+ * now" only when the box is actually open: a session still starting says where it is and nothing more.
+ */
+export function continuedArrivalAnnouncement(arrival: ContinuedArrival, ready = true): string {
+	const name = forkSentenceName(arrival.sourceName, "the session");
+	const host = forkSentenceName(arrival.host, "");
+	const where = `Continuing ${name} in a new session${host ? ` on ${host}` : ""}.`;
+	return ready ? `${where} You can send a prompt now.` : where;
 }
 
 // ── Refusals ────────────────────────────────────────────────────────────────
@@ -94,7 +160,7 @@ export function attemptAnnouncement(
 const UNREADABLE_REQUEST = "AgentPulse couldn't read that request. Reload the page and try again.";
 const UNREACHABLE = "Couldn't reach AgentPulse. Check your connection and try again.";
 
-type RefusalWords = (host: string, kind: ResumeKind) => string;
+type RefusalWords = (host: string, kind: ResumeKind, sourceName?: string | null) => string;
 
 const RETRY_NOT_AVAILABLE =
 	"This session was taken over, not launched, so it can't be retried. Send it a prompt, or start a new session.";
@@ -112,7 +178,8 @@ const REFUSALS: Record<string, RefusalWords> = {
 		"AgentPulse already has a record of running this session, so it can't be taken over.",
 	session_id_unsupported: () =>
 		"This session's ID isn't in a form AgentPulse can resume, so it can't be taken over.",
-	agent_not_supported: () => "AgentPulse can only take over Codex sessions for now.",
+	agent_not_supported: () =>
+		"AgentPulse can take over Codex and Claude Code sessions, but not sessions from other tools.",
 	cwd_unknown: () => "This session never reported a directory, so it can't be taken over.",
 	cwd_not_trusted: (host) =>
 		`${host} doesn't allow this session's directory. Its trusted roots are listed on Hosts.`,
@@ -131,7 +198,8 @@ const REFUSALS: Record<string, RefusalWords> = {
 			: `${host} was removed from AgentPulse. Choose another machine.`,
 	host_upgrade_required: (host, kind) => resumeFailureMessage("host_upgrade_required", host, kind),
 	host_cannot_run_codex: (host, kind) => hostCannotRunCodexMessage(host, kind),
-	host_cannot_run_claude: (host, kind) => hostCannotRunClaudeMessage(host, kind),
+	host_cannot_run_claude: (host, kind, sourceName) =>
+		hostCannotRunClaudeMessage(host, kind, sourceName),
 	end_session_first: () => END_SESSION_FIRST_MESSAGE,
 	session_key_mismatch: (host) =>
 		`This session was reported by a key that isn't tied to ${host}. Ask an admin to take it over.`,
@@ -149,18 +217,50 @@ const REFUSALS: Record<string, RefusalWords> = {
 };
 
 /**
+ * The refusals whose sentence names the action: for a Claude Code session it is "continue" (in a new session),
+ * not "take over". Every other code reads the same for both agents.
+ */
+const CLAUDE_REFUSALS: Record<string, RefusalWords> = {
+	session_active: () =>
+		"This session looks active: AgentPulse heard from it in the last 5 minutes, or it hasn't finished a turn. Close it in your terminal and try again in a few minutes. A session that crashed becomes available about an hour after its last activity.",
+	already_managed: () =>
+		"This session is already being continued here, or the session continued from it is still open. End that one first, then try again.",
+	session_id_unsupported: () =>
+		"This session's ID isn't in a form AgentPulse can continue, so it can't be continued.",
+	cwd_unknown: () => "This session never reported a directory, so it can't be continued.",
+	not_owner: (_host, kind) =>
+		kind === "recovery"
+			? RECOVERY_NOT_OWNER
+			: "Only this session's owner or an admin can continue it.",
+	human_required: (_host, kind) =>
+		kind === "recovery"
+			? "Resuming a session needs a signed-in person, not an API key."
+			: "Continuing a session needs a signed-in person, not an API key.",
+};
+
+/**
  * What to tell the person when POST /bind or POST /resume is refused or fails. The code decides; the host
  * (when one was chosen, or the session's own) names the machine; an unknown code or a network failure gets a
  * plain sentence of its own, never the code or a stack.
  */
 export function bindRefusalMessage(
 	error: unknown,
-	ctx: { host: string | null; kind: ResumeKind },
+	ctx: {
+		host: string | null;
+		kind: ResumeKind;
+		agent?: ResumeAgent;
+		/** The observed session's name, for the sentences that point back to it (a resume of a continued session). */
+		sourceName?: string | null;
+	},
 ): string {
 	const host = ctx.host?.trim() || "That machine";
 	if (error instanceof ApiError) {
-		if (error.code !== null && Object.hasOwn(REFUSALS, error.code)) {
-			return (REFUSALS[error.code] as RefusalWords)(host, ctx.kind);
+		if (error.code !== null) {
+			const claude = ctx.agent === "claude_code" ? CLAUDE_REFUSALS[error.code] : undefined;
+			if (claude) return claude(host, ctx.kind, ctx.sourceName);
+			if (Object.hasOwn(REFUSALS, error.code)) {
+				return (REFUSALS[error.code] as RefusalWords)(host, ctx.kind, ctx.sourceName);
+			}
 		}
 		return ctx.kind === "takeover"
 			? TAKEOVER_FAILURE_FALLBACK

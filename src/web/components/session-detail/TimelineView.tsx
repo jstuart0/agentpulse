@@ -1,3 +1,4 @@
+import { isForkTurnSummary } from "../../../shared/claude-fork-copy.js";
 import {
 	EVENT_DUPLICATE_WINDOW_MS,
 	EVENT_SOURCE_PRIORITY,
@@ -11,6 +12,7 @@ import type { EventCategory, EventSource, SessionEvent } from "../../../shared/t
 import { timeAttribute } from "../../lib/event-time.js";
 import { cn, formatTimeAgo } from "../../lib/utils.js";
 import { MarkdownContent } from "../MarkdownContent.js";
+import { HostSentence } from "./HostSentence.js";
 
 export type TimelineMode = "prompts" | "conversation" | "progress" | "terminal" | "debug";
 
@@ -222,7 +224,9 @@ export function TimelineCard({
 				</div>
 				<div className="mt-1.5">
 					{plainText ? (
-						<p className="whitespace-pre-wrap break-words text-sm">{text}</p>
+						<p className="whitespace-pre-wrap break-words text-sm">
+							<HostSentence text={text} />
+						</p>
 					) : (
 						<MarkdownContent content={text} compact />
 					)}
@@ -248,13 +252,27 @@ const FAILED_TURN_EVENT = "HeadlessPromptFailed";
  * Rows whose text comes from a host or a model and so is shown as plain text, never parsed as Markdown:
  * a remote image in Markdown would make the viewer's browser fetch it.
  */
-export function eventRowIsPlainText(event: Pick<SessionEvent, "eventType">): boolean {
+export function eventRowIsPlainText(
+	event: Pick<SessionEvent, "eventType"> & Partial<Pick<SessionEvent, "content">>,
+): boolean {
 	return (
 		event.eventType === "ManagedEventsLost" ||
 		event.eventType === APPROVAL_RESOLVED_EVENT ||
 		event.eventType === SESSION_RESUMED_EVENT_TYPE ||
-		event.eventType === FAILED_TURN_EVENT
+		event.eventType === FAILED_TURN_EVENT ||
+		isTurnSummaryRow(event)
 	);
+}
+
+/**
+ * The two per-turn lines a continued Claude session writes (what ran without asking you, what was refused).
+ * They are the only record of unasked tool calls, so Conversation shows them; the per-call lines stay in
+ * Progress. Matched by their fixed opening words, which survive a compact read that drops the raw payload.
+ */
+export function isTurnSummaryRow(
+	event: Pick<SessionEvent, "eventType"> & Partial<Pick<SessionEvent, "content">>,
+): boolean {
+	return event.eventType === "HeadlessStatus" && isForkTurnSummary(event.content);
 }
 
 export type RowTone = "default" | "amber" | "emerald";
@@ -374,6 +392,12 @@ export function getVisibleEvents<
 
 	return allEvents.filter((event) => {
 		if (showSystem && event.eventType === FAILED_TURN_EVENT && event.category === "system_event") {
+			return Boolean(event.content);
+		}
+		if (
+			mode !== "prompts" &&
+			isTurnSummaryRow({ eventType: event.eventType ?? "", content: event.content })
+		) {
 			return Boolean(event.content);
 		}
 		if (!event.category || !categories.has(event.category)) return false;

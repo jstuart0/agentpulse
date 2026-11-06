@@ -7,6 +7,7 @@ import type { AgentType, Session, SessionEvent } from "../../../shared/types.js"
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { useOwnershipUi } from "../../hooks/useOwnershipUi.js";
 import { useSummaryAvailability } from "../../hooks/useSummaryAvailable.js";
+import { isFork } from "../../lib/fork-session.js";
 import type { OwnerChipModel } from "../../lib/owner-chip.js";
 import { RENAME_BLOCKED_REASON, sessionActionAccess } from "../../lib/session-action-access.js";
 import { sessionHostLabel } from "../../lib/session-host.js";
@@ -26,6 +27,7 @@ import { FilterToggle, ModeButton, ScrollJumpControls } from "./SharedControls.j
 import type { TimelineMode } from "./TimelineView.js";
 import { WorkspaceTabBar, activityTabWorking } from "./WorkspaceTabBar.js";
 import { buildExportMarkdown } from "./export-markdown.js";
+import { FORK_TOOLS_REASON } from "./fork-status-view.js";
 import { controlBlockedReason } from "./host-control-view.js";
 import { launchLinkLabel } from "./session-takeover-view.js";
 import { STOP_NOT_OWNER_REASON, canStopSession, stopControlLabel } from "./stop-view.js";
@@ -126,6 +128,9 @@ export function SessionHeader(props: SessionHeaderProps) {
 			: rawOpStatus;
 
 	const canStop = canStopSession(session);
+	// A continued session records tool activity as short lines only, so there is nothing for these to reveal.
+	const forkSession = session.agentType === "claude_code" && isFork(session);
+	const toolsOffReason = forkSession ? FORK_TOOLS_REASON : null;
 	const hostLabel = sessionHostLabel(session);
 	const stopBlockedReason = canStop
 		? !mayStop
@@ -277,7 +282,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 								aria-describedby={stopBlockedReason ? "stop-blocked-reason" : undefined}
 								className="rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-800 dark:text-red-300 hover:bg-red-500/20 transition-colors disabled:opacity-50 disabled:hover:bg-red-500/10"
 							>
-								Stop
+								{forkSession ? "End session" : "Stop"}
 							</button>
 						)}
 						{stopBlockedReason && (
@@ -312,7 +317,9 @@ export function SessionHeader(props: SessionHeaderProps) {
 								/>
 							</svg>
 						</button>
-						<span className="text-xs text-muted-foreground">{session.totalToolUses} tools</span>
+						{forkSession ? null : (
+							<span className="text-xs text-muted-foreground">{session.totalToolUses} tools</span>
+						)}
 						<AgentTypeBadge agentType={session.agentType} />
 					</div>
 					{/* AGEN: the primary ack action, visible (not buried in the
@@ -401,6 +408,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 									onToggleNoisyTools={onToggleNoisyTools}
 									showSystem={showSystem}
 									onToggleSystem={onToggleSystem}
+									toolsOffReason={toolsOffReason}
 								/>
 							</div>
 						)}
@@ -414,6 +422,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 								onToggleNoisyTools={onToggleNoisyTools}
 								showSystem={showSystem}
 								onToggleSystem={onToggleSystem}
+								toolsOffReason={toolsOffReason}
 							/>
 						</div>
 					</>
@@ -427,7 +436,7 @@ export function SessionHeader(props: SessionHeaderProps) {
  * Shared mode + filter row for both the mobile collapsed drawer and
  * the desktop inline toolbar.
  */
-function FilterRow(props: {
+export function FilterRow(props: {
 	mode: TimelineMode;
 	onModeChange: (mode: TimelineMode) => void;
 	showTools: boolean;
@@ -436,6 +445,8 @@ function FilterRow(props: {
 	onToggleNoisyTools: () => void;
 	showSystem: boolean;
 	onToggleSystem: () => void;
+	/** Set on a continued session: the Tools and Noisy toggles are off, and this says why. */
+	toolsOffReason?: string | null;
 }) {
 	const {
 		mode,
@@ -446,6 +457,7 @@ function FilterRow(props: {
 		onToggleNoisyTools,
 		showSystem,
 		onToggleSystem,
+		toolsOffReason = null,
 	} = props;
 	return (
 		<>
@@ -480,13 +492,21 @@ function FilterRow(props: {
 				active={showTools || mode === "debug" || mode === "terminal"}
 				label="Tools"
 				onClick={onToggleTools}
+				disabled={toolsOffReason !== null}
+				title={toolsOffReason ?? undefined}
 			/>
 			<FilterToggle
 				active={showNoisyTools}
 				label="Noisy"
 				onClick={onToggleNoisyTools}
-				disabled={!(showTools || mode === "debug" || mode === "terminal")}
+				disabled={
+					toolsOffReason !== null || !(showTools || mode === "debug" || mode === "terminal")
+				}
+				title={toolsOffReason ?? undefined}
 			/>
+			{toolsOffReason ? (
+				<span className="text-[10px] text-muted-foreground">{toolsOffReason}</span>
+			) : null}
 		</>
 	);
 }

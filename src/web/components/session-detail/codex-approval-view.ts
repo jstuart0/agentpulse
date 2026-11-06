@@ -973,6 +973,33 @@ export function showsAvailabilityHint(
 	return state !== "pending" && state !== "degraded";
 }
 
+// ── focus when a request closes by itself ───────────────────────────────────
+
+/**
+ * Where focus goes when a request closes while it was inside the card (the server's row, a cancel, the turn
+ * ending): the focused button is gone, so focus would fall to the page. The outcome line of the first request
+ * that closed takes it, else the heading of the one now showing; nothing when focus wasn't inside, when an
+ * answer already asked for a landing, or when focus is still somewhere real. Pure, so it is tested without a
+ * DOM; the card passes in what it can see and looks the ids up.
+ */
+export function focusAfterClose(input: {
+	previousPendingIds: readonly string[];
+	pendingIds: readonly string[];
+	focusWasInside: boolean;
+	landingRequested: boolean;
+	focusLost: boolean;
+	currentId: string | null;
+}): { outcomeId: string; fallbackHeadingId: string | null } | null {
+	const closed = input.previousPendingIds.filter((id) => !input.pendingIds.includes(id));
+	if (closed.length === 0 || input.landingRequested || !input.focusWasInside || !input.focusLost) {
+		return null;
+	}
+	return {
+		outcomeId: approvalOutcomeFocusId(closed[0] as string),
+		fallbackHeadingId: input.currentId ? approvalHeadingId(input.currentId) : null,
+	};
+}
+
 // ── a message something else sent the session ───────────────────────────────
 
 /**

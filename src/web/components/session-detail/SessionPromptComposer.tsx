@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import type { Session } from "../../../shared/types.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../../hooks/useOwnershipUi.js";
 import { api } from "../../lib/api.js";
+import { forkSourceOf } from "../../lib/fork-session.js";
 import { sessionActionAccess } from "../../lib/session-action-access.js";
 import { sessionBindAccess } from "../../lib/session-bind-access.js";
 import { useUserStore } from "../../stores/user-store.js";
@@ -12,11 +13,15 @@ import {
 	COMPOSER_ENDED,
 	COMPOSER_KEEP_TEXT,
 	type ComposerMode,
+	END_SESSION_BUTTON,
+	RESUME_ANYWAY_BUTTON,
+	RESUME_ANYWAY_NOTE,
 	RESUME_BUTTON,
 	RESUME_BUTTON_AGAIN,
 	RESUME_BUTTON_BUSY,
 	type ResumeOffer,
 	type SendPhase,
+	WHAT_WAITS_SUMMARY,
 	boxState,
 	composerMode,
 	composerNotice,
@@ -45,6 +50,7 @@ export function SessionComposerSlot({
 	onSubmitted,
 	focusToken = 0,
 	stoppingText = null,
+	onEnd,
 }: {
 	session: Session;
 	/** Where a resume of this session stands, derived from its control actions by the page. */
@@ -54,6 +60,8 @@ export function SessionComposerSlot({
 	focusToken?: number;
 	/** A stop is queued or running (AGEN-110): the box is read-only and says why. */
 	stoppingText?: string | null;
+	/** Opens the End confirmation: offered first when a stranger's message stopped a continued session. */
+	onEnd?: () => void;
 }) {
 	const ui = useOwnershipUi();
 	const userId = useUserStore((s) => s.userId);
@@ -64,6 +72,7 @@ export function SessionComposerSlot({
 		canPrompt,
 		canResume: sessionBindAccess(ui, session, viewer),
 		resumeInFlight: attempt.state === "in_flight" && attempt.kind === "recovery",
+		source: forkSourceOf(session),
 	});
 	return (
 		<SessionPromptComposer
@@ -74,6 +83,7 @@ export function SessionComposerSlot({
 			onSubmitted={onSubmitted}
 			focusToken={focusToken}
 			stoppingText={stoppingText}
+			onEnd={onEnd}
 		/>
 	);
 }
@@ -85,6 +95,7 @@ export function SessionPromptComposer({
 	onSubmitted,
 	focusToken = 0,
 	stoppingText = null,
+	onEnd,
 }: {
 	session: Session;
 	mode: ComposerMode | null;
@@ -92,6 +103,7 @@ export function SessionPromptComposer({
 	onSubmitted: () => Promise<void>;
 	focusToken?: number;
 	stoppingText?: string | null;
+	onEnd?: () => void;
 }) {
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const focusedFor = useRef(0);
@@ -154,7 +166,12 @@ export function SessionPromptComposer({
 		try {
 			await api.resumeSession(session.sessionId);
 		} catch (error) {
-			setResumeRefusal(describeResumeFailure(error, session));
+			setResumeRefusal(
+				describeResumeFailure(error, session, {
+					sourceName:
+						forkSourceOf(session).state === "named" ? (session.continuedFrom?.name ?? null) : null,
+				}),
+			);
 			setResumePosting(false);
 			return;
 		}
@@ -186,6 +203,10 @@ export function SessionPromptComposer({
 								offer: locked.resume,
 								posting: resumePosting,
 								onResume: () => void resume(),
+								onEnd:
+									onEnd && locked.resume.state === "available" && locked.resume.afterPeerMessage
+										? onEnd
+										: undefined,
 								alert: resumeRefusal ?? failed,
 							}
 						: undefined
@@ -223,7 +244,9 @@ export function SessionPromptComposer({
 			posting={posting}
 			justSent={justSent}
 			prompt={prompt}
-			notice={mode.kind === "codex" ? composerNotice(session) : null}
+			notice={
+				mode.kind === "codex" || mode.kind === "claude_taken_over" ? composerNotice(session) : null
+			}
 			sideText={hostBlockedReason ?? interactiveControlReason ?? mode.side}
 			stoppingNotice={stoppingText}
 			unavailable={!interactiveControlReady || hostBlocked}
@@ -250,6 +273,8 @@ export function LockedDraft({
 		offer: ResumeOffer;
 		posting: boolean;
 		onResume: () => void;
+		/** After a stranger's message: ends the session. Offered before Resume. */
+		onEnd?: () => void;
 		alert: { reason: string; startNew: boolean } | null;
 	};
 }) {
@@ -278,19 +303,37 @@ export function LockedDraft({
 				) : null}
 				{resume ? (
 					<div className="flex flex-col gap-2 md:flex-row md:items-center">
+						{resume.onEnd ? (
+							<button
+								type="button"
+								onClick={resume.onEnd}
+								className="min-h-[44px] rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 md:min-h-0"
+							>
+								{END_SESSION_BUTTON}
+							</button>
+						) : null}
 						<button
 							type="button"
 							onClick={resume.onResume}
 							disabled={busy || resume.offer.state === "disabled"}
 							aria-describedby={retryFirst ? undefined : reasonId}
 							className={`min-h-[44px] rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 ${
-								retryFirst
+								retryFirst || resume.onEnd
 									? "border border-border text-foreground hover:bg-accent"
 									: "bg-primary text-primary-foreground hover:bg-primary/90"
 							}`}
 						>
-							{busy ? RESUME_BUTTON_BUSY : retryFirst ? RESUME_BUTTON_AGAIN : RESUME_BUTTON}
+							{busy
+								? RESUME_BUTTON_BUSY
+								: retryFirst
+									? RESUME_BUTTON_AGAIN
+									: resume.onEnd
+										? RESUME_ANYWAY_BUTTON
+										: RESUME_BUTTON}
 						</button>
+						{resume.onEnd ? (
+							<p className="text-[11px] text-muted-foreground">{RESUME_ANYWAY_NOTE}</p>
+						) : null}
 						{resume.alert && !retryFirst ? (
 							<p role="alert" className={`text-sm text-red-700 dark:text-red-400 ${WRAP}`}>
 								<HostSentence text={resume.alert.reason} />
@@ -370,14 +413,17 @@ export function ComposerBody({
 	const hintId = useId();
 	const noticeId = useId();
 	const alertId = useId();
+	const phoneHintId = useId();
 	const box = boxState(mode, phase, { posting });
 	const status = composerStatus(mode, phase, justSent);
 	const stopping = stoppingNotice !== null;
 	const shownNotice = stopping ? stoppingNotice : phase.step === "idle" ? notice : null;
-	const codex = mode.kind === "codex";
+	const codex = mode.kind === "codex" || mode.kind === "claude_taken_over";
+	const fork = mode.kind === "claude_taken_over";
 	const describedBy =
-		[hintId, shownNotice ? noticeId : null, box.alert ? alertId : null].filter(Boolean).join(" ") ||
-		undefined;
+		[hintId, fork ? phoneHintId : null, shownNotice ? noticeId : null, box.alert ? alertId : null]
+			.filter(Boolean)
+			.join(" ") || undefined;
 
 	return (
 		<div className="border-t border-border bg-card/80 px-3 py-3 md:px-6">
@@ -388,6 +434,14 @@ export function ComposerBody({
 				>
 					{mode.hint}
 				</div>
+				{fork ? (
+					<details className="text-[11px] text-muted-foreground md:hidden">
+						<summary className="flex min-h-[44px] cursor-pointer items-center">
+							{WHAT_WAITS_SUMMARY}
+						</summary>
+						<p id={phoneHintId}>{mode.hint}</p>
+					</details>
+				) : null}
 				{shownNotice ? (
 					<div id={noticeId} className="text-[11px] text-amber-700 dark:text-amber-400">
 						{shownNotice}
@@ -436,7 +490,7 @@ export function ComposerBody({
 				) : null}
 				{box.alert ? (
 					<div id={alertId} role="alert" className="text-xs text-red-600 dark:text-red-400">
-						{box.alert}
+						<HostSentence text={box.alert} />
 						{box.startNew ? <StartNewLink /> : null}
 					</div>
 				) : null}

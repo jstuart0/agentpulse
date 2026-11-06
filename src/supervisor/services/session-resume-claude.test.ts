@@ -483,6 +483,16 @@ describe("refusals", () => {
 		expect(fake.starts().length).toBe(0);
 	});
 
+	test("a version outside the range is refused in the plan's words, with the version found and the range tested", async () => {
+		writeTranscript(S, work);
+		const w = build({ version: "2.0.1" });
+		await w.takeover.run(action(), S);
+		expect(failedWords(w)).toBe(
+			"Claude Code 2.0.1 on mac-1 is outside what AgentPulse has tested (2.1.318 up to, not including, 2.2.0). Nothing was started. Change the Claude Code version there, or update AgentPulse.",
+		);
+		expect(fake.starts().length).toBe(0);
+	});
+
 	test("host_busy when no slot is free, and the fork's own id showing the source's is rejected; both leave no child", async () => {
 		writeTranscript(S, work);
 		const busy = build({ maxRuntimes: 0 });

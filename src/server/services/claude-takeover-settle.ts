@@ -9,11 +9,11 @@
  * S's row is never written. A leaf of the control-action settle: it flips no action and announces nothing.
  */
 import { and, eq, ne, sql } from "drizzle-orm";
+import { forkFirstRowContent } from "../../shared/claude-fork-copy.js";
 import {
 	CLAUDE_TAKEOVER_PRIVILEGES,
 	type ClaudeForkMode,
 	type ResumeFailureKind,
-	SESSION_FORKED_CONTENT,
 	SESSION_RESUMED_EVENT_TYPE,
 	isClaudeForkMode,
 	isResumableSessionId,
@@ -320,7 +320,7 @@ export async function settleClaudeTakeover(
 		eventType: SESSION_RESUMED_EVENT_TYPE,
 		category: "system_event",
 		source: "managed_control",
-		content: SESSION_FORKED_CONTENT,
+		content: forkFirstRowContent(mode, str(meta.hostName), source.displayName),
 		isNoise: false,
 		rawPayload: { resume_kind: "takeover", forked_from: sourceId },
 		createdAt: timestamp,

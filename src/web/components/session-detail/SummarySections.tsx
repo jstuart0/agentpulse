@@ -40,6 +40,7 @@ interface SectionsProps {
 	stored: StoredSessionSummary;
 	sessionId: string;
 	agentType: string | null;
+	continued?: boolean;
 	clock?: ClockOptions;
 	/** The Copy context button, shown inside Key Context. */
 	contextAction?: ReactNode;
@@ -60,11 +61,12 @@ export function SummarySections({
 	stored,
 	sessionId,
 	agentType,
+	continued,
 	clock,
 	contextAction,
 }: SectionsProps) {
 	const { summary } = stored;
-	const claims = claimOnlyCopy(agentType);
+	const claims = claimOnlyCopy(agentType, continued);
 	const claimHome = summary.accomplishments.some((a) => a.unverified)
 		? "accomplishments"
 		: summary.changes.some((c) => c.unverified)
