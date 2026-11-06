@@ -8,15 +8,15 @@
  *  3. Only `start`, `stop` and `version` are run under `codex app-server daemon`: never `bootstrap`, `update`,
  *     `restart` or anything else that could change a machine-wide service.
  *  4. Nothing is killed by name. A process is signalled by a pid this run started, or by a pid whose own
- *     environment names this run's exact `CODEX_HOME` (`lib/codex-own-pids.ts`, the one searching helper).
+ *     environment names this run's exact `CODEX_HOME` (`lib/own-pids.ts`, the one searching helper).
  *  5. No terminal user interface: a TUI shows an update dialog and takes keys, and nothing here sends keys.
  *
  * The scan (`scanText`) is an advisory tripwire for accidents, not a barrier: a determined edit can get past a
  * pattern. What actually holds the line is rule 1's check at run time and the spawner's allowlist; the scan
  * only makes a careless slip fail in CI.
  */
-import { lstatSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { join, sep } from "node:path";
+import { assertThrowawayHome } from "./throwaway-home.js";
 
 export const ALLOWED_DAEMON_SUBCOMMANDS = ["start", "stop", "version"] as const;
 
@@ -27,56 +27,26 @@ export const CODEX_SPAWN_ALLOWED_FILES = [
 ];
 /** The file that holds the rules; the scan doesn't read it, since its own patterns and name lists are what it looks for. */
 export const RULES_FILE = "scripts/lib/codex-canary-safety.ts";
-/** The one file that may search for processes and signal what it finds. */
-export const PROCESS_SEARCH_FILE = "scripts/lib/codex-own-pids.ts";
-
-function inside(root: string, path: string): boolean {
-	const rel = relative(root, path);
-	return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
-}
+/** The one file that may search for processes and signal what it finds (Codex and Claude are thin callers of it). */
+export const PROCESS_SEARCH_FILE = "scripts/lib/own-pids.ts";
 
 /**
  * Throws unless `codexHome` is a throwaway home: absolute, strictly inside `scratchRoot` (a path that merely
  * starts with the same characters is a different directory), not the person's real home or `.codex`, and
- * still outside them once links are followed.
+ * still outside them once links are followed. The check itself is `lib/throwaway-home.ts`, shared with Claude.
  */
 export function assertThrowawayCodexHome(
 	codexHome: string | undefined,
 	scratchRoot: string,
 	realHome: string,
 ): string {
-	if (!codexHome) throw new Error("CODEX_HOME is not set");
-	if (!isAbsolute(codexHome)) throw new Error("CODEX_HOME is not an absolute path");
-	const path = resolve(codexHome);
-	const realCodex = join(realHome, ".codex");
-	const forbidden = (candidate: string) =>
-		candidate === realHome ||
-		candidate === realCodex ||
-		inside(realCodex, candidate) ||
-		inside(candidate, realCodex);
-	if (forbidden(path)) throw new Error("CODEX_HOME is the real home or its .codex");
-	if (!inside(resolve(scratchRoot), path)) {
-		throw new Error("CODEX_HOME is not strictly inside the scratch directory");
-	}
-	try {
-		if (lstatSync(path).isSymbolicLink()) throw new Error("CODEX_HOME is itself a link");
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-	}
-	let real: string;
-	try {
-		real = realpathSync(path);
-	} catch {
-		real = path;
-	}
-	if (forbidden(real)) throw new Error("CODEX_HOME reaches the real home through a link");
-	let realRoot = resolve(scratchRoot);
-	try {
-		realRoot = realpathSync(realRoot);
-	} catch {}
-	if (!inside(realRoot, real))
-		throw new Error("CODEX_HOME leaves the scratch directory through a link");
-	return path;
+	return assertThrowawayHome({
+		name: "CODEX_HOME",
+		value: codexHome,
+		scratchRoot,
+		forbidden: [join(realHome, ".codex")],
+		forbiddenLabel: "the real home or its .codex",
+	});
 }
 
 export interface SourceFile {
@@ -89,7 +59,7 @@ export interface Finding {
 	detail: string;
 }
 
-const stripComments = (text: string): string =>
+export const stripComments = (text: string): string =>
 	text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
 
 /** What each rule looks for, applied to one file's text; `scanCanarySource` adds the file's identity. */
