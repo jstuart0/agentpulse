@@ -113,7 +113,7 @@ const refuse = (
 
 /** A dispatch refusal as the routes answer it: the code `resolveProposal` refused with, and its reason. */
 function refuseWith(result: {
-	status: 400 | 404 | 409 | 500;
+	status: 400 | 403 | 404 | 409 | 500;
 	code: string;
 	reason?: string;
 }): DecisionOutcome {

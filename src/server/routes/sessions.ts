@@ -61,8 +61,10 @@ import {
 	HostGoneError,
 	HostOfflineError,
 	HostUpgradeRequiredError,
+	HumanRequiredError,
 	ManagedStateNotContinuableError,
 	NothingToStopError,
+	PromptUnsafeError,
 	StopNotSupportedError,
 	listControlActionsForSession,
 	queuePromptAction,
@@ -994,6 +996,13 @@ sessionsRouter.post("/sessions/:sessionId/prompt", async (c: Context) => {
 	} catch (error) {
 		const hostRefusal = hostRefusalResponse(c, error);
 		if (hostRefusal) return hostRefusal;
+		// A code a client can branch on (a takeover fork takes no line that starts with a slash).
+		if (error instanceof PromptUnsafeError) {
+			return c.json({ error: error.code, reason: "slash_command", message: error.message }, 400);
+		}
+		if (error instanceof HumanRequiredError) {
+			return c.json({ error: error.code, message: error.message }, 403);
+		}
 		if (error instanceof ControlBusyError) {
 			return c.json({ error: error.message, reason: "control_busy" }, 400);
 		}

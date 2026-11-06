@@ -157,3 +157,59 @@ function nameErrors(env: Record<string, unknown> | null | undefined): string[] {
 
 // This is a denylist over an open namespace, so it is defence in depth, not the boundary: the
 // boundary is the trusted operator who may launch on a host at all.
+
+// ---- the environment a takeover fork's Claude gets (AGEN-117 T18) ----
+
+/**
+ * Variables a running Claude Code puts in its own children's environment to say "you are inside a Claude
+ * session". A fork started from a supervisor that was itself started from inside one would inherit them and
+ * attach to the parent (the messaging socket and token especially). Exact names, no glob over
+ * `CLAUDE_CODE_*`: `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`,
+ * `ANTHROPIC_*`, `AWS_*` and the rest are the person's login and must survive. A marker added by a later
+ * Claude Code is the residual.
+ */
+export const FORK_ENV_STRIP_EXACT: readonly string[] = [
+	"CLAUDECODE",
+	"CLAUDE_CODE_CHILD_SESSION",
+	"CLAUDE_CODE_ENTRYPOINT",
+	"CLAUDE_CODE_EXECPATH",
+	"CLAUDE_CODE_MESSAGING_SOCKET",
+	"CLAUDE_CODE_MESSAGING_TOKEN",
+	"CLAUDE_CODE_SESSION_ATTENDED",
+	"CLAUDE_CODE_SESSION_ID",
+	"CLAUDE_PID",
+	"CLAUDE_EFFORT",
+	"AI_AGENT",
+];
+
+/** Matched case-insensitively. A fork reports nothing through AgentPulse's own variables. */
+export const FORK_ENV_STRIP_PREFIXES: readonly string[] = ["AGENTPULSE_"];
+
+export function isForkStrippedEnvName(name: string): boolean {
+	const upper = name.toUpperCase();
+	return (
+		FORK_ENV_STRIP_EXACT.includes(upper) ||
+		FORK_ENV_STRIP_PREFIXES.some((prefix) => upper.startsWith(prefix))
+	);
+}
+
+/**
+ * The environment of every Claude process a takeover starts (the login probes and the fork itself), from
+ * one function, so a probe can't see a login the fork won't. The supervisor's own environment minus the
+ * session markers; a credential the person put there passes through untouched and is never read.
+ */
+export function forkChildEnv(
+	env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const [name, value] of Object.entries(env)) {
+		if (value === undefined || isForkStrippedEnvName(name)) continue;
+		out[name] = value;
+	}
+	// Ours, set after the strip and never from the person's environment: the installed hooks (HTTP, command and
+	// the relay) all honour it, so a hook a probe or a fork runs (a user `SessionStart` command hook fires once
+	// per `ask` probe, measured) reaches the server as a skip (answered 200, nothing stored) and cannot create a
+	// session row for a process that has no row of its own yet.
+	out.AGENTPULSE_SKIP = "1";
+	return out;
+}

@@ -100,13 +100,16 @@ export class RpcClient {
 	private pieces: string[] = [];
 	private pieceBytes = 0;
 	private readonly maxFrameBytes: number;
+	/** Whether notifications are kept for `waitForNotification` to find later. A long-lived stream that never waits turns this off. */
+	private readonly bufferNotifications: boolean;
 	private readonly timers: RpcTimers;
 
 	constructor(
 		private readonly link: RpcLink,
-		options: { maxFrameBytes?: number; timers?: RpcTimers } = {},
+		options: { maxFrameBytes?: number; timers?: RpcTimers; bufferNotifications?: boolean } = {},
 	) {
 		this.maxFrameBytes = options.maxFrameBytes ?? MAX_FRAME_BYTES;
+		this.bufferNotifications = options.bufferNotifications ?? true;
 		this.timers = options.timers ?? DEFAULT_TIMERS;
 	}
 
@@ -306,7 +309,7 @@ export class RpcClient {
 		if (typeof method !== "string") return;
 
 		const notification = message as unknown as JsonRpcNotification;
-		this.notifications.push(notification);
+		if (this.bufferNotifications) this.notifications.push(notification);
 		// F25: listeners are frequently async (they report state/events back to
 		// the server) and are dispatched fire-and-forget here — nothing else in
 		// this class awaits or catches their returned promise. A rejection

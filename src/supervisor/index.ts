@@ -10,11 +10,16 @@ import {
 import { createControlActionHandler } from "./control-actions.js";
 import { createLaunchDispatcher } from "./launch-dispatch.js";
 import { headlessRuntimeCount } from "./providers/claude-headless.js";
+import { claudeStreamRuntimeCount } from "./providers/claude-stream.js";
 import {
+	hasClaudeStreamRuntime,
+	hasHeadlessRuntime,
 	launchClaudeHeadlessRequest,
 	launchClaudeInteractiveRequest,
 	promptClaudeHeadlessSession,
 	promptClaudeInteractiveSession,
+	promptClaudeStreamSession,
+	stopClaudeStreamSession,
 	stopHeadlessClaude,
 } from "./providers/claude.js";
 import { wireCodexApprovals } from "./providers/codex-approvals-wiring.js";
@@ -30,6 +35,7 @@ import {
 } from "./providers/codex-managed.js";
 import { warmCodexProtocolVerdict } from "./providers/codex-protocol.js";
 import { createBridgeSpoolDrain } from "./services/bridge-spool.js";
+import { createClaudeForkRecord } from "./services/claude-fork-record.js";
 import { executeCleanupWorkArea } from "./services/cleanup-workarea.js";
 import { isCodexObserverEnabled, startCodexObserver } from "./services/codex-observer.js";
 import {
@@ -208,6 +214,9 @@ async function main() {
 	// Sessions this host is resuming (D16): the observer reads their lines and posts nothing, so a resumed
 	// turn can't also arrive as a second UserPromptSubmit and Stop beside the managed one.
 	const resumingSessions = new Set<string>();
+	const forkRecord = createClaudeForkRecord({
+		path: join(home, ".agentpulse", "claude-forks.json"),
+	});
 	const threadRecord = createManagedThreadRecord({
 		path: join(home, ".agentpulse", "managed-threads.json"),
 	});
@@ -292,7 +301,8 @@ async function main() {
 				const staleMs = Date.now() - lastHeartbeatOkAt;
 				if (staleMs <= watchdogStaleMs) return;
 				const codex = managedCodexRuntimeCount();
-				const headless = headlessRuntimeCount();
+				// A takeover fork is a Claude process of ours like a one-prompt child, and keeps the host alive the same way.
+				const headless = headlessRuntimeCount() + claudeStreamRuntimeCount();
 				// Only a stale host with no agent of its own looks at the filesystem for live terminal bridges;
 				// not knowing (an error, no answer in time) counts as "something may be running".
 				const bridges =
@@ -357,7 +367,12 @@ async function main() {
 			promptClaudeHeadlessSession,
 			promptClaudeInteractiveSession,
 			stopHeadlessClaude,
+			promptClaudeStreamSession,
+			stopClaudeStreamSession,
+			hasClaudeStreamRuntime,
+			hasHeadlessRuntime,
 		},
+		forkStatus: (sessionId) => forkRecord.status(sessionId),
 		executeCleanupWorkArea,
 		serverHas: serverFeatures.has,
 		finalReport,

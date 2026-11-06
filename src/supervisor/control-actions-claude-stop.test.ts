@@ -41,7 +41,7 @@ type HeadlessStop = { hadChild: boolean; gone: boolean; unchecked?: boolean };
 
 function harness(
 	headless: HeadlessStop | Error = { hadChild: true, gone: true },
-	opts: { launchReportFails?: boolean; codexStopFails?: Error } = {},
+	opts: { launchReportFails?: boolean; codexStopFails?: Error; stream?: HeadlessStop } = {},
 ) {
 	const calls: string[] = [];
 	const posted: Posted[] = [];
@@ -69,7 +69,13 @@ function harness(
 			if (headless instanceof Error) throw headless;
 			return headless;
 		},
+		stopClaudeStreamSession: async (id: string) => {
+			calls.push(`stream:${id}`);
+			return opts.stream ?? { hadChild: true, gone: true, unchecked: false };
+		},
 		hasManagedCodexRuntime: () => false,
+		hasClaudeStreamRuntime: () => false,
+		hasHeadlessRuntime: () => false,
 	} as unknown as ControlProviders;
 	const handle = createControlActionHandler({
 		gate,
@@ -246,7 +252,7 @@ describe("runtimes with no stop path here", () => {
 		]);
 	});
 
-	test.each([["claude_stream"], ["something_new"], [42]])(
+	test.each([["something_new"], [42]])(
 		"runtime %p fails with fixed words and touches no process",
 		async (runtime) => {
 			const h = harness();
@@ -261,11 +267,8 @@ describe("runtimes with no stop path here", () => {
 });
 
 describe("every runtime the server can name (src/shared/stop-runtime.ts)", () => {
-	// claude_stream's host side is P3's. Until then it fails with the unsupported words, on purpose; every
-	// other value the server can emit must reach a real stop path.
-	const NOT_YET = new Set<string>([STOP_RUNTIMES.claudeStream]);
-
-	test.each(STOP_RUNTIME_VALUES.filter((runtime) => !NOT_YET.has(runtime)))(
+	// Every value the server can emit must reach a real stop path (claude_stream's was wired in AGEN-117 P3).
+	test.each([...STOP_RUNTIME_VALUES])(
 		"%s is not answered with the unsupported words",
 		async (runtime) => {
 			const h = harness();
@@ -276,10 +279,14 @@ describe("every runtime the server can name (src/shared/stop-runtime.ts)", () =>
 		},
 	);
 
-	test("claude_stream is the named exception: unsupported until P3 wires it", async () => {
+	test("claude_stream goes to the fork's stop, never to the Codex or one-prompt stop, and the session reads stopped", async () => {
 		const h = harness();
 		await h.handle(stop({ runtime: STOP_RUNTIMES.claudeStream }));
-		expect(h.statusReports().map((p) => p.body.error)).toEqual([STOP_WORDS.unsupported]);
+		expect(h.calls).toEqual([`stream:${SESSION}`]);
+		expect(h.stateReports().map((p) => p.body.managedState)).toEqual(["stopped"]);
+		expect(h.statusReports().map((p) => p.body.status)).toEqual(["succeeded"]);
+		// The carrier launch is not running: there is nothing to cancel.
+		expect(h.launchReports()).toEqual([]);
 	});
 
 	test("the list the test walks is the whole list: four runtimes, claude_stream among them", () => {

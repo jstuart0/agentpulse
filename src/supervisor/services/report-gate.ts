@@ -133,6 +133,12 @@ export type ControlStatusBody = {
 	status: "running" | "succeeded" | "failed";
 	error?: string | null;
 	metadata?: Record<string, unknown> | null;
+	/**
+	 * With `running`: the host took this Claude prompt on (spawned it, or wrote it to the fork's process). The
+	 * server stamps `metadata.acceptedAt` from it, and only from it: a claim also reads `running`, so the status
+	 * alone says nothing about whether the host will refuse the prompt a moment later.
+	 */
+	accepted?: boolean;
 };
 
 export type StateReportResult = { session: Session; managedSession: ManagedSession };

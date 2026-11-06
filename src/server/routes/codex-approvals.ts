@@ -166,6 +166,9 @@ export function serializeApprovalList(list: CodexApprovalList): CodexApprovalLis
 		approvals: list.approvals.map(serializeSummary),
 		host: { state: list.host.state, name: list.host.name },
 		viewer: { canAccept: list.viewer.canAccept },
+		...(list.peerTurn
+			? { peerTurn: { text: list.peerTurn.text, hidden: list.peerTurn.hidden } }
+			: {}),
 	};
 }
 

@@ -30,6 +30,7 @@ const PERSON_FIXTURES = [
 	"detail-file-change.json",
 	"list-closed.json",
 	"list-open.json",
+	"list-peer-turn.json",
 ];
 
 const sorted = (values: readonly string[]) => [...values].sort();
@@ -109,6 +110,9 @@ function walkFixture(name: string, body: Json, problems: string[]) {
 		}
 		checkKeys(`${name}.host`, asObject(body.host), "CodexApprovalHost", problems);
 		checkKeys(`${name}.viewer`, asObject(body.viewer), "CodexApprovalViewer", problems);
+		if (body.peerTurn !== undefined) {
+			checkKeys(`${name}.peerTurn`, asObject(body.peerTurn), "ClaudePeerTurnNotice", problems);
+		}
 	} else if (name.startsWith("decision-")) {
 		checkKeys(name, body, "CodexApprovalDecisionResponse", problems);
 		walkSummary(`${name}.approval`, asObject(body.approval), problems);
@@ -145,6 +149,8 @@ describe("every fixture key is declared by both type files", () => {
 			if (presentation) seenKinds.add(String(presentation.requestKind));
 		}
 		expect(problems).toEqual([]);
+		// Positive control: the peer-turn notice was actually walked.
+		expect(read(`${MCP_FIXTURES}/list-peer-turn.json`)).toContain('"peerTurn"');
 		// Positive control: both presentation shapes were actually walked.
 		expect([...seenKinds].sort()).toEqual(["command", "file_change"]);
 	});

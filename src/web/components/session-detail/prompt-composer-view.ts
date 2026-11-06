@@ -200,12 +200,29 @@ export function composerNotice(session: Pick<Session, "isWorking" | "metadata">)
 }
 
 /**
- * Whether the composer watches the control action after the 202. A Codex prompt and an interactive
- * Claude prompt are done when the host hands them off. A headless Claude action reports only when its
- * monitor resolves, so a healthy long turn would hit the 90 s lock and read as failed.
+ * How the composer watches the control action after the 202 (AGEN-91, AGEN-117 T16):
+ *  - `settle`: until the host says how it ended. A Codex prompt and an interactive Claude prompt are done
+ *    when the host hands them off, so "done" is a short wait.
+ *  - `accept`: until the host reports it took the prompt on (`metadata.acceptedAt`, stamped only from the host's
+ *    own report; a claim reads `running` too), not until the turn ends. A headless Claude action stays
+ *    `running` for the whole turn (it reports only when its monitor resolves, and renews its lock), so a
+ *    healthy long turn must not be waited out; but the host can refuse a second turn (one already running,
+ *    the conversation open elsewhere), and without watching, that refusal would reach only Control history,
+ *    collapsed on a phone, after the draft was gone. The box is read-only ("Sending…") until the action
+ *    leaves `queued`; `running` clears the draft; `failed` keeps it and says why.
+ *  - null: the 202 is the end of it.
  */
+export type FollowMode = "settle" | "accept";
+
+export function followModeOf(mode: ComposerMode | null): FollowMode | null {
+	if (mode?.kind === "codex" || mode?.kind === "claude_interactive") return "settle";
+	if (mode?.kind === "claude_headless") return "accept";
+	return null;
+}
+
+/** Whether the composer watches the control action after the 202 at all. */
 export function followsAction(mode: ComposerMode | null): boolean {
-	return mode?.kind === "codex" || mode?.kind === "claude_interactive";
+	return followModeOf(mode) !== null;
 }
 
 export type SendPhase =
@@ -377,6 +394,8 @@ export const FOLLOW_POLL_MS = 1500;
 export const FOLLOW_DEADLINE_MS = 100_000;
 
 export interface FollowDeps {
+	/** `accept` stops at the host taking the action; the default waits for its end. */
+	until?: FollowMode;
 	fetchActions: (
 		sessionId: string,
 		opts: { background: true },
@@ -387,8 +406,8 @@ export interface FollowDeps {
 }
 
 /**
- * Polls one control action until it settles. Bound to the session it started with: an action row that
- * belongs to another session is never read. A failed poll is not the action's failure; it is tried again.
+ * Polls one control action until it settles (or, for `until: "accept"`, until the host has taken it). Bound
+ * to the session it started with: an action row that belongs to another session is never read. A failed poll is not the action's failure; it is tried again.
  * An action whose lock ran out before the host reported has an unknown outcome (the prompt may have run).
  */
 export async function followPromptAction(
@@ -397,6 +416,7 @@ export async function followPromptAction(
 	deps: FollowDeps,
 ): Promise<FollowOutcome> {
 	const startedAt = deps.now();
+	let lastStatus: ControlAction["status"] | null = null;
 	for (;;) {
 		if (deps.signal?.aborted) return { outcome: "aborted" };
 		try {
@@ -404,6 +424,17 @@ export async function followPromptAction(
 			if (deps.signal?.aborted) return { outcome: "aborted" };
 			const action = controlActions.find((a) => a.id === actionId && a.sessionId === sessionId);
 			if (action?.status === "succeeded") return { outcome: "succeeded" };
+			lastStatus = action?.status ?? lastStatus;
+			// Taken by the host: its own acceptance report stamps `acceptedAt`. A claim also reads `running`, and a
+			// host can still refuse the prompt after it (a turn already going, the conversation open elsewhere),
+			// so `running` alone is not acceptance.
+			if (
+				deps.until === "accept" &&
+				action?.status === "running" &&
+				typeof (action.metadata as Record<string, unknown> | null)?.acceptedAt === "string"
+			) {
+				return { outcome: "succeeded" };
+			}
 			if (action?.status === "failed") {
 				return action.error === CONTROL_TIMEOUT_ERROR
 					? { outcome: "unknown" }
@@ -412,7 +443,14 @@ export async function followPromptAction(
 		} catch {
 			// The next poll will say; a dropped request is not the host's answer.
 		}
-		if (deps.now() - startedAt >= FOLLOW_DEADLINE_MS) return { outcome: "unknown" };
+		if (deps.now() - startedAt >= FOLLOW_DEADLINE_MS) {
+			// A host that never sends an acceptance (one older than this server) leaves a claimed prompt reading
+			// `running`: after the deadline that is taken as the old behaviour, accepted. An action nobody
+			// claimed in that time is genuinely unknown.
+			return deps.until === "accept" && lastStatus === "running"
+				? { outcome: "succeeded" }
+				: { outcome: "unknown" };
+		}
 		await deps.sleep(FOLLOW_POLL_MS);
 	}
 }

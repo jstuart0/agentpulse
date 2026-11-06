@@ -115,4 +115,35 @@ describe("disposeRuntimesAndExit", () => {
 		await expect(disposeRuntimesAndExit()).rejects.toThrow("exit called");
 		expect(exit).toHaveBeenCalledWith(1);
 	});
+
+	test("takeover forks are disposed before the exit, and a hung fork shutdown is bounded", async () => {
+		const order: string[] = [];
+		const codex = await import("../providers/codex-managed.js");
+		const headless = await import("../providers/claude-headless.js");
+		const stream = await import("../providers/claude-stream.js");
+		const exit = spyOn(process, "exit").mockImplementation((() => {
+			order.push("exit");
+			throw new Error("exit called");
+		}) as never);
+		spies.push(
+			spyOn(codex, "disposeAllManagedCodexRuntimes").mockImplementation(async () => {}),
+			spyOn(headless, "disposeAllHeadlessRuntimes").mockImplementation(async () => {}),
+			spyOn(stream, "disposeAllClaudeStreamRuntimes").mockImplementation(async () => {
+				await new Promise((r) => setTimeout(r, 5));
+				order.push("streams");
+			}),
+			exit,
+		);
+		await expect(disposeRuntimesAndExit()).rejects.toThrow("exit called");
+		expect(order).toEqual(["streams", "exit"]);
+
+		spies.push(
+			spyOn(stream, "disposeAllClaudeStreamRuntimes").mockImplementation(
+				() => new Promise<void>(() => {}),
+			),
+		);
+		const began = Date.now();
+		await expect(disposeRuntimesAndExit({ streamBoundMs: 80 })).rejects.toThrow("exit called");
+		expect(Date.now() - began).toBeLessThan(2_000);
+	});
 });

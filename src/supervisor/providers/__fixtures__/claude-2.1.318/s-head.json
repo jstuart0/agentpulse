@@ -1,0 +1,194 @@
+[
+	{
+		"label": "plain",
+		"cwd": "/scratch/p0/work/s_head/plainproj",
+		"cwdLength": 128,
+		"status": 0,
+		"isError": false,
+		"sessionId": "ae62b6ea-7b49-48e8-8cea-df00a2aef7fb",
+		"encodedDir": "-scratch-p0-work-s-head-plainproj",
+		"encodedLength": 128,
+		"head": [
+			"{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-11-06T04:10:21.704Z\",\"sessionId\":\"ae62b6ea-7b49-48e8-8cea-df00a2aef7fb\",\"content\":\"Reply with just: ok\"}",
+			"{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-11-06T04:10:21.705Z\",\"sessionId\":\"ae62b6ea-7b49-48e8-8cea-df00a2aef7fb\"}",
+			"{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"b333db03-f669-46ba-8fbb-3d0e987d3455\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Reply with just: ok\"},\"uuid\":\"cc74e073-aaec-46eb-bbc6-357adbf80b77\",\"timestamp\":\"2026-11-06T04:10:21.736Z\",\"permissionMode\":\"default\",\"promptSource\":\"sdk\",\"turnOrigin\":\"sdk\",\"turnPosition\":{\"promptIndex\":0,\"turnIndex\":1},\"userType\":\"external\",\"entrypoint\":\"sdk-cli\",\"cwd\":\"/scratch/p0/work/s_head/plainproj\",\"sessionId\":\"ae62b6ea-7b49-48e8-8cea-df00a2aef7fb\",\"version\":\"2.1.318\",\"gitBranch\":\"HEAD\"}"
+		],
+		"stderr": ""
+	},
+	{
+		"label": "dot",
+		"cwd": "/scratch/p0/work/s_head/my.proj",
+		"cwdLength": 126,
+		"status": 0,
+		"isError": false,
+		"sessionId": "9e2d1644-99f4-421a-9846-08830bba5468",
+		"encodedDir": "-scratch-p0-work-s-head-my-proj",
+		"encodedLength": 126,
+		"head": [
+			"{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-11-06T04:10:23.292Z\",\"sessionId\":\"9e2d1644-99f4-421a-9846-08830bba5468\",\"content\":\"Reply with just: ok\"}",
+			"{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-11-06T04:10:23.293Z\",\"sessionId\":\"9e2d1644-99f4-421a-9846-08830bba5468\"}",
+			"{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"7100dc8e-681b-40a4-844e-e3df62069325\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Reply with just: ok\"},\"uuid\":\"c336daa3-6c65-4521-ae55-c04891c7f835\",\"timestamp\":\"2026-11-06T04:10:23.318Z\",\"permissionMode\":\"default\",\"promptSource\":\"sdk\",\"turnOrigin\":\"sdk\",\"turnPosition\":{\"promptIndex\":0,\"turnIndex\":1},\"userType\":\"external\",\"entrypoint\":\"sdk-cli\",\"cwd\":\"/scratch/p0/work/s_head/my.proj\",\"sessionId\":\"9e2d1644-99f4-421a-9846-08830bba5468\",\"version\":\"2.1.318\",\"gitBranch\":\"HEAD\"}"
+		],
+		"stderr": ""
+	},
+	{
+		"label": "leading_dot",
+		"cwd": "/scratch/p0/work/s_head/.hidden",
+		"cwdLength": 126,
+		"status": 0,
+		"isError": false,
+		"sessionId": "ca4b77e7-54ba-41f4-a411-7c06e0796873",
+		"encodedDir": "-scratch-p0-work-s-head--hidden",
+		"encodedLength": 126,
+		"head": [
+			"{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-11-06T04:10:25.027Z\",\"sessionId\":\"ca4b77e7-54ba-41f4-a411-7c06e0796873\",\"content\":\"Reply with just: ok\"}",
+			"{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-11-06T04:10:25.028Z\",\"sessionId\":\"ca4b77e7-54ba-41f4-a411-7c06e0796873\"}",
+			"{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"df9e228a-2e6b-45c6-8675-743b90280402\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Reply with just: ok\"},\"uuid\":\"5b2cfdb7-65eb-49bc-be16-6a7669d5e5b6\",\"timestamp\":\"2026-11-06T04:10:25.056Z\",\"permissionMode\":\"default\",\"promptSource\":\"sdk\",\"turnOrigin\":\"sdk\",\"turnPosition\":{\"promptIndex\":0,\"turnIndex\":1},\"userType\":\"external\",\"entrypoint\":\"sdk-cli\",\"cwd\":\"/scratch/p0/work/s_head/.hidden\",\"sessionId\":\"ca4b77e7-54ba-41f4-a411-7c06e0796873\",\"version\":\"2.1.318\",\"gitBranch\":\"HEAD\"}"
+		],
+		"stderr": ""
+	},
+	{
+		"label": "underscore",
+		"cwd": "/scratch/p0/work/s_head/my_proj",
+		"cwdLength": 126,
+		"status": 0,
+		"isError": false,
+		"sessionId": "a74327f3-2449-4330-9a8a-5c146ab8815f",
+		"encodedDir": "-scratch-p0-work-s-head-my-proj",
+		"encodedLength": 126,
+		"head": [
+			"{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-11-06T04:10:26.852Z\",\"sessionId\":\"a74327f3-2449-4330-9a8a-5c146ab8815f\",\"content\":\"Reply with just: ok\"}",
+			"{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-11-06T04:10:26.853Z\",\"sessionId\":\"a74327f3-2449-4330-9a8a-5c146ab8815f\"}",
+			"{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"3c717226-ffc9-4ad7-a446-b76eb0977a0a\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Reply with just: ok\"},\"uuid\":\"3ecb14b0-3d39-4f88-ba22-32031dd3f90b\",\"timestamp\":\"2026-11-06T04:10:26.881Z\",\"permissionMode\":\"default\",\"promptSource\":\"sdk\",\"turnOrigin\":\"sdk\",\"turnPosition\":{\"promptIndex\":0,\"turnIndex\":1},\"userType\":\"external\",\"entrypoint\":\"sdk-cli\",\"cwd\":\"/scratch/p0/work/s_head/my_proj\",\"sessionId\":\"a74327f3-2449-4330-9a8a-5c146ab8815f\",\"version\":\"2.1.318\",\"gitBranch\":\"HEAD\"}"
+		],
+		"stderr": ""
+	},
+	{
+		"label": "space",
+		"cwd": "/scratch/p0/work/s_head/my proj",
+		"cwdLength": 126,
+		"status": 0,
+		"isError": false,
+		"sessionId": "4ec49ca8-e1f1-4e49-be36-1a7eb023aaf5",
+		"encodedDir": "-scratch-p0-work-s-head-my-proj",
+		"encodedLength": 126,
+		"head": [
+			"{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-11-06T04:10:28.570Z\",\"sessionId\":\"4ec49ca8-e1f1-4e49-be36-1a7eb023aaf5\",\"content\":\"Reply with just: ok\"}",
+			"{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-11-06T04:10:28.571Z\",\"sessionId\":\"4ec49ca8-e1f1-4e49-be36-1a7eb023aaf5\"}",
+			"{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"086dbfe5-7b0e-499c-aa76-c553bd663ddc\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Reply with just: ok\"},\"uuid\":\"5807ff35-4671-4053-8e61-4b28aed61867\",\"timestamp\":\"2026-11-06T04:10:28.598Z\",\"permissionMode\":\"default\",\"promptSource\":\"sdk\",\"turnOrigin\":\"sdk\",\"turnPosition\":{\"promptIndex\":0,\"turnIndex\":1},\"userType\":\"external\",\"entrypoint\":\"sdk-cli\",\"cwd\":\"/scratch/p0/work/s_head/my proj\",\"sessionId\":\"4ec49ca8-e1f1-4e49-be36-1a7eb023aaf5\",\"version\":\"2.1.318\",\"gitBranch\":\"HEAD\"}"
+		],
+		"stderr": ""
+	},
+	{
+		"label": "non_ascii",
+		"cwd": "/scratch/p0/work/s_head/caf\u00e9-\u65e5\u672c-\u00fc",
+		"cwdLength": 128,
+		"status": 0,
+		"isError": false,
+		"sessionId": "269b6a1a-c98a-4f2a-b247-e00cadee0f7d",
+		"encodedDir": "-scratch-p0-work-s-head-caf------",
+		"encodedLength": 128,
+		"head": [
+			"{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-11-06T04:10:30.527Z\",\"sessionId\":\"269b6a1a-c98a-4f2a-b247-e00cadee0f7d\",\"content\":\"Reply with just: ok\"}",
+			"{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-11-06T04:10:30.528Z\",\"sessionId\":\"269b6a1a-c98a-4f2a-b247-e00cadee0f7d\"}",
+			"{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"b109924c-0629-4313-8636-733b1f967585\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Reply with just: ok\"},\"uuid\":\"51009cc2-8b7a-43af-80ec-906303c639f4\",\"timestamp\":\"2026-11-06T04:10:30.555Z\",\"permissionMode\":\"default\",\"promptSource\":\"sdk\",\"turnOrigin\":\"sdk\",\"turnPosition\":{\"promptIndex\":0,\"turnIndex\":1},\"userType\":\"external\",\"entrypoint\":\"sdk-cli\",\"cwd\":\"/scratch/p0/work/s_head/caf\u00e9-\u65e5\u672c-\u00fc\",\"sessionId\":\"269b6a1a-c98a-4f2a-b247-e00cadee0f7d\",\"version\":\"2.1.318\",\"gitBranch\":\"HEAD\"}"
+		],
+		"stderr": ""
+	},
+	{
+		"label": "over_200",
+		"cwd": "/scratch/p0/work/s_head/LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL/MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/oooooooooooooooooooooooooooooooooooooooo",
+		"cwdLength": 372,
+		"status": 0,
+		"isError": false,
+		"sessionId": "cf5f67cd-e4c3-4b24-880c-10e3415c131c",
+		"encodedDir": "-scratch-p0-work-s-head-LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL-MMMMMMMMMM-2bd0b1",
+		"encodedLength": 207,
+		"head": [
+			"{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-11-06T04:10:32.615Z\",\"sessionId\":\"cf5f67cd-e4c3-4b24-880c-10e3415c131c\",\"content\":\"Reply with just: ok\"}",
+			"{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-11-06T04:10:32.616Z\",\"sessionId\":\"cf5f67cd-e4c3-4b24-880c-10e3415c131c\"}",
+			"{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"a71ce1d0-205c-47b1-8d1c-d14889bcfb52\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Reply with just: ok\"},\"uuid\":\"7b6989c8-c234-49e4-8947-4c7cc4ab3526\",\"timestamp\":\"2026-11-06T04:10:32.650Z\",\"permissionMode\":\"default\",\"promptSource\":\"sdk\",\"turnOrigin\":\"sdk\",\"turnPosition\":{\"promptIndex\":0,\"turnIndex\":1},\"userType\":\"external\",\"entrypoint\":\"sdk-cli\",\"cwd\":\"/scratch/p0/work/s_head/LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL/MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/oooooooooooooooooooooooooooooooooooooooo\",\"sessionId\":\"cf5f67cd-e4c3-4b24-880c-10e3415c131c\",\"version\":\"2.1.318\",\"gitBranch\":\"HEAD\"}"
+		],
+		"stderr": ""
+	},
+	{
+		"label": "len_200",
+		"cwd": "/scratch/p0/work/s_head/ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+		"cwdLength": 200,
+		"status": 0,
+		"isError": false,
+		"sessionId": "c40a59f9-6937-4f29-b11a-4ae5756503f0",
+		"encodedDir": "-scratch-p0-work-s-head-ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+		"encodedLength": 200,
+		"head": [
+			"{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-11-06T04:10:34.486Z\",\"sessionId\":\"c40a59f9-6937-4f29-b11a-4ae5756503f0\",\"content\":\"Reply with just: ok\"}",
+			"{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-11-06T04:10:34.487Z\",\"sessionId\":\"c40a59f9-6937-4f29-b11a-4ae5756503f0\"}",
+			"{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"adb356a8-e14c-4a99-b30a-17429ca2a629\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Reply with just: ok\"},\"uuid\":\"306a18ca-1ce1-42e8-9646-d63fb93da5a0\",\"timestamp\":\"2026-11-06T04:10:34.519Z\",\"permissionMode\":\"default\",\"promptSource\":\"sdk\",\"turnOrigin\":\"sdk\",\"turnPosition\":{\"promptIndex\":0,\"turnIndex\":1},\"userType\":\"external\",\"entrypoint\":\"sdk-cli\",\"cwd\":\"/scratch/p0/work/s_head/ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\",\"sessionId\":\"c40a59f9-6937-4f29-b11a-4ae5756503f0\",\"version\":\"2.1.318\",\"gitBranch\":\"HEAD\"}"
+		],
+		"stderr": ""
+	},
+	{
+		"label": "len_201",
+		"cwd": "/scratch/p0/work/s_head/pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+		"cwdLength": 201,
+		"status": 0,
+		"isError": false,
+		"sessionId": "43fdbba0-3e04-4c21-bccf-5d5c9da7f765",
+		"encodedDir": "-scratch-p0-work-s-head-ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp-fz29ia",
+		"encodedLength": 207,
+		"head": [
+			"{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-11-06T04:10:36.290Z\",\"sessionId\":\"43fdbba0-3e04-4c21-bccf-5d5c9da7f765\",\"content\":\"Reply with just: ok\"}",
+			"{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-11-06T04:10:36.291Z\",\"sessionId\":\"43fdbba0-3e04-4c21-bccf-5d5c9da7f765\"}",
+			"{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"6af4def5-3d21-43a0-be79-0a5e08f5283c\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Reply with just: ok\"},\"uuid\":\"48a77858-29eb-400b-b4a3-3391e2082b61\",\"timestamp\":\"2026-11-06T04:10:36.318Z\",\"permissionMode\":\"default\",\"promptSource\":\"sdk\",\"turnOrigin\":\"sdk\",\"turnPosition\":{\"promptIndex\":0,\"turnIndex\":1},\"userType\":\"external\",\"entrypoint\":\"sdk-cli\",\"cwd\":\"/scratch/p0/work/s_head/pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\",\"sessionId\":\"43fdbba0-3e04-4c21-bccf-5d5c9da7f765\",\"version\":\"2.1.318\",\"gitBranch\":\"HEAD\"}"
+		],
+		"stderr": ""
+	},
+	{
+		"label": "over_200_b",
+		"cwd": "/scratch/p0/work/s_head/LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL/MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/oooooooooooooooooooooooooooooooooooooooo/b",
+		"cwdLength": 374,
+		"status": 0,
+		"isError": false,
+		"sessionId": "4d00d462-56b7-41da-af4f-7649ee8a7438",
+		"encodedDir": "-scratch-p0-work-s-head-LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL-MMMMMMMMMM-nbricg",
+		"encodedLength": 207,
+		"head": [
+			"{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-11-06T04:10:38.132Z\",\"sessionId\":\"4d00d462-56b7-41da-af4f-7649ee8a7438\",\"content\":\"Reply with just: ok\"}",
+			"{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-11-06T04:10:38.133Z\",\"sessionId\":\"4d00d462-56b7-41da-af4f-7649ee8a7438\"}",
+			"{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"a2d40719-dc16-4ceb-a6cf-81647dcc9ce7\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Reply with just: ok\"},\"uuid\":\"5b12e839-75bf-4732-acad-3f85913ccb73\",\"timestamp\":\"2026-11-06T04:10:38.159Z\",\"permissionMode\":\"default\",\"promptSource\":\"sdk\",\"turnOrigin\":\"sdk\",\"turnPosition\":{\"promptIndex\":0,\"turnIndex\":1},\"userType\":\"external\",\"entrypoint\":\"sdk-cli\",\"cwd\":\"/scratch/p0/work/s_head/LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL/MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/oooooooooooooooooooooooooooooooooooooooo/b\",\"sessionId\":\"4d00d462-56b7-41da-af4f-7649ee8a7438\",\"version\":\"2.1.318\",\"gitBranch\":\"HEAD\"}"
+		],
+		"stderr": ""
+	},
+	{
+		"label": "over_200_c",
+		"cwd": "/scratch/p0/work/s_head/LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL/MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/oooooooooooooooooooooooooooooooooooooooo/cc",
+		"cwdLength": 375,
+		"status": 0,
+		"isError": false,
+		"sessionId": "19c308a2-d4fc-4594-9fdb-5567b7666626",
+		"encodedDir": "-scratch-p0-work-s-head-LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL-MMMMMMMMMM-ctk92a",
+		"encodedLength": 207,
+		"head": [
+			"{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-11-06T04:10:39.949Z\",\"sessionId\":\"19c308a2-d4fc-4594-9fdb-5567b7666626\",\"content\":\"Reply with just: ok\"}",
+			"{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-11-06T04:10:39.950Z\",\"sessionId\":\"19c308a2-d4fc-4594-9fdb-5567b7666626\"}",
+			"{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"821ce764-66aa-46c9-a124-6bf2c07d13f8\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Reply with just: ok\"},\"uuid\":\"fb848c92-cb8d-4571-aeb5-9f41c1f1a9c8\",\"timestamp\":\"2026-11-06T04:10:39.976Z\",\"permissionMode\":\"default\",\"promptSource\":\"sdk\",\"turnOrigin\":\"sdk\",\"turnPosition\":{\"promptIndex\":0,\"turnIndex\":1},\"userType\":\"external\",\"entrypoint\":\"sdk-cli\",\"cwd\":\"/scratch/p0/work/s_head/LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL/MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/oooooooooooooooooooooooooooooooooooooooo/cc\",\"sessionId\":\"19c308a2-d4fc-4594-9fdb-5567b7666626\",\"version\":\"2.1.318\",\"gitBranch\":\"HEAD\"}"
+		],
+		"stderr": ""
+	},
+	{
+		"label": "over_200_d",
+		"cwd": "/scratch/p0/work/s_head/LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL/MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/oooooooooooooooooooooooooooooooooooooooo/ddd",
+		"cwdLength": 376,
+		"status": 0,
+		"isError": false,
+		"sessionId": "1566332c-0102-414f-a4f2-63134527c5a2",
+		"encodedDir": "-scratch-p0-work-s-head-LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL-MMMMMMMMMM-sq8i1q",
+		"encodedLength": 207,
+		"head": [
+			"{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-11-06T04:10:41.812Z\",\"sessionId\":\"1566332c-0102-414f-a4f2-63134527c5a2\",\"content\":\"Reply with just: ok\"}",
+			"{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"timestamp\":\"2026-11-06T04:10:41.813Z\",\"sessionId\":\"1566332c-0102-414f-a4f2-63134527c5a2\"}",
+			"{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"c3ab5c3c-fa0e-4314-866c-964bd614b23d\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Reply with just: ok\"},\"uuid\":\"1ba71e57-5483-44c6-9947-e73239fc2637\",\"timestamp\":\"2026-11-06T04:10:41.839Z\",\"permissionMode\":\"default\",\"promptSource\":\"sdk\",\"turnOrigin\":\"sdk\",\"turnPosition\":{\"promptIndex\":0,\"turnIndex\":1},\"userType\":\"external\",\"entrypoint\":\"sdk-cli\",\"cwd\":\"/scratch/p0/work/s_head/LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL/MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/oooooooooooooooooooooooooooooooooooooooo/ddd\",\"sessionId\":\"1566332c-0102-414f-a4f2-63134527c5a2\",\"version\":\"2.1.318\",\"gitBranch\":\"HEAD\"}"
+		],
+		"stderr": ""
+	}
+]

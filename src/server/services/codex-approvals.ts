@@ -47,6 +47,7 @@ import {
 	CODEX_CLOSED_VISIBLE_MS,
 	CODEX_NEW_ROW_GRACE_MS,
 	CODEX_OUTCOME_UNKNOWN_AFTER_MS,
+	type ClaudePeerTurnNotice,
 	type CodexApprovalAck,
 	type CodexApprovalAnswer,
 	type CodexApprovalDecisionResponse,
@@ -1127,11 +1128,43 @@ export async function listApprovalsForSession(
 			ownerUserId === undefined ? null : { ownerUserId },
 			"accept",
 		);
+	// Explicitly the owner's or an admin's (solo: the one person), not merely someone who may read the session:
+	// an unowned session in team mode is readable by any member, and a stranger's message may hold anything.
+	const mayReadPeerTurn =
+		mode === "solo" ||
+		caller.actor.role === "admin" ||
+		(typeof ownerUserId === "string" && caller.actor.userId === ownerUserId);
+	const peerTurn = mayReadPeerTurn ? await peerTurnOf(db, sessionId) : null;
 	return {
 		v: 1,
 		approvals: rows.map((row) => toSummary(row, nowMs, true)),
 		host,
 		viewer: { canAccept },
+		...(peerTurn ? { peerTurn } : {}),
+	};
+}
+
+/**
+ * What a takeover fork was stopped for, if it was: the server-owned `metadata.peerTurn`. Only this read
+ * returns it, and only to the owner or an admin (judged by the caller above); the session DTO strips it. It is
+ * the last message found in the transcript, which may not be the one that stopped the session.
+ */
+async function peerTurnOf(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle
+	db: any,
+	sessionId: string,
+): Promise<ClaudePeerTurnNotice | null> {
+	const [row] = await db
+		.select({ metadata: sessions.metadata })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	const peer = (row?.metadata as Record<string, unknown> | null | undefined)?.peerTurn;
+	if (!peer || typeof peer !== "object") return null;
+	const { text, hidden } = peer as { text?: unknown; hidden?: unknown };
+	return {
+		text: typeof text === "string" ? text : null,
+		hidden: hidden === true || typeof text !== "string",
 	};
 }
 

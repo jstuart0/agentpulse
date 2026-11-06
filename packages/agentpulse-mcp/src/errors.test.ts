@@ -231,6 +231,26 @@ describe("mapError — answering a HITL request", () => {
 		});
 	}
 
+	test("a slash-command refusal of a continued session reads as its own sentence, and human_required as a person's act", () => {
+		const slash = mapError(
+			new ApiError(400, {
+				error: "prompt_unsafe",
+				reason: "slash_command",
+				message: "server words",
+			}),
+			BASE_URL,
+		).content[0].text;
+		expect(slash).toContain("starts with a slash");
+		expect(slash).not.toContain("request is still open");
+		expect(slash).not.toContain("server words");
+		const human = mapError(
+			new ApiError(403, { error: "human_required", message: "server words" }),
+			BASE_URL,
+		).content[0].text;
+		expect(human).toContain("signed-in person");
+		expect(human).not.toContain("server words");
+	});
+
 	test("a busy session says nothing was sent and the request is still open, so retrying is safe", () => {
 		const text = mapError(
 			new ApiError(409, { error: "prompt_not_deliverable", reason: "control_busy" }),

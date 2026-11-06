@@ -190,8 +190,16 @@ const ERROR_TABLE: ReadonlyArray<{
 	{
 		status: 400,
 		error: "prompt_unsafe",
+		message: (body) =>
+			body && typeof body === "object" && (body as { reason?: unknown }).reason === "slash_command"
+				? "A continued session takes no message that starts with a slash (slash commands are off there). Reword it so it starts with something else. Nothing was sent."
+				: "That prompt has characters AgentPulse won't type into a session. Nothing was sent and the request is still open.",
+	},
+	{
+		status: 403,
+		error: "human_required",
 		message:
-			"That prompt has characters AgentPulse won't type into a session. Nothing was sent and the request is still open.",
+			"AgentPulse refused: this needs a signed-in person, and an API key can't do it. For a continued session that runs under the person's own Claude settings, prompts come from a person at the dashboard.",
 	},
 	// Declining a managed Codex approval (decline_approval, list_pending_approvals).
 	{

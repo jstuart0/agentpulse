@@ -189,6 +189,8 @@ function harness(
 	const turn = opts.turn ?? deferredTurn();
 	const providers = {
 		hasManagedCodexRuntime: () => false,
+		hasClaudeStreamRuntime: () => false,
+		hasHeadlessRuntime: () => false,
 		promptClaudeHeadlessSession: async () => turn.turn,
 		stopHeadlessClaude: async () => ({ hadChild: true, gone: true, unchecked: false }),
 		...opts.providers,
@@ -260,8 +262,11 @@ describe("renewal: a running prompt keeps its lock", () => {
 		await h.clock.tick();
 		const running = h.statuses().filter((s) => s.status === "running");
 		expect(running).toHaveLength(2);
-		for (const body of running) expect(body).toEqual({ status: "running" });
-		expect(h.statuses()[0]).toEqual({ status: "running" });
+		// The first is the host saying it took the prompt on (the server stamps acceptedAt from that and only that);
+		// every one after is a renewal, only the status.
+		expect(running[0]).toEqual({ status: "running", accepted: true });
+		expect(running[1]).toEqual({ status: "running" });
+		expect(h.statuses()[0]).toEqual({ status: "running", accepted: true });
 	});
 
 	test("a server that doesn't advertise claude_turn_control gets no running reports and no timer", async () => {

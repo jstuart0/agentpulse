@@ -13,6 +13,7 @@ import { getDb } from "../db/client.js";
 import { events, managedDeliveryReceipts, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import {
+	incrementForkHookDropped,
 	incrementIngestForeignKeyDropped,
 	incrementIngestOwnerMismatch,
 	incrementIngestReservedToolUseIdDropped,
@@ -622,6 +623,16 @@ function foldOldestIdsIntoAnon(wait: PermissionWaitState): void {
 	wait.ids = kept;
 }
 
+/** A takeover fork: the takeover wrote `forkedFromSessionId` into its metadata, and no hook can (it is server-owned). */
+function isForkRow(row: { metadata?: unknown }): boolean {
+	const metadata = row.metadata;
+	return (
+		!!metadata &&
+		typeof metadata === "object" &&
+		typeof (metadata as Record<string, unknown>).forkedFromSessionId === "string"
+	);
+}
+
 function isApprovalWaitId(id: unknown): id is string {
 	return typeof id === "string" && id.startsWith(APPROVAL_WAIT_ID_PREFIX);
 }
@@ -1076,6 +1087,14 @@ export async function processHookEvent(
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
 		.limit(1);
+
+	// A takeover fork's timeline comes only from the stream its supervisor reports (AGEN-117 T18). A hook post
+	// for it is dropped before anything else is read or stored: still 200, counted on /health, no statement.
+	// Read from the row already loaded.
+	if (existing[0] && isForkRow(existing[0])) {
+		incrementForkHookDropped();
+		return { sessionId, isNew: false, session: null, events: [] };
+	}
 
 	// Whether this row existed before this call touched anything. Distinct
 	// from `isNew` below, which also flips to false when this call's own
@@ -1588,6 +1607,12 @@ export async function processStatusUpdate(
 
 	if (existing.length === 0) {
 		return false; // Session not found
+	}
+
+	// A fork's status comes from its supervisor's stream, never from a status post (AGEN-117 T18).
+	if (isForkRow(existing[0])) {
+		incrementForkHookDropped();
+		return false;
 	}
 
 	// Same rule and counter as a hook event: a key that is foreign to an owned

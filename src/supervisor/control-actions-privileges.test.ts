@@ -35,6 +35,8 @@ async function promptWith(metadata: Record<string, unknown>) {
 	});
 	const providers = {
 		hasManagedCodexRuntime: () => false,
+		hasClaudeStreamRuntime: () => false,
+		hasHeadlessRuntime: () => false,
 		stopManagedCodexSession: async () => {},
 		promptClaudeHeadlessSession: async (a: Record<string, unknown>) => {
 			received.push(a);

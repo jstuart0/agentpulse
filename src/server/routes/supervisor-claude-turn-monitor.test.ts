@@ -238,6 +238,8 @@ function supervisorFor(
 			throw new Error("not used");
 		},
 		hasManagedCodexRuntime: () => false,
+		hasClaudeStreamRuntime: () => false,
+		hasHeadlessRuntime: headless.hasHeadlessRuntime,
 		promptClaudeInteractiveSession: async () => {
 			throw new Error("not used");
 		},

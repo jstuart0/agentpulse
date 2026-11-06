@@ -14,19 +14,30 @@ export type AgentsListing =
 	| { ok: true; sessionIds: ReadonlySet<string> }
 	| { ok: false; why: string };
 
-/** The conversation ids in one `agents --json` answer, or null when the answer isn't a list of agents. */
-export function parseAgentsListing(stdout: string): ReadonlySet<string> | null {
+/** One conversation Claude Code has open: the process holding it and the session id. A missing pid is `null`. */
+export type AgentEntry = { pid: number | null; sessionId: string };
+
+export type AgentEntriesListing =
+	| { ok: true; entries: readonly AgentEntry[] }
+	| { ok: false; why: string };
+
+function agentsList(stdout: string): unknown[] | null {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(stdout);
 	} catch {
 		return null;
 	}
-	const list = Array.isArray(parsed)
+	return Array.isArray(parsed)
 		? parsed
 		: parsed && typeof parsed === "object" && Array.isArray((parsed as { agents?: unknown }).agents)
 			? ((parsed as { agents: unknown[] }).agents as unknown[])
 			: null;
+}
+
+/** The conversation ids in one `agents --json` answer, or null when the answer isn't a list of agents. */
+export function parseAgentsListing(stdout: string): ReadonlySet<string> | null {
+	const list = agentsList(stdout);
 	if (list === null) return null;
 	const ids = new Set<string>();
 	for (const entry of list) {
@@ -36,12 +47,33 @@ export function parseAgentsListing(stdout: string): ReadonlySet<string> | null {
 	return ids;
 }
 
-export async function listClaudeAgents(options: {
+/**
+ * The entries of one `agents --json` answer, each with the process that holds the conversation, or null
+ * when the answer isn't a list. An entry with no usable `sessionId` is a failure to read, not an entry
+ * for no one: a takeover must not take "can't tell" for "nobody has it".
+ */
+export function parseAgentEntries(stdout: string): readonly AgentEntry[] | null {
+	const list = agentsList(stdout);
+	if (list === null) return null;
+	const entries: AgentEntry[] = [];
+	for (const raw of list) {
+		const record =
+			raw && typeof raw === "object" ? (raw as { sessionId?: unknown; pid?: unknown }) : null;
+		if (!record || typeof record.sessionId !== "string" || !record.sessionId) return null;
+		entries.push({
+			sessionId: record.sessionId,
+			pid: typeof record.pid === "number" && Number.isInteger(record.pid) ? record.pid : null,
+		});
+	}
+	return entries;
+}
+
+async function runAgents(options: {
 	executable: string;
 	cwd: string;
 	env: Record<string, string | undefined>;
 	timeoutMs?: number;
-}): Promise<AgentsListing> {
+}): Promise<{ ok: true; stdout: string } | { ok: false; why: string }> {
 	let proc: ReturnType<typeof Bun.spawn>;
 	try {
 		proc = Bun.spawn({
@@ -69,11 +101,27 @@ export async function listClaudeAgents(options: {
 		]);
 		if (timedOut) return { ok: false, why: "it timed out" };
 		if (code !== 0) return { ok: false, why: `it exited ${code}` };
-		const ids = parseAgentsListing(stdout);
-		return ids ? { ok: true, sessionIds: ids } : { ok: false, why: "its answer wasn't a list" };
+		return { ok: true, stdout };
 	} catch {
 		return { ok: false, why: "it couldn't be read" };
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+type AgentsOptions = Parameters<typeof runAgents>[0];
+
+export async function listClaudeAgents(options: AgentsOptions): Promise<AgentsListing> {
+	const ran = await runAgents(options);
+	if (!ran.ok) return ran;
+	const ids = parseAgentsListing(ran.stdout);
+	return ids ? { ok: true, sessionIds: ids } : { ok: false, why: "its answer wasn't a list" };
+}
+
+/** Like `listClaudeAgents`, with the process behind each entry (a takeover's own-id and second-writer checks). */
+export async function listClaudeAgentEntries(options: AgentsOptions): Promise<AgentEntriesListing> {
+	const ran = await runAgents(options);
+	if (!ran.ok) return ran;
+	const entries = parseAgentEntries(ran.stdout);
+	return entries ? { ok: true, entries } : { ok: false, why: "its answer wasn't a list" };
 }

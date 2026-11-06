@@ -1,3 +1,4 @@
+import { CLAUDE_FORK_SLASH_MESSAGE } from "../../shared/managed-messages.js";
 import { registerApiErrorMessages, registerApiErrorReasonMessages } from "./api-errors.js";
 
 /**
@@ -31,6 +32,8 @@ registerApiErrorMessages({
 });
 
 registerApiErrorReasonMessages({
+	// A continued session takes no line that starts with a slash (the same words the host and the server use).
+	prompt_unsafe: { slash_command: CLAUDE_FORK_SLASH_MESSAGE },
 	prompt_not_deliverable: {
 		managed_state:
 			"This session's process ended when its host restarted, so it can't take more prompts. Start a new session for this work.",

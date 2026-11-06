@@ -80,6 +80,8 @@ function harness(
 	});
 	const providers = {
 		hasManagedCodexRuntime: () => false,
+		hasClaudeStreamRuntime: () => false,
+		hasHeadlessRuntime: () => false,
 		stopManagedCodexSession: async (id: string) => {
 			ran.push(`stop:${id}`);
 			if (over.stopFails) throw new Error("runtime gone");

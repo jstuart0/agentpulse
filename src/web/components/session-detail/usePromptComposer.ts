@@ -6,6 +6,7 @@ import {
 	type ComposerMode,
 	type SendPhase,
 	describeSendFailure,
+	followModeOf,
 	followPromptAction,
 	followsAction,
 	settleFollow,
@@ -100,6 +101,7 @@ export function usePromptComposer({
 				now: Date.now,
 				sleep,
 				signal: controller.signal,
+				until: followModeOf(mode) ?? "settle",
 			});
 			const settled = settleFollow(result);
 			if (!alive.current || settled === null) return;

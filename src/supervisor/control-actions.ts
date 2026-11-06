@@ -22,6 +22,9 @@
  */
 import { CLAUDE_TURN_CONTROL, CLAUDE_TURN_RENEWAL_MS } from "../shared/constants.js";
 import {
+	CLAUDE_FORK_NOT_HEADLESS_ERROR,
+	CLAUDE_FORK_RECORD_UNREADABLE_ERROR,
+	CLAUDE_STREAM_HELD_ERROR,
 	NOTHING_RUNNING_STOP_NOTE,
 	STOPPED_BY_PERSON_ERROR,
 	STOPPED_UNCHECKED_NOTE,
@@ -31,9 +34,14 @@ import { STOP_RUNTIMES } from "../shared/stop-runtime.js";
 import type { ControlAction, ManagedState } from "../shared/types.js";
 import { MANAGED_STATES } from "../shared/types.js";
 import type { LaunchCallbacks } from "./providers/claude-shared.js";
+import { ClaudePromptRefusal, ClaudePromptWithheld } from "./providers/claude-stream.js";
 import type {
+	hasClaudeStreamRuntime,
+	hasHeadlessRuntime,
 	promptClaudeHeadlessSession,
 	promptClaudeInteractiveSession,
+	promptClaudeStreamSession,
+	stopClaudeStreamSession,
 	stopHeadlessClaude,
 } from "./providers/claude.js";
 import type {
@@ -54,6 +62,11 @@ export type ControlProviders = {
 	promptClaudeHeadlessSession: typeof promptClaudeHeadlessSession;
 	promptClaudeInteractiveSession: typeof promptClaudeInteractiveSession;
 	stopHeadlessClaude: typeof stopHeadlessClaude;
+	/** A takeover fork's long-lived process (AGEN-117 T16). */
+	promptClaudeStreamSession: typeof promptClaudeStreamSession;
+	stopClaudeStreamSession: typeof stopClaudeStreamSession;
+	hasClaudeStreamRuntime: typeof hasClaudeStreamRuntime;
+	hasHeadlessRuntime: typeof hasHeadlessRuntime;
 };
 
 export interface ControlActionDeps {
@@ -63,6 +76,13 @@ export interface ControlActionDeps {
 	executeCleanupWorkArea: typeof executeCleanupWorkArea;
 	/** Runs a `resume` action (see services/session-resume.ts). Absent: this build can't, and says so. */
 	resumeSession?: (action: ControlAction, sessionId: string) => Promise<void>;
+	/**
+	 * What this host's own record says about the id: a fork it started, not one, or unknown (the record is there
+	 * and can't be believed). The one-prompt path refuses a fork whatever a prompt action's metadata says, so a
+	 * server that predates `metadata.runtime` (or was rolled back) can't send a fork down the path that would
+	 * start `claude --resume` on it, and refuses when it can't tell. Absent: no record is kept.
+	 */
+	forkStatus?: (sessionId: string) => "fork" | "not_fork" | "unknown";
 	/** Whether the server said it can do `feature` (registration and every heartbeat). Absent: it said nothing. */
 	serverHas?: (feature: string) => boolean;
 	/** Runs `callback` every `ms` until the returned handle stops it. The default is an unref'd interval. */
@@ -102,6 +122,8 @@ const PROMPT_WORDS = {
 	missingPrompt: "Prompt action is missing its prompt text.",
 	unknownAgent: "This host can't send prompts to this kind of session.",
 	mismatch: "This session's records don't match how it was launched, so nothing was sent.",
+	/** What a continued session's prompt failure says when the cause is the host's own to keep (detail goes to its log). */
+	failed: "The prompt couldn't be sent. Try again.",
 } as const;
 
 /** The words a failed stop carries. Fixed: nothing about the host or the process is echoed. */
@@ -233,10 +255,46 @@ export function createControlActionHandler(
 		}
 	}
 
+	/**
+	 * A takeover fork: the fence, the interrupt and the ladder are the runtime's. Nothing registered (a restart,
+	 * or a fork that already ended) reads stopped with the honest note; the carrier launch is not running, so
+	 * there is nothing to cancel.
+	 */
+	async function stopClaudeStream(action: ControlAction, sessionId: string) {
+		try {
+			const outcome = await providers.stopClaudeStreamSession(sessionId);
+			if (!outcome.gone) {
+				await failStop(action, STOP_WORDS.finishing);
+				return;
+			}
+			if (!outcome.hadChild) {
+				await reportStopped(sessionId, NOTHING_RUNNING_STOP_NOTE);
+				await report(action, {
+					status: "succeeded",
+					metadata: { ...(asRecord(action.metadata) ?? {}), note: NOTHING_RUNNING_STOP_NOTE },
+				});
+				return;
+			}
+			const note = outcome.unchecked ? STOPPED_UNCHECKED_NOTE : undefined;
+			await reportStopped(sessionId, note);
+			await report(
+				action,
+				note
+					? { status: "succeeded", metadata: { ...(asRecord(action.metadata) ?? {}), note } }
+					: { status: "succeeded" },
+			);
+		} catch (error) {
+			log(`[control-actions] claude fork stop failed: ${errorText(error)}`);
+			await failStop(action, STOP_WORDS.failed);
+		}
+	}
+
 	async function stop(action: ControlAction, sessionId: string) {
 		switch (readStopRuntime(action)) {
 			case STOP_RUNTIMES.codex:
 				return stopCodex(action, sessionId);
+			case STOP_RUNTIMES.claudeStream:
+				return stopClaudeStream(action, sessionId);
 			case STOP_RUNTIMES.claudeHeadless:
 				return stopClaudeHeadless(action, sessionId);
 			case STOP_RUNTIMES.claudeTerminal:
@@ -299,11 +357,14 @@ export function createControlActionHandler(
 			return { accepted: async () => {}, stop: () => {} };
 		}
 		let inFlight = false;
-		const renew = async () => {
+		const renew = async (accepted = false) => {
 			if (inFlight) return;
 			inFlight = true;
 			try {
-				await report(action, { status: "running" });
+				await report(
+					action,
+					accepted ? { status: "running", accepted: true } : { status: "running" },
+				);
 			} catch (error) {
 				log(
 					`[control-actions] couldn't renew the lock of prompt ${action.id}: ${errorText(error)}`,
@@ -313,7 +374,68 @@ export function createControlActionHandler(
 			}
 		};
 		const timer = schedule(() => void renew(), CLAUDE_TURN_RENEWAL_MS);
-		return { accepted: renew, stop: () => timer.stop() };
+		return { accepted: () => renew(true), stop: () => timer.stop() };
+	}
+
+	/**
+	 * A takeover fork's prompt goes to its live process, with no fall-through to a one-prompt `-p` run: that
+	 * would start `claude --resume` on the fork. The turn stays `running` until its `result`, renewed like a
+	 * launched Claude's, and ends `succeeded` or `failed` with fixed words. Whatever refuses it says why in
+	 * the action's `error`; the stored metadata, which holds the prompt text, is replaced.
+	 */
+	async function promptClaudeStream(
+		action: ControlAction,
+		sessionId: string,
+		text: string,
+		callbacks: LaunchCallbacks,
+	) {
+		let sent: Awaited<ReturnType<ControlProviders["promptClaudeStreamSession"]>>;
+		try {
+			if (!text) throw new ClaudePromptRefusal("no_runtime", PROMPT_WORDS.missingPrompt);
+			// A one-prompt child holds the id: a second process on the conversation is never started beside it.
+			if (providers.hasHeadlessRuntime(sessionId)) {
+				throw new ClaudePromptRefusal("no_runtime", CLAUDE_STREAM_HELD_ERROR);
+			}
+			sent = await providers.promptClaudeStreamSession(
+				{ sessionId, prompt: text, actionId: action.id },
+				callbacks,
+			);
+		} catch (error) {
+			if (error instanceof ClaudePromptWithheld) {
+				log(`[supervisor] control action ${action.id} (prompt) withheld`);
+				await gate.refuseControlAction(action.id);
+				return;
+			}
+			// Only a refusal this host wrote itself carries its words to the server. Anything else (a thrown
+			// detail from the process, the filesystem, a report) goes to the host log and is a fixed sentence here.
+			if (!(error instanceof ClaudePromptRefusal)) {
+				log(`[control-actions] claude fork prompt failed: ${errorText(error)}`);
+			}
+			await report(action, {
+				status: "failed",
+				error: error instanceof ClaudePromptRefusal ? error.message : PROMPT_WORDS.failed,
+				metadata: { mode: "claude_stream" },
+			});
+			return;
+		}
+		const renewals = startRenewals(action);
+		await renewals.accepted();
+		void sent.done
+			.then(async (outcome) => {
+				renewals.stop();
+				await finalReport(`action:${action.id}`, () =>
+					report(
+						action,
+						outcome.ok
+							? { status: "succeeded", metadata: sent.metadata }
+							: { status: "failed", error: outcome.error, metadata: { mode: "claude_stream" } },
+					),
+				);
+			})
+			.catch((error) => {
+				renewals.stop();
+				log(`[control-actions] claude fork prompt monitor failed: ${errorText(error)}`);
+			});
 	}
 
 	async function prompt(action: ControlAction, sessionId: string) {
@@ -347,6 +469,14 @@ export function createControlActionHandler(
 			return;
 		}
 
+		if (
+			agentType === "claude_code" &&
+			asRecord(action.metadata)?.runtime === STOP_RUNTIMES.claudeStream
+		) {
+			await promptClaudeStream(action, sessionId, text, callbacks);
+			return;
+		}
+
 		try {
 			if (agentType !== "claude_code") {
 				log(
@@ -361,6 +491,12 @@ export function createControlActionHandler(
 				// This host holds a Codex process for the session, so the record the server sent is wrong.
 				throw new Error(PROMPT_WORDS.mismatch);
 			}
+			// A fork never takes the one-prompt path: not when this host holds its process, and not when its own
+			// record lists the id, whatever the action's metadata says (an older or rolled-back server).
+			if (providers.hasClaudeStreamRuntime(sessionId)) throw new Error(CLAUDE_STREAM_HELD_ERROR);
+			const forkStatus = deps.forkStatus?.(sessionId) ?? "not_fork";
+			if (forkStatus === "fork") throw new Error(CLAUDE_FORK_NOT_HEADLESS_ERROR);
+			if (forkStatus === "unknown") throw new Error(CLAUDE_FORK_RECORD_UNREADABLE_ERROR);
 
 			if (managedState === "interactive_terminal") {
 				const response = await providers.promptClaudeInteractiveSession(

@@ -1,0 +1,63 @@
+{
+	"twoLive": {
+		"label": "two live children (a stream child and a fork)",
+		"status": 0,
+		"ms": 153,
+		"stderr": "",
+		"parsed": [
+			{
+				"pid": 14272,
+				"cwd": "/scratch/p0/work/agents-proj",
+				"kind": "interactive",
+				"startedAt": 1793938158903,
+				"sessionId": "25b97dc0-17e6-401b-9859-985914a8aa5d",
+				"name": "agents-proj-fb",
+				"status": "idle"
+			},
+			{
+				"pid": 14302,
+				"cwd": "/scratch/p0/work/agents-proj",
+				"kind": "interactive",
+				"startedAt": 1793938160159,
+				"sessionId": "108ad0e4-4fa0-4a18-b685-a4e431137fcc",
+				"name": "agents-proj-66",
+				"status": "idle"
+			}
+		]
+	},
+	"liveSessionIds": {
+		"live1": "25b97dc0-17e6-401b-9859-985914a8aa5d",
+		"live2": "108ad0e4-4fa0-4a18-b685-a4e431137fcc",
+		"S": "f3071170-f08f-4ff9-aab9-99eead1cd8a5",
+		"N": "108ad0e4-4fa0-4a18-b685-a4e431137fcc"
+	},
+	"pids": {
+		"live1": 14272,
+		"live2": 14302
+	},
+	"configFilesBefore": 15,
+	"oneLive": {
+		"label": "fork ended, one stream child left",
+		"status": 0,
+		"ms": 168,
+		"stderr": "",
+		"parsed": [
+			{
+				"pid": 14272,
+				"cwd": "/scratch/p0/work/agents-proj",
+				"kind": "interactive",
+				"startedAt": 1793938158903,
+				"sessionId": "25b97dc0-17e6-401b-9859-985914a8aa5d",
+				"name": "agents-proj-fb",
+				"status": "idle"
+			}
+		]
+	},
+	"noneLive": {
+		"label": "all ended",
+		"status": 0,
+		"ms": 166,
+		"stderr": "",
+		"parsed": []
+	}
+}

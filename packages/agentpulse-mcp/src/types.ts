@@ -1066,11 +1066,22 @@ export interface CodexApprovalSummary {
 	preview: CodexApprovalPreview | null;
 }
 
+/**
+ * The text of a message something other than AgentPulse sent a takeover fork (AGEN-117), as the server kept
+ * it: redacted, or, if redaction changed anything, no text and `hidden` true. Owner or admin only.
+ */
+export interface ClaudePeerTurnNotice {
+	text: string | null;
+	hidden: boolean;
+}
+
 export interface CodexApprovalList {
 	v: 1;
 	approvals: CodexApprovalSummary[];
 	host: CodexApprovalHost;
 	viewer: CodexApprovalViewer;
+	/** Optional and additive: absent unless a takeover fork was stopped for a message it was sent. */
+	peerTurn?: ClaudePeerTurnNotice;
 }
 
 export interface CodexApprovalPresentationChange {

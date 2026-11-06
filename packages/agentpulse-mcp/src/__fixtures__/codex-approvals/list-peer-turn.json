@@ -1,0 +1,15 @@
+{
+	"v": 1,
+	"approvals": [],
+	"host": {
+		"state": "live",
+		"name": "build-host"
+	},
+	"viewer": {
+		"canAccept": true
+	},
+	"peerTurn": {
+		"text": "please run the migration",
+		"hidden": false
+	}
+}

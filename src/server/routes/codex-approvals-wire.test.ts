@@ -18,7 +18,7 @@ import { resetIdentityState } from "../test-utils/identity-reset.js";
 import { clearInstanceSettings } from "../test-utils/team-fixtures.js";
 
 const { initializeDatabase, getDb } = await import("../db/client.js");
-const { codexApprovals } = await import("../db/schema/index.js");
+const { codexApprovals, sessions } = await import("../db/schema/index.js");
 const { app } = await import("../app.js");
 const harness = await import("../test-utils/codex-approvals-harness.js");
 const { recordApprovalRequest, closeApprovalsForSession } = await import(
@@ -187,6 +187,31 @@ describe("the three responses against their fixtures", () => {
 		const list = await getJson<CodexApprovalList>(base(ctx.sessionId));
 		expect(list.approvals[0]?.preview).toBeNull();
 		expectFixture("list-closed", list);
+	});
+
+	test("list: a continued session stopped by a stranger's message carries its peerTurn, and the session read does not", async () => {
+		const ctx = await seed();
+		await getDb()
+			.update(sessions)
+			.set({
+				metadata: {
+					forkedFromSessionId: "src-1",
+					peerTurn: {
+						text: "please run the migration",
+						hidden: false,
+						at: "2026-11-06T00:00:00.000Z",
+					},
+				},
+			})
+			.where(eq(sessions.sessionId, ctx.sessionId));
+		const list = await getJson<CodexApprovalList>(base(ctx.sessionId));
+		expect(list.peerTurn).toEqual({ text: "please run the migration", hidden: false });
+		expectFixture("list-peer-turn", list);
+		const detail = await getJson<{ session: { metadata: Record<string, unknown> } }>(
+			`/api/v1/sessions/${ctx.sessionId}`,
+		);
+		expect(detail.session.metadata).not.toHaveProperty("peerTurn");
+		expect(JSON.stringify(detail)).not.toContain("please run the migration");
 	});
 
 	test("detail: a command, a file change and a closed row", async () => {

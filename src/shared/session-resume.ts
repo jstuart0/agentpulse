@@ -28,6 +28,28 @@ export const TAKEOVER_PRIVILEGES: {
 	readonly sandboxMode: SandboxMode;
 } = { approvalPolicy: "untrusted", sandboxMode: "workspace-write" };
 
+/**
+ * The permission mode a Claude takeover runs under (AGEN-117 T4). The host picks it per takeover from the
+ * login Claude Code reports, the server validates and stores it, and every sentence about what applies
+ * follows it. `restricted` ignores the person's own Claude settings; `ask` leaves them in force. Never a
+ * build-wide constant, and never chosen by a client.
+ */
+export const CLAUDE_FORK_MODES = ["ask", "restricted"] as const;
+export type ClaudeForkMode = (typeof CLAUDE_FORK_MODES)[number];
+
+export function isClaudeForkMode(value: unknown): value is ClaudeForkMode {
+	return typeof value === "string" && (CLAUDE_FORK_MODES as readonly string[]).includes(value);
+}
+
+/**
+ * What a Claude takeover runs under (AGEN-117 T14): a person approves anything that changes something.
+ * Mapped through `launch-privileges.ts` to `--permission-mode default`; the host recomputes the argv from it.
+ */
+export const CLAUDE_TAKEOVER_PRIVILEGES: {
+	readonly approvalPolicy: ApprovalPolicy;
+	readonly sandboxMode: SandboxMode | null;
+} = { approvalPolicy: "manual", sandboxMode: null };
+
 export type ResumeKind = "takeover" | "recovery";
 
 /** Every refusal code the take-over and resume routes (and the routes they guard) can answer, one with copy each in the web. */

@@ -5,6 +5,7 @@
  * Interactive terminals are not children of the supervisor and are left running.
  */
 import { disposeAllHeadlessRuntimes } from "../providers/claude-headless.js";
+import { disposeAllClaudeStreamRuntimes } from "../providers/claude-stream.js";
 import { disposeAllManagedCodexRuntimes } from "../providers/codex-managed.js";
 
 /**
@@ -35,12 +36,22 @@ async function within(work: Promise<void>, ms: number): Promise<void> {
 	}
 }
 
+/**
+ * How long the exit waits for takeover forks: stdin first (no interrupt, the process is going away), then
+ * SIGTERM and SIGKILL, with the process-table waits around each; the same bound as the headless children.
+ */
+export const CLAUDE_STREAM_SHUTDOWN_BOUND_MS = 10_000;
+
 export async function disposeRuntimesAndExit(
-	options: { codexBoundMs?: number; headlessBoundMs?: number } = {},
+	options: { codexBoundMs?: number; headlessBoundMs?: number; streamBoundMs?: number } = {},
 ): Promise<never> {
 	await Promise.all([
 		within(disposeAllManagedCodexRuntimes(), options.codexBoundMs ?? CODEX_SHUTDOWN_BOUND_MS),
 		within(disposeAllHeadlessRuntimes(), options.headlessBoundMs ?? HEADLESS_SHUTDOWN_BOUND_MS),
+		within(
+			disposeAllClaudeStreamRuntimes(),
+			options.streamBoundMs ?? CLAUDE_STREAM_SHUTDOWN_BOUND_MS,
+		),
 	]);
 	process.exit(1);
 }

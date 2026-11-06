@@ -223,34 +223,139 @@ describe("a 202 on Codex", () => {
 	});
 });
 
-describe("a 202 on Claude headless", () => {
-	test("clears at once, never polls, and shows no alert, notice or status", async () => {
-		client.sendSessionPrompt = async () => ({ action: action() });
+describe("a 202 on Claude headless (AGEN-117 T16: followed until the host has taken it)", () => {
+	test("waits read-only through queued and the claim, then the host's acceptance clears the draft and stops the polling", async () => {
+		client.sendSessionPrompt = async () => ({ action: action({ status: "queued" }) });
 		let polls = 0;
 		client.getSessionControlActions = async () => {
 			polls += 1;
-			return { controlActions: [] };
+			return {
+				controlActions: [
+					polls < 2
+						? action({ status: "queued" })
+						: polls < 4
+							? action({ status: "running" })
+							: action({ status: "running", metadata: { acceptedAt: "2026-11-06 01:00:00" } }),
+				],
+			};
 		};
 		const s = session("claude_code", "headless", true);
 		const t = mount({ s });
 		await t.render();
 		await t.type("long task");
 		await t.send();
+		await flush(30);
 		const v = t.now();
 		expect(v.prompt).toBe("");
 		expect(v.phase).toEqual({ step: "idle" });
-		expect(v.justSent).toBe(false);
-		expect(polls).toBe(0);
-		expect(t.calls.settled).toBe(0);
-		// Past the 90 s lock nothing changes, because nothing is watching.
-		fakeNow += 120_000;
+		expect(v.justSent).toBe(true);
+		expect(polls).toBe(4);
+		expect(t.calls.settled).toBe(1);
+		// The turn runs for as long as it likes: nothing is watching it any more.
+		fakeNow += 600_000;
 		await flush(30);
+		expect(polls).toBe(4);
 		expect(t.now().phase).toEqual({ step: "idle" });
-		expect(polls).toBe(0);
 		await t.h.unmount();
 	});
 
-	test("a refusal is a toast, as before, with the text kept and no inline alert", async () => {
+	test("while it is queued the box says Sending… and takes no second send", async () => {
+		client.sendSessionPrompt = async () => ({ action: action({ status: "queued" }) });
+		const hold = deferred<{ controlActions: ControlAction[] }>();
+		client.getSessionControlActions = () => hold.promise;
+		const s = session("claude_code", "headless");
+		const t = mount({ s });
+		await t.render();
+		await t.type("one");
+		await t.send();
+		expect(t.now().phase).toEqual({ step: "following" });
+		expect(boxState(t.options.mode as never, t.now().phase, { posting: false })).toMatchObject({
+			readOnly: true,
+			sendDisabled: true,
+			buttonText: "Sending…",
+		});
+		hold.resolve({
+			controlActions: [
+				action({ status: "running", metadata: { acceptedAt: "2026-11-06 01:00:00" } }),
+			],
+		});
+		await flush(30);
+		expect(t.now().phase).toEqual({ step: "idle" });
+		await t.h.unmount();
+	});
+
+	test("a refusal by the host keeps the text and says why, at the box", async () => {
+		client.sendSessionPrompt = async () => ({ action: action({ status: "queued" }) });
+		client.getSessionControlActions = async () => ({
+			controlActions: [
+				action({
+					status: "failed",
+					error:
+						"Claude is still working on the last prompt, so nothing was sent. Try again when it finishes.",
+				}),
+			],
+		});
+		const s = session("claude_code", "headless", true);
+		const t = mount({ s });
+		await t.render();
+		await t.type("keep me");
+		await t.send();
+		await flush(30);
+		expect(t.now().prompt).toBe("keep me");
+		expect(t.now().phase).toEqual({
+			step: "failed",
+			reason:
+				"Claude is still working on the last prompt, so nothing was sent. Try again when it finishes.",
+			startNew: false,
+		});
+		await t.h.unmount();
+	});
+
+	test("a host refusal that arrives after the claim keeps the draft: the claim was not acceptance", async () => {
+		client.sendSessionPrompt = async () => ({ action: action({ status: "queued" }) });
+		let polls = 0;
+		client.getSessionControlActions = async () => {
+			polls += 1;
+			return {
+				controlActions: [
+					polls < 3
+						? action({ status: "running" })
+						: action({
+								status: "failed",
+								error: "This conversation is still open on this machine, so nothing was sent.",
+							}),
+				],
+			};
+		};
+		const t = mount({ s: session("claude_code", "headless") });
+		await t.render();
+		await t.type("do not lose me");
+		await t.send();
+		await flush(30);
+		expect(polls).toBe(3);
+		expect(t.now().prompt).toBe("do not lose me");
+		expect(t.now().phase).toMatchObject({
+			step: "failed",
+			reason: "This conversation is still open on this machine, so nothing was sent.",
+		});
+		await t.h.unmount();
+	});
+
+	test("a turn that succeeded before the first poll is accepted too", async () => {
+		client.sendSessionPrompt = async () => ({ action: action({ status: "queued" }) });
+		client.getSessionControlActions = async () => ({
+			controlActions: [action({ status: "succeeded" })],
+		});
+		const t = mount({ s: session("claude_code", "headless") });
+		await t.render();
+		await t.type("quick");
+		await t.send();
+		await flush(30);
+		expect(t.now().prompt).toBe("");
+		await t.h.unmount();
+	});
+
+	test("a refusal of the POST itself is shown at the box with the text kept", async () => {
 		client.sendSessionPrompt = async () => {
 			throw new ApiError(409, "x", { error: "host_offline" });
 		};
@@ -260,7 +365,7 @@ describe("a 202 on Claude headless", () => {
 		await t.type("keep me");
 		await t.send();
 		expect(t.now().prompt).toBe("keep me");
-		expect(t.now().phase).toEqual({ step: "idle" });
+		expect(t.now().phase.step).toBe("failed");
 		await t.h.unmount();
 	});
 });

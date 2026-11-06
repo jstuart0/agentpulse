@@ -22,6 +22,7 @@ import {
 } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
+import { stripAndRedact } from "./ai/redactor.js";
 import { closeApprovalsForSession } from "./codex-approvals.js";
 import { failResumeAction } from "./control-actions.js";
 import {
@@ -134,7 +135,17 @@ function withoutServerOwnedMetadata(
  * stale or forged `SessionEnd` and is never cleared (AGEN-115, D14): a supervisor can neither set nor clear it.
  * `endedByEvent` is the hook terminal latch (D21); the server sets it for a stopped Claude row (AGEN-110).
  */
-const SERVER_OWNED_METADATA_KEYS = ["permissionWait", "managedResumeAt", "endedByEvent"] as const;
+const SERVER_OWNED_METADATA_KEYS = [
+	"permissionWait",
+	"managedResumeAt",
+	"endedByEvent",
+	// A takeover fork's markers (AGEN-117 T6, T18): `forkedFromSessionId` is what makes the hook path drop a
+	// session's posts, and `peerTurn` holds the redacted text of a message a stranger sent it. A supervisor
+	// report can write none of them.
+	"forkedFromSessionId",
+	"forkPermissionBranch",
+	"peerTurn",
+] as const;
 
 // Test seam (AGEN-115): runs after a report's open-action check and before its writes, so a test can land a
 // settle of the same action in that window.
@@ -211,6 +222,24 @@ async function claudeStopLatchChange(
 		.where(eq(launchRequests.launchCorrelationId, input.sessionId))
 		.limit(1);
 	return (launch?.agentType ?? existingSession.agentType) === "claude_code" ? change : null;
+}
+
+/** The most a message's text is kept at (the host cuts it to this too). */
+export const PEER_TURN_MAX_CHARS = 1024;
+
+/**
+ * What the server keeps of a message a stranger sent a fork: the text, run through the approval pipeline's
+ * redaction, or, if redaction (or the stripping of invisible characters) changed anything, no text at all and
+ * a flag, so the reader is shown fixed words instead of something that may hold a secret.
+ */
+export function peerTurnRecord(
+	text: string,
+	at: string,
+): { text: string | null; hidden: boolean; at: string } {
+	const cut = text.slice(0, PEER_TURN_MAX_CHARS);
+	const { text: cleaned, hits } = stripAndRedact(cut);
+	const changed = hits.length > 0 || cleaned !== cut;
+	return changed ? { text: null, hidden: true, at } : { text: cleaned, hidden: false, at };
 }
 
 async function writeManagedSessionState(
@@ -315,7 +344,15 @@ async function writeManagedSessionState(
 				existingSession,
 				options.replay === true,
 			);
-			if (supervisorMetadata || latch !== null) {
+			// The text of a message a stranger sent a takeover fork, from the host's degraded report: kept only in
+			// the server-owned `peerTurn`, redacted, and only for a session the server itself marked as a fork.
+			const peerText =
+				input.managedState === "degraded" && typeof input.peerTurnText === "string"
+					? input.peerTurnText
+					: null;
+			// A successful resume leaves the stranger's message behind: it is cleared with the sync error it explained.
+			const clearsPeer = input.clearProviderSyncError === true && resumeActionId !== null;
+			if (supervisorMetadata || latch !== null || peerText !== null || clearsPeer) {
 				// Late read-modify-write inside the transaction: re-read metadata
 				// immediately before writing so a concurrent writer's keys (e.g.
 				// applyPermissionWaitTransition's permissionWait) aren't clobbered
@@ -338,6 +375,11 @@ async function writeManagedSessionState(
 						: latch === "clear" || heldLatch === undefined
 							? rest
 							: { ...rest, endedByEvent: heldLatch };
+				if (peerText !== null && typeof merged.forkedFromSessionId === "string") {
+					merged.peerTurn = peerTurnRecord(peerText, timestamp);
+				} else if (clearsPeer) {
+					merged.peerTurn = undefined;
+				}
 				updates.metadata = merged;
 			}
 			await tx.update(sessions).set(updates).where(eq(sessions.sessionId, input.sessionId));
@@ -631,40 +673,58 @@ export interface TurnBoundaryEvent {
 
 type TurnChange = "start" | "launch_start" | "end" | "stopped";
 
-/** What one event does to a managed Codex session's turn, or null. The marker is what makes it a Codex runtime's. */
-function turnChangeOf(event: TurnBoundaryEvent, late: boolean): TurnChange | null {
-	const marked = event.rawPayload?.codexRuntime === true;
+/**
+ * Which runtime's marker an event carries: a Codex app-server's (`codexRuntime`) or a takeover fork's
+ * long-lived Claude stream (`claudeStreamRuntime`, AGEN-117 T18). The marker decides which agent type's
+ * launch the event may move, so a Claude marker on a Codex row, or the reverse, changes nothing.
+ */
+type TurnAgent = "codex_cli" | "claude_code";
+
+function markerAgent(event: TurnBoundaryEvent): TurnAgent | null {
+	if (event.rawPayload?.codexRuntime === true) return "codex_cli";
+	if (event.rawPayload?.claudeStreamRuntime === true) return "claude_code";
+	return null;
+}
+
+/** What one event does to a managed session's turn, or null. The marker is what makes it a managed runtime's. */
+function turnChangeOf(
+	event: TurnBoundaryEvent,
+	late: boolean,
+): { change: TurnChange; agent: TurnAgent | null } | null {
+	const agent = markerAgent(event);
 	switch (event.eventType) {
 		case "HeadlessPromptSubmitted":
-			return marked && !late ? "start" : null;
+			return agent && !late ? { change: "start", agent } : null;
 		case "ManagedSessionStart":
-			return marked && !late ? "launch_start" : null;
+			return agent && !late ? { change: "launch_start", agent } : null;
 		case "HeadlessPromptCompleted":
 		case "HeadlessPromptFailed":
-			return marked ? "end" : null;
+			return agent ? { change: "end", agent } : null;
 		case "ManagedSessionStopped":
-			return "stopped";
+			return { change: "stopped", agent: null };
 		default:
 			return null;
 	}
 }
 
 /**
- * A managed Codex turn's working state, from the events a supervisor reports (AGEN-91 D5). Codex's
- * own hooks post under the thread id, not this session's id, so nothing else flips these columns.
- * The last relevant event in the batch wins. A late report (an outbox replay) can end a turn but
- * never start one. `db` is the receipt transaction's `tx` when there is one.
+ * A managed turn's working state, from the events a supervisor reports (AGEN-91 D5, AGEN-117 T18). Codex's
+ * own hooks post under the thread id, not this session's id, and a takeover fork's hooks are dropped
+ * outright, so nothing else flips these columns. The last relevant event in the batch wins. A late report
+ * (an outbox replay) can end a turn but never start one. `db` is the receipt transaction's `tx` when there is
+ * one.
  *
- * Claude's own hooks own its working state, so a Claude row is touched only by `ManagedSessionStopped`
- * (AGEN-110): a stopped process will never send the Stop hook, so the host's stop event clears the working
- * flag and the turn start.
+ * A launched Claude's own hooks own its working state, so a launched Claude row is touched only by
+ * `ManagedSessionStopped` (AGEN-110): a stopped process will never send the Stop hook, so the host's stop
+ * event clears the working flag and the turn start. A takeover fork's turn events carry the Claude marker and
+ * move the row exactly as a Codex turn's do.
  *
- * Statements: none for a batch with no relevant event (a Claude prompt or completion lacks the
- * marker, so no agent-type read is needed to decide that); one guarded UPDATE otherwise. That
- * includes ManagedSessionStopped, which carries no marker and clears working on either agent's row.
- * The guard keeps a Codex marker on a Claude row from changing anything, and it reads the launch's
- * agent type (what the host was asked to run) before the session row's, which a hook can create first
- * with a type of its choosing.
+ * Statements: none for a batch with no relevant event (a launched Claude's prompt or completion lacks the
+ * marker, so no agent-type read is needed to decide that); one guarded UPDATE otherwise. That includes
+ * ManagedSessionStopped, which carries no marker and clears working on either agent's row. The guard keeps
+ * a marker on a row of the other agent from changing anything, and it reads the launch's agent type (what
+ * the host was asked to run) before the session row's, which a hook can create first with a type of its
+ * choosing.
  */
 export async function applyManagedTurnBoundaries(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
@@ -673,15 +733,27 @@ export async function applyManagedTurnBoundaries(
 	incoming: readonly TurnBoundaryEvent[],
 	options: { late: boolean },
 ): Promise<void> {
-	let last: TurnChange | null = null;
+	let last: { change: TurnChange; agent: TurnAgent | null } | null = null;
 	for (const event of incoming) last = turnChangeOf(event, options.late) ?? last;
 	if (last === null) return;
+	// A Claude turn marker moves only a takeover fork's row. A launched Claude's own hooks own its working
+	// state, so the same marker on one of those changes nothing (the supervisor that owns it has no reason to
+	// send it). Read from the launch, which only a launch request writes; one extra statement, only for a batch
+	// that carries the Claude marker.
+	if (last.agent === "claude_code") {
+		const [launch] = await db
+			.select({ metadata: launchRequests.metadata })
+			.from(launchRequests)
+			.where(eq(launchRequests.launchCorrelationId, sessionId))
+			.limit(1);
+		if ((launch?.metadata as Record<string, unknown> | null)?.boundObservedSession !== true) return;
+	}
 
 	const now = new Date().toISOString();
 	const updates: Record<string, unknown> =
-		last === "stopped"
+		last.change === "stopped"
 			? { isWorking: false, currentTurnStartedAt: null }
-			: last === "end"
+			: last.change === "end"
 				? {
 						isWorking: false,
 						currentTurnStartedAt: null,
@@ -695,10 +767,15 @@ export async function applyManagedTurnBoundaries(
 						status: "active",
 						endedAt: null,
 						// A sent prompt acknowledges whatever came before it; the launch turn has nothing before it.
-						...(last === "start" ? { lastUserAcknowledgedAt: now } : {}),
+						...(last.change === "start" ? { lastUserAcknowledgedAt: now } : {}),
 					};
-	// A stop is reported by the host for either agent; every other change carries the Codex marker.
-	const agents = last === "stopped" ? sql`in ('codex_cli', 'claude_code')` : sql`= 'codex_cli'`;
+	// A stop is reported by the host for either agent; every other change carries its runtime's marker.
+	const agents =
+		last.agent === null
+			? sql`in ('codex_cli', 'claude_code')`
+			: last.agent === "claude_code"
+				? sql`= 'claude_code'`
+				: sql`= 'codex_cli'`;
 	await db
 		.update(sessions)
 		.set(updates)

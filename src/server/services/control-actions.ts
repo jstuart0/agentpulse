@@ -6,8 +6,10 @@ import {
 	CODEX_FOLLOW_UP_PROMPTS,
 } from "../../shared/constants.js";
 import {
+	CLAUDE_FORK_SLASH_MESSAGE,
 	CLAUDE_STOP_UPGRADE_MESSAGE,
 	CONTROL_TIMEOUT_ERROR,
+	FORK_PROMPT_NEEDS_PERSON_MESSAGE,
 	HOST_RESTARTED_TURN_ERROR,
 	HOST_UPGRADE_REQUIRED_MESSAGE,
 	STOPPED_BY_PERSON_ERROR,
@@ -789,6 +791,32 @@ export class ManagedStateNotContinuableError extends Error {
 	}
 }
 
+/**
+ * A prompt to a takeover fork that starts with a slash (AGEN-117 T16): with the slash commands switched off
+ * the text would still reach the model as text, so the server refuses it as well as the host. Nothing is queued.
+ */
+export class PromptUnsafeError extends Error {
+	readonly code = "prompt_unsafe";
+	constructor() {
+		super(CLAUDE_FORK_SLASH_MESSAGE);
+		this.name = "PromptUnsafeError";
+	}
+}
+
+/**
+ * A prompt to a takeover fork that runs under the person's own Claude settings (mode `ask`, or any mode that
+ * is not `restricted`): those settings can allow tools with no card, so only a person may drive it (AGEN-117
+ * CR18, X17). An API key, a host or the watcher gets this; a signed-in person, DISABLE_AUTH and a person's
+ * decision on a request do not.
+ */
+export class HumanRequiredError extends Error {
+	readonly code = "human_required";
+	constructor() {
+		super(FORK_PROMPT_NEEDS_PERSON_MESSAGE);
+		this.name = "HumanRequiredError";
+	}
+}
+
 /** A Stop on a session started in a terminal: nothing here can stop it, so nothing is queued (AGEN-110). */
 export class StopNotSupportedError extends Error {
 	readonly code = "stop_not_supported";
@@ -818,7 +846,9 @@ export type EnqueueRefusal =
 	| "host_offline"
 	| "host_gone"
 	| "host_upgrade_required"
-	| "managed_state";
+	| "managed_state"
+	| "prompt_unsafe"
+	| "human_required";
 
 function refusalToError(reason: EnqueueRefusal): Error {
 	switch (reason) {
@@ -840,6 +870,10 @@ function refusalToError(reason: EnqueueRefusal): Error {
 			return new HostUpgradeRequiredError();
 		case "managed_state":
 			return new ManagedStateNotContinuableError();
+		case "prompt_unsafe":
+			return new PromptUnsafeError();
+		case "human_required":
+			return new HumanRequiredError();
 		case "nothing_to_stop":
 			return new NothingToStopError();
 		case "stop_not_supported":
@@ -947,7 +981,7 @@ export async function takeControlLock(
 	// The session's launch is found by its correlation id, the same key the owner-of-record join uses. A launch
 	// still `running` after the ceiling is a report that never came, not a turn: it stops blocking.
 	const firstTurnCutoff = new Date(clock() - CLAUDE_TURN_MAX_AGE_MS).toISOString();
-	const noFirstTurnRunning = sql`NOT EXISTS (SELECT 1 FROM ${launchRequests} WHERE ${launchRequests.launchCorrelationId} = ${sessionId} AND ${launchRequests.status} = 'running' AND ${launchRequests.requestedLaunchMode} = 'headless' AND ${launchRequests.updatedAt} > ${firstTurnCutoff})`;
+	const noFirstTurnRunning = sql`NOT EXISTS (SELECT 1 FROM ${launchRequests} WHERE ${launchRequests.launchCorrelationId} = ${sessionId} AND ${launchRequests.status} = 'running' AND ${launchRequests.requestedLaunchMode} = 'headless' AND ${stampAsIso(launchRequests.updatedAt)} > ${firstTurnCutoff})`;
 	const taken = await tx
 		.update(managedSessions)
 		.set({
@@ -964,6 +998,17 @@ export async function takeControlLock(
 		)
 		.returning({ sessionId: managedSessions.sessionId });
 	return taken.length > 0;
+}
+
+/**
+ * A stored time as the ISO text a cutoff is made of. SQLite fills an insert's `updated_at` with
+ * `datetime('now')` ("2026-11-06 06:44:56", a space) while the code writes ISO ("2026-11-06T06:44:56.000Z"),
+ * and a plain text compare of the two orders by that space against the `T`: on the cutoff's own date a fresh
+ * default-stamped row read as older than the cutoff, so a running first turn stopped blocking for part of
+ * every day. Postgres stores ISO already, where this changes nothing.
+ */
+function stampAsIso(column: unknown) {
+	return sql`replace(${column}, ' ', 'T')`;
 }
 
 /**
@@ -985,7 +1030,7 @@ export async function hasRunningFirstTurn(
 				eq(launchRequests.launchCorrelationId, sessionId),
 				eq(launchRequests.status, "running"),
 				eq(launchRequests.requestedLaunchMode, "headless"),
-				sql`${launchRequests.updatedAt} > ${cutoff}`,
+				sql`${stampAsIso(launchRequests.updatedAt)} > ${cutoff}`,
 			),
 		)
 		.limit(1);
@@ -1061,6 +1106,24 @@ async function preemptRunningClaudePrompt(
 		})
 		.where(and(eq(controlActions.id, holderId), eq(controlActions.status, "running")));
 	return true;
+}
+
+/**
+ * Whether the actor is a person: a signed-in user, DISABLE_AUTH's anonymous caller, or a verified Telegram
+ * chat answering a request. An API key, a host, the watcher and system work are not.
+ */
+export function isPersonActor(actor: Actor): boolean {
+	return actor.label === "user" || actor.label === "anonymous" || actor.label === "telegram";
+}
+
+/** True when the launch is the carrier of a taken-over Claude session (a fork): `boundObservedSession` is set only by the takeover. */
+export function isClaudeTakeoverLaunch(
+	launch: Pick<typeof launchRequests.$inferSelect, "agentType" | "metadata">,
+): boolean {
+	return (
+		launch.agentType === "claude_code" &&
+		(launch.metadata as Record<string, unknown> | null)?.boundObservedSession === true
+	);
 }
 
 /**
@@ -1263,22 +1326,44 @@ export async function enqueuePromptInTx(
 	// created by anyone with an ingest key, under a launch's id, with an agent type of their choosing; one that
 	// disagrees with its launch is refused, so it can't send a Codex launch's prompt down the Claude path.
 	if (session.agentType !== launch.agentType) return { ok: false, reason: "launch_mismatch" };
+	const isCodex = launch.agentType === "codex_cli";
+	// A takeover fork is a Claude session whose process is the host's long-lived one: its carrier launch says
+	// so (read from the launch, which only a launch request writes, never from the session row).
+	const isClaudeTakeover = isClaudeTakeoverLaunch(launch);
+	// The host would refuse a fork's slash line too; the server says so first, with nothing queued.
+	if (isClaudeTakeover && /^\s*\//.test(prompt)) return { ok: false, reason: "prompt_unsafe" };
+	// A fork running under the person's own Claude settings (anything but `restricted`) takes prompts from a
+	// person only: those settings may allow tools with no card (CR18). Judged on the actor, so the route, the
+	// Ask handler and a decision on a request all meet it here.
+	if (
+		isClaudeTakeover &&
+		(session.metadata as Record<string, unknown> | null)?.forkPermissionBranch !== "restricted" &&
+		!isPersonActor(actor)
+	) {
+		return { ok: false, reason: "human_required" };
+	}
 	const promptHostRefusal = await hostRefusal(tx, sessionId);
 	if (promptHostRefusal) return { ok: false, reason: promptHostRefusal };
-	const isCodex = launch.agentType === "codex_cli";
 	// Only a Codex launch asks the host anything: Claude prompts cost no extra statement.
 	if (isCodex && !(await hostTakesCodexPrompts(tx, sessionId))) {
 		return { ok: false, reason: "host_upgrade_required" };
 	}
+	const hasLongLivedProcess = isCodex || isClaudeTakeover;
 	// A row still `pending` with an action holding its lock is being taken over or resumed: it can't take a
 	// prompt yet, and "not continuable" would send the person off to start again. Narrow on purpose: a
 	// pending row with no active action keeps the answer below.
-	if (isCodex && managed.managedState === "pending" && managed.activeControlActionId) {
+	if (hasLongLivedProcess && managed.managedState === "pending" && managed.activeControlActionId) {
 		return { ok: false, reason: "control_busy" };
 	}
 	// A Codex session's process dies with its host's supervisor, and registration then marks it degraded: a
-	// prompt queued for it would only be refused by the host after the person was told it was sent.
-	if (isCodex && !CONTINUABLE_MANAGED_STATES.has(managed.managedState as ManagedState)) {
+	// prompt queued for it would only be refused by the host after the person was told it was sent. A fork's
+	// process dies with the supervisor the same way, but registration does not mark a fork degraded yet (that
+	// predicate is Codex-only until the takeover phase widens it): until then the host's own exit report is
+	// what moves a fork to degraded, and this refuses a prompt once it has. A stopped fork is never resumed.
+	if (
+		hasLongLivedProcess &&
+		!CONTINUABLE_MANAGED_STATES.has(managed.managedState as ManagedState)
+	) {
 		return { ok: false, reason: "managed_state" };
 	}
 	// Judged after the refusals above, so a held lock doesn't hide why the session can't take a prompt;
@@ -1310,6 +1395,9 @@ export async function enqueuePromptInTx(
 			metadata: {
 				prompt,
 				agentType: launch.agentType,
+				// What the host must run this on (AGEN-117 T11/T16), from the launch: `claude_stream` sends it to the
+				// fork's live process, `claude_headless` starts a one-prompt child. Absent means Codex, as for a stop.
+				...(stopRuntimeOf(launch) && !isCodex ? { runtime: stopRuntimeOf(launch) } : {}),
 				// The launch's directory (judged against the host's trusted roots when it was
 				// requested), never the agent-reported session.cwd, which the agent can change.
 				cwd: launch.cwd,
@@ -1319,7 +1407,7 @@ export async function enqueuePromptInTx(
 				// privileges (null = the agent's default) and env for the supervisor to re-apply. A Codex
 				// follow-up starts a turn on a thread whose settings were set and verified at launch and are
 				// sticky: it sends nothing that could widen them, so none of this is ever in the row.
-				...(isCodex
+				...(hasLongLivedProcess
 					? {}
 					: {
 							model: launch.model ?? null,
@@ -1738,6 +1826,8 @@ export async function updateControlAction(
 		status: Exclude<ControlActionStatus, "queued">;
 		error?: string | null;
 		metadata?: Record<string, unknown> | null;
+		/** A `running` report that says the host took a Claude prompt on (see `ControlStatusBody.accepted`). */
+		accepted?: boolean;
 	},
 	seam: UpdateControlActionSeam = {},
 ) {
@@ -1795,9 +1885,27 @@ export async function updateControlAction(
 	// of the action that holds it and nothing else: never the action's metadata, error or finish time, and
 	// never the status of an action that has finished.
 	if (input.status === "running") {
+		// The one thing a running report may add: `metadata.acceptedAt`, from the host's own acceptance report
+		// for a prompt, once. The claim also reads `running`, so only this tells a composer the host took the
+		// prompt on rather than being about to refuse it. Still a guarded write on an action in flight.
+		const accepts =
+			input.accepted === true &&
+			current.actionType === "prompt" &&
+			current.status === "running" &&
+			!(current.metadata as Record<string, unknown> | null)?.acceptedAt;
 		await getDb()
 			.update(controlActions)
-			.set({ updatedAt: timestamp })
+			.set({
+				updatedAt: timestamp,
+				...(accepts
+					? {
+							metadata: {
+								...((current.metadata as Record<string, unknown> | null) ?? {}),
+								acceptedAt: timestamp,
+							},
+						}
+					: {}),
+			})
 			.where(and(eq(controlActions.id, current.id), eq(controlActions.status, "running")));
 		if (current.sessionId && (await mayRenewLock(current))) {
 			// A renewal can't carry the lock past the ceiling, counted from when the action was queued (an

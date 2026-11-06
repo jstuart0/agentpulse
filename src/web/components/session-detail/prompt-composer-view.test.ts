@@ -23,6 +23,7 @@ import {
 	describeResumeFailure,
 	describeSendFailure,
 	focusBoxAfterSettle,
+	followModeOf,
 	followPromptAction,
 	followsAction,
 	lockedNotice,
@@ -280,14 +281,23 @@ describe("composerNotice", () => {
 });
 
 describe("followsAction", () => {
-	test("Codex and Claude interactive follow; Claude headless never does", () => {
+	test("Codex, Claude interactive and Claude headless follow; a degraded Codex session and no box do not", () => {
 		expect(followsAction(composerMode(probe("codex_cli", "managed"), ALLOWED))).toBe(true);
 		expect(followsAction(composerMode(probe("claude_code", "interactive_terminal"), ALLOWED))).toBe(
 			true,
 		);
-		expect(followsAction(composerMode(probe("claude_code", "headless"), ALLOWED))).toBe(false);
+		expect(followsAction(composerMode(probe("claude_code", "headless"), ALLOWED))).toBe(true);
 		expect(followsAction(composerMode(probe("codex_cli", "degraded"), ALLOWED))).toBe(false);
 		expect(followsAction(null)).toBe(false);
+	});
+
+	test("Codex and interactive wait for the end; headless waits only for the host to take it", () => {
+		expect(followModeOf(composerMode(probe("codex_cli", "managed"), ALLOWED))).toBe("settle");
+		expect(followModeOf(composerMode(probe("claude_code", "interactive_terminal"), ALLOWED))).toBe(
+			"settle",
+		);
+		expect(followModeOf(composerMode(probe("claude_code", "headless"), ALLOWED))).toBe("accept");
+		expect(followModeOf(null)).toBeNull();
 	});
 });
 
@@ -303,7 +313,7 @@ describe("the box across a send", () => {
 		});
 	});
 
-	test("while the POST is in flight a followed mode is read-only, a headless Claude box is not", () => {
+	test("while the POST is in flight every followed mode is read-only", () => {
 		expect(boxState(codex, IDLE, { posting: true })).toMatchObject({
 			readOnly: true,
 			sendDisabled: true,
@@ -311,7 +321,7 @@ describe("the box across a send", () => {
 		});
 		const headless = modeOf(probe("claude_code", "headless"));
 		expect(boxState(headless, IDLE, { posting: true })).toMatchObject({
-			readOnly: false,
+			readOnly: true,
 			sendDisabled: true,
 			buttonText: "Sending...",
 		});
@@ -386,8 +396,11 @@ describe("composerStatus", () => {
 		expect(composerStatus(codex, IDLE, false)).toEqual({ text: "", srOnly: true });
 	});
 
-	test("Claude headless and a blocked box have no status line", () => {
-		expect(composerStatus(headless, { step: "following" }, true)).toBeNull();
+	test("Claude headless says the same while it waits for the host to take the turn; a blocked box has no status line", () => {
+		expect(composerStatus(headless, { step: "following" }, false)).toEqual({
+			text: "Waiting for the host to start this turn.",
+			srOnly: false,
+		});
 		expect(
 			composerStatus(composerMode(probe("codex_cli", "degraded"), ALLOWED), IDLE, false),
 		).toBeNull();
@@ -529,6 +542,44 @@ describe("followPromptAction", () => {
 		};
 		return { deps, calls };
 	}
+
+	test("until accept: queued and a claimed `running` are waited on; acceptedAt is acceptance; the default keeps waiting for the end", async () => {
+		const accepted = (n: number) =>
+			n < 3
+				? [action({ status: "queued" })]
+				: n < 5
+					? [action({ status: "running" })]
+					: [action({ status: "running", metadata: { acceptedAt: "2026-11-06 01:00:00" } })];
+		const accept = harness((n) => accepted(n));
+		expect(await followPromptAction("s1", "a1", { ...accept.deps, until: "accept" })).toEqual({
+			outcome: "succeeded",
+		});
+		expect(accept.calls).toHaveLength(5);
+		const settle = harness((n) => [action({ status: n < 4 ? "running" : "succeeded" })]);
+		expect(await followPromptAction("s1", "a1", settle.deps)).toEqual({ outcome: "succeeded" });
+		expect(settle.calls).toHaveLength(4);
+	});
+
+	test("until accept: a host refusal after the claim is the failure, not acceptance", async () => {
+		const refused = harness((n) => [
+			n < 3 ? action({ status: "running" }) : action({ status: "failed", error: "No." }),
+		]);
+		expect(await followPromptAction("s1", "a1", { ...refused.deps, until: "accept" })).toEqual({
+			outcome: "failed",
+			error: "No.",
+		});
+	});
+
+	test("until accept: at the deadline a claimed action from a host that never says it accepted is taken as accepted; an unclaimed one is unknown", async () => {
+		const old = harness(() => [action({ status: "running" })]);
+		expect(await followPromptAction("s1", "a1", { ...old.deps, until: "accept" })).toEqual({
+			outcome: "succeeded",
+		});
+		const never = harness(() => [action({ status: "queued" })]);
+		expect(await followPromptAction("s1", "a1", { ...never.deps, until: "accept" })).toEqual({
+			outcome: "unknown",
+		});
+	});
 
 	test("polls quietly every 1.5 s and returns succeeded", async () => {
 		const { deps, calls } = harness((n) => [action({ status: n < 3 ? "running" : "succeeded" })]);

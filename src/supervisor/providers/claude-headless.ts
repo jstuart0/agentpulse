@@ -122,6 +122,11 @@ async function stopLadderFor(
 	return { gone, checked: reach.treeChecked?.() ?? true };
 }
 
+/** True when this supervisor runs a one-prompt Claude child for the session (a fork's stream must not start beside it). */
+export function hasHeadlessRuntime(sessionId: string): boolean {
+	return (activeRuntimes.get(sessionId)?.size ?? 0) > 0;
+}
+
 /** How many headless Claude children this supervisor is running; the keep-alive rule reads it. */
 export function headlessRuntimeCount(): number {
 	let total = 0;

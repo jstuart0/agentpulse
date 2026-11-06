@@ -748,6 +748,7 @@ supervisorsAgentRouter.post(
 			status: "running" | "succeeded" | "failed";
 			error?: string | null;
 			metadata?: Record<string, unknown> | null;
+			accepted?: boolean;
 		}>();
 		// A report names its status, and it must be a real one.
 		if (!["running", "succeeded", "failed"].includes(body.status)) {
@@ -759,6 +760,7 @@ supervisorsAgentRouter.post(
 			status: body.status,
 			error: cleanHostText(body.error),
 			metadata: body.metadata ?? null,
+			accepted: body.accepted === true,
 		});
 		if (!action) return c.json({ error: "Control action not found" }, 404);
 		return c.json({ action });

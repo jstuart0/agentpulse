@@ -1158,6 +1158,12 @@ export interface ManagedSessionStateInput {
 	 * `providerSyncError` never clears (it would erase the restart marker a replay guard keys on).
 	 */
 	clearProviderSyncError?: boolean;
+	/**
+	 * A takeover fork the host stopped because something else sent it a message (AGEN-117 T3): the last such
+	 * message's text, at most 1 KiB. Honoured only on a `degraded` report for a fork. The server redacts it,
+	 * stores it in server-owned `metadata.peerTurn` and returns it only through the approvals read.
+	 */
+	peerTurnText?: string;
 }
 
 export interface ManagedSessionEventInput {

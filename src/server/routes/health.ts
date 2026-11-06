@@ -13,6 +13,7 @@ import { getSearchIndexStatus } from "../services/search/search-index-status.js"
 import { computeChecksum } from "../util/checksum.js";
 import {
 	getBgErrorCount,
+	getForkHookDroppedCount,
 	getInFlightCount,
 	getIngestForeignKeyDroppedCount,
 	getIngestKeyBoundCount,
@@ -86,6 +87,8 @@ export function computeClientChecksums(): Promise<Record<string, string>> {
 //    unseen" is never hook-reachable, regardless of ownership.
 //  - foreignKeyDropped (team mode): cumulative count of hook events and native-name
 //    writes dropped because the posting key is foreign to an owned session.
+//  - forkHookDropped (AGEN-117): cumulative count of hook posts dropped because the session is a
+//    takeover fork, whose timeline comes only from its supervisor's stream.
 //  - ingestKeyBound (team mode): cumulative count of sessions whose first event from an
 //    ownerless key recorded that key as the session's ingest key.
 //  - sessionCreationLimited: cumulative count of new sessions dropped because the
@@ -134,6 +137,7 @@ health.get("/health", async (c) => {
 		oversizeDropped: getOversizeDropped(),
 		ingestOwnerMismatch: getIngestOwnerMismatchCount(),
 		foreignKeyDropped: getIngestForeignKeyDroppedCount(),
+		forkHookDropped: getForkHookDroppedCount(),
 		ingestKeyBound: getIngestKeyBoundCount(),
 		sessionCreationLimited: getSessionCreationLimitedCount(),
 		unacknowledgeDropped: getIngestUnacknowledgeDroppedCount(),

@@ -101,6 +101,12 @@ export function mapSessionDto<
 	// ingestKeyId never leaves the server — removed here, not just
 	// left undefined, so it's absent from the serialized JSON too.
 	const { ingestKeyId: _ingestKeyId, ...rest } = row as T & { ingestKeyId?: string | null };
+	// The text of a message a stranger sent a takeover fork (AGEN-117 T3) is for the session's owner or an
+	// admin, through the approvals read, and nowhere else: a session DTO is read by every team member.
+	if ("peerTurn" in metadata) {
+		const { peerTurn: _peerTurn, ...publicMetadata } = metadata;
+		(rest as { metadata: unknown }).metadata = publicMetadata;
+	}
 
 	return {
 		...rest,

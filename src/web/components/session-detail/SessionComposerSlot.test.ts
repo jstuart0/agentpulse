@@ -278,9 +278,15 @@ describe("ComposerBody states", () => {
 		}
 	});
 
-	test("Claude headless has no status line", () => {
+	test("Claude headless has the status line a followed send has (it waits for the host to take the turn)", () => {
 		const out = body({ mode: headless, sideText: headless.side });
-		expect(out).not.toContain("<output");
+		expect(out).toContain("<output");
+		const following = body({
+			mode: headless,
+			sideText: headless.side,
+			phase: { step: "following" },
+		});
+		expect(following).toContain("Waiting for the host to start this turn.");
 	});
 
 	test("an unavailable host or terminal turns the box off", () => {
