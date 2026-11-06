@@ -36,6 +36,7 @@ import {
 import { warmCodexProtocolVerdict } from "./providers/codex-protocol.js";
 import { createBridgeSpoolDrain } from "./services/bridge-spool.js";
 import { createClaudeForkRecord } from "./services/claude-fork-record.js";
+import { createClaudeTakeover } from "./services/claude-takeover.js";
 import { executeCleanupWorkArea } from "./services/cleanup-workarea.js";
 import { isCodexObserverEnabled, startCodexObserver } from "./services/codex-observer.js";
 import {
@@ -347,6 +348,15 @@ async function main() {
 		recordThread: (launchRequestId, threadId) => threadRecord.write(launchRequestId, threadId),
 		finalReport,
 	});
+	const claudeTakeover = createClaudeTakeover({
+		gate,
+		hostName: config.hostName,
+		trustedRoots: config.trustedRoots,
+		forkRecord,
+		env: process.env,
+		probeCwd: join(home, ".agentpulse", "claude-probe"),
+		tracker: approvalsWiring.approvals,
+	});
 	const resumeSession = createSessionResumer({
 		gate,
 		hostName: config.hostName,
@@ -355,6 +365,7 @@ async function main() {
 		hold: resumingSessions,
 		neutralCwd: () => resolveNeutralCwd(home),
 		providers: { managedCodexRuntimeHolds, resumeManagedCodexSession },
+		claude: claudeTakeover,
 	});
 	const handleControlAction = createControlActionHandler({
 		resumeSession,
@@ -373,6 +384,7 @@ async function main() {
 			hasHeadlessRuntime,
 		},
 		forkStatus: (sessionId) => forkRecord.status(sessionId),
+		forkListed: (sessionId) => claudeTakeover.isListed(sessionId),
 		executeCleanupWorkArea,
 		serverHas: serverFeatures.has,
 		finalReport,

@@ -83,6 +83,11 @@ export interface ControlActionDeps {
 	 * start `claude --resume` on it, and refuses when it can't tell. Absent: no record is kept.
 	 */
 	forkStatus?: (sessionId: string) => "fork" | "not_fork" | "unknown";
+	/**
+	 * Whether Claude Code on this machine still lists a fork this host holds no process for. A degraded fork's
+	 * End asks: a command an earlier approval started may still be running (AGEN-117 T11). Absent: not asked.
+	 */
+	forkListed?: (sessionId: string) => Promise<"listed" | "not_listed" | "unknown">;
 	/** Whether the server said it can do `feature` (registration and every heartbeat). Absent: it said nothing. */
 	serverHas?: (feature: string) => boolean;
 	/** Runs `callback` every `ms` until the returned handle stops it. The default is an unref'd interval. */
@@ -168,8 +173,17 @@ export function createControlActionHandler(
 	const finalReport = deps.finalReport ?? sendOnce;
 
 	/** Status results, always through the gate: `succeeded` for a session that is now excluded becomes the generic failure. */
-	const report = (action: ControlAction, body: Parameters<ReportGate["reportControlStatus"]>[2]) =>
-		gate.reportControlStatus(action.id, action.sessionId ?? null, body, namedDirectory(action));
+	const report = async (
+		action: ControlAction,
+		body: Parameters<ReportGate["reportControlStatus"]>[2],
+	): Promise<void> => {
+		await gate.reportControlStatus(
+			action.id,
+			action.sessionId ?? null,
+			body,
+			namedDirectory(action),
+		);
+	};
 
 	/** The session reads stopped, and the timeline says so in the words given (a stop of nothing doesn't claim a process was stopped). */
 	async function reportStopped(sessionId: string, content = STOPPED_EVENT_CONTENT) {
@@ -268,6 +282,12 @@ export function createControlActionHandler(
 				return;
 			}
 			if (!outcome.hadChild) {
+				// No process of ours, but an approved command may outlive a dead supervisor: if Claude still lists
+				// the fork (or can't say), it isn't stopped yet.
+				if (deps.forkListed && (await deps.forkListed(sessionId)) !== "not_listed") {
+					await failStop(action, STOP_WORDS.finishing);
+					return;
+				}
 				await reportStopped(sessionId, NOTHING_RUNNING_STOP_NOTE);
 				await report(action, {
 					status: "succeeded",

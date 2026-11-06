@@ -4,7 +4,7 @@
  */
 import { CLAUDE_STOP, CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
 import { HOST_RESTARTED_SYNC_ERROR } from "../../shared/managed-messages.js";
-import { RESUMES_SESSIONS } from "../../shared/session-resume.js";
+import { CLAUDE_TAKEOVER, RESUMES_SESSIONS } from "../../shared/session-resume.js";
 import type { Actor } from "../auth/actor.js";
 import { getDb } from "../db/client.js";
 import { launchRequests, managedSessions, sessions, supervisors } from "../db/schema/index.js";
@@ -22,7 +22,13 @@ export const TAKEOVER_CAPABILITIES = {
 	launchModes: ["headless", "interactive_terminal", "managed_codex"],
 	os: "linux",
 	terminalSupport: ["terminal"],
-	features: [CODEX_FOLLOW_UP_PROMPTS, CLAUDE_STOP, ENFORCES_LAUNCH_PRIVILEGES, RESUMES_SESSIONS],
+	features: [
+		CODEX_FOLLOW_UP_PROMPTS,
+		CLAUDE_STOP,
+		ENFORCES_LAUNCH_PRIVILEGES,
+		RESUMES_SESSIONS,
+		CLAUDE_TAKEOVER,
+	],
 	executables: {
 		claude: { available: true, command: "claude", resolvedPath: "/usr/bin/claude", source: "auto" },
 		codex: { available: true, command: "codex", resolvedPath: "/usr/bin/codex", source: "auto" },

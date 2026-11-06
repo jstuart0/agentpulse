@@ -201,6 +201,12 @@ const ERROR_TABLE: ReadonlyArray<{
 		message:
 			"AgentPulse refused: this needs a signed-in person, and an API key can't do it. For a continued session that runs under the person's own Claude settings, prompts come from a person at the dashboard.",
 	},
+	{
+		status: 409,
+		error: "end_session_first",
+		message:
+			"That session may still be running. End it first (stop_session), then delete or archive it. Nothing was changed.",
+	},
 	// Declining a managed Codex approval (decline_approval, list_pending_approvals).
 	{
 		status: 404,

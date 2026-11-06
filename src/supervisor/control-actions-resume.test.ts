@@ -467,9 +467,9 @@ describe("success (step 15)", () => {
 	test("succeeded is reported once the provider returned, and retried once if the report fails", async () => {
 		const w = await build();
 		let first = true;
-		const real = (w.gate as { reportControlStatus: (...a: unknown[]) => Promise<void> })
+		const real = (w.gate as { reportControlStatus: (...a: unknown[]) => Promise<unknown> })
 			.reportControlStatus;
-		(w.gate as { reportControlStatus: (...a: unknown[]) => Promise<void> }).reportControlStatus =
+		(w.gate as { reportControlStatus: (...a: unknown[]) => Promise<unknown> }).reportControlStatus =
 			async (...args) => {
 				if (first) {
 					first = false;
@@ -540,7 +540,7 @@ describe("the success report fails both times (D10's double failure)", () => {
 			},
 		});
 		let attempts = 0;
-		(w.gate as { reportControlStatus: (...a: unknown[]) => Promise<void> }).reportControlStatus =
+		(w.gate as { reportControlStatus: (...a: unknown[]) => Promise<unknown> }).reportControlStatus =
 			async () => {
 				attempts += 1;
 				throw new Error("network down");

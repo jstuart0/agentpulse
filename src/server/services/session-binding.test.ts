@@ -750,16 +750,20 @@ describe("what the fresh host row must still allow, and what a host that can't r
 // ── 3: inputs (items 10, 11) ─────────────────────────────────────────────────
 
 describe("inputs", () => {
-	test("claude_code and copilot_cli are refused with the same answer and no rows", async () => {
+	test("copilot_cli is agent_not_supported with no rows; claude_code on a host without the Claude feature is host_cannot_run_claude with no rows (rewritten for AGEN-117)", async () => {
 		const host = await seedHost();
-		const answers = [];
-		for (const agentType of ["claude_code", "copilot_cli"]) {
-			const id = await seedObserved({ agentType });
-			answers.push(await refusal(bind(id, host, SOLO)));
-			await expectNoRows(id);
-		}
-		expect(answers[0]).toMatchObject({ code: "agent_not_supported", status: 409 });
-		expect(answers[1]).toEqual(answers[0]);
+		const copilot = await seedObserved({ agentType: "copilot_cli" });
+		expect(await refusal(bind(copilot, host, SOLO))).toMatchObject({
+			code: "agent_not_supported",
+			status: 409,
+		});
+		await expectNoRows(copilot);
+		const claude = await seedObserved({ agentType: "claude_code" });
+		expect(await refusal(bind(claude, host, SOLO))).toMatchObject({
+			code: "host_cannot_run_claude",
+			status: 409,
+		});
+		await expectNoRows(claude);
 	});
 
 	test("a hook-written agent_type=codex_cli for an id with no managed rows is judged by isLaunchable then codex_cli only", async () => {

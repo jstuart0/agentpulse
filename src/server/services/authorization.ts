@@ -25,11 +25,19 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Actor, InstanceModeName } from "../auth/actor.js";
 import { getDb } from "../db/client.js";
-import { apiKeys, controlActions, sessions, supervisors, users } from "../db/schema/index.js";
+import {
+	apiKeys,
+	controlActions,
+	managedSessions,
+	sessions,
+	supervisors,
+	users,
+} from "../db/schema/index.js";
 import { incrementIngestKeyBound } from "../routes/ingest-counters.js";
 import { BindRefusal } from "./bind-refusal.js";
 import { getMode } from "./instance-mode.js";
 import { isOnServiceKeyList } from "./service-key-lists.js";
+import { resolveSessionOwner } from "./session-ownership.js";
 import { resolveSessionHost } from "./session-ownership.js";
 
 /** What every surface says when owner-or-admin refuses someone. */
@@ -187,16 +195,46 @@ async function assertNoOpenTakeover(sessionId: string): Promise<void> {
 	if (takeover) throw new BindRefusal("takeover_in_progress");
 }
 
-/** Delete: the owner or an admin (team), and never while a takeover of it is open. */
+/**
+ * A taken-over Claude session (a fork) that may still have a process is ended before it is deleted or
+ * archived (AGEN-117 T17): `pending`, `managed` and `degraded` all can (a degraded one may have a child an
+ * approved command is still finishing, and only its host can say). A host that is gone lifts the refusal:
+ * nothing can confirm and no prompt can reach it. An offline host keeps it. Judged ahead of solo's no-op.
+ */
+async function assertNoLiveFork(sessionId: string): Promise<void> {
+	const [row] = await getDb()
+		.select({ managedState: managedSessions.managedState, metadata: sessions.metadata })
+		.from(managedSessions)
+		.innerJoin(sessions, eq(sessions.sessionId, managedSessions.sessionId))
+		.where(eq(managedSessions.sessionId, sessionId))
+		.limit(1);
+	if (!row) return;
+	if (!(row.metadata as Record<string, unknown> | null)?.forkedFromSessionId) return;
+	if (!["pending", "managed", "degraded"].includes(row.managedState)) return;
+	// The owner of record, by the one resolver; no owner or a revoked host is a host that is gone.
+	const hostId = await resolveSessionOwner(getDb(), sessionId);
+	if (hostId !== null) {
+		const [host] = await getDb()
+			.select({ enrollmentState: supervisors.enrollmentState })
+			.from(supervisors)
+			.where(eq(supervisors.id, hostId))
+			.limit(1);
+		if (host && host.enrollmentState !== "revoked") throw new BindRefusal("end_session_first");
+	}
+}
+
+/** Delete: the owner or an admin (team), never while a takeover of it is open, and a live fork is ended first. */
 export async function assertCanDeleteSession(actor: Actor, sessionId: string): Promise<void> {
 	await assertSessionOwnerOrAdmin(actor, sessionId);
 	await assertNoOpenTakeover(sessionId);
+	await assertNoLiveFork(sessionId);
 }
 
 /** Archive: the same rule as delete. */
 export async function assertCanArchiveSession(actor: Actor, sessionId: string): Promise<void> {
 	await assertSessionOwnerOrAdmin(actor, sessionId);
 	await assertNoOpenTakeover(sessionId);
+	await assertNoLiveFork(sessionId);
 }
 export const assertCanRenameSession = assertSessionOwnerOrAdmin;
 export const assertCanPinSession = assertSessionOwnerOrAdmin;

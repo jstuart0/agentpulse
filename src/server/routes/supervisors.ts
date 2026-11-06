@@ -52,6 +52,7 @@ import {
 } from "../services/codex-approvals.js";
 import {
 	claimNextControlAction,
+	failOpenForkActionsOfRestartedHost,
 	failRunningClaudePromptsOfRestartedHost,
 	updateControlAction,
 } from "../services/control-actions.js";
@@ -67,6 +68,7 @@ import {
 	ReservedEventTypeError,
 	appendManagedSessionDelivery,
 	appendManagedSessionEvents,
+	degradeClaudeForksOfRestartedHost,
 	degradeCodexSessionsOfRestartedHost,
 	listManagedSessionsNeedingSync,
 	upsertManagedSessionState,
@@ -269,14 +271,23 @@ async function closeRestartedHostApprovals(supervisorId: string): Promise<void> 
  * must not fail the registration either. The changed sessions are announced after the commit.
  */
 async function degradeRestartedHostSessions(supervisorId: string): Promise<void> {
+	let forks: string[] = [];
+	try {
+		// A takeover still being made on the old process is over; its forks are gone with that process.
+		await failOpenForkActionsOfRestartedHost(supervisorId);
+		forks = await degradeClaudeForksOfRestartedHost(supervisorId);
+	} catch {
+		console.error("[supervisors] could not degrade a restarted host's Claude forks");
+	}
 	try {
 		const changed = await degradeCodexSessionsOfRestartedHost(supervisorId);
 		// Batched, and not awaited: the supervisor's registration has 15 s, and an announcement is not worth it.
-		void broadcastSweptSessions(changed).catch(() => {
-			console.error("[supervisors] could not announce a restarted host's Codex sessions");
+		void broadcastSweptSessions([...forks, ...changed]).catch(() => {
+			console.error("[supervisors] could not announce a restarted host's sessions");
 		});
 	} catch {
 		console.error("[supervisors] could not degrade a restarted host's Codex sessions");
+		if (forks.length > 0) void broadcastSweptSessions(forks).catch(() => {});
 	}
 }
 
@@ -754,6 +765,8 @@ supervisorsAgentRouter.post(
 			error?: string | null;
 			metadata?: Record<string, unknown> | null;
 			accepted?: boolean;
+			provedCwd?: unknown;
+			permissionMode?: unknown;
 		}>();
 		// A report names its status, and it must be a real one.
 		if (!["running", "succeeded", "failed"].includes(body.status)) {
@@ -766,6 +779,8 @@ supervisorsAgentRouter.post(
 			error: cleanHostText(body.error),
 			metadata: body.metadata ?? null,
 			accepted: body.accepted === true,
+			provedCwd: body.provedCwd,
+			permissionMode: body.permissionMode,
 		});
 		if (!action) return c.json({ error: "Control action not found" }, 404);
 		return c.json({ action });

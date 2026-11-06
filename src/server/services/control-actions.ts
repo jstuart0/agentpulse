@@ -15,10 +15,13 @@ import {
 	STOPPED_BY_PERSON_ERROR,
 } from "../../shared/managed-messages.js";
 import {
+	CLAUDE_TAKEOVER,
 	RESUMES_SESSIONS,
 	type ResumeKind,
 	SESSION_RESUMED_CONTENT,
 	SESSION_RESUMED_EVENT_TYPE,
+	forkSessionIdOf,
+	resumeAgentOf,
 	resumeFailureMessage,
 } from "../../shared/session-resume.js";
 import {
@@ -60,11 +63,12 @@ import { requestWsRevalidation } from "../ws/revalidation.js";
 import { CONTINUABLE_MANAGED_STATES } from "./ai/continuability.js";
 import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
 import { BindRefusal } from "./bind-refusal.js";
+import { ForkSettleRollback, settleClaudeTakeover } from "./claude-takeover-settle.js";
 import { fenceApprovalsForStop } from "./codex-approvals-fence.js";
 import { type ClosedApproval, runApprovalClosedEffects } from "./codex-approvals.js";
 import { buildStoredCliArgs, validateAgainstSupervisor } from "./launch-compatibility.js";
 import { mapLaunchRequest } from "./launch-validator.js";
-import { notifySessionUpdated } from "./notifier.js";
+import { notifySessionCreated, notifySessionUpdated } from "./notifier.js";
 import { bumpVersionAndReload } from "./projects/cache.js";
 import { assignTakeoverOwner } from "./session-owner-admin.js";
 import {
@@ -277,7 +281,13 @@ async function releaseAndFailLapsedAction(
 /** What `failResumeAction` and `completeResumeAction` report: nothing changed, or the session whose rows moved. */
 export type ResumeSettle =
 	| { settled: false }
-	| { settled: true; sessionId: string; outcome: "failed" | "succeeded" };
+	| {
+			settled: true;
+			sessionId: string;
+			outcome: "failed" | "succeeded";
+			/** A Claude takeover that succeeded: the new session N, to announce. */
+			forkId?: string;
+	  };
 
 interface ResumeActionRef {
 	id: string;
@@ -289,6 +299,10 @@ interface ResumeActionRef {
 /** Test seam: runs after the settle's writes, inside its transaction. */
 interface ResumeSettleDeps {
 	afterWrites?: (tx: unknown) => Promise<void>;
+	/** What the host proved and picked, for a Claude takeover's settle (AGEN-117 T5). Judged, never trusted. */
+	fork?: { provedCwd: unknown; permissionMode: unknown };
+	/** Test seam: runs inside the fork settle's locked transaction, after the action is flipped, before it is judged. */
+	afterFlip?: (tx: unknown) => Promise<void>;
 }
 
 function resumeKindOf(action: ResumeActionRef): ResumeKind {
@@ -301,7 +315,7 @@ function resumeKindOf(action: ResumeActionRef): ResumeKind {
  * Tells everyone a resume action's rows moved: one `session_updated` and one socket revalidation. A failure
  * to announce is logged and never undoes the settle.
  */
-async function announceResumeSettled(sessionId: string): Promise<void> {
+async function announceResumeSettled(sessionId: string, revalidate = true): Promise<void> {
 	try {
 		const [row] = await getDb()
 			.select()
@@ -309,11 +323,32 @@ async function announceResumeSettled(sessionId: string): Promise<void> {
 			.where(eq(sessions.sessionId, sessionId))
 			.limit(1);
 		if (row) notifySessionUpdated(row);
-		await requestWsRevalidation();
+		if (revalidate) await requestWsRevalidation();
 	} catch (error) {
 		console.error(
 			JSON.stringify({
 				kind: "resume_announce_failed",
+				level: "error",
+				error: error instanceof Error ? error.message.slice(0, 300) : "unknown",
+			}),
+		);
+	}
+}
+
+/** `session_created` for the new fork, and the socket revalidation its owner needs. Logged, never thrown. */
+async function announceForkCreated(forkId: string): Promise<void> {
+	try {
+		const [row] = await getDb()
+			.select()
+			.from(sessions)
+			.where(eq(sessions.sessionId, forkId))
+			.limit(1);
+		if (row) notifySessionCreated(row);
+		await requestWsRevalidation();
+	} catch (error) {
+		console.error(
+			JSON.stringify({
+				kind: "fork_announce_failed",
 				level: "error",
 				error: error instanceof Error ? error.message.slice(0, 300) : "unknown",
 			}),
@@ -384,7 +419,11 @@ export async function failResumeAction(
  */
 async function announceAfterSettle(handle: unknown | null, outcome: ResumeSettle): Promise<void> {
 	if (!outcome.settled) return;
-	const announce = () => announceResumeSettled(outcome.sessionId);
+	const announce = async () => {
+		// A fork's creation revalidates sockets once; S needs only its own update, so its actions are re-read.
+		await announceResumeSettled(outcome.sessionId, !outcome.forkId);
+		if (outcome.forkId) await announceForkCreated(outcome.forkId);
+	};
 	if (handle === null || !afterCommit(announce)) await announce();
 }
 
@@ -412,6 +451,11 @@ export async function completeResumeAction(
 	action: ResumeActionRef,
 	deps: ResumeSettleDeps = {},
 ): Promise<ResumeSettle> {
+	if (forkSessionIdOf(action.metadata) !== null) {
+		const outcome = await completeForkTakeover(handle, action, deps);
+		await announceAfterSettle(handle, outcome);
+		return outcome;
+	}
 	const outcome = await inTransactionOf(handle, async (tx): Promise<ResumeSettle> => {
 		const sessionId = action.sessionId;
 		if (!sessionId) return { settled: false };
@@ -510,6 +554,73 @@ export async function completeResumeAction(
 	return outcome;
 }
 
+function hostNameOfAction(action: ResumeActionRef): string {
+	const name = (action.metadata as { hostName?: unknown } | null)?.hostName;
+	return typeof name === "string" && name !== "" ? name : "The host";
+}
+
+/**
+ * Settles a Claude takeover (AGEN-117 T5): the action is on the observed session S and no row N exists, so
+ * success is "N's rows are written", judged again from fresh reads, under the admin lock so a role or owner
+ * change can't slip between the judgement and the writes. The action is flipped first (guarded on queued or
+ * running, so a swept action never revives); a failed judgement ends the same action as failed in the same
+ * transaction with nothing else written. A conflict found after a write rolls the whole transaction back and
+ * the action is then failed on its own. Only the settle that opens its own transaction runs this: a caller
+ * holding one (a sweep) can only fail a fork action.
+ */
+async function completeForkTakeover(
+	handle: unknown | null,
+	action: ResumeActionRef,
+	deps: ResumeSettleDeps,
+): Promise<ResumeSettle> {
+	const sessionId = action.sessionId;
+	if (!sessionId || handle !== null || !deps.fork) {
+		return failResumeAction(
+			handle,
+			action,
+			resumeFailureMessage("settle_conflict", hostNameOfAction(action), "takeover", "claude_code"),
+		);
+	}
+	const fork = deps.fork;
+	const words = (kind: Parameters<typeof resumeFailureMessage>[0]) =>
+		resumeFailureMessage(kind, hostNameOfAction(action), "takeover", "claude_code");
+	try {
+		return await withAdminLock(async (tx): Promise<ResumeSettle> => {
+			const timestamp = nowIso();
+			const flipped = await tx
+				.update(controlActions)
+				.set({ status: "succeeded", error: null, finishedAt: timestamp, updatedAt: timestamp })
+				.where(
+					and(
+						eq(controlActions.id, action.id),
+						inArray(controlActions.status, ["queued", "running"]),
+					),
+				)
+				.returning({ id: controlActions.id });
+			if (flipped.length === 0) return { settled: false };
+			const afterFlip = deps.afterFlip;
+			await awaitSeamInsideAdminLock(afterFlip ? () => afterFlip(tx) : null, undefined);
+			const result = await settleClaudeTakeover(tx, action, fork, Date.now());
+			if (result.ok) {
+				return { settled: true, sessionId, outcome: "succeeded", forkId: result.forkId };
+			}
+			await tx
+				.update(controlActions)
+				.set({
+					status: "failed",
+					error: words(result.kind),
+					finishedAt: timestamp,
+					updatedAt: timestamp,
+				})
+				.where(eq(controlActions.id, action.id));
+			return { settled: true, sessionId, outcome: "failed" };
+		});
+	} catch (error) {
+		if (!(error instanceof ForkSettleRollback)) throw error;
+		return failResumeAction(null, action, words(error.kind));
+	}
+}
+
 /** D6: an unowned session taken over by an admin gets its intended owner only now that the takeover has worked. */
 async function assignOwnerIfAsked(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
@@ -555,7 +666,12 @@ async function settleExpiredResume(
 	return failResumeAction(
 		handle,
 		action,
-		resumeFailureMessage("timeout", managed.hostName ?? "The host", resumeKindOf(action)),
+		resumeFailureMessage(
+			"timeout",
+			managed.hostName ?? "The host",
+			resumeKindOf(action),
+			resumeAgentOf(action.metadata),
+		),
 	);
 }
 
@@ -601,7 +717,82 @@ export async function sweepExpiredResumeActions(nowMs: number = Date.now()): Pro
 			);
 		}
 	}
-	return settled;
+	return settled + (await failOverdueForkActions(nowMs));
+}
+
+/**
+ * A Claude takeover's action has no managed row to hold a lock, so its own deadline ends it (T5): queued
+ * and running both fail once `forkDeadlineAt` has passed. The host that answers later is told `failed` and
+ * kills its child. Returns how many failed.
+ */
+export async function failOverdueForkActions(nowMs: number): Promise<number> {
+	const open: Array<typeof controlActions.$inferSelect> = await getDb()
+		.select()
+		.from(controlActions)
+		.where(
+			and(
+				eq(controlActions.actionType, "resume"),
+				inArray(controlActions.status, ["queued", "running"]),
+				isNotNull(jsonExtractText(controlActions.metadata, "$.forkSessionId")),
+			),
+		)
+		.orderBy(asc(controlActions.createdAt))
+		.limit(RESUME_SWEEP_BATCH * 5);
+	let failed = 0;
+	for (const action of open) {
+		const deadline = Date.parse(
+			String((action.metadata as { forkDeadlineAt?: unknown } | null)?.forkDeadlineAt ?? ""),
+		);
+		// A deadline that can't be read is a deadline that has passed: nothing may stay open for ever.
+		if (Number.isFinite(deadline) && deadline > nowMs) continue;
+		try {
+			const outcome = await failResumeAction(
+				null,
+				action,
+				resumeFailureMessage("timeout", hostNameOfAction(action), "takeover", "claude_code"),
+			);
+			if (outcome.settled) failed += 1;
+		} catch (error) {
+			console.error(
+				JSON.stringify({
+					kind: "fork_deadline_sweep_failed",
+					level: "error",
+					error: error instanceof Error ? error.message.slice(0, 300) : "unknown",
+				}),
+			);
+		}
+	}
+	return failed;
+}
+
+/**
+ * A supervisor registered again, so the process that was forking for it is gone: its claimed (running)
+ * takeover actions fail with the restart words. They are found by the claimant, since the join through a
+ * managed row can't see them (no row exists for the fork until it settles). Queued ones are left for the
+ * new process to claim. Returns how many failed.
+ */
+export async function failOpenForkActionsOfRestartedHost(supervisorId: string): Promise<number> {
+	const open: Array<typeof controlActions.$inferSelect> = await getDb()
+		.select()
+		.from(controlActions)
+		.where(
+			and(
+				eq(controlActions.actionType, "resume"),
+				eq(controlActions.status, "running"),
+				eq(controlActions.claimedBySupervisorId, supervisorId),
+				isNotNull(jsonExtractText(controlActions.metadata, "$.forkSessionId")),
+			),
+		);
+	let failed = 0;
+	for (const action of open) {
+		const outcome = await failResumeAction(
+			null,
+			action,
+			resumeFailureMessage("restart", hostNameOfAction(action), "takeover", "claude_code"),
+		);
+		if (outcome.settled) failed += 1;
+	}
+	return failed;
 }
 
 /** A host that lost `resumes_sessions` (rolled back, replaced) is told so at claim time, not left to the lock. */
@@ -610,7 +801,11 @@ async function refuseResumeForOldHost(
 	supervisorId: string,
 ): Promise<boolean> {
 	const host = await getSupervisor(supervisorId);
-	if ((host?.capabilities.features ?? []).includes(RESUMES_SESSIONS)) return false;
+	const agent = resumeAgentOf(action.metadata);
+	// A Claude resume needs the Claude feature, a Codex one the Codex feature: a host with only the other
+	// one can't run it (AGEN-117 T14).
+	const needed = agent === "claude_code" ? CLAUDE_TAKEOVER : RESUMES_SESSIONS;
+	if ((host?.capabilities.features ?? []).includes(needed)) return false;
 	await failResumeAction(
 		null,
 		action,
@@ -618,6 +813,7 @@ async function refuseResumeForOldHost(
 			"host_upgrade_required",
 			host?.hostName ?? "The host",
 			resumeKindOf(action),
+			agent,
 		),
 	);
 	return true;
@@ -679,7 +875,16 @@ export function redactControlAction(
 	options: { includePrompt: boolean },
 ): ControlAction {
 	if (!action.metadata) return action;
-	const { env: _env, prompt, ...rest } = action.metadata as Record<string, unknown>;
+	const {
+		env: _env,
+		prompt,
+		// Who owned the session, who it will belong to and who pressed the button: user ids no reader of the
+		// action needs (AGEN-117 P5-I8). The host's channel (claim, update) uses the unredacted action.
+		ownerAtBind: _ownerAtBind,
+		intendedOwner: _intendedOwner,
+		boundByUserId: _boundByUserId,
+		...rest
+	} = action.metadata as Record<string, unknown>;
 	return {
 		...action,
 		metadata: options.includePrompt && prompt !== undefined ? { ...rest, prompt } : rest,
@@ -957,6 +1162,9 @@ export async function promptNeedsHostUpgrade(
 		.limit(1);
 	if (!managed) return false;
 	const launch = await resolveManagedLaunch(db, sessionId, managed.launchRequestId);
+	if (launch && isClaudeTakeoverLaunch(launch)) {
+		return !(await hostHasFeature(db, sessionId, CLAUDE_TAKEOVER));
+	}
 	if (launch?.agentType !== "codex_cli") return false;
 	return !(await hostTakesCodexPrompts(db, sessionId));
 }
@@ -1348,6 +1556,10 @@ export async function enqueuePromptInTx(
 	if (isCodex && !(await hostTakesCodexPrompts(tx, sessionId))) {
 		return { ok: false, reason: "host_upgrade_required" };
 	}
+	// A fork's host must say it can run forks (AGEN-117 P3-I17): a host without it can't take a stream prompt.
+	if (isClaudeTakeover && !(await hostHasFeature(tx, sessionId, CLAUDE_TAKEOVER))) {
+		return { ok: false, reason: "host_upgrade_required" };
+	}
 	const hasLongLivedProcess = isCodex || isClaudeTakeover;
 	// A row still `pending` with an action holding its lock is being taken over or resumed: it can't take a
 	// prompt yet, and "not continuable" would send the person off to start again. Narrow on purpose: a
@@ -1357,9 +1569,8 @@ export async function enqueuePromptInTx(
 	}
 	// A Codex session's process dies with its host's supervisor, and registration then marks it degraded: a
 	// prompt queued for it would only be refused by the host after the person was told it was sent. A fork's
-	// process dies with the supervisor the same way, but registration does not mark a fork degraded yet (that
-	// predicate is Codex-only until the takeover phase widens it): until then the host's own exit report is
-	// what moves a fork to degraded, and this refuses a prompt once it has. A stopped fork is never resumed.
+	// process dies with the supervisor the same way: registration marks a restarted host's forks degraded
+	// (`degradeClaudeForksOfRestartedHost`) and this refuses a prompt once it has. A stopped fork is never resumed.
 	if (
 		hasLongLivedProcess &&
 		!CONTINUABLE_MANAGED_STATES.has(managed.managedState as ManagedState)
@@ -1620,17 +1831,44 @@ export async function queueCleanupWorkArea(
  * events via FK, so events go first.
  */
 async function finalizeCleanupWorkArea(projectId: string): Promise<void> {
-	await withTransaction(async (tx) => {
+	const kept = await withTransaction(async (tx) => {
 		const projectSessions = await tx
-			.select({ id: sessions.id, sessionId: sessions.sessionId })
+			.select({ id: sessions.id, sessionId: sessions.sessionId, metadata: sessions.metadata })
 			.from(sessions)
 			.where(eq(sessions.projectId, projectId));
+		// A continued session that may still have a process is ended before anything deletes it (T17): the
+		// project stays until that is done, instead of the work area's rows going out from under a live fork.
+		const forkIds = projectSessions
+			.filter(
+				(s: { metadata: unknown }) =>
+					(s.metadata as Record<string, unknown> | null)?.forkedFromSessionId,
+			)
+			.map((s: { sessionId: string }) => s.sessionId);
+		if (forkIds.length > 0) {
+			const live = await tx
+				.select({ sessionId: managedSessions.sessionId })
+				.from(managedSessions)
+				.where(
+					and(
+						inArray(managedSessions.sessionId, forkIds),
+						inArray(managedSessions.managedState, ["pending", "managed", "degraded"]),
+					),
+				);
+			if (live.length > 0) return true;
+		}
 		for (const s of projectSessions) {
 			await tx.delete(events).where(eq(events.sessionId, s.sessionId));
 			await tx.delete(sessions).where(eq(sessions.id, s.id));
 		}
 		await tx.delete(projects).where(eq(projects.id, projectId));
+		return false;
 	});
+	if (kept) {
+		console.warn(
+			`[control-actions] work area cleanup kept project ${projectId}: a continued session is live`,
+		);
+		return;
+	}
 	// Cache invalidation only matters once the rows are durably gone; running
 	// it after the tx commits keeps the cache consistent on rollback.
 	await bumpVersionAndReload();
@@ -1679,6 +1917,14 @@ async function claimRefusalForPrompt(
 			`[control-actions] prompt ${action.id} has no launch row and no usable agent type; failing it`,
 		);
 		return LAUNCH_MISMATCH_CLAIM_MESSAGE;
+	}
+	if (effective === "claude_code") {
+		// A prompt for a fork's long-lived process needs a host that still advertises forks (P3-I17).
+		const runtime = (action.metadata as Record<string, unknown> | null)?.runtime;
+		if (runtime !== "claude_stream") return null;
+		return (await supervisorHasFeature(getDb(), supervisorId, CLAUDE_TAKEOVER))
+			? null
+			: HOST_UPGRADE_REQUIRED_MESSAGE;
 	}
 	if (effective !== "codex_cli") return null;
 	return (await supervisorHasFeature(getDb(), supervisorId, CODEX_FOLLOW_UP_PROMPTS))
@@ -1760,18 +2006,40 @@ export async function claimNextControlAction(supervisorId: string) {
 			.orderBy(asc(controlActions.createdAt))
 			.limit(1);
 
+		// 3. A Claude takeover is an action on the observed session S, which has no managed row until the
+		// takeover settles (AGEN-117 T5): pre-assigned to its host like a session-less one.
+		const forkRow = await getDb()
+			.select()
+			.from(controlActions)
+			.where(
+				and(
+					eq(controlActions.status, "queued"),
+					eq(controlActions.actionType, "resume"),
+					isNotNull(controlActions.sessionId),
+					isNotNull(jsonExtractText(controlActions.metadata, "$.forkSessionId")),
+					eq(jsonExtractText(controlActions.metadata, "$.targetSupervisorId"), supervisorId),
+				),
+			)
+			.orderBy(asc(controlActions.createdAt))
+			.limit(1);
+
 		const sessionAction = sessionRow[0]?.action ?? null;
 		const launchAgentType = sessionRow[0]?.launchAgentType ?? null;
 		const sessionlessAction = sessionlessRow[0] ?? null;
 
-		let candidate = null;
-		if (sessionAction && sessionlessAction) {
-			candidate =
-				sessionAction.createdAt <= sessionlessAction.createdAt ? sessionAction : sessionlessAction;
-		} else {
-			candidate = sessionAction ?? sessionlessAction;
-		}
+		const candidates = [sessionAction, sessionlessAction, forkRow[0] ?? null].filter(
+			(row): row is NonNullable<typeof row> => row !== null,
+		);
+		candidates.sort((a, b) => (a.createdAt <= b.createdAt ? -1 : 1));
+		const candidate = candidates[0] ?? null;
 		if (!candidate) return null;
+		if (
+			candidate.actionType === "resume" &&
+			forkSessionIdOf(candidate.metadata) !== null &&
+			(await failIfForkOverdue(candidate))
+		) {
+			continue;
+		}
 
 		if (isExpiredAiPrompt(candidate)) {
 			await failUnclaimedAction(candidate, "Expired before a supervisor claimed it.");
@@ -1814,6 +2082,20 @@ export async function claimNextControlAction(supervisorId: string) {
 	return null;
 }
 
+/** A queued takeover whose deadline passed before any host took it: failed here, so a late claim can't start a fork nobody waits for. */
+async function failIfForkOverdue(action: typeof controlActions.$inferSelect): Promise<boolean> {
+	const deadline = Date.parse(
+		String((action.metadata as { forkDeadlineAt?: unknown } | null)?.forkDeadlineAt ?? ""),
+	);
+	if (Number.isFinite(deadline) && deadline > Date.now()) return false;
+	const outcome = await failResumeAction(
+		null,
+		action,
+		resumeFailureMessage("timeout", hostNameOfAction(action), "takeover", "claude_code"),
+	);
+	return outcome.settled;
+}
+
 /** Test seam for a status report: runs once the action is read, before anything is written. */
 interface UpdateControlActionSeam {
 	afterActionRead?: () => Promise<void>;
@@ -1828,6 +2110,9 @@ export async function updateControlAction(
 		metadata?: Record<string, unknown> | null;
 		/** A `running` report that says the host took a Claude prompt on (see `ControlStatusBody.accepted`). */
 		accepted?: boolean;
+		/** A Claude takeover's success report: the directory the host proved and the mode it picked (T5). */
+		provedCwd?: unknown;
+		permissionMode?: unknown;
 	},
 	seam: UpdateControlActionSeam = {},
 ) {
@@ -1844,8 +2129,18 @@ export async function updateControlAction(
 			await failResumeAction(
 				null,
 				current,
-				input.error ?? resumeFailureMessage("rejected", "The host", resumeKindOf(current)),
+				input.error ??
+					resumeFailureMessage(
+						"rejected",
+						"The host",
+						resumeKindOf(current),
+						resumeAgentOf(current.metadata),
+					),
 			);
+		} else if (forkSessionIdOf(current.metadata) !== null) {
+			await completeResumeAction(null, current, {
+				fork: { provedCwd: input.provedCwd, permissionMode: input.permissionMode },
+			});
 		} else {
 			// The host says it worked. If the row never became `managed`, it didn't: that's a failure.
 			const [managed] = await getDb()
@@ -1864,7 +2159,12 @@ export async function updateControlAction(
 				await failResumeAction(
 					null,
 					current,
-					resumeFailureMessage("rejected", "The host", resumeKindOf(current)),
+					resumeFailureMessage(
+						"rejected",
+						"The host",
+						resumeKindOf(current),
+						resumeAgentOf(current.metadata),
+					),
 				);
 			} else {
 				await completeResumeAction(null, current);

@@ -1259,6 +1259,12 @@ export async function processHookEvent(
 				.where(eq(sessions.sessionId, sessionId))
 				.limit(1);
 			priorRow = row;
+			// The row that won the race may be a takeover fork settled a moment ago (AGEN-117 P5-B6): re-checked
+			// here, since the drop above read the row before it existed.
+			if (priorRow && isForkRow(priorRow)) {
+				incrementForkHookDropped();
+				return { sessionId, isNew: false, session: null, events: [] };
+			}
 			if (priorRow && !(await admitForeignKeyWrite(priorRow, attribution))) {
 				incrementIngestForeignKeyDropped();
 				return { sessionId, isNew: false, session: null, events: [] };

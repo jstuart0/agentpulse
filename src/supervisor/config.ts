@@ -7,7 +7,7 @@ import {
 	tightenPrivateFilePermissionsSync,
 	writePrivateFileSyncNoFollow,
 } from "../shared/private-file.js";
-import { RESUMES_SESSIONS } from "../shared/session-resume.js";
+import { CLAUDE_TAKEOVER, RESUMES_SESSIONS } from "../shared/session-resume.js";
 import type { SupervisorRegistrationInput } from "../shared/types.js";
 
 export interface SupervisorConfig {
@@ -261,6 +261,7 @@ export async function withExecutableCapabilities(
 				...(terminalSupport.length > 0 ? ["interactive_terminal"] : []),
 				...(interactiveTerminalControl.available ? ["interactive_terminal_control"] : []),
 				...(codex.resolvedPath ? ["managed_codex", CODEX_FOLLOW_UP_PROMPTS, RESUMES_SESSIONS] : []),
+				...(claude.resolvedPath && currentOs() === "macos" ? [CLAUDE_TAKEOVER] : []),
 			],
 			interactiveTerminalControl,
 			executables: {

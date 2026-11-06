@@ -11,8 +11,10 @@
  */
 import { cleanHostText } from "../../../shared/clean-host-text.js";
 import {
+	END_SESSION_FIRST_MESSAGE,
 	type ResumeKind,
 	TAKEOVER_IN_PROGRESS_MESSAGE,
+	hostCannotRunClaudeMessage,
 	hostCannotRunCodexMessage,
 	resumeFailureMessage,
 } from "../../../shared/session-resume.js";
@@ -129,6 +131,8 @@ const REFUSALS: Record<string, RefusalWords> = {
 			: `${host} was removed from AgentPulse. Choose another machine.`,
 	host_upgrade_required: (host, kind) => resumeFailureMessage("host_upgrade_required", host, kind),
 	host_cannot_run_codex: (host, kind) => hostCannotRunCodexMessage(host, kind),
+	host_cannot_run_claude: (host, kind) => hostCannotRunClaudeMessage(host, kind),
+	end_session_first: () => END_SESSION_FIRST_MESSAGE,
 	session_key_mismatch: (host) =>
 		`This session was reported by a key that isn't tied to ${host}. Ask an admin to take it over.`,
 	rate_limited: () => "Too many attempts. Try again in a minute.",

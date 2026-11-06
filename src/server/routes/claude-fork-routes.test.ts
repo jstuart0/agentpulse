@@ -64,7 +64,7 @@ beforeAll(async () => {
 				launchModes: ["headless"],
 				os: "linux",
 				terminalSupport: [],
-				features: [],
+				features: ["claude_takeover"],
 			},
 			trustedRoots: ["/tmp"],
 		}),

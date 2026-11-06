@@ -220,6 +220,15 @@ function reserveSlot(sessionId: string, max: number): () => void {
 	};
 }
 
+/**
+ * Reserves a fork's slot synchronously, before any await, so two takeovers can't both pass a count and probe
+ * logins for a ninth runtime. Throws `host_busy` past the cap. The returned function gives the slot back; a
+ * start that is handed it as `reservedSlot` owns it from then on.
+ */
+export function reserveClaudeStreamSlot(sessionId: string, max?: number): () => void {
+	return reserveSlot(sessionId, max ?? MAX_CLAUDE_STREAM_RUNTIMES);
+}
+
 export function hasClaudeStreamRuntime(sessionId: string): boolean {
 	return runtimes.has(sessionId) || slots.has(sessionId);
 }
@@ -292,6 +301,13 @@ export type ClaudeStreamOptions = {
 	timings?: ClaudeStopTimings;
 	link?: ClaudeLinkOptions;
 	ownIdWaitMs?: number;
+	/**
+	 * The directory `agents --json` runs in. A neutral, private one: run in the conversation's own repository,
+	 * Claude Code would load that repository's settings (AGEN-117 P5-B3). Default: `cwd`.
+	 */
+	agentsCwd?: string;
+	/** A slot the caller reserved before its probes (`reserveClaudeStreamSlot`); released by the runtime or on a failed start. */
+	reservedSlot?: () => void;
 	log?: (line: string) => void;
 	/** Where the per-prompt and start `agents --json` checks run. Default: the real listing. */
 	listAgents?: typeof listClaudeAgentEntries;
@@ -531,7 +547,7 @@ export class ClaudeStreamRuntime {
 	private async assertNotOpenElsewhere(): Promise<void> {
 		const listing = await this.listAgents({
 			executable: this.options.executable,
-			cwd: this.options.cwd,
+			cwd: this.options.agentsCwd ?? this.options.cwd,
 			env: this.agentsEnv,
 		});
 		if (!listing.ok) {
@@ -1178,7 +1194,9 @@ async function statOrNull(path: string): Promise<{ size: number; mtimeMs: number
 export async function startClaudeStream(
 	options: ClaudeStreamOptions,
 ): Promise<ClaudeStreamRuntime> {
-	const release = reserveSlot(options.sessionId, options.maxRuntimes ?? MAX_CLAUDE_STREAM_RUNTIMES);
+	const release =
+		options.reservedSlot ??
+		reserveSlot(options.sessionId, options.maxRuntimes ?? MAX_CLAUDE_STREAM_RUNTIMES);
 	let runtime: ClaudeStreamRuntime | undefined;
 	let proc: ClaudeProcess | undefined;
 	try {
@@ -1243,7 +1261,11 @@ async function verifyOwnId(
 	const deadline = Date.now() + (options.ownIdWaitMs ?? OWN_ID_WAIT_MS);
 	let lastWhy: string | null = null;
 	while (true) {
-		const listing = await list({ executable: options.executable, cwd: options.cwd, env });
+		const listing = await list({
+			executable: options.executable,
+			cwd: options.agentsCwd ?? options.cwd,
+			env,
+		});
 		if (!listing.ok) {
 			lastWhy = listing.why;
 		} else {
@@ -1296,6 +1318,9 @@ export async function promptClaudeStreamSession(
 		await reportNoRuntime(action.sessionId, callbacks);
 		throw new ClaudePromptRefusal("no_runtime", CLAUDE_FORK_NO_RUNTIME_ERROR);
 	}
+	// The server only claims a prompt for a session whose rows exist, so one arriving for a runtime still
+	// `settling` is proof the takeover settled even though its answer never got here (AGEN-117 T5).
+	runtime.settled();
 	return await runtime.sendPrompt(action.prompt, action.actionId);
 }
 
@@ -1306,6 +1331,7 @@ export async function stopClaudeStreamSession(
 ): Promise<{ hadChild: boolean; gone: boolean; unchecked: boolean }> {
 	const runtime = runtimes.get(sessionId);
 	if (!runtime) return { hadChild: false, gone: true, unchecked: false };
+	runtime.settled(); // a Stop claimed for N is proof of settle, as a prompt is
 	const result = await runtime.stop(timings);
 	return { hadChild: true, gone: result.gone, unchecked: !result.checked };
 }

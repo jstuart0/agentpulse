@@ -30,6 +30,11 @@ on:
       - "src/server/services/managed-session-state.ts"
       - "src/server/services/event-processor.ts"
       - "src/server/services/claude-fork*"
+      - "src/server/services/claude-takeover*"
+      - "src/server/services/authorization.ts"
+      - "src/server/services/fork-live-paths*"
+      - "src/server/services/ai/action-requests-service.ts"
+      - "src/server/services/ask/ask-session-action-handler.ts"
       - "src/server/services/claude-approvals*"
       - "src/shared/codex-approvals.ts"
       - "src/shared/claude-approvals.ts"
@@ -116,6 +121,8 @@ jobs:
             src/server/routes/supervisor-claude-turn-monitor.test.ts \
             src/server/services/claude-fork-server.test.ts \
             src/server/services/claude-approvals.test.ts \
+            src/server/services/session-binding-claude.test.ts \
+            src/server/services/fork-live-paths.test.ts \
             src/server/routes/claude-fork-routes.test.ts \
             src/server/services/ai/continue-decision-fork.test.ts 2>&1 | tee claude-turn.log
           if grep -Eq '^ *[1-9][0-9]* skip' claude-turn.log; then

@@ -1,5 +1,8 @@
 import { and, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
-import { HOST_RESTARTED_SYNC_ERROR } from "../../shared/managed-messages.js";
+import {
+	HOST_RESTARTED_FORK_SYNC_ERROR,
+	HOST_RESTARTED_SYNC_ERROR,
+} from "../../shared/managed-messages.js";
 import { resumeFailureMessage } from "../../shared/session-resume.js";
 import { isWithinWindow } from "../../shared/time-window.js";
 import { parseStoredTimestamp } from "../../shared/timestamp.js";
@@ -20,6 +23,7 @@ import {
 	supervisors,
 	users,
 } from "../db/schema/index.js";
+import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
 import { stripAndRedact } from "./ai/redactor.js";
@@ -411,7 +415,8 @@ async function writeManagedSessionState(
 		options.replay === true &&
 		!isTerminalStateReport(input) &&
 		existingManaged?.managedState === "degraded" &&
-		existingManaged.providerSyncError === HOST_RESTARTED_SYNC_ERROR;
+		(existingManaged.providerSyncError === HOST_RESTARTED_SYNC_ERROR ||
+			existingManaged.providerSyncError === HOST_RESTARTED_FORK_SYNC_ERROR);
 	const providerSyncState =
 		(heldDegraded ? undefined : input.providerSyncState) ??
 		existingManaged?.providerSyncState ??
@@ -977,6 +982,137 @@ export async function degradeCodexSessionsOfRestartedHost(
 
 		await deps.afterWrites?.(tx);
 		return live.map((row) => row.sessionId);
+	});
+}
+
+/**
+ * A supervisor registered again, so the long-lived Claude process of every fork it held is gone (AGEN-117
+ * T10, P3-I19). The Codex pass above is keyed on the launch's agent type; a fork is a Claude launch whose
+ * session row names its source, so it needs its own. For the forks that host owns of record and that haven't
+ * ended: the row becomes `degraded` with HOST_RESTARTED_FORK_SYNC_ERROR (which a replayed report can't undo),
+ * the working flag clears (a cut turn reads WAITING), and the prompts and recovery resumes still open for
+ * them fail with fixed words and release their locks. A row already stamped is left alone, so a second
+ * restart writes nothing. Returns the sessions changed, to announce.
+ */
+export async function degradeClaudeForksOfRestartedHost(
+	supervisorId: string,
+	deps: { afterWrites?: (tx: unknown) => Promise<void> } = {},
+): Promise<string[]> {
+	return withTransaction(async (tx) => {
+		const forks: Array<{
+			sessionId: string;
+			isWorking: boolean;
+			stamped: boolean;
+			hostName: string | null;
+		}> = (
+			await tx
+				.select({
+					sessionId: managedSessions.sessionId,
+					isWorking: sessions.isWorking,
+					syncError: managedSessions.providerSyncError,
+					hostName: managedSessions.hostName,
+				})
+				.from(managedSessions)
+				.innerJoin(sessions, eq(sessions.sessionId, managedSessions.sessionId))
+				.leftJoin(launchRequests, ownerLaunchJoin)
+				.where(
+					and(
+						sessionOwnedBy(supervisorId),
+						isNotNull(jsonExtractText(sessions.metadata, "$.forkedFromSessionId")),
+						notInArray(managedSessions.managedState, [...TERMINAL_MANAGED_STATES]),
+					),
+				)
+		).map(
+			(row: {
+				sessionId: string;
+				isWorking: boolean;
+				syncError: string | null;
+				hostName: string | null;
+			}) => ({
+				sessionId: row.sessionId,
+				isWorking: row.isWorking,
+				stamped: row.syncError === HOST_RESTARTED_FORK_SYNC_ERROR,
+				hostName: row.hostName,
+			}),
+		);
+		if (forks.length === 0) return [];
+		const timestamp = nowIso();
+		const hostNames = new Map(forks.map((fork) => [fork.sessionId, fork.hostName]));
+
+		// Open actions of every fork this host holds, a stamped one included: the process they were for is gone.
+		// A recovery ends through the one resume settle (with the resume words); a prompt fails with its own.
+		for (const ids of inChunks(forks.map((fork) => fork.sessionId))) {
+			const open: Array<typeof controlActions.$inferSelect> = await tx
+				.select()
+				.from(controlActions)
+				.where(
+					and(
+						inArray(controlActions.sessionId, ids),
+						inArray(controlActions.actionType, ["prompt", "resume"]),
+						inArray(controlActions.status, ["queued", "running"]),
+					),
+				);
+			for (const action of open) {
+				if (action.actionType === "resume") {
+					await failResumeAction(
+						tx,
+						action,
+						resumeFailureMessage(
+							"restart",
+							hostNames.get(action.sessionId ?? "") ?? "The host",
+							"recovery",
+							"claude_code",
+						),
+					);
+				} else {
+					await tx
+						.update(controlActions)
+						.set({
+							status: "failed",
+							error: HOST_RESTARTED_PROMPT_ERROR,
+							finishedAt: timestamp,
+							updatedAt: timestamp,
+						})
+						.where(
+							and(
+								eq(controlActions.id, action.id),
+								inArray(controlActions.status, ["queued", "running"]),
+							),
+						);
+					await tx
+						.update(managedSessions)
+						.set({ activeControlActionId: null, controlLockExpiresAt: null, updatedAt: timestamp })
+						.where(eq(managedSessions.activeControlActionId, action.id));
+				}
+			}
+		}
+
+		const fresh = forks.filter((fork) => !fork.stamped);
+		for (const ids of inChunks(fresh.map((fork) => fork.sessionId))) {
+			await tx
+				.update(managedSessions)
+				.set({
+					managedState: "degraded",
+					providerSyncState: "failed",
+					providerSyncError: HOST_RESTARTED_FORK_SYNC_ERROR,
+					updatedAt: timestamp,
+				})
+				.where(inArray(managedSessions.sessionId, ids));
+			await tx
+				.update(sessions)
+				.set({ lastActivityAt: timestamp })
+				.where(inArray(sessions.sessionId, ids));
+		}
+		for (const ids of inChunks(
+			fresh.filter((fork) => fork.isWorking).map((fork) => fork.sessionId),
+		)) {
+			await tx
+				.update(sessions)
+				.set({ isWorking: false, currentTurnStartedAt: null, lastAgentTurnCompletedAt: timestamp })
+				.where(inArray(sessions.sessionId, ids));
+		}
+		await deps.afterWrites?.(tx);
+		return fresh.map((fork) => fork.sessionId);
 	});
 }
 

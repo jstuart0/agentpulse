@@ -13,6 +13,10 @@
 export const HOST_RESTARTED_SYNC_ERROR =
 	"The host's supervisor restarted, so this session's Codex process is gone.";
 
+/** Stored on a taken-over Claude session when its host's supervisor registered again: the process it ran is gone (AGEN-117 T10). */
+export const HOST_RESTARTED_FORK_SYNC_ERROR =
+	"The host's supervisor restarted, so this session's Claude process is gone.";
+
 /** The `error` an action carries when its lock ran out before the supervisor reported: its outcome is unknown. */
 export const CONTROL_TIMEOUT_ERROR = "Control action timed out waiting for supervisor completion.";
 

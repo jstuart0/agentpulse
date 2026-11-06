@@ -26,6 +26,7 @@ import {
 	assertCanChangeSessions,
 	assertCanDeleteSession,
 } from "../authorization.js";
+import { refusalSentence } from "../bind-refusal.js";
 import { getChannelCredential } from "../channels/channels-service.js";
 import { getTelegramBotToken } from "../channels/telegram-credentials.js";
 import { sendTelegramMessage } from "../channels/telegram.js";
@@ -607,7 +608,8 @@ async function executeSessionMutation(
 		await mutationFn(payload.sessionId);
 		return succeed(request, resolvedBy, `Action applied to **${sessionName}**.`);
 	} catch (err) {
-		const reason = err instanceof Error ? err.message : String(err);
+		const sentence = refusalSentence(err);
+		const reason = sentence ?? (err instanceof Error ? err.message : String(err));
 		return fail(
 			request,
 			resolvedBy,
@@ -1197,7 +1199,7 @@ async function executeBulkSessionAction(
 				sessionId,
 				name,
 				ok: false,
-				error: err instanceof Error ? err.message : String(err),
+				error: refusalSentence(err) ?? (err instanceof Error ? err.message : String(err)),
 			});
 		}
 	}
@@ -1278,6 +1280,9 @@ async function actorMayApply(id: string, actor: Actor): Promise<boolean> {
 		return true;
 	} catch (err) {
 		if (err instanceof NotOwnerError) return false;
+		// A live fork or an open takeover isn't a question of who may apply the request: the executor fails it
+		// with the fixed sentence, instead of the approval throwing.
+		if (refusalSentence(err) !== null) return true;
 		throw err;
 	}
 }

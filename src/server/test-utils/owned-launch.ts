@@ -1,3 +1,4 @@
+import { CLAUDE_STOP, CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
 /**
  * Shared test fixture: "a session owned by supervisor X" (Phase 1.0,
  * 2026-09-29-deliver-supervisor-auth-routing).
@@ -8,7 +9,7 @@
  * inventory). One shared construction of "owned launch" instead of three
  * hand-rolled `launch_requests` inserts drifting on required columns.
  */
-import { CLAUDE_STOP, CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
+import { CLAUDE_TAKEOVER } from "../../shared/session-resume.js";
 import { getDb } from "../db/client.js";
 import { launchRequests, supervisors } from "../db/schema/index.js";
 
@@ -91,7 +92,7 @@ async function seedLiveHostIfAbsent(supervisorId: string): Promise<void> {
 				terminalSupport: ["terminal"],
 				// A fixture host takes Codex follow-ups and Claude stops; a test about an older supervisor seeds its own. (supervisor-fixture.ts's
 				// seedSupervisor differs on purpose: its default host is an older one, with no features.)
-				features: [CODEX_FOLLOW_UP_PROMPTS, CLAUDE_STOP],
+				features: [CODEX_FOLLOW_UP_PROMPTS, CLAUDE_STOP, CLAUDE_TAKEOVER],
 				executables: {
 					claude: {
 						available: true,

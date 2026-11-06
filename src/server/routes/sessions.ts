@@ -1384,7 +1384,13 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 	// is present but not a boolean is a malformed call.
 	if (body.archived !== undefined && typeof body.archived !== "boolean") return invalidBody(c);
 	const archived = body.archived !== false;
-	const refusal = await refuseUnlessOwnerOrAdmin(c, sessionId, assertCanArchiveSession);
+	// Putting a session back in view changes nothing about a process that may still be running, so only
+	// archiving meets the live-fork and open-takeover rules; unarchiving is the plain owner-or-admin one.
+	const refusal = await refuseUnlessOwnerOrAdmin(
+		c,
+		sessionId,
+		archived ? assertCanArchiveSession : assertCanRenameSession,
+	);
 	if (refusal) return refusal;
 
 	await getDb()

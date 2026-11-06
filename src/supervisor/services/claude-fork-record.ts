@@ -48,6 +48,11 @@ export type ForkStatus = "fork" | "not_fork" | "unknown";
 export interface ClaudeForkRecord {
 	/** The entry for a fork this host started, or null (no file, no entry, an untrusted file). */
 	lookup(forkId: string): ForkEntry | null;
+	/**
+	 * The entry for this fork even when its mode can't be used (missing, or a value other than `ask` and
+	 * `restricted`): a recovery tells that from no record at all, since no upgrade clears it (T13).
+	 */
+	lookupRaw(forkId: string): { source: string; dir: string; mode: unknown } | null;
 	/** True when the id is a fork this host recorded. */
 	isFork(forkId: string): boolean;
 	/** `isFork` that tells an unreadable record from no record. */
@@ -100,6 +105,27 @@ export function createClaudeForkRecord(options: {
 
 	return {
 		lookup: (forkId) => read()?.entries.find((entry) => entry.forkId === forkId) ?? null,
+		lookupRaw(forkId) {
+			const file = readPrivateFileNoFollow(options.path, MAX_FILE_BYTES);
+			if (file.kind !== "ok") return null;
+			try {
+				const parsed = JSON.parse(file.text) as { version?: unknown; entries?: unknown };
+				if (parsed.version !== 1 || !Array.isArray(parsed.entries)) return null;
+				for (const raw of parsed.entries as Array<Record<string, unknown> | null>) {
+					if (
+						raw &&
+						raw.forkId === forkId &&
+						typeof raw.source === "string" &&
+						typeof raw.dir === "string"
+					) {
+						return { source: raw.source, dir: raw.dir, mode: raw.mode };
+					}
+				}
+			} catch {
+				// unreadable: no entry
+			}
+			return null;
+		},
 		isFork: (forkId) => read()?.entries.some((entry) => entry.forkId === forkId) ?? false,
 		status(forkId) {
 			if (readPrivateFileNoFollow(options.path, MAX_FILE_BYTES).kind === "absent")
