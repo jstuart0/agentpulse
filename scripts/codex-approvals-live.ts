@@ -41,6 +41,11 @@
  * a deliberate break each scenario must then fail on. Rules for every run: no terminal UI; nothing is killed
  * but this run's own children and processes naming this run's exact CODEX_HOME; Codex is started only through
  * `lib/codex-canary-spawn.ts`; CI holds these in `codex-live-safety.test.ts`.
+ * The Claude scenarios (AGEN-117, `claude-takeover-canary.ts`) are asked for with
+ * `--real --only claude[,<id>...] --work <dir> [--login key|helper|both] [--mutate <name>|all] [--cap-usd 1.9] [--result <file>] [--keep-scratch]`
+ * and need `ANTHROPIC_API_KEY` in the environment of the command (never a file or an argument); they never touch
+ * a Codex home. Exit codes: 0 all good, 1 a failure, 2 usage, 3 instrumentInvalid, 4 mutationSurvived,
+ * 5 mutationInvalid (`claude-canary-runner.ts`).
  * An `--only` id that names no scenario exits 2 before anything starts.
  * Codex is asked in a way that cannot be answered without an approval (escalated command, exact patch
  * text); if it asks nothing anyway, that scenario fails, because a canary that passes without asking
@@ -65,6 +70,7 @@ import {
 } from "node:fs";
 import { homedir, hostname, tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
+import { CLAUDE_SCENARIO_IDS, runClaudeCanary } from "./claude-takeover-canary.js";
 import { guardAuthCopy, removeAuthCopy } from "./codex-canary-guard.js";
 import { TAKEOVER_SCENARIO_IDS, runTakeoverScenarios } from "./codex-takeover-canary.js";
 import { assertThrowawayCodexHome } from "./lib/codex-canary-safety.js";
@@ -2360,6 +2366,41 @@ async function real(workArg: string, minutes: number, only: string[]): Promise<n
 		results.error = String(error instanceof Error ? error.stack : error);
 		return await cleanup(1);
 	}
+}
+
+/** The Claude scenarios (AGEN-117, `claude-takeover-canary.ts`): `--only claude` or any of their ids; never mixed with Codex ones. */
+function claudeRequest(raw: string | undefined): string[] | null {
+	if (raw === undefined) return null;
+	const ids = raw.split(",");
+	const claudeIds: string[] = [...CLAUDE_SCENARIO_IDS];
+	const isClaude = (id: string) => id === "claude" || claudeIds.includes(id);
+	if (!ids.some(isClaude)) return null;
+	const stray = ids.filter((id) => !isClaude(id));
+	if (stray.length > 0) {
+		console.error(`[real] Claude and Codex scenarios don't mix in one run: ${stray.join(", ")}`);
+		process.exit(2);
+	}
+	return ids;
+}
+
+if (flag("--real") && claudeRequest(opt("--only"))) {
+	const login = opt("--login") ?? "key";
+	if (!["key", "helper", "both"].includes(login)) {
+		console.error("[real] --login is key, helper or both");
+		process.exit(2);
+	}
+	process.exit(
+		await runClaudeCanary({
+			work: opt("--work") ?? "",
+			minutes: Number(opt("--minutes") ?? 30),
+			only: claudeRequest(opt("--only")) as string[],
+			logins: login === "both" ? ["key", "helper"] : [login as "key" | "helper"],
+			mutate: opt("--mutate") ?? null,
+			capUsd: Number(opt("--cap-usd") ?? 1.9),
+			...(opt("--result") ? { resultPath: opt("--result") as string } : {}),
+			keepScratch: flag("--keep-scratch"),
+		}),
+	);
 }
 
 if (flag("--real")) {

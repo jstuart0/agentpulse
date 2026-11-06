@@ -350,6 +350,10 @@ describe("a message something else sent the fork", () => {
 			"AgentPulse is hiding it because it may hold a secret.",
 		);
 		expect(peerTurnLines(undefined, HOST)).toBeNull();
+		// No text and not hidden: the host found no peer-tagged line (P7-X2). Fixed words, not the secret copy.
+		expect(peerTurnLines({ text: null, hidden: false }, HOST)?.[1]).toBe(
+			"AgentPulse could not capture the message.",
+		);
 	});
 });
 

@@ -240,6 +240,8 @@ export function peerTurnRecord(
 	text: string,
 	at: string,
 ): { text: string | null; hidden: boolean; at: string } {
+	// The host found no line Claude tags as a peer's: stored as "not captured" (no text, not hidden), never guessed.
+	if (text.trim() === "") return { text: null, hidden: false, at };
 	const cut = text.slice(0, PEER_TURN_MAX_CHARS);
 	const { text: cleaned, hits } = stripAndRedact(cut);
 	const changed = hits.length > 0 || cleaned !== cut;

@@ -211,5 +211,11 @@ export function forkChildEnv(
 	// per `ask` probe, measured) reaches the server as a skip (answered 200, nothing stored) and cannot create a
 	// session row for a process that has no row of its own yet.
 	out.AGENTPULSE_SKIP = "1";
+	// Ours too, and for the same reason as a hook's skip: no turn may start that the host did not send. Claude
+	// Code moves a Bash command that outlives its limit to the background and, when that command ends, starts a
+	// turn of its own (a notification, then a reply) on the open stream. The host reads such a turn as a message
+	// from a stranger and ends the fork (canary `turn-guard`, 2.1.319). With background tasks off, a long
+	// command runs to its own limit inside the turn that asked for it.
+	out.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
 	return out;
 }

@@ -1005,7 +1005,8 @@ export function focusAfterClose(input: {
 /**
  * The lines for a fork that was stopped because something other than AgentPulse sent it a message (T3): the
  * owner's or an admin's read only, since that is who the server returns the notice to. The text is whatever
- * the server kept after redaction, or, if redaction changed anything, nothing but the reason it is hidden.
+ * the server kept after redaction; if redaction changed anything, nothing but the reason it is hidden; and if the host found no
+ * line Claude tags as a peer's, nothing but that.
  */
 export function peerTurnLines(
 	peer: ClaudePeerTurnNotice | undefined | null,
@@ -1013,8 +1014,7 @@ export function peerTurnLines(
 ): string[] | null {
 	if (!peer) return null;
 	const lead = `Something else on ${hostLabel(host)} sent this session a message, so AgentPulse stopped it.`;
-	if (peer.hidden || peer.text === null) {
-		return [lead, "AgentPulse is hiding it because it may hold a secret."];
-	}
+	if (peer.hidden) return [lead, "AgentPulse is hiding it because it may hold a secret."];
+	if (peer.text === null) return [lead, "AgentPulse could not capture the message."];
 	return [lead, `The message: ${peer.text}`];
 }

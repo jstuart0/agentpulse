@@ -727,3 +727,16 @@ describe("the first-turn guard reads both timestamp formats (found while re-runn
 		},
 	);
 });
+
+describe("peerTurnRecord: nothing captured (P7-X2)", () => {
+	test("an empty text from the host is stored as no text and not hidden; real text is unchanged", async () => {
+		const { peerTurnRecord } = await import("./managed-session-state.js");
+		expect(peerTurnRecord("", "t")).toEqual({ text: null, hidden: false, at: "t" });
+		expect(peerTurnRecord("  \n", "t")).toEqual({ text: null, hidden: false, at: "t" });
+		expect(peerTurnRecord("do the thing", "t")).toEqual({
+			text: "do the thing",
+			hidden: false,
+			at: "t",
+		});
+	});
+});

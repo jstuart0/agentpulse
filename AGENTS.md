@@ -155,15 +155,15 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 - `GET /api/v1/sessions/:id/claude-md` — Get CLAUDE.md content
 - `PUT /api/v1/sessions/:id/claude-md` — Save CLAUDE.md content
 
-**Managed Codex approvals:**
-- `GET /api/v1/sessions/:id/approvals` — Open (and recently closed) command and file-change approvals for a managed Codex session, with the host's state (`manage` key or a signed-in person; owner or admin in team mode)
+**Managed approvals (Codex, and Claude Code forks):**
+- `GET /api/v1/sessions/:id/approvals` — Open (and recently closed) command, file-change and (Claude) tool approvals for a managed Codex session or a continued Claude Code session, with the host's state (`manage` key or a signed-in person; owner or admin in team mode)
 - `GET /api/v1/sessions/:id/approvals/:approvalId` — One approval with the full text a person is shown and its hash
 - `POST /api/v1/sessions/:id/approvals/:approvalId/decision` — `{ decision: "accept" | "decline" | "cancel", presentationHash? }`; accept needs a signed-in person and the hash, never an API key
 - `POST /api/v1/supervisors/:id/managed-sessions/:sessionId/approvals` and `POST /api/v1/supervisors/:id/approvals/sync` — supervisor credential only: report a request, and poll for answers
 
-**Taking over and resuming Codex sessions:**
-- `POST /api/v1/sessions/:id/bind` — `{ targetSupervisorId, sameMachineConfirmed: true }`; takes an observed Codex session over on that host. A signed-in person only, never an API key (`human_required`). Refusal codes are in `src/shared/session-resume.ts`
-- `POST /api/v1/sessions/:id/resume` — no body; resumes a managed Codex session whose process is gone (`degraded`)
+**Taking over and resuming Codex sessions, and continuing Claude Code sessions (forks):**
+- `POST /api/v1/sessions/:id/bind` — `{ targetSupervisorId, sameMachineConfirmed: true }`; takes an observed Codex session over on that host, or forks an observed Claude Code session there (the original is never written; the fork is a new session, `<name> (continued)`). A signed-in person only, never an API key (`human_required`). Refusal codes are in `src/shared/session-resume.ts`
+- `POST /api/v1/sessions/:id/resume` — no body; resumes a managed Codex session or a Claude fork whose process is gone (`degraded`), under the mode the fork started with
 
 **Projects:**
 - `GET /api/v1/projects` — List projects, full detail (`manage`-scoped only)

@@ -12,6 +12,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { assertThrowawayClaudeHome, redactKey } from "./claude-canary-safety.js";
 
+/** The person's real home, read once when this module loads: before anything in the run can override HOME. */
+const REAL_HOME = homedir();
+
 export const CLAUDE_BIN = "/opt/homebrew/bin/claude";
 export const CC_SOCKS_DIR = "/tmp/cc-socks";
 /** Per-call budget ceiling the spawner accepts, in dollars. */
@@ -139,7 +142,7 @@ export function assertAllowedClaudeArgs(
 }
 
 function checkOptions(args: readonly string[], options: ClaudeRunOptions): void {
-	const real = homedir();
+	const real = REAL_HOME;
 	assertThrowawayClaudeHome("HOME", options.home, options.scratchRoot, real);
 	assertThrowawayClaudeHome("CLAUDE_CONFIG_DIR", options.configDir, options.scratchRoot, real);
 	assertThrowawayClaudeHome("HOME", options.cwd, options.scratchRoot, real);
@@ -380,8 +383,19 @@ export class ClaudeStream {
 		return this.exitCode === undefined;
 	}
 
-	/** Close stdin, wait `graceMs`, SIGTERM the group this run started, then SIGKILL last. Scrubs this pid's socket. */
-	async finish(graceMs = 3000): Promise<number | null | undefined> {
+	private finishing: Promise<number | null | undefined> | undefined;
+
+	/**
+	 * Close stdin, wait `graceMs`, SIGTERM the group this run started, then SIGKILL last. Scrubs this pid's socket.
+	 * One ladder however often it is asked, and nothing is signalled once the child has exited (a recycled pid is
+	 * not ours): the second call returns the first's answer.
+	 */
+	finish(graceMs = 3000): Promise<number | null | undefined> {
+		this.finishing ??= this.runFinish(graceMs);
+		return this.finishing;
+	}
+
+	private async runFinish(graceMs: number): Promise<number | null | undefined> {
 		clearTimeout(this.killTimer);
 		try {
 			this.child.stdin?.end();
@@ -391,10 +405,10 @@ export class ClaudeStream {
 				this.exited.then(() => true),
 				new Promise<boolean>((r) => setTimeout(() => r(false), ms)),
 			]);
-		if (!(await exitedIn(graceMs))) {
-			this.signalGroup("SIGTERM");
-			if (!(await exitedIn(2000))) {
-				this.signalGroup("SIGKILL");
+		if (this.exitCode === undefined && !(await exitedIn(graceMs))) {
+			if (this.exitCode === undefined) this.signalGroup("SIGTERM");
+			if (this.exitCode === undefined && !(await exitedIn(2000))) {
+				if (this.exitCode === undefined) this.signalGroup("SIGKILL");
 				await exitedIn(2000);
 			}
 		}

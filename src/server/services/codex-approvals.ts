@@ -1227,7 +1227,7 @@ async function peerTurnOf(
 	const { text, hidden } = peer as { text?: unknown; hidden?: unknown };
 	return {
 		text: typeof text === "string" ? text : null,
-		hidden: hidden === true || typeof text !== "string",
+		hidden: hidden === true,
 	};
 }
 

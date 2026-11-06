@@ -64,7 +64,7 @@ describe("claude argv", () => {
 					"--disallowedTools",
 					"Agent,Task,SendMessage,ListAgents,CronCreate,CronDelete,CronList,ScheduleWakeup,EnterWorktree,ExitWorktree,Skill,Workflow,Monitor,AskUserQuestion,EnterPlanMode,ExitPlanMode,TaskStop,ReportFindings,ToolSearch,WebSearch",
 					"--settings",
-					'{"permissions":{"ask":["Write(*)","Edit(*)","NotebookEdit(*)","WebFetch(*)"]}}',
+					'{"permissions":{"ask":["Write(*)","Edit(*)","NotebookEdit(*)","WebFetch(*)"]},"env":{"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS":"1"}}',
 				];
 				expect(forkArgv({ source: S, fork: N, mode })).toEqual(expected);
 			});
@@ -115,12 +115,13 @@ describe("claude argv", () => {
 				for (const id of [S, N]) expect(probe.includes(id)).toBe(false);
 			});
 
-			test("--settings deep-equals the four ask rules and holds no hooks key", () => {
+			test("--settings deep-equals the four ask rules and the background-tasks env, and holds no hooks key", () => {
 				const settings = JSON.parse(
 					valueAfter(forkArgv({ source: S, fork: N, mode }), "--settings") as string,
 				);
 				expect(settings).toEqual({
 					permissions: { ask: ["Write(*)", "Edit(*)", "NotebookEdit(*)", "WebFetch(*)"] },
+					env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" },
 				});
 				expect(settings).not.toHaveProperty("hooks");
 				expect(CLAUDE_FORK_SETTINGS.permissions.ask).toHaveLength(4);

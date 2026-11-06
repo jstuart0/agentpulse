@@ -22,7 +22,7 @@ If you run multiple Claude Code, Codex CLI, or Copilot CLI sessions across diffe
 AgentPulse has two major modes:
 
 - **Observability** -- watch Claude Code, Codex, and Copilot CLI sessions in real time, with prompts, responses, progress, notes, and session history in one dashboard (Copilot CLI is observed only -- AgentPulse can't launch or steer it)
-- **Orchestration** -- launch and manage sessions from AgentPulse itself with templates, supervisors, headless tasks, interactive sessions, retries, host routing, and answering a managed Codex session's command and file-change approvals from the dashboard (see [Answering Codex approvals](#answering-codex-approvals))
+- **Orchestration** -- launch and manage sessions from AgentPulse itself with templates, supervisors, headless tasks, interactive sessions, retries, host routing, answering a managed Codex session's command and file-change approvals from the dashboard (see [Answering Codex approvals](#answering-codex-approvals)), and continuing a Claude Code session you started by hand as a fork, with its approvals answered the same way (see [Continuing a Claude Code session](#continuing-a-claude-code-session-you-started-by-hand))
 
 Plus an **AI Labs** layer that's very new and explicitly experimental -- see [the Labs section below](#ai-labs-experimental).
 
@@ -785,7 +785,7 @@ When the supervisor can't reach the server, the agents it launched keep running 
 
 ## Answering Codex approvals
 
-When a Codex session that AgentPulse launched asks to run a command or change files, the session page shows what it wants and you can accept or decline there. Only managed Codex sessions can be answered (not Claude Code, not a Codex you started yourself), and only by a signed-in person: an API key can read and decline but never accept.
+When a Codex session that AgentPulse launched asks to run a command or change files, the session page shows what it wants and you can accept or decline there. Only managed sessions can be answered (a Codex AgentPulse launched, or a Claude Code session continued as a fork, below; not a Codex you started yourself), and only by a signed-in person: an API key can read and decline but never accept.
 
 - **What you're shown.** The whole command (wrapped, never cut) or each file's diff, the working directory, and Codex's reason. Files outside the working directory are listed first and marked. Anything the server had to change before showing it (a secret it redacted, hidden or lookalike characters, runs of blank space, an over-long command, a missing diff) makes the request decline-only, with the reason. Accept and decline both ask you to confirm, and the confirm button arms after a short pause so a double click can't answer.
 - **Time and default.** A request waits 20 minutes, then is declined. Nothing is queued: if the host is offline, or AgentPulse can't reach it, the card says so and offers no answer, and the request is declined at its deadline. An accept must reach the host within a minute of your click, or the host declines instead.
@@ -804,6 +804,19 @@ A Codex session you ran yourself (in a terminal, or `codex exec`) shows up as ob
 - **If Codex's background service still holds it,** the takeover says so. That service outlives the terminal, and in two test runs on 0.163 with a non-TUI client it let go after 30 minutes (a real terminal session hasn't been measured); to free it sooner, run `codex app-server daemon stop` on that machine, which interrupts anything else running through it.
 - **A project with a `.codex/config.toml`** in its directory, or in a folder above it up to the git root, is refused: its settings can run commands without asking you.
 - A session whose process was lost when its supervisor restarted shows **Resume session** instead. Codex only, a signed-in person only (API keys can't), and the supervisor on the machine must be updated.
+
+## Continuing a Claude Code session you started by hand
+
+A Claude Code session you ran yourself shows up as observed. Open it and choose **Continue in a new session**, then the machine it ran on. AgentPulse does not write to your session. That machine's supervisor starts a **fork**: a new session that carries the same conversation forward (`claude --resume <id> --fork-session`), shown as `<name> (continued)`. Your original stays exactly as it was and you can keep using it in a terminal; the two don't share what happens next. A fork has the six tools Bash, Read, Write, Edit, NotebookEdit and WebFetch, and no subagents, no MCP servers and no slash commands. Anything that would write a file, fetch a page or run a command asks you first on the session page, with the same accept or decline cards as Codex (read-only commands such as `ls` and `cat` run unasked, as they do in Claude Code itself). **End session** stops the fork; you can fork the original again.
+
+- **It needs a login the supervisor can use.** Claude Code run by the supervisor does not use the login `claude` uses in a terminal (on 2.1.318 on macOS, a keychain login is "Not logged in" headless). If the supervisor has none, Continue says so and starts nothing: give the supervisor's environment a subscription token (`claude setup-token`, set as `CLAUDE_CODE_OAUTH_TOKEN`) or an API key (`ANTHROPIC_API_KEY`), then restart it. AgentPulse never stores, reads or sends either; Claude Code reads it.
+- **Two modes, picked from the login, and the page says which applied.** With `ANTHROPIC_API_KEY` in the supervisor's environment the fork runs `restricted`: your own allow rules, hooks and user `CLAUDE.md` are ignored, so every Write, Edit, NotebookEdit, WebFetch and Bash asks. With any other working login (for example an `apiKeyHelper`) it runs `ask`: your own settings apply, so a tool your rules already allow runs with no card, and your hooks run. A fork never takes either mode on a guess; a login AgentPulse hasn't measured gets `ask`.
+- **Project `CLAUDE.md`, hooks and `.mcp.json` are not loaded** in either mode, and none of your user MCP servers.
+- **A fork can't run Bash commands in the background.** A dev server or a long build stops at Claude Code's own Bash limit instead of carrying on after the turn; run those in your terminal.
+- **What the timeline shows.** A fixed line per tool call ("Write: ran, you approved it", "Bash: ran without asking", and so on), never the command, path or URL. The card shows those while it waits, and only the owner or an admin can read it. The tool count is hidden for a fork.
+- **If the fork's process is lost** (a supervisor restart, a crash) the session shows **Resume session**. An approved command that was already running can outlive the supervisor until it finishes; Resume says "still running" until then.
+- **Only a signed-in person** can continue a session or accept an approval; an API key can't. Claude Code 2.1.318 up to, not including, 2.2.0 is the tested range; another version is refused with the range named.
+- **Not measured.** Only macOS, Claude Code 2.1.318 and the API key login on a throwaway home were run end to end. A subscription token, Bedrock, Vertex, Linux and Windows hosts, and a person's own `settings.json` hooks were not.
 
 ## What the setup script does
 

@@ -265,7 +265,8 @@ export interface CodexApprovalSummary {
 
 /**
  * The text of a message something other than AgentPulse sent a takeover fork (AGEN-117 T3), as the server
- * kept it: redacted, or, if redaction changed anything, no text and `hidden` true. Present only on the
+ * kept it: redacted, or, if redaction changed anything, no text and `hidden` true; no text and `hidden` false means the host found no
+ * line Claude tags as a peer's and the message was not captured. Present only on the
  * approvals read, which is the session owner's or an admin's.
  */
 export interface ClaudePeerTurnNotice {

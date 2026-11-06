@@ -164,12 +164,26 @@ describe("values and the last denylist additions", () => {
 	});
 });
 
+/** What the strip adds after the person's own environment: the hook skip, and no Claude-started turns (phase 7). */
+const OURS = { AGENTPULSE_SKIP: "1", CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" };
+
 describe("forkChildEnv (AGEN-117 T18)", () => {
+	test("background tasks are off in the child whatever the person's environment says (a Claude-started turn ends the fork)", async () => {
+		const { forkChildEnv } = await import("./launch-env-policy.js");
+		for (const own of ["0", "", "false", "1"]) {
+			expect(
+				forkChildEnv({ CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: own })
+					.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS,
+			).toBe("1");
+		}
+		expect(forkChildEnv({}).CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe("1");
+	});
+
 	test("AGENTPULSE_SKIP is ours: the person's own value, in any case or spelling, never reaches the child", async () => {
 		const { forkChildEnv } = await import("./launch-env-policy.js");
 		for (const own of ["0", "", "false", "no", "1"]) {
 			expect(forkChildEnv({ AGENTPULSE_SKIP: own }).AGENTPULSE_SKIP).toBe("1");
-			expect(forkChildEnv({ agentpulse_skip: own })).toEqual({ AGENTPULSE_SKIP: "1" });
+			expect(forkChildEnv({ agentpulse_skip: own })).toEqual({ ...OURS });
 		}
 	});
 
@@ -205,7 +219,7 @@ describe("forkChildEnv (AGEN-117 T18)", () => {
 		expect(forkChildEnv({ ...parent, PATH: "/bin", HOME: "/h" })).toEqual({
 			PATH: "/bin",
 			HOME: "/h",
-			AGENTPULSE_SKIP: "1",
+			...OURS,
 		});
 		expect(isForkStrippedEnvName("agentpulse_anything")).toBe(true);
 	});
@@ -223,11 +237,11 @@ describe("forkChildEnv (AGEN-117 T18)", () => {
 			CLAUDE_CONFIG_DIR: "/c",
 			CLAUDE_CODE_SOMETHING_ELSE: "1",
 		};
-		expect(forkChildEnv(login)).toEqual({ ...login, AGENTPULSE_SKIP: "1" });
+		expect(forkChildEnv(login)).toEqual({ ...login, ...OURS });
 	});
 
 	test("drops undefined values", async () => {
 		const { forkChildEnv } = await import("./launch-env-policy.js");
-		expect(forkChildEnv({ A: "1", B: undefined })).toEqual({ A: "1", AGENTPULSE_SKIP: "1" });
+		expect(forkChildEnv({ A: "1", B: undefined })).toEqual({ A: "1", ...OURS });
 	});
 });

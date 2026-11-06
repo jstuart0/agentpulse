@@ -77,6 +77,9 @@ const OWN_ID_POLL_MS = 250;
 /** The transcript tail read for an injected message. */
 const PEER_TAIL_BYTES = 256 * 1024;
 export const PEER_TURN_TEXT_CAP = 1024;
+/** How long a peer-tagged transcript line is waited for: attempts and the pause between them. */
+const PEER_TEXT_ATTEMPTS = 4;
+const PEER_TEXT_WAIT_MS = 150;
 /** How many of the host's own prompts are remembered, to tell them from an injected one in the transcript's tail. */
 const MAX_SENT_TEXTS = 64;
 /** A request the host declined itself writes at most this many warning rows a turn. */
@@ -960,10 +963,11 @@ export class ClaudeStreamRuntime {
 		// Nothing is answered after this: the tracker closes what it holds, the client stops writing.
 		this.port?.dispose();
 		const turn = this.turn;
-		let peerTurnText: string | undefined;
-		if (kind === "peer_turn") peerTurnText = this.readPeerText();
 		this.proc.link.transportClosed(new Error("fatal"));
+		// Stopped before anything is read: the stranger's turn must not run on while the text is looked for.
 		await this.proc.stop(this.fatalStopOptions);
+		let peerTurnText: string | undefined;
+		if (kind === "peer_turn") peerTurnText = await this.readPeerText();
 		const words =
 			kind === "peer_turn" ? CLAUDE_FORK_PEER_SYNC_ERROR : CLAUDE_FORK_CHANGED_SYNC_ERROR;
 		const events = [];
@@ -985,7 +989,7 @@ export class ClaudeStreamRuntime {
 				status: "idle",
 				providerSyncState: "failed",
 				providerSyncError: words,
-				...(peerTurnText ? { peerTurnText } : {}),
+				...(peerTurnText !== undefined ? { peerTurnText } : {}),
 			});
 		});
 		this.turn = null;
@@ -1085,7 +1089,23 @@ export class ClaudeStreamRuntime {
 	// ---- the injected message ----
 
 	/** The last text this process's transcript holds that the host did not send, capped: the last one found, not necessarily the one that stopped the session. Never throws. */
-	private readPeerText(): string | undefined {
+	/**
+	 * The stranger's message, from the transcript, once the process has ended. Only a line Claude itself tags as
+	 * a peer's (`origin.kind === "peer"`) counts: a fork's transcript begins with the source's copied history, and
+	 * the last line the host did not send can be one of the person's own earlier prompts (measured, canary
+	 * `peer-inject`). The tag is written a moment after the stream shows the turn, so it is waited for briefly.
+	 * When none appears the answer is the empty string, which the server stores as "message not captured".
+	 */
+	private async readPeerText(): Promise<string> {
+		for (let attempt = 0; attempt < PEER_TEXT_ATTEMPTS; attempt++) {
+			const text = this.readPeerTextOnce();
+			if (text !== undefined) return text;
+			await new Promise((resolve) => setTimeout(resolve, PEER_TEXT_WAIT_MS));
+		}
+		return "";
+	}
+
+	private readPeerTextOnce(): string | undefined {
 		try {
 			const configDir = this.options.configDir ?? defaultConfigDir(this.options.env);
 			if (configDir === null) return undefined;
@@ -1093,6 +1113,7 @@ export class ClaudeStreamRuntime {
 				configDir,
 				sessionId: this.sessionId,
 				sentTexts: this.sentTexts,
+				peerOnly: true,
 			});
 		} catch {
 			return undefined;
@@ -1134,6 +1155,8 @@ export function readPeerTurnText(input: {
 	configDir: string;
 	sessionId: string;
 	sentTexts: readonly string[];
+	/** Count only lines Claude itself tags as sent by a peer (`origin.kind === "peer"`): a fork's copied history never is. */
+	peerOnly?: boolean;
 }): string | undefined {
 	const projects = join(input.configDir, "projects");
 	const matches = readdirSync(projects, { withFileTypes: true })
@@ -1166,6 +1189,7 @@ export function readPeerTurnText(input: {
 			continue;
 		}
 		if (!isRecord(parsed) || parsed.type !== "user" || parsed.isSidechain === true) continue;
+		if (input.peerOnly && !(isRecord(parsed.origin) && parsed.origin.kind === "peer")) continue;
 		const lineText = userLineText(isRecord(parsed.message) ? parsed.message.content : null);
 		if (lineText === null || lineText.trim() === "") continue;
 		if (input.sentTexts.includes(lineText)) continue;

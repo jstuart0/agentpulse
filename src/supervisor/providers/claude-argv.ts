@@ -53,9 +53,15 @@ export const CLAUDE_FORK_DISALLOWED_TOOLS = [
 	"WebSearch",
 ] as const;
 
-/** The one inline settings object: ask for file changes and fetches, no hooks key, nothing else. */
+/**
+ * The one inline settings object: ask for file changes and fetches, no background tasks, no hooks key, nothing
+ * else. The env entry repeats what `forkChildEnv` sets: a user's own `settings.json` `env` could turn background
+ * tasks back on, and flag settings outrank user settings (a Claude-started turn ends the fork; canary
+ * `turn-guard`, 2.1.319).
+ */
 export const CLAUDE_FORK_SETTINGS = {
 	permissions: { ask: ["Write(*)", "Edit(*)", "NotebookEdit(*)", "WebFetch(*)"] },
+	env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" },
 } as const;
 
 /** What the host records about a fork it started, and later requires before it resumes it in place. */

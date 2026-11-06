@@ -253,6 +253,20 @@ describe("starting a fork", () => {
 		expect(rt.state).toBe("starting");
 	});
 
+	test("stop() twice, at once and after the process is gone, is one ladder and one answer (P7-X4, X8)", async () => {
+		const h = harness();
+		const rt = await h.start();
+		rt.beginSettle();
+		const first = rt.proc.stop({
+			timings: { interruptMs: 0, stdinCloseMs: 400, termMs: 400, killMs: 400 },
+		});
+		const second = rt.proc.stop();
+		expect(second).toBe(first);
+		expect((await first).gone).toBe(true);
+		expect(rt.proc.stop()).toBe(first);
+		expect(rt.proc.hasExited()).toBe(true);
+	});
+
 	test("the same session id can't be started twice", async () => {
 		const h = harness();
 		await h.start();
@@ -1047,6 +1061,52 @@ describe("the injected message's text", () => {
 		}
 	});
 
+	test("peerOnly counts only lines Claude tags as a peer's: a fork's copied history is never the answer (canary peer-inject)", () => {
+		const root = mkdtempSync(join(tmpdir(), "peer-text-"));
+		try {
+			writeTranscript(root, "a", FORK_ID, [
+				{
+					type: "user",
+					message: { role: "user", content: "an old prompt copied from the source" },
+				},
+				{ type: "user", message: { role: "user", content: "hello from the host" } },
+			]);
+			// Before the peer's line is written, the old rule would pick the copied history; peerOnly finds nothing.
+			expect(
+				readPeerTurnText({
+					configDir: root,
+					sessionId: FORK_ID,
+					sentTexts: ["hello from the host"],
+				}),
+			).toBe("an old prompt copied from the source");
+			expect(
+				readPeerTurnText({
+					configDir: root,
+					sessionId: FORK_ID,
+					sentTexts: ["hello from the host"],
+					peerOnly: true,
+				}),
+			).toBeUndefined();
+			writeTranscript(root, "a", FORK_ID, [
+				{
+					type: "user",
+					message: { role: "user", content: "an old prompt copied from the source" },
+				},
+				{
+					type: "user",
+					origin: { kind: "peer", from: "unknown" },
+					message: { role: "user", content: "Another Claude session sent a message:\nhi" },
+				},
+				{ type: "user", message: { role: "user", content: "a later line with no origin" } },
+			]);
+			expect(
+				readPeerTurnText({ configDir: root, sessionId: FORK_ID, sentTexts: [], peerOnly: true }),
+			).toBe("Another Claude session sent a message:\nhi");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test("is capped at 1 KiB, absent for two transcripts or none, and never throws", () => {
 		const root = mkdtempSync(join(tmpdir(), "peer-text-"));
 		try {
@@ -1068,7 +1128,7 @@ describe("the injected message's text", () => {
 		}
 	});
 
-	test("a peer turn is reported in the degraded report as peerTurnText", async () => {
+	const peerReport = async (lines: Record<string, unknown>[]) => {
 		const peer = outLines("peer-injected-turn").find(
 			(m) => m.type === "command_lifecycle",
 		) as Record<string, unknown>;
@@ -1077,18 +1137,35 @@ describe("the injected message's text", () => {
 			unprompted: [{ ...peer, session_id: FORK_ID }],
 			unpromptedTrigger: trigger,
 		});
-		writeTranscript(join(h.root, "cfg"), "proj", FORK_ID, [
-			{ type: "user", message: { content: "injected text from another process" } },
-		]);
+		writeTranscript(join(h.root, "cfg"), "proj", FORK_ID, lines);
 		const rt = await h.start();
 		rt.beginSettle();
 		writeFileSync(trigger, "");
 		await rt.closed;
 		rmSync(join(trigger, ".."), { recursive: true, force: true });
-		const degraded = h.states.find((s) => s.managedState === "degraded") as unknown as {
+		return h.states.find((s) => s.managedState === "degraded") as unknown as {
 			peerTurnText?: string;
 		};
+	};
+
+	test("a peer turn is reported in the degraded report as peerTurnText (the line Claude tags as a peer's)", async () => {
+		const degraded = await peerReport([
+			{ type: "user", message: { content: "an older prompt of the person's" } },
+			{
+				type: "user",
+				origin: { kind: "peer", from: "unknown" },
+				message: { content: "injected text from another process" },
+			},
+		]);
 		expect(degraded?.peerTurnText).toBe("injected text from another process");
+	});
+
+	test("with no peer-tagged line the report says nothing was captured (an empty text), never an older line (P7-X2)", async () => {
+		const degraded = await peerReport([
+			{ type: "user", message: { content: "an older prompt of the person's" } },
+			{ type: "user", message: { content: "injected text from another process" } },
+		]);
+		expect(degraded?.peerTurnText).toBe("");
 	});
 });
 
