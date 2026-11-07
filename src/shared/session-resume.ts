@@ -3,7 +3,11 @@
  * One module, so the server that writes a refusal, the supervisor that reports a failure and the clients
  * that print either hold the same names and the same sentences.
  */
-import { ORIGINAL_SESSION_FALLBACK, forkSentenceName } from "./claude-fork-copy.js";
+import {
+	ORIGINAL_SESSION_FALLBACK,
+	RESTRICTED_LOGIN_KINDS,
+	forkSentenceName,
+} from "./claude-fork-copy.js";
 import type { ApprovalPolicy, SandboxMode } from "./types.js";
 
 /** The supervisor feature that says a host can run a `resume` action. Added to its capability lists in the phase where the handler lands. */
@@ -381,7 +385,7 @@ const CLAUDE_RECOVERY_OVERRIDES: Partial<Record<ResumeFailureKind, Words>> = {
  */
 function claudeRecoveryNotLoggedIn(host: string, mode: ClaudeForkMode | undefined): string {
 	return mode === "restricted"
-		? `This session runs without your Claude settings, and Claude Code on ${host} no longer has a login it can use that way, so it wasn't resumed. Give the supervisor's environment a subscription token from \`claude setup-token\` (as \`CLAUDE_CODE_OAUTH_TOKEN\`) or an API key (as \`ANTHROPIC_API_KEY\`), restart the supervisor, then resume.`
+		? `This session runs without your Claude settings, and Claude Code on ${host} no longer has a login it can use that way, so it wasn't resumed. Give the supervisor's environment ${RESTRICTED_LOGIN_KINDS.includes("token") ? "a subscription token from `claude setup-token` (as `CLAUDE_CODE_OAUTH_TOKEN`) or an API key" : "an API key"} (as \`ANTHROPIC_API_KEY\`), restart the supervisor, then resume.`
 		: `Claude Code on ${host} no longer has a login the supervisor can use, so this session wasn't resumed. ${CLAUDE_TERMINAL_LOGIN} Give it a subscription token from \`claude setup-token\` (as \`CLAUDE_CODE_OAUTH_TOKEN\`) or an API key (as \`ANTHROPIC_API_KEY\`), restart the supervisor, then resume.`;
 }
 

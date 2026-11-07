@@ -11,6 +11,39 @@ import { cleanHostText } from "./clean-host-text.js";
 
 export type ForkMode = "ask" | "restricted";
 
+/**
+ * The logins the host starts a fork under `restricted` for. It mirrors `KNOWN_RESTRICTED_LOGINS`
+ * (`supervisor/providers/claude-login-mode.ts`, which the web may not import): `claude-login-mode.test.ts` fails
+ * when the two disagree, so adding the token entry there forces this list, and every sentence below, to change
+ * with it (V-5: copy follows the table).
+ */
+export const RESTRICTED_LOGIN_KINDS: readonly ("api_key" | "token")[] = ["api_key"];
+
+/** "an API key", or "a subscription token or an API key" once the token entry ships. */
+export function restrictedLoginPhrase(
+	kinds: readonly ("api_key" | "token")[] = RESTRICTED_LOGIN_KINDS,
+): string {
+	return kinds.includes("token") ? "a subscription token or an API key" : "an API key";
+}
+
+/** What `ask` covers: every login the table has no entry for, a token among them until it has one. */
+export function askLoginPhrase(
+	kinds: readonly ("api_key" | "token")[] = RESTRICTED_LOGIN_KINDS,
+): string {
+	return kinds.includes("token")
+		? "any other login"
+		: "a subscription token, an apiKeyHelper or any other login";
+}
+
+/** What to give the supervisor to have a fork's settings ignored. */
+export function restrictedLoginAdvice(
+	kinds: readonly ("api_key" | "token")[] = RESTRICTED_LOGIN_KINDS,
+): string {
+	return kinds.includes("token")
+		? "a subscription token from `claude setup-token` or an API key"
+		: "an API key";
+}
+
 /** Used where a name is unknown: the lookup hasn't answered, or the host sent none. */
 export const ORIGINAL_SESSION_FALLBACK = "the original session";
 const THIS_MACHINE = "this machine";
@@ -35,12 +68,12 @@ export function forkModeLine(
 ): string {
 	const where = forkSentenceName(machine, THIS_MACHINE);
 	if (mode === "restricted") {
-		return `Your Claude settings on ${where} aren't used in this session, because the supervisor's Claude Code logs in with a subscription token or an API key. That includes your own CLAUDE.md and your hooks.`;
+		return `Your Claude settings on ${where} aren't used in this session, because the supervisor's Claude Code logs in with ${restrictedLoginPhrase()}. That includes your own CLAUDE.md and your hooks.`;
 	}
 	const again = sourceGone
 		? "start a new session"
 		: `continue ${forkSentenceName(sourceName, ORIGINAL_SESSION_FALLBACK)} again`;
-	return `Your Claude settings on ${where} still apply in this session, because the supervisor's Claude Code logs in a way that needs them. Commands your settings allow, and anything a hook there answers, run without asking you. To have them ignored instead, give the supervisor a subscription token from \`claude setup-token\` or an API key, then end this session and ${again}.`;
+	return `Your Claude settings on ${where} still apply in this session, because the supervisor's Claude Code logs in a way that needs them. Commands your settings allow, and anything a hook there answers, run without asking you. To have them ignored instead, give the supervisor ${restrictedLoginAdvice()}, then end this session and ${again}.`;
 }
 
 /** The first sentence of a fork's first row: what this session is. */

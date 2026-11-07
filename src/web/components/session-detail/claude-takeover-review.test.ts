@@ -210,7 +210,7 @@ describe("the plan's refusal rows, exact", () => {
 			"Claude Code has no login the supervisor on studio can use, so nothing was started. Being logged in to Claude in a terminal isn't enough for the supervisor. Give the supervisor's environment either a subscription token, made with `claude setup-token` and set as `CLAUDE_CODE_OAUTH_TOKEN`, or an API key set as `ANTHROPIC_API_KEY`. Then restart the supervisor and try again.",
 		);
 		expect(recover("claude_not_logged_in", "restricted")).toBe(
-			"This session runs without your Claude settings, and Claude Code on studio no longer has a login it can use that way, so it wasn't resumed. Give the supervisor's environment a subscription token from `claude setup-token` (as `CLAUDE_CODE_OAUTH_TOKEN`) or an API key (as `ANTHROPIC_API_KEY`), restart the supervisor, then resume.",
+			"This session runs without your Claude settings, and Claude Code on studio no longer has a login it can use that way, so it wasn't resumed. Give the supervisor's environment an API key (as `ANTHROPIC_API_KEY`), restart the supervisor, then resume.",
 		);
 		expect(recover("claude_not_logged_in", "ask")).toBe(
 			"Claude Code on studio no longer has a login the supervisor can use, so this session wasn't resumed. Being logged in to Claude in a terminal isn't enough for the supervisor. Give it a subscription token from `claude setup-token` (as `CLAUDE_CODE_OAUTH_TOKEN`) or an API key (as `ANTHROPIC_API_KEY`), restart the supervisor, then resume.",
@@ -324,8 +324,8 @@ describe("the dialog rendered: the picker first, focus on it, the words around i
 	test("both mode paragraphs and the tells-you-which line are on screen, with neither chosen", () => {
 		const out = dialog();
 		for (const text of [
-			"With a subscription token or an API key:",
-			"With any other login:",
+			"With an API key:",
+			"With a subscription token, an apiKeyHelper or any other login:",
 			"The new session tells you which before you send anything.",
 		]) {
 			expect(out).toContain(text);
@@ -554,7 +554,7 @@ describe("names and ids that reach a sentence", () => {
 	test("X1: a backtick in a name never reaches a sentence, so a name can't draw a code span", () => {
 		expect(forkSentenceName(hostile, "x")).toBe("evil'code'nameRTL");
 		const line = forkModeLine("ask", "stu`dio", hostile);
-		expect(line.match(/`/g)).toHaveLength(2); // the sentence's own `claude setup-token` pair, nothing more
+		expect(line.match(/`/g) ?? []).toHaveLength(0); // the sentence has no code span of its own now, and the name made none
 		expect(line).toContain("continue evil'code'nameRTL again");
 		const status = forkStatusView({
 			fork: forkInfo(fork("managed")) as never,
@@ -594,7 +594,6 @@ describe("names and ids that reach a sentence", () => {
 		expect(out).not.toContain("‮");
 		// The only code spans are the sentence's own command: the hostile name opened none.
 		const spans = [...out.matchAll(/<code[^>]*>([^<]*)<\/code>/g)].map((m) => m[1]);
-		expect(spans.length).toBeGreaterThan(0);
 		for (const span of spans) expect(span).toBe("claude setup-token");
 	});
 

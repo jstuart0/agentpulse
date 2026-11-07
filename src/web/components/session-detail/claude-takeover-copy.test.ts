@@ -250,10 +250,10 @@ describe("the dialog: one text for both modes, committing to neither", () => {
 			"What else applies depends on how Claude Code logs in for the supervisor on the machine you choose. The new session tells you which before you send anything.",
 		);
 		expect(all).toContain(
-			"With a subscription token or an API key: your Claude settings aren't used. That includes your own CLAUDE.md and any hooks you rely on as safety checks.",
+			"With an API key: your Claude settings aren't used. That includes your own CLAUDE.md and any hooks you rely on as safety checks.",
 		);
 		expect(all).toContain(
-			"With any other login: your Claude settings still apply, so commands they allow, and anything a hook there answers, run without waiting for you.",
+			"With a subscription token, an apiKeyHelper or any other login: your Claude settings still apply, so commands they allow, and anything a hook there answers, run without waiting for you.",
 		);
 	});
 
@@ -815,11 +815,15 @@ describe("refusals for a Claude session", () => {
 			"claude_code",
 			"ask",
 		);
-		for (const [name, sentence] of Object.entries({ onS, onNRestricted, onNAsk })) {
+		for (const [name, sentence] of Object.entries({ onS, onNAsk })) {
 			expect(sentence, name).toContain("claude setup-token");
 			expect(sentence, name).toContain("ANTHROPIC_API_KEY");
 			expect(sentence, name).toContain("CLAUDE_CODE_OAUTH_TOKEN");
 		}
+		// A fork that runs without the person's settings needs a login the table maps to `restricted` (V-5):
+		// today that is an API key only, so a token is not offered as the way back.
+		expect(onNRestricted).toContain("ANTHROPIC_API_KEY");
+		expect(onNRestricted).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
 		expect(onS).toContain(
 			"Being logged in to Claude in a terminal isn't enough for the supervisor.",
 		);
@@ -853,10 +857,10 @@ describe("the mode line follows the stored mode, before any prompt", () => {
 		const restricted = view("restricted");
 		const ask = view("ask");
 		expect(restricted.modeLine).toBe(
-			"Your Claude settings on studio aren't used in this session, because the supervisor's Claude Code logs in with a subscription token or an API key. That includes your own CLAUDE.md and your hooks.",
+			"Your Claude settings on studio aren't used in this session, because the supervisor's Claude Code logs in with an API key. That includes your own CLAUDE.md and your hooks.",
 		);
 		expect(ask.modeLine).toBe(
-			"Your Claude settings on studio still apply in this session, because the supervisor's Claude Code logs in a way that needs them. Commands your settings allow, and anything a hook there answers, run without asking you. To have them ignored instead, give the supervisor a subscription token from `claude setup-token` or an API key, then end this session and continue refactor the parser again.",
+			"Your Claude settings on studio still apply in this session, because the supervisor's Claude Code logs in a way that needs them. Commands your settings allow, and anything a hook there answers, run without asking you. To have them ignored instead, give the supervisor an API key, then end this session and continue refactor the parser again.",
 		);
 		expect(restricted.modeLine).not.toBe(ask.modeLine);
 		expect(ask.modeLine).toBe(forkModeLine("ask", "studio", "refactor the parser"));

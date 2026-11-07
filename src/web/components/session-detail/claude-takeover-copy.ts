@@ -11,7 +11,11 @@
  * only inside the command that opens it in a terminal. The dialog commits to neither permission mode: the
  * host picks one from the login it finds, and the new session says which before anything is sent.
  */
-import { forkSentenceName } from "../../../shared/claude-fork-copy.js";
+import {
+	askLoginPhrase,
+	forkSentenceName,
+	restrictedLoginPhrase,
+} from "../../../shared/claude-fork-copy.js";
 import { isResumableSessionId } from "../../../shared/session-resume.js";
 import type { SupervisorRecord } from "../../../shared/types.js";
 
@@ -135,11 +139,11 @@ export function claudeDialogLines(input: ClaudeDialogInput): ClaudeDialogLines {
 		),
 		para(
 			"your Claude settings aren't used. That includes your own CLAUDE.md and any hooks you rely on as safety checks.",
-			"With a subscription token or an API key:",
+			`With ${restrictedLoginPhrase()}:`,
 		),
 		para(
 			"your Claude settings still apply, so commands they allow, and anything a hook there answers, run without waiting for you.",
-			"With any other login:",
+			`With ${askLoginPhrase()}:`,
 		),
 		para(
 			"your project's CLAUDE.md, hooks and MCP servers, your own MCP servers, subagents, slash commands and saving memories. Tools show in the timeline by name and outcome, with no details.",

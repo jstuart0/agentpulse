@@ -522,3 +522,18 @@ describe("what a probe's child is given and how long it is waited for (X16, X22)
 		rmSync(join(tmpdir(), `claude-probe-stuck-${process.pid}`), { recursive: true, force: true });
 	});
 });
+
+describe("the copy follows the table (V-5)", () => {
+	test("the restricted logins the dialogs name are exactly the kinds KNOWN_RESTRICTED_LOGINS holds", async () => {
+		const { RESTRICTED_LOGIN_KINDS } = await import("../../shared/claude-fork-copy.js");
+		const kinds = KNOWN_RESTRICTED_LOGINS.map((entry) =>
+			entry.tokenSource === "CLAUDE_CODE_OAUTH_TOKEN"
+				? "token"
+				: entry.apiKeySource === "ANTHROPIC_API_KEY"
+					? "api_key"
+					: "unnamed",
+		);
+		expect(kinds).not.toContain("unnamed");
+		expect([...RESTRICTED_LOGIN_KINDS].sort() as string[]).toEqual([...kinds].sort());
+	});
+});
