@@ -6,6 +6,9 @@ name: Codex approvals (Postgres)
 # Postgres before the merge. ingest-latency.test.ts rides along because the hook path's statement budget
 # is the first thing a change to the shared tables or db client moves. The take-over suites (AGEN-115) ride
 # along too: their concurrency cases lean on row locks and unique inserts, which SQLite can pass vacuously.
+# So do the Claude turn guard, Stop, fork-routing and fork-approval suites (AGEN-117): the conditional lock statement, the guarded expiry
+# and the Stop that takes the lock from a running prompt are Postgres-visible, and a barrier test that was
+# skipped proves nothing, so a separate step fails the job if any of them reports a skip.
 
 on:
   pull_request:
@@ -18,8 +21,30 @@ on:
       - "src/server/services/session-binding*"
       - "src/server/services/session-resume-lifecycle*"
       - "src/server/services/control-actions.ts"
+      - "src/server/services/control-actions-claude*"
+      - "src/server/services/launch-dispatch*"
+      - "src/server/routes/supervisor-claude-turn*"
+      - "src/server/routes/supervisors.ts"
+      - "src/server/test-utils/owned-launch.ts"
+      - "src/shared/managed-messages.ts"
       - "src/server/services/managed-session-state.ts"
+      - "src/server/services/event-processor.ts"
+      - "src/server/services/claude-fork*"
+      - "src/server/services/claude-takeover*"
+      - "src/server/services/authorization.ts"
+      - "src/server/services/fork-live-paths*"
+      - "src/server/services/ai/action-requests-service.ts"
+      - "src/server/services/ask/ask-session-action-handler.ts"
+      - "src/server/services/claude-approvals*"
+      - "src/shared/codex-approvals.ts"
+      - "src/shared/claude-approvals.ts"
+      - "src/server/routes/health.ts"
+      - "src/server/routes/ingest-counters.ts"
+      - "src/server/routes/claude-fork*"
+      - "src/server/services/ai/proposal-resolution.ts"
       - "src/server/services/session-owner-admin.ts"
+      - "src/server/services/session-detail*"
+      - "src/server/services/session-dto.ts"
       - ".github/workflows/codex-approvals-postgres.yml"
 
 concurrency:
@@ -84,3 +109,26 @@ jobs:
           src/server/routes/session-bind-route.test.ts
           src/server/services/session-resume-lifecycle.test.ts
           src/server/services/managed-turn-state.test.ts
+          src/server/services/session-detail-fork.test.ts
+
+      - name: Claude turn guard and Stop (Postgres backend; a skipped test fails the job)
+        env:
+          AGENTPULSE_TEST_BACKEND: postgres
+          AGENTPULSE_TEST_PG_URL: postgres://agentpulse_test:agentpulse_test@localhost:5432/agentpulse_test
+          DATABASE_URL: postgres://agentpulse_test:agentpulse_test@localhost:5432/agentpulse_test
+        shell: bash
+        run: |
+          bun test \
+            src/server/services/control-actions-claude-turn.test.ts \
+            src/server/services/control-actions-claude-stop.test.ts \
+            src/server/routes/supervisor-claude-turn-monitor.test.ts \
+            src/server/services/claude-fork-server.test.ts \
+            src/server/services/claude-approvals.test.ts \
+            src/server/services/session-binding-claude.test.ts \
+            src/server/services/fork-live-paths.test.ts \
+            src/server/routes/claude-fork-routes.test.ts \
+            src/server/services/ai/continue-decision-fork.test.ts 2>&1 | tee claude-turn.log
+          if grep -Eq '^ *[1-9][0-9]* skip' claude-turn.log; then
+            echo "A Claude turn guard test was skipped on Postgres." >&2
+            exit 1
+          fi

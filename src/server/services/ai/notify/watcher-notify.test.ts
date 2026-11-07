@@ -311,9 +311,14 @@ describe("a valid answer", () => {
 describe("a turn that failed is never reported as finished", () => {
 	const FAILED_NOTE = "The last turn didn't finish. Open the session to see what happened.";
 
-	async function failedWorld(endType: "HeadlessPromptFailed" | "HeadlessPromptCompleted") {
+	const STOPPED_NOTE = "This session was stopped before the turn finished.";
+
+	async function failedWorld(
+		endType: "HeadlessPromptFailed" | "HeadlessPromptCompleted" | "ManagedSessionStopped",
+		agentType: "codex_cli" | "claude_code" = "codex_cli",
+	) {
 		const sessionId = `nf-${++n}-${crypto.randomUUID().slice(0, 6)}`;
-		await seedSession(sessionId, { agentType: "codex_cli" });
+		await seedSession(sessionId, { agentType });
 		await seedEvent(sessionId, {
 			eventType: "HeadlessPromptSubmitted",
 			category: "prompt",
@@ -327,7 +332,7 @@ describe("a turn that failed is never reported as finished", () => {
 		const endId = await seedEvent(sessionId, { eventType: endType, category: "system_event" });
 		const session = {
 			sessionId,
-			agentType: "codex_cli",
+			agentType,
 			displayName: sessionId,
 			cwd: "/work/project",
 			gitBranch: null,
@@ -376,6 +381,32 @@ describe("a turn that failed is never reported as finished", () => {
 		expect((await rowsFor(w.sessionId))[0]).toMatchObject({
 			verdict: "needs_you",
 			why: FAILED_NOTE,
+		});
+	});
+
+	test.each(["claude_code", "codex_cli"] as const)(
+		"a finished verdict on a ManagedSessionStopped trigger (%s) is stored as needs_you with the stopped note",
+		async (agentType) => {
+			const w = await failedWorld("ManagedSessionStopped", agentType);
+			stub.script("openai", { text: answer([w.messageId]) });
+			expect(await run(w)).toEqual({ did: "report" });
+			expect((await rowsFor(w.sessionId))[0]).toMatchObject({
+				status: "delivered",
+				verdict: "needs_you",
+				why: STOPPED_NOTE,
+			});
+		},
+	);
+
+	test("a stopped trigger leaves the model's own stuck verdict alone", async () => {
+		const w = await failedWorld("ManagedSessionStopped", "claude_code");
+		stub.script("openai", {
+			text: answer([w.messageId], { verdict: "stuck", why: "It was looping on one file." }),
+		});
+		expect(await run(w)).toEqual({ did: "report" });
+		expect((await rowsFor(w.sessionId))[0]).toMatchObject({
+			verdict: "stuck",
+			why: "It was looping on one file.",
 		});
 	});
 

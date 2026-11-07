@@ -163,3 +163,85 @@ describe("values and the last denylist additions", () => {
 		expect(errors.length).toBeGreaterThanOrEqual(2);
 	});
 });
+
+/** What the strip adds after the person's own environment: the hook skip, and no Claude-started turns (phase 7). */
+const OURS = { AGENTPULSE_SKIP: "1", CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" };
+
+describe("forkChildEnv (AGEN-117 T18)", () => {
+	test("background tasks are off in the child whatever the person's environment says (a Claude-started turn ends the fork)", async () => {
+		const { forkChildEnv } = await import("./launch-env-policy.js");
+		for (const own of ["0", "", "false", "1"]) {
+			expect(
+				forkChildEnv({ CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: own })
+					.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS,
+			).toBe("1");
+		}
+		expect(forkChildEnv({}).CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe("1");
+	});
+
+	test("AGENTPULSE_SKIP is ours: the person's own value, in any case or spelling, never reaches the child", async () => {
+		const { forkChildEnv } = await import("./launch-env-policy.js");
+		for (const own of ["0", "", "false", "no", "1"]) {
+			expect(forkChildEnv({ AGENTPULSE_SKIP: own }).AGENTPULSE_SKIP).toBe("1");
+			expect(forkChildEnv({ agentpulse_skip: own })).toEqual({ ...OURS });
+		}
+	});
+
+	test("strips exactly the session markers and AgentPulse's own variables, by set equality", async () => {
+		const { FORK_ENV_STRIP_EXACT, FORK_ENV_STRIP_PREFIXES, forkChildEnv, isForkStrippedEnvName } =
+			await import("./launch-env-policy.js");
+		expect([...FORK_ENV_STRIP_EXACT].sort()).toEqual(
+			[
+				"AI_AGENT",
+				"CLAUDECODE",
+				"CLAUDE_CODE_CHILD_SESSION",
+				"CLAUDE_CODE_ENTRYPOINT",
+				"CLAUDE_CODE_EXECPATH",
+				"CLAUDE_CODE_MESSAGING_SOCKET",
+				"CLAUDE_CODE_MESSAGING_TOKEN",
+				"CLAUDE_CODE_SESSION_ATTENDED",
+				"CLAUDE_CODE_SESSION_ID",
+				"CLAUDE_EFFORT",
+				"CLAUDE_PID",
+			].sort(),
+		);
+		// Floor twelve, counted from the names written out above and not from the list under test: eleven exact
+		// names and the AgentPulse prefix, with the named member present.
+		expect(FORK_ENV_STRIP_EXACT).toHaveLength(11);
+		expect([...FORK_ENV_STRIP_PREFIXES]).toEqual(["AGENTPULSE_"]);
+		expect(FORK_ENV_STRIP_EXACT).toContain("CLAUDE_CODE_MESSAGING_SOCKET");
+		const parent: Record<string, string> = Object.fromEntries(
+			[...FORK_ENV_STRIP_EXACT, "AGENTPULSE_KEY", "agentpulse_lower", "AgentPulse_Mixed"].map(
+				(n) => [n, "x"],
+			),
+		);
+		// What is left is what the person had, plus ours: the skip flag, set after the strip.
+		expect(forkChildEnv({ ...parent, PATH: "/bin", HOME: "/h" })).toEqual({
+			PATH: "/bin",
+			HOME: "/h",
+			...OURS,
+		});
+		expect(isForkStrippedEnvName("agentpulse_anything")).toBe(true);
+	});
+
+	test("the login variables and the rest of CLAUDE_CODE_*, ANTHROPIC_* and AWS_* survive", async () => {
+		const { forkChildEnv } = await import("./launch-env-policy.js");
+		const login = {
+			CLAUDE_CODE_OAUTH_TOKEN: "t",
+			CLAUDE_CODE_USE_BEDROCK: "1",
+			CLAUDE_CODE_USE_VERTEX: "1",
+			ANTHROPIC_API_KEY: "k",
+			ANTHROPIC_BASE_URL: "u",
+			AWS_PROFILE: "p",
+			AWS_REGION: "r",
+			CLAUDE_CONFIG_DIR: "/c",
+			CLAUDE_CODE_SOMETHING_ELSE: "1",
+		};
+		expect(forkChildEnv(login)).toEqual({ ...login, ...OURS });
+	});
+
+	test("drops undefined values", async () => {
+		const { forkChildEnv } = await import("./launch-env-policy.js");
+		expect(forkChildEnv({ A: "1", B: undefined })).toEqual({ A: "1", ...OURS });
+	});
+});

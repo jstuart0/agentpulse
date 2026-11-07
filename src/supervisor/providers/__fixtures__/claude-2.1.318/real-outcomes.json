@@ -1,0 +1,6 @@
+{
+	"version": "2.1.318",
+	"missing_updatedInput": { "toolRan": true },
+	"wrong_request_id": { "ignoredUntilCorrectId": true },
+	"duplicate_response": { "toolResultsForFirstCall": 1, "firstAnswerWins": true }
+}

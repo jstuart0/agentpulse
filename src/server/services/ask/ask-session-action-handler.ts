@@ -1,5 +1,4 @@
 import { eq, sql } from "drizzle-orm";
-import { TAKEOVER_IN_PROGRESS_MESSAGE } from "../../../shared/session-resume.js";
 import type { AskThreadOrigin } from "../../../shared/types.js";
 import type { Actor } from "../../auth/actor.js";
 import { getDb } from "../../db/client.js";
@@ -13,7 +12,7 @@ import {
 	assertCanPinSession,
 	assertCanRenameSession,
 } from "../authorization.js";
-import { BindRefusal } from "../bind-refusal.js";
+import { refusalSentence } from "../bind-refusal.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
 import { renameSession } from "../session-tracker.js";
 import type { ResolvedSession } from "./ask-resolver.js";
@@ -74,9 +73,8 @@ export async function handleSessionAction(
 			if (err instanceof NotOwnerError)
 				return { replyText: NOT_OWNER_MESSAGE, actionRequestId: null };
 			// Delete and archive are refused while a takeover of the session is open.
-			if (err instanceof BindRefusal && err.code === "takeover_in_progress") {
-				return { replyText: TAKEOVER_IN_PROGRESS_MESSAGE, actionRequestId: null };
-			}
+			const sentence = refusalSentence(err);
+			if (sentence !== null) return { replyText: sentence, actionRequestId: null };
 			throw err;
 		}
 	}

@@ -77,4 +77,73 @@ describe("disposeRuntimesAndExit", () => {
 		expect(took).toBeGreaterThanOrEqual(70);
 		expect(took).toBeLessThan(2_000);
 	});
+
+	test("exit is called within the bound when the headless shutdown never settles (a hung ps)", async () => {
+		const codex = await import("../providers/codex-managed.js");
+		const headless = await import("../providers/claude-headless.js");
+		const exit = spyOn(process, "exit").mockImplementation((() => {
+			throw new Error("exit called");
+		}) as never);
+		spies.push(
+			spyOn(codex, "disposeAllManagedCodexRuntimes").mockImplementation(async () => {}),
+			spyOn(headless, "disposeAllHeadlessRuntimes").mockImplementation(
+				() => new Promise<void>(() => {}),
+			),
+			exit,
+		);
+		const began = Date.now();
+		await expect(disposeRuntimesAndExit({ headlessBoundMs: 80 })).rejects.toThrow("exit called");
+		const took = Date.now() - began;
+		expect(exit).toHaveBeenCalledWith(1);
+		expect(took).toBeGreaterThanOrEqual(70);
+		expect(took).toBeLessThan(2_000);
+	});
+
+	test("a headless shutdown that throws still reaches the exit", async () => {
+		const codex = await import("../providers/codex-managed.js");
+		const headless = await import("../providers/claude-headless.js");
+		const exit = spyOn(process, "exit").mockImplementation((() => {
+			throw new Error("exit called");
+		}) as never);
+		spies.push(
+			spyOn(codex, "disposeAllManagedCodexRuntimes").mockImplementation(async () => {}),
+			spyOn(headless, "disposeAllHeadlessRuntimes").mockImplementation(async () => {
+				throw new Error("boom");
+			}),
+			exit,
+		);
+		await expect(disposeRuntimesAndExit()).rejects.toThrow("exit called");
+		expect(exit).toHaveBeenCalledWith(1);
+	});
+
+	test("takeover forks are disposed before the exit, and a hung fork shutdown is bounded", async () => {
+		const order: string[] = [];
+		const codex = await import("../providers/codex-managed.js");
+		const headless = await import("../providers/claude-headless.js");
+		const stream = await import("../providers/claude-stream.js");
+		const exit = spyOn(process, "exit").mockImplementation((() => {
+			order.push("exit");
+			throw new Error("exit called");
+		}) as never);
+		spies.push(
+			spyOn(codex, "disposeAllManagedCodexRuntimes").mockImplementation(async () => {}),
+			spyOn(headless, "disposeAllHeadlessRuntimes").mockImplementation(async () => {}),
+			spyOn(stream, "disposeAllClaudeStreamRuntimes").mockImplementation(async () => {
+				await new Promise((r) => setTimeout(r, 5));
+				order.push("streams");
+			}),
+			exit,
+		);
+		await expect(disposeRuntimesAndExit()).rejects.toThrow("exit called");
+		expect(order).toEqual(["streams", "exit"]);
+
+		spies.push(
+			spyOn(stream, "disposeAllClaudeStreamRuntimes").mockImplementation(
+				() => new Promise<void>(() => {}),
+			),
+		);
+		const began = Date.now();
+		await expect(disposeRuntimesAndExit({ streamBoundMs: 80 })).rejects.toThrow("exit called");
+		expect(Date.now() - began).toBeLessThan(2_000);
+	});
 });

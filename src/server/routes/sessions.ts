@@ -61,7 +61,11 @@ import {
 	HostGoneError,
 	HostOfflineError,
 	HostUpgradeRequiredError,
+	HumanRequiredError,
 	ManagedStateNotContinuableError,
+	NothingToStopError,
+	PromptUnsafeError,
+	StopNotSupportedError,
 	listControlActionsForSession,
 	queuePromptAction,
 	queueStopAction,
@@ -926,7 +930,9 @@ function hostRefusalResponse(c: Context, error: unknown) {
 		error instanceof HostOfflineError ||
 		error instanceof HostGoneError ||
 		error instanceof HostUpgradeRequiredError ||
-		error instanceof ManagedStateNotContinuableError
+		error instanceof ManagedStateNotContinuableError ||
+		error instanceof NothingToStopError ||
+		error instanceof StopNotSupportedError
 	) {
 		return c.json({ error: error.code, message: error.message }, 409);
 	}
@@ -943,7 +949,13 @@ sessionsRouter.post("/sessions/:sessionId/stop", async (c: Context) => {
 	} catch (error) {
 		const hostRefusal = hostRefusalResponse(c, error);
 		if (hostRefusal) return hostRefusal;
-		return c.json({ error: error instanceof Error ? error.message : "Unable to queue stop" }, 400);
+		if (error instanceof ControlBusyError) {
+			// A code, as the other stop refusals are; the old sentence stays in `message` for a client that prints it.
+			return c.json({ error: "control_busy", message: error.message }, 400);
+		}
+		// An unexpected failure: the detail goes to the log, never into the response.
+		console.error("[sessions] stop could not be queued:", error);
+		return c.json({ error: "Unable to queue stop" }, 400);
 	}
 });
 
@@ -984,6 +996,13 @@ sessionsRouter.post("/sessions/:sessionId/prompt", async (c: Context) => {
 	} catch (error) {
 		const hostRefusal = hostRefusalResponse(c, error);
 		if (hostRefusal) return hostRefusal;
+		// A code a client can branch on (a takeover fork takes no line that starts with a slash).
+		if (error instanceof PromptUnsafeError) {
+			return c.json({ error: error.code, reason: "slash_command", message: error.message }, 400);
+		}
+		if (error instanceof HumanRequiredError) {
+			return c.json({ error: error.code, message: error.message }, 403);
+		}
 		if (error instanceof ControlBusyError) {
 			return c.json({ error: error.message, reason: "control_busy" }, 400);
 		}
@@ -1365,7 +1384,13 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 	// is present but not a boolean is a malformed call.
 	if (body.archived !== undefined && typeof body.archived !== "boolean") return invalidBody(c);
 	const archived = body.archived !== false;
-	const refusal = await refuseUnlessOwnerOrAdmin(c, sessionId, assertCanArchiveSession);
+	// Putting a session back in view changes nothing about a process that may still be running, so only
+	// archiving meets the live-fork and open-takeover rules; unarchiving is the plain owner-or-admin one.
+	const refusal = await refuseUnlessOwnerOrAdmin(
+		c,
+		sessionId,
+		archived ? assertCanArchiveSession : assertCanRenameSession,
+	);
 	if (refusal) return refusal;
 
 	await getDb()

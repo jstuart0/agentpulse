@@ -23,12 +23,28 @@ export const CODEX_OUTCOME_UNKNOWN_AFTER_MS = 5 * 60 * 1000;
 export const CODEX_NEW_ROW_GRACE_MS = 30 * 1000;
 /** Closed rows (and a `may_have_run` one) stay on the list this long. */
 export const CODEX_CLOSED_VISIBLE_MS = 5 * 60 * 1000;
+/**
+ * A row closed `decided_elsewhere` stays on the list this long: a person away for ten minutes is the likely
+ * case, and it is the one outcome that says "go and look at the machine" (AGEN-117 T10).
+ */
+export const CODEX_DECIDED_ELSEWHERE_VISIBLE_MS = 24 * 60 * 60 * 1000;
+/**
+ * After the host declines a Claude request, how long it waits for the `tool_result` that proves nothing ran
+ * before it reports that something else decided (AGEN-117 T10). The one site for the host and its tests.
+ */
+export const CLAUDE_DECLINE_EVIDENCE_WAIT_MS = 5 * 1000;
 
 /**
  * What a server tells a supervisor it can do, on `register` and `heartbeat` (D14). Absent means off:
  * an old server says nothing, and a supervisor that doesn't hear this declines every approval itself.
  */
 export const CODEX_APPROVALS_SERVER_FEATURE = "codex_approvals";
+/**
+ * The same, for the requests a takeover fork of a Claude Code session makes (AGEN-117 T9, T10). Judged per
+ * dialect, so a server rolled back past it keeps Codex answerable while Claude's requests are declined on the
+ * host with one fixed warning.
+ */
+export const CLAUDE_APPROVALS_SERVER_FEATURE = "claude_approvals";
 
 /**
  * The supervisor tracker's own clocks (D4, D16). Its deadline is the TTL plus a minute from receipt, so
@@ -86,13 +102,19 @@ export const APPROVAL_CLOSED_REASONS = [
 	"interrupted",
 	"runtime_gone",
 	"session_stopped",
+	"decided_elsewhere",
 ] as const;
 export type ApprovalClosedReason = (typeof APPROVAL_CLOSED_REASONS)[number];
 
 export const APPROVAL_DECISIONS = ["accept", "decline", "cancel"] as const;
 export type ApprovalDecision = (typeof APPROVAL_DECISIONS)[number];
 
-export const APPROVAL_REQUEST_KINDS = ["command", "file_change"] as const;
+/**
+ * `claude_tool` is a takeover fork's request that is neither a command nor a file change: a web fetch, or a
+ * read outside the working directory (AGEN-117 T9). A Claude Bash call is a `command` and its edits are
+ * `file_change`s, so the presentation of those two is shared.
+ */
+export const APPROVAL_REQUEST_KINDS = ["command", "file_change", "claude_tool"] as const;
 export type ApprovalRequestKind = (typeof APPROVAL_REQUEST_KINDS)[number];
 
 export const NOT_APPROVABLE_REASONS = [
@@ -109,6 +131,17 @@ export const NOT_APPROVABLE_REASONS = [
 	"grant_root",
 	"unknown_param",
 	"accept_not_offered",
+	// A takeover fork's request (AGEN-117 T9): a tool outside the fixed set, one that needs someone at the
+	// machine, a path that is a link to somewhere else, an input whose bytes can't be echoed unchanged, and a
+	// write into the directory where Claude keeps what it remembers.
+	"unknown_tool",
+	"requires_interaction",
+	"symlink_target",
+	"input_not_stable",
+	"agent_memory",
+	// A path that isn't a full path (relative, or starting with ~): which file it means depends on a directory
+	// the host can't be sure Claude is in.
+	"path_not_absolute",
 ] as const;
 export type NotApprovableReason = (typeof NOT_APPROVABLE_REASONS)[number];
 
@@ -127,6 +160,7 @@ export const CODEX_APPROVAL_OUTCOMES = [
 	"codex_shut_down",
 	"session_stopped",
 	"approved_then_stopped",
+	"decided_elsewhere",
 ] as const;
 export type CodexApprovalOutcome = (typeof CODEX_APPROVAL_OUTCOMES)[number];
 
@@ -141,6 +175,9 @@ export const TRACKER_OUTCOMES = [
 	"declined_local",
 	"runtime_gone",
 	"runtime_gone_after_response",
+	// Claude only: a rule, a hook or the harness decided the call before the person did (T10). The host sends
+	// it only when the server advertised `claude_approvals`, so a rolled-back server never reads it.
+	"decided_elsewhere",
 ] as const;
 export type TrackerOutcome = (typeof TRACKER_OUTCOMES)[number];
 
@@ -173,6 +210,7 @@ export const TRACKER_OUTCOME_TABLE: Readonly<
 	declined_local: { terminal: true, accept: "answer_lapsed", other: "applied" },
 	runtime_gone: { terminal: true, accept: "runtime_gone", other: "runtime_gone" },
 	runtime_gone_after_response: { terminal: true, accept: "outcome_unknown", other: "applied" },
+	decided_elsewhere: { terminal: true, accept: "decided_elsewhere", other: "decided_elsewhere" },
 };
 
 // ── Person DTOs ────────────────────────────────────────────────────────────
@@ -202,6 +240,9 @@ export interface CodexApprovalPreview {
 	paths?: CodexApprovalPathPreview[];
 	pathOutsideCwd: boolean;
 	nonAscii: boolean;
+	/** `claude_tool` only: the tool and its target, the target cut to fit. */
+	tool?: string;
+	target?: string;
 }
 
 export interface CodexApprovalSummary {
@@ -222,11 +263,24 @@ export interface CodexApprovalSummary {
 	preview: CodexApprovalPreview | null;
 }
 
+/**
+ * The text of a message something other than AgentPulse sent a takeover fork (AGEN-117 T3), as the server
+ * kept it: redacted, or, if redaction changed anything, no text and `hidden` true; no text and `hidden` false means the host found no
+ * line Claude tags as a peer's and the message was not captured. Present only on the
+ * approvals read, which is the session owner's or an admin's.
+ */
+export interface ClaudePeerTurnNotice {
+	text: string | null;
+	hidden: boolean;
+}
+
 export interface CodexApprovalList {
 	v: 1;
 	approvals: CodexApprovalSummary[];
 	host: CodexApprovalHost;
 	viewer: CodexApprovalViewer;
+	/** Optional and additive: absent unless a takeover fork was stopped for a message it was sent. */
+	peerTurn?: ClaudePeerTurnNotice;
 }
 
 /** One changed file, as shown and hashed. */
@@ -250,6 +304,8 @@ export interface CodexApprovalCommandPresentation {
 	cwd: string | null;
 	reason: string | null;
 	grantRoot: string | null;
+	/** A Claude Bash request only: the path Claude says the command would touch, shown as given. Absent for Codex. */
+	blockedPath?: string | null;
 }
 export interface CodexApprovalFileChangePresentation {
 	v: 1;
@@ -259,9 +315,20 @@ export interface CodexApprovalFileChangePresentation {
 	reason: string | null;
 	grantRoot: string | null;
 }
+/** A takeover fork's web fetch or read outside its directory. `target` is the URL or the path. */
+export interface CodexApprovalClaudeToolPresentation {
+	v: 1;
+	requestKind: "claude_tool";
+	tool: string;
+	target: string | null;
+	cwd: string | null;
+	reason: string | null;
+	grantRoot: string | null;
+}
 export type CodexApprovalPresentation =
 	| CodexApprovalCommandPresentation
-	| CodexApprovalFileChangePresentation;
+	| CodexApprovalFileChangePresentation
+	| CodexApprovalClaudeToolPresentation;
 
 export interface CodexApprovalDetail {
 	v: 1;
@@ -273,6 +340,12 @@ export interface CodexApprovalDetail {
 	 * purpose, so the hash is unchanged. Absent from an older server: read it as "can't tell".
 	 */
 	outsideCwd?: boolean[];
+	/**
+	 * A Claude request that writes, or names, a file Claude sessions load later with no card (CLAUDE.md,
+	 * AGENTS.md, `.claude/`, `.mcp.json`, git hooks, a shell rc file). Outside the presentation like
+	 * `outsideCwd`, so the hash is unchanged. Absent for Codex and from an older server.
+	 */
+	touchesAgentConfig?: boolean;
 	reasonText: string | null;
 }
 
@@ -313,6 +386,11 @@ export interface CodexApprovalReportRequest {
 	changes?: CodexApprovalChange[];
 	truncated: boolean;
 	declineOnly: NotApprovableReason[];
+	/** Claude only: the tool of a `claude_tool` request (`WebFetch` or `Read`) and its URL or path. */
+	tool?: string | null;
+	target?: string | null;
+	/** Claude Bash only: the path Claude named as the one the command would touch. */
+	blockedPath?: string | null;
 }
 
 /** 201 for a new row, 200 for the same key again. */

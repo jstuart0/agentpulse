@@ -1,14 +1,17 @@
+import { createHash } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { CLAUDE_STOP } from "../../shared/constants.js";
 /**
  * Shared fixtures for the watcher-modes tests: the AI runtime switched on, a
  * provider row, owned sessions, notification channels, and a capture of the
  * structured audit lines. Everything goes through Drizzle. Not a test file.
  */
-import { createHash } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { CLAUDE_TAKEOVER } from "../../shared/session-resume.js";
 import { getDb } from "../db/client.js";
 import {
 	events,
 	aiHitlRequests,
+	launchRequests,
 	llmProviders,
 	notificationChannels,
 	sessions,
@@ -168,12 +171,21 @@ export async function seedLiveManagedSession(
 	await seedSupervisor(supervisorId, {
 		leaseOffsetMs: options.supervisor === "offline" ? -60_000 : 60_000,
 		leaseBaseMs: Date.now(),
+		// A current host for Claude stops: a stop on it reaches the control lock, which is what the
+		// contention tests are about. (A test about an older host seeds its own.)
+		capabilities: { version: 1, features: [CLAUDE_STOP, CLAUDE_TAKEOVER] },
 	});
 	await seedManagedSession({
 		sessionId,
 		supervisorId,
 		managedState: options.managedState ?? "managed",
 	});
+	// A headless launch: a stop on a terminal launch is refused at enqueue (nothing can stop it), and a
+	// fixture for "a managed session a stop can reach" must not be one.
+	await getDb()
+		.update(launchRequests)
+		.set({ requestedLaunchMode: "headless" })
+		.where(eq(launchRequests.launchCorrelationId, sessionId));
 	if (options.ownerUserId) {
 		await getDb()
 			.update(sessions)

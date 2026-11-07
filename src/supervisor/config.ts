@@ -2,12 +2,12 @@ import { constants, accessSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { arch, homedir, hostname, platform } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
-import { CODEX_FOLLOW_UP_PROMPTS } from "../shared/constants.js";
+import { CLAUDE_STOP, CLAUDE_TURN_CONTROL, CODEX_FOLLOW_UP_PROMPTS } from "../shared/constants.js";
 import {
 	tightenPrivateFilePermissionsSync,
 	writePrivateFileSyncNoFollow,
 } from "../shared/private-file.js";
-import { RESUMES_SESSIONS } from "../shared/session-resume.js";
+import { CLAUDE_TAKEOVER, RESUMES_SESSIONS } from "../shared/session-resume.js";
 import type { SupervisorRegistrationInput } from "../shared/types.js";
 
 export interface SupervisorConfig {
@@ -88,6 +88,8 @@ export function buildDefaultConfig(): SupervisorConfig {
 				CODEX_FOLLOW_UP_PROMPTS,
 				RESUMES_SESSIONS,
 				"headless_claude",
+				CLAUDE_STOP,
+				CLAUDE_TURN_CONTROL,
 				"enforces_launch_privileges",
 				"offline_outbox",
 			],
@@ -251,12 +253,15 @@ export async function withExecutableCapabilities(
 				"can_run_prelaunch_actions",
 				"can_cleanup_workarea",
 				"headless_claude",
+				CLAUDE_STOP,
+				CLAUDE_TURN_CONTROL,
 				"enforces_launch_privileges",
 				"offline_outbox",
 				...(git.resolvedPath ? ["can_scaffold_workarea", "can_clone_repo"] : []),
 				...(terminalSupport.length > 0 ? ["interactive_terminal"] : []),
 				...(interactiveTerminalControl.available ? ["interactive_terminal_control"] : []),
 				...(codex.resolvedPath ? ["managed_codex", CODEX_FOLLOW_UP_PROMPTS, RESUMES_SESSIONS] : []),
+				...(claude.resolvedPath && currentOs() === "macos" ? [CLAUDE_TAKEOVER] : []),
 			],
 			interactiveTerminalControl,
 			executables: {

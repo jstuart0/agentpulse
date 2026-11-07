@@ -32,6 +32,7 @@ describe("TakeoverCardBody", () => {
 					text: "Started outside AgentPulse. Once it has ended, a connected machine can take it over so you can send prompts here.",
 					failure: null,
 					hostsState: "ready",
+					entryLabel: "Take over…",
 				},
 				onOpen: noop,
 			}),
@@ -46,7 +47,13 @@ describe("TakeoverCardBody", () => {
 	test("the button is a 44px target on a phone", () => {
 		const out = html(
 			createElement(TakeoverCardBody, {
-				view: { kind: "eligible", text: "t", failure: null, hostsState: "ready" },
+				view: {
+					kind: "eligible",
+					text: "t",
+					failure: null,
+					hostsState: "ready",
+					entryLabel: "Take over…",
+				},
 				onOpen: noop,
 			}),
 		);
@@ -96,7 +103,13 @@ describe("TakeoverCardBody", () => {
 		const reason = "studio can't find this session's history, so it wasn't taken over.";
 		const out = html(
 			createElement(TakeoverCardBody, {
-				view: { kind: "eligible", text: "t", failure: reason, hostsState: "ready" },
+				view: {
+					kind: "eligible",
+					text: "t",
+					failure: reason,
+					hostsState: "ready",
+					entryLabel: "Take over…",
+				},
 				onOpen: noop,
 			}),
 		);
@@ -114,6 +127,7 @@ describe("TakeoverCardBody", () => {
 					text: "t",
 					failure: "run `codex app-server daemon stop` on studio and try again.",
 					hostsState: "ready",
+					entryLabel: "Take over…",
 				},
 				onOpen: noop,
 			}),
@@ -126,7 +140,13 @@ describe("TakeoverCardBody", () => {
 	test("hosts still loading shows no button; hosts that failed offer a retry", () => {
 		const loading = html(
 			createElement(TakeoverCardBody, {
-				view: { kind: "eligible", text: "t", failure: null, hostsState: "loading" },
+				view: {
+					kind: "eligible",
+					text: "t",
+					failure: null,
+					hostsState: "loading",
+					entryLabel: "Take over…",
+				},
 				onOpen: noop,
 			}),
 		);
@@ -134,7 +154,13 @@ describe("TakeoverCardBody", () => {
 		expect(loading).toContain('aria-busy="true"');
 		const failed = html(
 			createElement(TakeoverCardBody, {
-				view: { kind: "eligible", text: "t", failure: null, hostsState: "error" },
+				view: {
+					kind: "eligible",
+					text: "t",
+					failure: null,
+					hostsState: "error",
+					entryLabel: "Take over…",
+				},
 				onOpen: noop,
 				onRetryHosts: noop,
 			}),
@@ -151,6 +177,7 @@ describe("TakeoverCardBody", () => {
 					text: "t",
 					failure: "<img src=x onerror=alert(1)>",
 					hostsState: "ready",
+					entryLabel: "Take over…",
 				},
 				onOpen: noop,
 			}),

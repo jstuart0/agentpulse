@@ -195,6 +195,12 @@ describe("one test per reason", () => {
 		grant_root: () => fileChangeReport({ grantRoot: "/work" }),
 		unknown_param: () => commandReport({ declineOnly: ["unknown_param"] }),
 		accept_not_offered: () => commandReport({ declineOnly: ["accept_not_offered"] }),
+		unknown_tool: () => commandReport({ declineOnly: ["unknown_tool"] }),
+		requires_interaction: () => commandReport({ declineOnly: ["requires_interaction"] }),
+		symlink_target: () => commandReport({ declineOnly: ["symlink_target"] }),
+		input_not_stable: () => commandReport({ declineOnly: ["input_not_stable"] }),
+		agent_memory: () => commandReport({ declineOnly: ["agent_memory"] }),
+		path_not_absolute: () => commandReport({ declineOnly: ["path_not_absolute"] }),
 	};
 
 	for (const reason of NOT_APPROVABLE_REASONS) {

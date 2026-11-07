@@ -1,4 +1,7 @@
-import { TAKEOVER_IN_PROGRESS_MESSAGE } from "../../shared/takeover-in-progress.js";
+import {
+	END_SESSION_FIRST_MESSAGE,
+	TAKEOVER_IN_PROGRESS_MESSAGE,
+} from "../../shared/takeover-in-progress.js";
 import { ApiError } from "./api.js";
 
 /**
@@ -28,6 +31,7 @@ const MESSAGES: Record<string, string> = {
 	busy: "The server is busy. Try again in a moment.",
 	key_not_user_settable: "That setting can't be changed here.",
 	takeover_in_progress: TAKEOVER_IN_PROGRESS_MESSAGE,
+	end_session_first: END_SESSION_FIRST_MESSAGE,
 };
 
 /**

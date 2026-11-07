@@ -129,6 +129,9 @@ export function parseTranscriptDelta(agentType: AgentType, lines: string[]): Nor
 
 async function syncTranscriptForSession(session: SessionWithMetadata): Promise<void> {
 	if (!session.transcriptPath) return;
+	// A fork's history is a copy of the original's: backfilling it would put the original's text in the
+	// fork's timeline, and its own turns are reported by the host (AGEN-117 T6).
+	if ((session.metadata as Record<string, unknown> | null)?.forkedFromSessionId) return;
 	const cursor = getTranscriptCursor(session.metadata);
 	const offset = cursor.offset ?? 0;
 

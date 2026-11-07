@@ -493,7 +493,7 @@ describe("control-actions ownership-consistency guard (beyond correlationId equa
 	test("queuePromptAction and queueStopAction still succeed for a consistently-owned session", async () => {
 		const sessionId = `consistent-${crypto.randomUUID()}`;
 		const supervisorId = `sup-consistent-${crypto.randomUUID()}`;
-		await seedOwnedLaunch(sessionId, supervisorId, { status: "running" });
+		await seedOwnedLaunch(sessionId, supervisorId, { status: "completed" });
 		await seedSessionRow(sessionId, isoAgo(5_000));
 		const now = new Date().toISOString();
 		await getDb()

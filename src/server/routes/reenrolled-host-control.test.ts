@@ -6,8 +6,9 @@
  * 90 s control lock and failing. Built on the real enroll, register, claim and
  * report HTTP flow, then the lease is moved the way time would.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { eq } from "drizzle-orm";
+import { CLAUDE_STOP_UPGRADE_MESSAGE } from "../../shared/managed-messages.js";
 import "../db/__test_db.js";
 import { deleteAllSupervisors } from "../services/__test_supervisors.js";
 
@@ -61,7 +62,7 @@ async function enroll(hostName: string): Promise<Credential> {
 				launchModes: ["headless"],
 				os: "linux",
 				terminalSupport: [],
-				features: [],
+				features: ["claude_stop"],
 				executables: {
 					claude: { available: true, command: "claude", resolvedPath: "/bin/claude" },
 				},
@@ -382,5 +383,97 @@ describe("re-enrollment errors are unchanged", () => {
 		await setLease(old.id, -1_000);
 		const stop = await post(`/sessions/${sessionId}/stop`);
 		expect(await errorOf(stop)).toBe("host_offline");
+	});
+});
+
+describe("a Claude stop's refusals, as the dashboard and MCP read them", () => {
+	async function liveWorld() {
+		const host = await enroll("studio");
+		const sessionId = `refusal-${crypto.randomUUID().slice(0, 8)}`;
+		await launchedOn(sessionId, host);
+		await heartbeat(host);
+		return { host, sessionId };
+	}
+	const body = async (res: Response) => (await res.json()) as Record<string, unknown>;
+
+	test("a host that predates claude_stop: 409 host_upgrade_required in words about Claude, nothing queued", async () => {
+		const { host, sessionId } = await liveWorld();
+		await getDb()
+			.update(supervisors)
+			.set({ capabilities: { version: 1, features: [] } as never })
+			.where(eq(supervisors.id, host.id));
+		const res = await post(`/sessions/${sessionId}/stop`);
+		expect(res.status).toBe(409);
+		expect(await body(res)).toEqual({
+			error: "host_upgrade_required",
+			message: CLAUDE_STOP_UPGRADE_MESSAGE,
+		});
+		expect(await actionRows()).toHaveLength(0);
+	});
+
+	test("a second stop while one is open: 400 control_busy, the code in `error` and the old sentence in `message`", async () => {
+		const { sessionId } = await liveWorld();
+		expect((await post(`/sessions/${sessionId}/stop`)).status).toBe(202);
+		const res = await post(`/sessions/${sessionId}/stop`);
+		expect(res.status).toBe(400);
+		expect(await body(res)).toEqual({
+			error: "control_busy",
+			message: "Another control action is already in progress for this session.",
+		});
+	});
+
+	test("a session that has already ended: 409 nothing_to_stop", async () => {
+		const { sessionId } = await liveWorld();
+		await getDb()
+			.update(managedSessions)
+			.set({ managedState: "stopped" })
+			.where(eq(managedSessions.sessionId, sessionId));
+		await getDb()
+			.update(launchRequests)
+			.set({ status: "completed" })
+			.where(eq(launchRequests.launchCorrelationId, sessionId));
+		const res = await post(`/sessions/${sessionId}/stop`);
+		expect(res.status).toBe(409);
+		expect((await body(res)).error).toBe("nothing_to_stop");
+		expect(await actionRows()).toHaveLength(0);
+	});
+
+	test("a session started in a terminal: 409 stop_not_supported in fixed words, nothing queued, no lock", async () => {
+		const { sessionId } = await liveWorld();
+		await getDb()
+			.update(launchRequests)
+			.set({ requestedLaunchMode: "interactive_terminal" })
+			.where(eq(launchRequests.launchCorrelationId, sessionId));
+		const res = await post(`/sessions/${sessionId}/stop`);
+		expect(res.status).toBe(409);
+		expect(await body(res)).toEqual({
+			error: "stop_not_supported",
+			message:
+				"Stop isn't available for sessions started in a terminal yet. Stop it in that terminal.",
+		});
+		expect(await actionRows()).toHaveLength(0);
+		const [managed] = await getDb()
+			.select()
+			.from(managedSessions)
+			.where(eq(managedSessions.sessionId, sessionId));
+		expect(managed?.activeControlActionId).toBeNull();
+	});
+
+	test("an unexpected failure while queueing says nothing about it: fixed words out, detail in the log", async () => {
+		const { sessionId } = await liveWorld();
+		const actions = await import("../services/control-actions.js");
+		const failing = spyOn(actions, "queueStopAction").mockRejectedValue(
+			new Error('relation "control_actions" at /srv/db/secret-path exploded'),
+		);
+		const logged = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const res = await post(`/sessions/${sessionId}/stop`);
+			expect(res.status).toBe(400);
+			expect(await body(res)).toEqual({ error: "Unable to queue stop" });
+			expect(logged.mock.calls.flat().map(String).join(" ")).toContain("secret-path");
+		} finally {
+			failing.mockRestore();
+			logged.mockRestore();
+		}
 	});
 });

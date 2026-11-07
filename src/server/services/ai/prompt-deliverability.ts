@@ -14,7 +14,11 @@ import { eq } from "drizzle-orm";
 import type { ManagedState } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
 import { managedSessions } from "../../db/schema/index.js";
-import { expireStaleControlLock, promptNeedsHostUpgrade } from "../control-actions.js";
+import {
+	expireStaleControlLock,
+	hasRunningFirstTurn,
+	promptNeedsHostUpgrade,
+} from "../control-actions.js";
 import { getSessionOwnerConnections } from "../session-ownership.js";
 import { CONTINUABLE_MANAGED_STATES } from "./continuability.js";
 
@@ -71,5 +75,9 @@ export async function promptDeliverability(sessionId: string): Promise<PromptDel
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
 	if (row?.activeControlActionId) return { deliverable: false, reason: "control_busy" };
+	// A launched Claude session's first turn is its launch, which holds no lock: a prompt waits for it.
+	if (await hasRunningFirstTurn(getDb(), sessionId)) {
+		return { deliverable: false, reason: "control_busy" };
+	}
 	return { deliverable: true };
 }

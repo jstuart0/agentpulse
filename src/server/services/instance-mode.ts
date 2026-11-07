@@ -108,6 +108,16 @@ export async function getMode(): Promise<InstanceMode> {
 	return (await readStoredMode(getDb())) ?? "solo";
 }
 
+/** `getMode` on a transaction handle, for a locked body that must not open a second connection. */
+export async function getModeOn(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	handle: any,
+): Promise<InstanceMode> {
+	const fromEnv = config.modeEnv;
+	if (fromEnv) return fromEnv;
+	return (await readStoredMode(handle)) ?? "solo";
+}
+
 /**
  * The stored mode as a column of a read that is happening anyway, so a handler
  * that has that row needs no statement of its own for the mode. Decode the

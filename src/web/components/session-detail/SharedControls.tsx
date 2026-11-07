@@ -59,16 +59,20 @@ export function FilterToggle({
 	label,
 	onClick,
 	disabled = false,
+	title,
 }: {
 	active: boolean;
 	label: string;
 	onClick: () => void;
 	disabled?: boolean;
+	/** Why the toggle is off, when it is. */
+	title?: string;
 }) {
 	return (
 		<button
 			onClick={onClick}
 			disabled={disabled}
+			title={title}
 			className={cn(
 				"rounded-full border px-2.5 py-1 text-[10px] font-medium transition-colors",
 				active

@@ -30,6 +30,7 @@ const PERSON_FIXTURES = [
 	"detail-file-change.json",
 	"list-closed.json",
 	"list-open.json",
+	"list-peer-turn.json",
 ];
 
 const sorted = (values: readonly string[]) => [...values].sort();
@@ -61,6 +62,7 @@ describe("the vendored closed sets equal the shared ones", () => {
 		for (const content of [SHARED, MCP]) {
 			expect(content).toContain('requestKind: "command";');
 			expect(content).toContain('requestKind: "file_change";');
+			expect(content).toContain('requestKind: "claude_tool";');
 		}
 	});
 });
@@ -109,6 +111,9 @@ function walkFixture(name: string, body: Json, problems: string[]) {
 		}
 		checkKeys(`${name}.host`, asObject(body.host), "CodexApprovalHost", problems);
 		checkKeys(`${name}.viewer`, asObject(body.viewer), "CodexApprovalViewer", problems);
+		if (body.peerTurn !== undefined) {
+			checkKeys(`${name}.peerTurn`, asObject(body.peerTurn), "ClaudePeerTurnNotice", problems);
+		}
 	} else if (name.startsWith("decision-")) {
 		checkKeys(name, body, "CodexApprovalDecisionResponse", problems);
 		walkSummary(`${name}.approval`, asObject(body.approval), problems);
@@ -120,7 +125,9 @@ function walkFixture(name: string, body: Json, problems: string[]) {
 			const kind =
 				presentation.requestKind === "command"
 					? "CodexApprovalCommandPresentation"
-					: "CodexApprovalFileChangePresentation";
+					: presentation.requestKind === "claude_tool"
+						? "CodexApprovalClaudeToolPresentation"
+						: "CodexApprovalFileChangePresentation";
 			checkKeys(`${name}.presentation`, presentation, kind, problems);
 			for (const [i, c] of ((presentation.changes as unknown[]) ?? []).entries()) {
 				checkKeys(
@@ -145,6 +152,8 @@ describe("every fixture key is declared by both type files", () => {
 			if (presentation) seenKinds.add(String(presentation.requestKind));
 		}
 		expect(problems).toEqual([]);
+		// Positive control: the peer-turn notice was actually walked.
+		expect(read(`${MCP_FIXTURES}/list-peer-turn.json`)).toContain('"peerTurn"');
 		// Positive control: both presentation shapes were actually walked.
 		expect([...seenKinds].sort()).toEqual(["command", "file_change"]);
 	});

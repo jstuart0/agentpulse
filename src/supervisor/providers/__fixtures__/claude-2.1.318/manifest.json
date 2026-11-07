@@ -1,0 +1,94 @@
+{
+	"bash-blocked-path.jsonl": {
+		"restricted": false,
+		"source": "phase0b c_cd_req"
+	},
+	"bash-fail.jsonl": {
+		"restricted": false,
+		"source": "p0 bash_fail"
+	},
+	"cancel-hook-allow.jsonl": {
+		"restricted": false,
+		"source": "phase0b e_allow"
+	},
+	"cancel-hook-deny.jsonl": {
+		"restricted": false,
+		"source": "phase0b e_deny"
+	},
+	"cancel-interrupt.jsonl": {
+		"restricted": false,
+		"source": "phase0b d_int"
+	},
+	"helper-ask.jsonl": {
+		"restricted": false,
+		"source": "phase0c auth_helper"
+	},
+	"helper-restricted.jsonl": {
+		"restricted": true,
+		"source": "phase0c auth_helper_restricted"
+	},
+	"id-swap-clear.jsonl": {
+		"restricted": false,
+		"source": "phase0c s2_noflag"
+	},
+	"key-ask-bash.jsonl": {
+		"restricted": false,
+		"source": "m04_rewrite"
+	},
+	"key-ask-fork-noprompt.jsonl": {
+		"restricted": false,
+		"source": "phase0b a3_fork_noprompt"
+	},
+	"key-fork-restricted-write-deny.jsonl": {
+		"restricted": true,
+		"source": "phase0c n_n3_fork_restricted"
+	},
+	"key-restricted-clean.jsonl": {
+		"restricted": true,
+		"source": "phase0c n_n1r_restricted_clean"
+	},
+	"no-login-ask.jsonl": {
+		"restricted": false,
+		"source": "phase0c auth_nokey_nohelper_control"
+	},
+	"peer-injected-turn.jsonl": {
+		"restricted": false,
+		"source": "phase0c p1"
+	},
+	"plain-fork-init.jsonl": {
+		"restricted": false,
+		"source": "phase0b a1_fork (no T8 flags: 27 tools)"
+	},
+	"read-outside.jsonl": {
+		"restricted": false,
+		"source": "m05"
+	},
+	"t8-fork-init.jsonl": {
+		"restricted": false,
+		"source": "phase0c t_fork_full"
+	},
+	"tools-m04.jsonl": {
+		"restricted": false,
+		"source": "m04_plain"
+	},
+	"tools-webfetch-edit-notebook.jsonl": {
+		"restricted": false,
+		"source": "phase0c b2_star_inj"
+	},
+	"unknown-request.jsonl": {
+		"restricted": false,
+		"source": "p0 unknown_req"
+	},
+	"user-reject.jsonl": {
+		"restricted": false,
+		"source": "phase0c f2_hook_then_deny"
+	},
+	"uuid-fork.jsonl": {
+		"restricted": false,
+		"source": "p0 uuid_fork_plain"
+	},
+	"uuid-fresh.jsonl": {
+		"restricted": false,
+		"source": "p0 uuid_fresh_plain"
+	}
+}

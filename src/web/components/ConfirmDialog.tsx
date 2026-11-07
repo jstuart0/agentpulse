@@ -10,6 +10,10 @@ interface ConfirmDialogProps {
 	 * is described by, so a screen reader doesn't read the whole form as the description.
 	 */
 	fields?: ReactNode;
+	/** Put `fields` above the description: when the first thing a person must do is choose (a machine), on a phone too. */
+	fieldsFirst?: boolean;
+	/** Initial focus goes to the first control in `fields` (the choice to make), not to either button. */
+	focusFields?: boolean;
 	confirmLabel: string;
 	cancelLabel?: string;
 	/** Red confirm button, and Cancel focused first: the safe default for something that can't be undone. */
@@ -36,10 +40,16 @@ interface ConfirmDialogProps {
  * safe button is focused first; Escape and the backdrop cancel (not while the
  * request is running).
  */
-export function ConfirmDialog({
+/**
+ * What sits inside the dialog's frame: the heading, the fields and description, the refusal, the two buttons.
+ * Exported so the layout (what comes first, where initial focus lands) can be rendered and read without a portal.
+ */
+export function ConfirmDialogPanel({
 	title,
 	children,
 	fields,
+	fieldsFirst = false,
+	focusFields = false,
 	confirmLabel,
 	cancelLabel = "Cancel",
 	destructive = false,
@@ -49,12 +59,11 @@ export function ConfirmDialog({
 	armAfterMs = 0,
 	confirmDisabled = false,
 	error = null,
-	fallbackFocusId,
 	onConfirm,
 	onCancel,
-}: ConfirmDialogProps) {
-	const headingId = useId();
-	const descriptionId = useId();
+	headingId,
+	descriptionId,
+}: ConfirmDialogProps & { headingId: string; descriptionId: string }) {
 	const cancelRef = useRef<HTMLButtonElement>(null);
 	const armed = useArmedAfter(armAfterMs);
 	const errorRef = useRef<HTMLParagraphElement>(null);
@@ -64,13 +73,7 @@ export function ConfirmDialog({
 	}, [error]);
 
 	return (
-		<DialogShell
-			labelledBy={headingId}
-			describedBy={descriptionId}
-			role={destructive ? "alertdialog" : "dialog"}
-			onClose={busy ? undefined : onCancel}
-			fallbackFocusId={fallbackFocusId}
-		>
+		<>
 			<div className="flex-1 p-5 md:p-6">
 				<h2
 					id={headingId}
@@ -78,10 +81,11 @@ export function ConfirmDialog({
 				>
 					{title}
 				</h2>
+				{fields && fieldsFirst ? <div className="mb-4 space-y-3">{fields}</div> : null}
 				<div id={descriptionId} className="space-y-3 text-sm text-hint">
 					{children}
 				</div>
-				{fields ? <div className="mt-4 space-y-3">{fields}</div> : null}
+				{fields && !fieldsFirst ? <div className="mt-4 space-y-3">{fields}</div> : null}
 				{error && (
 					<p ref={errorRef} role="alert" className="mt-3 text-sm text-red-700 dark:text-red-400">
 						{error}
@@ -92,7 +96,7 @@ export function ConfirmDialog({
 				<button
 					ref={cancelRef}
 					type="button"
-					data-autofocus={destructive || focusCancel ? "" : undefined}
+					data-autofocus={!focusFields && (destructive || focusCancel) ? "" : undefined}
 					onClick={onCancel}
 					disabled={busy}
 					className="min-h-[44px] rounded-md border border-border px-4 py-2 text-sm text-foreground transition-colors [overflow-wrap:anywhere] hover:bg-accent disabled:opacity-50 md:min-h-0"
@@ -101,7 +105,7 @@ export function ConfirmDialog({
 				</button>
 				<button
 					type="button"
-					data-autofocus={destructive || focusCancel ? undefined : ""}
+					data-autofocus={!focusFields && !(destructive || focusCancel) ? "" : undefined}
 					onClick={onConfirm}
 					disabled={busy || confirmDisabled || !armed}
 					className={`min-h-[44px] rounded-md px-4 py-2 text-sm font-medium transition-colors [overflow-wrap:anywhere] disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 ${
@@ -113,6 +117,22 @@ export function ConfirmDialog({
 					{busy ? busyLabel : confirmLabel}
 				</button>
 			</div>
+		</>
+	);
+}
+
+export function ConfirmDialog(props: ConfirmDialogProps) {
+	const headingId = useId();
+	const descriptionId = useId();
+	return (
+		<DialogShell
+			labelledBy={headingId}
+			describedBy={descriptionId}
+			role={props.destructive ? "alertdialog" : "dialog"}
+			onClose={props.busy ? undefined : props.onCancel}
+			fallbackFocusId={props.fallbackFocusId}
+		>
+			<ConfirmDialogPanel {...props} headingId={headingId} descriptionId={descriptionId} />
 		</DialogShell>
 	);
 }

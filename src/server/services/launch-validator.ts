@@ -282,7 +282,24 @@ async function replayExistingLaunch(
 	};
 }
 
-export async function createValidatedLaunchRequest(input: LaunchRequestInput, actor: Actor) {
+/**
+ * Metadata keys only the server writes (a takeover's carrier row: AGEN-115). A client-posted launch can't
+ * set them: `boundObservedSession` would route its Stop down the stream path and its resume as a takeover,
+ * and `boundByUserId` would name who pressed a button nobody pressed.
+ */
+export const SERVER_ONLY_LAUNCH_METADATA_KEYS = ["boundObservedSession", "boundByUserId"] as const;
+
+function withoutServerOnlyKeys(
+	metadata: LaunchRequestInput["metadata"],
+): LaunchRequestInput["metadata"] {
+	if (!metadata) return metadata;
+	const clean = { ...metadata };
+	for (const key of SERVER_ONLY_LAUNCH_METADATA_KEYS) delete clean[key];
+	return clean;
+}
+
+export async function createValidatedLaunchRequest(rawInput: LaunchRequestInput, actor: Actor) {
+	const input = { ...rawInput, metadata: withoutServerOnlyKeys(rawInput.metadata) };
 	const normalizedTemplate = normalizeTemplateInput(input.template);
 	const templateValidation = validateTemplateInput(normalizedTemplate);
 	if (templateValidation.errors.length > 0) {

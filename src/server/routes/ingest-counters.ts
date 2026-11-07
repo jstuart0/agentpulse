@@ -20,6 +20,7 @@ let sessionCreationLimited = 0;
 let ingestKeyBound = 0;
 let skipHeaderDropped = 0;
 let reservedToolUseIdDropped = 0;
+let forkHookDropped = 0;
 
 export function getBgErrorCount(): number {
 	return bgErrorCount;
@@ -141,6 +142,19 @@ export function incrementIngestReservedToolUseIdDropped(): void {
 	reservedToolUseIdDropped++;
 }
 
+/**
+ * A hook post for a takeover fork (a session with `metadata.forkedFromSessionId`) is dropped (AGEN-117 T18):
+ * answered 200, nothing stored. Under mode `ask` a `PreToolUse` hook would store the tool's input in a
+ * timeline row any team member can read, and a forged `PermissionRequest` or `Stop` could leave the fork
+ * WAITING or hide a real request. A fork's whole timeline comes from the stream its supervisor reports.
+ */
+export function getForkHookDroppedCount(): number {
+	return forkHookDropped;
+}
+export function incrementForkHookDropped(): void {
+	forkHookDropped++;
+}
+
 /** Reset all counters — for use in tests only. */
 export function _resetCountersForTest(): void {
 	bgErrorCount = 0;
@@ -154,6 +168,7 @@ export function _resetCountersForTest(): void {
 	ingestKeyBound = 0;
 	skipHeaderDropped = 0;
 	reservedToolUseIdDropped = 0;
+	forkHookDropped = 0;
 }
 
 /** Reset only the mismatch counter — for use in tests only. */

@@ -51,6 +51,8 @@ export interface SessionResumerDeps {
 		managedCodexRuntimeHolds: typeof managedCodexRuntimeHolds;
 		resumeManagedCodexSession: typeof resumeManagedCodexSession;
 	};
+	/** A Claude takeover or recovery (AGEN-117). Absent: this build can't run one, and says so. */
+	claude?: { run(action: ControlAction, sessionId: string): Promise<void> };
 	log?: (line: string) => void;
 }
 
@@ -112,6 +114,22 @@ export function createSessionResumer(
 		const metadata = (action.metadata ?? {}) as Record<string, unknown>;
 		const resumeKind: ResumeKind = metadata.resumeKind === "recovery" ? "recovery" : "takeover";
 		const threadId = typeof metadata.threadId === "string" ? metadata.threadId : "";
+
+		// A Claude resume has its own sequence (claude-takeover.ts) and holds nothing for the Codex observer.
+		if (metadata.agentType === "claude_code") {
+			if (deps.claude) return deps.claude.run(action, sessionId);
+			try {
+				await gate.refuseResume(
+					action.id,
+					resumeFailureMessage("host_upgrade_required", deps.hostName, resumeKind, "claude_code"),
+				);
+			} catch (error) {
+				log(
+					`[supervisor] couldn't report a refused resume: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			return;
+		}
 
 		async function refuse(kind: CodexResumeKind, detail?: string) {
 			log(

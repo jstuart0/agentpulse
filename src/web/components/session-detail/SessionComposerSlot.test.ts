@@ -193,6 +193,43 @@ describe("ComposerBody states", () => {
 	const body = (over: Partial<ComposerBodyProps> = {}) =>
 		html(createElement(ComposerBody, { ...base, ...over }));
 
+	test("while a stop is on its way the line replaces the notice at every width, the box is read-only (not disabled) and Send is off", () => {
+		for (const m of [mode, headless]) {
+			const out = body({
+				mode: m,
+				notice: "A notice that stopping replaces",
+				stoppingNotice: "Stopping Codex on studio…",
+			});
+			expect(out).toContain("Stopping Codex on studio…");
+			expect(out).not.toContain("A notice that stopping replaces");
+			expect(out).toMatch(/<textarea[^>]*readonly/i);
+			expect(out).not.toMatch(/<textarea[^>]*disabled/i);
+			expect(out).toMatch(/<button[^>]*disabled=""[^>]*>Send (prompt|task)<\/button>/);
+			// The line sits in its own block, not in the md-only hint or side text.
+			expect(out).toMatch(
+				/<div id="[^"]*" class="text-\[11px\] text-amber-700[^"]*">Stopping Codex on studio…<\/div>/,
+			);
+		}
+	});
+
+	test("with no stop the same body is unchanged: the notice shows, the box is writable", () => {
+		const out = body({ notice: "A plain notice" });
+		expect(out).toContain("A plain notice");
+		expect(out).not.toMatch(/<textarea[^>]*readonly/i);
+	});
+
+	test("through the slot: a stopping line reaches the box", () => {
+		const out = html(
+			createElement(SessionComposerSlot, {
+				session: session("claude_code", "headless"),
+				onSubmitted: async () => {},
+				stoppingText: "Stopping Claude on studio…",
+			}),
+		);
+		expect(out).toContain("Stopping Claude on studio…");
+		expect(out).toMatch(/<textarea[^>]*readonly/i);
+	});
+
 	test("while the host starts the turn: read-only text, 'Sending…', Send aria-disabled, and the wait said aloud", () => {
 		const out = body({ phase: { step: "following" } });
 		expect(out).toMatch(/<textarea[^>]*readonly/i);
@@ -212,12 +249,12 @@ describe("ComposerBody states", () => {
 
 	test("a failed send: editable text, the reason in role=alert, and the way to a new session when it asks for one", () => {
 		const out = body({ phase: { step: "failed", reason: "Host said no.", startNew: false } });
-		expect(out).toMatch(/<div[^>]*role="alert"[^>]*>Host said no\.<\/div>/);
+		expect(out).toMatch(/<div[^>]*role="alert"[^>]*>(<span>)?Host said no\.(<\/span>)?<\/div>/);
 		expect(out).not.toMatch(/<textarea[^>]*readonly/i);
 		expect(out).not.toContain("Go to Templates");
 		const upgrade = body({ phase: { step: "failed", reason: "Update it.", startNew: true } });
 		expect(upgrade).toMatch(
-			/role="alert"[^>]*>Update it\. <a[^>]*href="\/templates"[^>]*>Go to Templates<\/a>/,
+			/role="alert"[^>]*>(<span>)?Update it\.(<\/span>)? <a[^>]*href="\/templates"[^>]*>Go to Templates<\/a>/,
 		);
 	});
 
@@ -241,9 +278,15 @@ describe("ComposerBody states", () => {
 		}
 	});
 
-	test("Claude headless has no status line", () => {
+	test("Claude headless has the status line a followed send has (it waits for the host to take the turn)", () => {
 		const out = body({ mode: headless, sideText: headless.side });
-		expect(out).not.toContain("<output");
+		expect(out).toContain("<output");
+		const following = body({
+			mode: headless,
+			sideText: headless.side,
+			phase: { step: "following" },
+		});
+		expect(following).toContain("Waiting for the host to start this turn.");
 	});
 
 	test("an unavailable host or terminal turns the box off", () => {

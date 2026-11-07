@@ -133,7 +133,28 @@ export type ControlStatusBody = {
 	status: "running" | "succeeded" | "failed";
 	error?: string | null;
 	metadata?: Record<string, unknown> | null;
+	/**
+	 * With `running`: the host took this Claude prompt on (spawned it, or wrote it to the fork's process). The
+	 * server stamps `metadata.acceptedAt` from it, and only from it: a claim also reads `running`, so the status
+	 * alone says nothing about whether the host will refuse the prompt a moment later.
+	 */
+	accepted?: boolean;
+	/** A Claude takeover's success: the directory the host proved from the original's transcript (AGEN-117 T5). */
+	provedCwd?: string;
+	/** A Claude takeover's success: the permission mode the host picked from the login. The server judges the shape. */
+	permissionMode?: string;
 };
+
+/**
+ * What became of a control-status report: `sent` (with the server's answer, whose `action.status` says how the
+ * action stands now), or why nothing was sent: `excluded` (a rule covers the session: the gate posted the
+ * one fixed refusal instead), `blocked` (the rules or the gate's saved state can't be trusted) or `refused`
+ * (the action named another directory than the known one). A caller whose report decides whether a child
+ * lives reads this; every other caller ignores it.
+ */
+export type ControlReportOutcome =
+	| { outcome: "sent"; action: { status: string } | null }
+	| { outcome: "excluded" | "blocked" | "refused" };
 
 export type StateReportResult = { session: Session; managedSession: ManagedSession };
 
@@ -307,7 +328,7 @@ export interface ReportGate {
 		sessionId: string | null,
 		body: ControlStatusBody,
 		actionCwd?: string,
-	): Promise<void>;
+	): Promise<ControlReportOutcome>;
 	/** Refreshes the rules (also following moved symlinks), writes the stamp, and closes any reported session a rule now covers. Called on a timer. */
 	scan(): Promise<void>;
 	/** Sends what the offline outbox holds, oldest first, a bounded amount per call. Called on a timer; a no-op without an outbox or while the server is unreachable. */
@@ -1373,10 +1394,17 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 		async reportControlStatus(actionId, sessionId, body, actionCwd) {
 			const verdict = sessionId ? decide(sessionId) : decideDirectory(actionCwd);
 			if (verdict === "send") {
-				await post(`/control-actions/${actionId}/status`, body);
-			} else if (verdict === "excluded") {
-				await refuseControlAction(actionId);
+				const answer = (await post(`/control-actions/${actionId}/status`, body)) as {
+					action?: { status?: unknown } | null;
+				} | null;
+				const status = answer?.action?.status;
+				return {
+					outcome: "sent",
+					action: typeof status === "string" ? { status } : null,
+				};
 			}
+			if (verdict === "excluded") await refuseControlAction(actionId);
+			return { outcome: verdict };
 		},
 
 		async scan() {

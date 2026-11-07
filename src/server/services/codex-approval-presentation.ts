@@ -11,6 +11,7 @@
  */
 import {
 	CODEX_APPROVAL_LIMITS,
+	type CodexApprovalClaudeToolPresentation,
 	type CodexApprovalFileChangePresentation,
 	type CodexApprovalPathPreview,
 	type CodexApprovalPresentation,
@@ -46,6 +47,12 @@ export function hashPresentation(presentation: CodexApprovalPresentation): strin
 
 /** Precedence when more than one reason applies: what the supervisor already knows first, then what the server finds. */
 const REASON_PRECEDENCE: readonly NotApprovableReason[] = [
+	"unknown_tool",
+	"requires_interaction",
+	"agent_memory",
+	"path_not_absolute",
+	"symlink_target",
+	"input_not_stable",
 	"write_stdin",
 	"network",
 	"grant_root",
@@ -170,7 +177,28 @@ function validDeclineOnly(input: unknown): NotApprovableReason[] {
 	);
 }
 
-export function buildPresentation(report: CodexApprovalReportRequest): BuiltPresentation {
+/**
+ * Who asked. A takeover fork's Bash request carries the path Claude says it would touch (`blockedPath`) in its
+ * presentation; a Codex request has no such key, so a Codex row's stored text and hash don't change.
+ */
+export type PresentationAgent = "codex" | "claude";
+
+/**
+ * True when the URL's host isn't one a person can read off it: the authority can't be found (`https:\\host`,
+ * `https:/host`, which a fetcher may still read as a host), it carries credentials (`user@host`, where what
+ * follows the `@` is the real host), it has a non-ASCII character or it has a punycode label. ASCII lookalikes
+ * (`rn` for `m`) are not caught: a residual.
+ */
+export function urlHostLooksLikeAnother(url: string): boolean {
+	const authority = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(url.trim())?.[1];
+	if (authority === undefined) return true;
+	return authority.includes("@") || /\P{ASCII}/u.test(authority) || /(^|\.)xn--/i.test(authority);
+}
+
+export function buildPresentation(
+	report: CodexApprovalReportRequest,
+	agent: PresentationAgent = "codex",
+): BuiltPresentation {
 	const findings = newFindings();
 	const reasons = new Set<NotApprovableReason>(validDeclineOnly(report.declineOnly));
 	const truncated = report.truncated === true;
@@ -187,7 +215,27 @@ export function buildPresentation(report: CodexApprovalReportRequest): BuiltPres
 	if (grantRoot !== null) reasons.add("grant_root");
 
 	let presentation: CodexApprovalPresentation;
-	if (report.requestKind === "command") {
+	if (report.requestKind === "claude_tool") {
+		const tool = cleanField(report.tool, 32, findings) ?? "";
+		const isUrl = tool === "WebFetch";
+		const target = cleanField(report.target, CODEX_APPROVAL_LIMITS.pathChars, findings, {
+			truncated,
+			// A URL's lookalike check is its own (below); a path is split on its slashes like any other.
+			...(isUrl ? {} : pathChecks),
+		});
+		if (isBlank(target)) reasons.add("no_command");
+		if (isUrl && target !== null && urlHostLooksLikeAnother(target)) findings.lookalike = true;
+		const toolPresentation: CodexApprovalClaudeToolPresentation = {
+			v: 1,
+			requestKind: "claude_tool",
+			tool,
+			target,
+			cwd,
+			reason,
+			grantRoot: null,
+		};
+		presentation = toolPresentation;
+	} else if (report.requestKind === "command") {
 		const command = cleanField(report.command, CODEX_APPROVAL_LIMITS.command, findings, {
 			truncated,
 			split: "whitespace",
@@ -195,7 +243,23 @@ export function buildPresentation(report: CodexApprovalReportRequest): BuiltPres
 		});
 		if (isBlank(command)) reasons.add("no_command");
 		if (isBlank(cwd)) reasons.add("no_cwd");
-		presentation = { v: 1, requestKind: "command", command, cwd, reason, grantRoot };
+		presentation =
+			agent === "claude"
+				? {
+						v: 1,
+						requestKind: "command",
+						command,
+						cwd,
+						reason,
+						grantRoot,
+						blockedPath: cleanField(
+							report.blockedPath,
+							CODEX_APPROVAL_LIMITS.pathChars,
+							findings,
+							pathChecks,
+						),
+					}
+				: { v: 1, requestKind: "command", command, cwd, reason, grantRoot };
 	} else {
 		const changes: CodexApprovalPresentationChange[] = [];
 		let diffBudget: number = CODEX_APPROVAL_LIMITS.totalDiff;
@@ -289,8 +353,65 @@ export function changesOutsideCwd(presentation: CodexApprovalFileChangePresentat
 	);
 }
 
+// ── files Claude sessions load later with no card ───────────────────────────
+
+/**
+ * Instruction and configuration files a later Claude session reads or runs: its project and user instructions,
+ * `.claude/` settings, hooks and skills, the MCP config, git hooks and the shell's startup files. Matched on the
+ * path as written (the host has already refused one that is a link elsewhere), case-insensitively, at the end of
+ * the name: `CLAUDE.md.bak` is not one.
+ */
+const AGENT_CONFIG_PATH_RES: readonly RegExp[] = [
+	/(^|\/)(claude|agents)\.md$/i,
+	/(^|\/)\.claude(\/|$)/i,
+	/(^|\/)\.mcp\.json$/i,
+	/(^|\/)\.git\/hooks(\/|$)/i,
+	/(^|\/)\.git\/config$/i,
+	/(^|\/)\.(gitmodules|gitconfig|npmrc|envrc)$/i,
+	/(^|\/)\.husky(\/|$)/i,
+	/(^|\/)\.ssh(\/|$)/i,
+	/(^|\/)\.(bash_profile|bashrc|profile|zprofile|zshenv|zshrc|zlogin|zlogout)$/i,
+];
+
+export function pathIsAgentConfig(path: string): boolean {
+	return AGENT_CONFIG_PATH_RES.some((re) => re.test(path.trim()));
+}
+
+/** A Bash command whose text names one of those files. The text isn't parsed: a variable or a `cd` gets past this. */
+export function commandNamesAgentConfig(command: string): boolean {
+	return command
+		.split(/[\s'"`;|&<>()=]+/)
+		.some(
+			(token) => token !== "" && (pathIsAgentConfig(token) || /^~\/\.claude(\/|$)/i.test(token)),
+		);
+}
+
+/** Whether this request writes, or a command names, an agent-config file. Beside the presentation, not in its hash. */
+export function touchesAgentConfig(presentation: CodexApprovalPresentation): boolean {
+	switch (presentation.requestKind) {
+		case "file_change":
+			return presentation.changes.some(
+				(change) => pathIsAgentConfig(change.path) || pathIsAgentConfig(change.movePath ?? ""),
+			);
+		case "command":
+			return commandNamesAgentConfig(presentation.command ?? "");
+		default:
+			return false;
+	}
+}
+
 /** The list-sized view of a presentation: bounded to 4 KiB, no full diff. */
 export function buildPreview(presentation: CodexApprovalPresentation): CodexApprovalPreview {
+	if (presentation.requestKind === "claude_tool") {
+		const target = presentation.target ?? "";
+		return {
+			cwd: presentation.cwd,
+			tool: presentation.tool,
+			target: target.length > 300 ? target.slice(0, 300) : target,
+			pathOutsideCwd: presentation.tool === "Read",
+			nonAscii: NON_ASCII_RE.test(target) || NON_ASCII_RE.test(presentation.cwd ?? ""),
+		};
+	}
 	if (presentation.requestKind === "command") {
 		const command = presentation.command ?? "";
 		const head = command.length > 1200 ? command.slice(0, 1200) : command;

@@ -39,7 +39,7 @@ import {
 	users,
 	watcherConfigs,
 } from "../../db/schema/index.js";
-import { enqueuePromptInTx } from "../control-actions.js";
+import { enqueuePromptInTx, isClaudeTakeoverLaunch } from "../control-actions.js";
 import { getMode } from "../instance-mode.js";
 import { notifyInboxChanged } from "../notifier.js";
 import { findLaunchRowByCorrelationId, getSessionOwnerConnections } from "../session-ownership.js";
@@ -157,7 +157,7 @@ export type DispatchResult =
 	| { ok: true; controlActionId: string; auditId: string; prompt: string }
 	| {
 			ok: false;
-			status: 400 | 404 | 409 | 500;
+			status: 400 | 403 | 404 | 409 | 500;
 			code: string;
 			reason?: string;
 			/** Always false: a refusal never queues anything, so a caller may release a claim. */
@@ -452,6 +452,11 @@ async function runDispatchChecksAndEnqueue(tx: Tx, input: DispatchChecks): Promi
 		if (launch?.agentType === "codex_cli") {
 			return refusal(409, "auto_send_blocked", "codex_needs_person");
 		}
+		// Nor a continued (taken-over) Claude session: it runs under the person's own settings, or has a card path
+		// only a person answers, so an unattended prompt is never what they agreed to (AGEN-117 I18).
+		if (launch && isClaudeTakeoverLaunch(launch)) {
+			return refusal(409, "auto_send_blocked", "takeover_needs_person");
+		}
 	}
 
 	// 3. Has the turn moved on? A proposal that can't be tied to a turn is stale by definition.
@@ -508,6 +513,10 @@ function refusalForEnqueue(reason: string): Refusal {
 			return refusal(409, "prompt_not_deliverable", "managed_state");
 		case "host_upgrade_required":
 			return refusal(409, "prompt_not_deliverable", "host_upgrade_required");
+		case "prompt_unsafe":
+			return refusal(400, "prompt_unsafe", "slash_command");
+		case "human_required":
+			return refusal(403, "human_required");
 		default:
 			return refusal(409, "prompt_not_deliverable", "control_busy");
 	}
@@ -583,13 +592,13 @@ export type ResolveResult =
 	| { ok: true; action: "applied"; controlActionId: string; prompt: string; auditId: string }
 	| {
 			ok: false;
-			status: 400 | 404 | 409 | 500;
+			status: 400 | 403 | 404 | 409 | 500;
 			code: string;
 			reason?: string;
 	  };
 
 function resolveRefusal(
-	status: 400 | 404 | 409 | 500,
+	status: 400 | 403 | 404 | 409 | 500,
 	code: string,
 	reason?: string,
 ): ResolveResult {

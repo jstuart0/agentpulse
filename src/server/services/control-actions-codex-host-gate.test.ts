@@ -472,7 +472,8 @@ async function hostWorld(agent: "codex_cli" | "claude_code", features: string[])
 			requestedSupervisorId: host.id,
 			claimedBySupervisorId: host.id,
 			requestedLaunchMode: agent === "codex_cli" ? "managed_codex" : "headless",
-			status: "running",
+			// A headless Claude launch still running is the session's first turn, which takes no prompt.
+			status: agent === "codex_cli" ? "running" : "completed",
 		})
 		.returning();
 	await getDb()

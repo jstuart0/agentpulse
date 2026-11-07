@@ -10,11 +10,17 @@ import {
 import { createControlActionHandler } from "./control-actions.js";
 import { createLaunchDispatcher } from "./launch-dispatch.js";
 import { headlessRuntimeCount } from "./providers/claude-headless.js";
+import { claudeStreamRuntimeCount } from "./providers/claude-stream.js";
 import {
+	hasClaudeStreamRuntime,
+	hasHeadlessRuntime,
 	launchClaudeHeadlessRequest,
 	launchClaudeInteractiveRequest,
 	promptClaudeHeadlessSession,
 	promptClaudeInteractiveSession,
+	promptClaudeStreamSession,
+	stopClaudeStreamSession,
+	stopHeadlessClaude,
 } from "./providers/claude.js";
 import { wireCodexApprovals } from "./providers/codex-approvals-wiring.js";
 import {
@@ -29,6 +35,8 @@ import {
 } from "./providers/codex-managed.js";
 import { warmCodexProtocolVerdict } from "./providers/codex-protocol.js";
 import { createBridgeSpoolDrain } from "./services/bridge-spool.js";
+import { createClaudeForkRecord } from "./services/claude-fork-record.js";
+import { createClaudeTakeover } from "./services/claude-takeover.js";
 import { executeCleanupWorkArea } from "./services/cleanup-workarea.js";
 import { isCodexObserverEnabled, startCodexObserver } from "./services/codex-observer.js";
 import {
@@ -37,6 +45,7 @@ import {
 	warnIfHomeMismatch,
 } from "./services/exclude-rules-watch.js";
 import { disposeRuntimesAndExit } from "./services/fatal-exit.js";
+import { createFinalReporter } from "./services/final-report.js";
 import {
 	countBridgesBounded,
 	keepAliveLine,
@@ -57,6 +66,7 @@ import {
 	parseRetryAfterMs,
 	setSharedCredentialTripwire,
 } from "./services/report-resilience.js";
+import { createServerFeatures } from "./services/server-features.js";
 import {
 	createSessionResumer,
 	isObserverHeld,
@@ -205,6 +215,9 @@ async function main() {
 	// Sessions this host is resuming (D16): the observer reads their lines and posts nothing, so a resumed
 	// turn can't also arrive as a second UserPromptSubmit and Stop beside the managed one.
 	const resumingSessions = new Set<string>();
+	const forkRecord = createClaudeForkRecord({
+		path: join(home, ".agentpulse", "claude-forks.json"),
+	});
 	const threadRecord = createManagedThreadRecord({
 		path: join(home, ".agentpulse", "managed-threads.json"),
 	});
@@ -263,6 +276,10 @@ async function main() {
 	// an accept for exactly that request. The tracker reaches the server only through the gate, and the
 	// server tells it what it can do on registration and on every heartbeat (absent means off).
 	const approvalsWiring = wireCodexApprovals({ gate, serverFeatures: registration.serverFeatures });
+	// The same list for the Claude turn guard's renewals, kept current by every heartbeat.
+	const serverFeatures = createServerFeatures(registration.serverFeatures);
+	// A launch's or prompt's last status, kept and retried until the server answers.
+	const finalReport = createFinalReporter();
 
 	// The interactive terminal bridge holds no credential and opens no connection: it writes its reports to
 	// disk and this drain sends them through the gate.
@@ -285,7 +302,8 @@ async function main() {
 				const staleMs = Date.now() - lastHeartbeatOkAt;
 				if (staleMs <= watchdogStaleMs) return;
 				const codex = managedCodexRuntimeCount();
-				const headless = headlessRuntimeCount();
+				// A takeover fork is a Claude process of ours like a one-prompt child, and keeps the host alive the same way.
+				const headless = headlessRuntimeCount() + claudeStreamRuntimeCount();
 				// Only a stale host with no agent of its own looks at the filesystem for live terminal bridges;
 				// not knowing (an error, no answer in time) counts as "something may be running".
 				const bridges =
@@ -328,6 +346,16 @@ async function main() {
 		},
 		executePrelaunchActions,
 		recordThread: (launchRequestId, threadId) => threadRecord.write(launchRequestId, threadId),
+		finalReport,
+	});
+	const claudeTakeover = createClaudeTakeover({
+		gate,
+		hostName: config.hostName,
+		trustedRoots: config.trustedRoots,
+		forkRecord,
+		env: process.env,
+		probeCwd: join(home, ".agentpulse", "claude-probe"),
+		tracker: approvalsWiring.approvals,
 	});
 	const resumeSession = createSessionResumer({
 		gate,
@@ -337,6 +365,7 @@ async function main() {
 		hold: resumingSessions,
 		neutralCwd: () => resolveNeutralCwd(home),
 		providers: { managedCodexRuntimeHolds, resumeManagedCodexSession },
+		claude: claudeTakeover,
 	});
 	const handleControlAction = createControlActionHandler({
 		resumeSession,
@@ -348,8 +377,17 @@ async function main() {
 			hasManagedCodexRuntime,
 			promptClaudeHeadlessSession,
 			promptClaudeInteractiveSession,
+			stopHeadlessClaude,
+			promptClaudeStreamSession,
+			stopClaudeStreamSession,
+			hasClaudeStreamRuntime,
+			hasHeadlessRuntime,
 		},
+		forkStatus: (sessionId) => forkRecord.status(sessionId),
+		forkListed: (sessionId) => claudeTakeover.isListed(sessionId),
 		executeCleanupWorkArea,
+		serverHas: serverFeatures.has,
+		finalReport,
 	});
 
 	void gate.scan();
@@ -378,13 +416,14 @@ async function main() {
 			// Whether the exclude file on this host is in use, absent or broken, for the Hosts page.
 			// Optional on the wire: a server that predates the field ignores the body.
 			// The last successful answer's features win; a failed heartbeat leaves the last known value alone.
-			await approvalsWiring.applyHeartbeat(
+			const beat = await approvalsWiring.applyHeartbeat(
 				() =>
 					request(`/supervisors/${registration.supervisor.id}/heartbeat`, {
 						method: "POST",
 						body: heartbeatBody(gate.rulesState(), heartbeatOutbox(outbox.summary(), Date.now())),
 					}) as Promise<{ serverFeatures?: string[] } | null>,
 			);
+			serverFeatures.set(beat?.serverFeatures);
 			lastHeartbeatOkAt = Date.now();
 			staleLogged = false;
 			gate.noteServerReachable();

@@ -73,6 +73,8 @@ function harness(
 			return { metadata: { mode: "managed_codex", threadId: "thr-1", turnId: "turn-2" } };
 		},
 		hasManagedCodexRuntime: (id: string) => (over.runtimeSessions ?? []).includes(id),
+		hasClaudeStreamRuntime: () => false,
+		hasHeadlessRuntime: () => false,
 		promptClaudeHeadlessSession: async (a: Record<string, unknown>) => {
 			calls.push("promptClaudeHeadlessSession");
 			claudeArgs.push(a);

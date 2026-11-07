@@ -1,3 +1,4 @@
+import { forkSentenceName } from "../../../shared/claude-fork-copy.js";
 /**
  * What the prompt box on the session page offers and says (AGEN-91). Pure functions, so every sentence
  * is tested without rendering. Refusals that come back from the server read through `hostRefusalMessage`
@@ -5,6 +6,17 @@
  */
 import { cleanHostText } from "../../../shared/clean-host-text.js";
 import {
+	CLAUDE_API_ERROR_MESSAGE,
+	CLAUDE_FORK_BUSY_ERROR,
+	CLAUDE_FORK_CHANGED_SYNC_ERROR,
+	CLAUDE_FORK_CHECK_FAILED_ERROR,
+	CLAUDE_FORK_FIRST_PROMPT_FAILED_ERROR,
+	CLAUDE_FORK_NO_RUNTIME_ERROR,
+	CLAUDE_FORK_PEER_SYNC_ERROR,
+	CLAUDE_FORK_SLASH_MESSAGE,
+	CLAUDE_FORK_TERMINAL_FOUND_ERROR,
+	CLAUDE_FORK_UNSTOPPABLE_SYNC_ERROR,
+	CLAUDE_LOGIN_LOST_ERROR,
 	CONTROL_TIMEOUT_ERROR,
 	HOST_RESTARTED_SYNC_ERROR,
 } from "../../../shared/managed-messages.js";
@@ -12,6 +24,13 @@ import type { ControlAction, Session } from "../../../shared/types.js";
 import { describeApiError } from "../../lib/api-errors.js";
 import { ApiError } from "../../lib/api.js";
 import { hasPendingCodexApproval } from "../../lib/codex-approval-wait.js";
+import {
+	type ForkSource,
+	continueAgain,
+	forkInfo,
+	sourceLabel,
+	sourceUnavailable,
+} from "../../lib/fork-session.js";
 import { hostNameOf, hostRefusalMessage } from "./host-control-view.js";
 import { bindRefusalMessage, isTakenOver } from "./session-takeover-view.js";
 
@@ -22,6 +41,8 @@ export const COMPOSER_BLOCKED_CONNECTION =
 	"This session's connection to Codex isn't healthy, so it can't take prompts. Start a new session to keep going.";
 export const COMPOSER_BLOCKED_NOT_READY =
 	"This session isn't ready for prompts yet. The box opens once Codex has started.";
+export const COMPOSER_BLOCKED_NOT_READY_CLAUDE =
+	"This session isn't ready for prompts yet. The box opens once Claude has started.";
 export const COMPOSER_BLOCKED_NOT_OWNER =
 	"Only the owner or an admin can send prompts to this session.";
 export const COMPOSER_ENDED =
@@ -33,6 +54,9 @@ export const COMPOSER_FAILED_FALLBACK =
 	"The host couldn't take the prompt. Your text is back here.";
 export const COMPOSER_BUSY =
 	"Another action on this session is still going. Your text is here. Send it when that finishes.";
+/** A Claude prompt holds the session's lock for the whole turn (AGEN-117 T12), so the usual "busy" is a turn in progress. */
+export const COMPOSER_BUSY_CLAUDE =
+	"Claude is still working on this session. Your text is here. Send it when it finishes.";
 export const COMPOSER_STATUS_WAITING = "Waiting for the host to start this turn.";
 export const COMPOSER_STATUS_SENT = "Prompt sent.";
 const NOTICE_APPROVAL_FIRST =
@@ -50,10 +74,19 @@ export interface ComposerCopy {
 }
 
 /** What the locked notice offers for a Codex session whose process is gone. Absent: nothing to press. */
-export type ResumeOffer = { state: "available" } | { state: "disabled" } | { state: "in_flight" };
+export type ResumeOffer =
+	| {
+			state: "available";
+			/** A message from something else stopped the session: ending it comes first, Resume second. */
+			afterPeerMessage?: true;
+	  }
+	| { state: "disabled" }
+	| { state: "in_flight" };
 
 export type ComposerMode =
-	| ({ kind: "claude_interactive" | "claude_headless" | "codex" } & ComposerCopy)
+	| ({
+			kind: "claude_interactive" | "claude_headless" | "claude_taken_over" | "codex";
+	  } & ComposerCopy)
 	| {
 			kind: "blocked";
 			reason: string;
@@ -63,7 +96,17 @@ export type ComposerMode =
 	  };
 
 type ModeSession = Pick<Session, "agentType" | "managedSession"> &
-	Partial<Pick<Session, "hostControl" | "ownerUserId">>;
+	Partial<
+		Pick<
+			Session,
+			| "hostControl"
+			| "ownerUserId"
+			| "forkedFromSessionId"
+			| "forkPermissionBranch"
+			| "metadata"
+			| "continuedFrom"
+		>
+	>;
 
 export interface ComposerAccess {
 	canPrompt: boolean;
@@ -71,9 +114,16 @@ export interface ComposerAccess {
 	canResume: boolean;
 	/** A resume of this session is queued or running. */
 	resumeInFlight?: boolean;
+	/** For a continued Claude session: what the page knows of the session it came from. */
+	source?: ForkSource;
 }
 
 export const RESUME_BUTTON = "Resume session";
+export const END_SESSION_BUTTON = "End session";
+export const RESUME_ANYWAY_BUTTON = "Resume anyway";
+export const RESUME_ANYWAY_NOTE = "If you resume, Claude will remember that message.";
+/** On a phone the box's hint sits behind this, so the timeline keeps its room. */
+export const WHAT_WAITS_SUMMARY = "What waits for you";
 export const RESUME_BUTTON_BUSY = "Resuming…";
 export const RESUME_BUTTON_AGAIN = "Try resuming again";
 
@@ -104,6 +154,28 @@ const CODEX_TAKEN_OVER: ComposerCopy = {
 	...CODEX,
 	hint: "This starts a new turn in the same Codex thread, under this session's approval policy and sandbox.",
 };
+
+/** What each prompt does in a continued Claude session, by the settings it runs under. Neither says "enforced". */
+const CLAUDE_FORK_HINT = {
+	ask: "Each prompt continues this conversation on {machine}. File changes and most commands wait for your approval here, unless your own Claude settings answer first. You can end this session from here; it can't be continued afterwards.",
+	restricted:
+		"Each prompt continues this conversation on {machine}. File changes and commands wait for your approval here, except read-only commands. You can end this session from here; it can't be continued afterwards.",
+} as const;
+
+function claudeForkCopy(session: ModeSession): ComposerCopy {
+	const machine = session.managedSession?.hostName?.trim() || "its machine";
+	// A fork that doesn't say its mode gets the wording that promises less.
+	const mode = forkInfo(session)?.mode ?? "ask";
+	return {
+		hint: CLAUDE_FORK_HINT[mode].replace("{machine}", machine),
+		placeholder: "What should Claude do next?",
+		button: "Send prompt",
+		side: "Replies and approval requests appear in this session.",
+	};
+}
+
+const CLAUDE_FORK_DEGRADED_PEER =
+	"Something else on {machine} sent this session a message, so AgentPulse stopped it.";
 
 function blocked(reason: string, startNew = false, resume?: ResumeOffer): ComposerMode {
 	return resume
@@ -168,10 +240,94 @@ function degradedMode(session: ModeSession, access: ComposerAccess): ComposerMod
 	);
 }
 
+/**
+ * A continued Claude session whose process is gone. The sentence follows why: a message something else sent
+ * it, a change in how Claude was running, or an exit. Resume reopens it under the settings it started with;
+ * after a stranger's message the person is offered ending it first, and only they see why.
+ */
+function degradedForkMode(session: ModeSession, access: ComposerAccess): ComposerMode {
+	const managed = session.managedSession as NonNullable<ModeSession["managedSession"]>;
+	const machine = managed.hostName?.trim() || "its machine";
+	const error = managed.providerSyncError;
+	const peer = error === CLAUDE_FORK_PEER_SYNC_ERROR;
+	const hostReason = codexHostReason(session);
+	if (access.resumeInFlight) {
+		return blocked(`Asking ${hostNameOf(session)} to resume this session…`, false, {
+			state: "in_flight",
+		});
+	}
+	// The host could not confirm the process ended and still holds the fork: Resume is refused there until a
+	// Stop finishes the job, so the box offers no Resume and says what to do (CX2-1).
+	if (error === CLAUDE_FORK_UNSTOPPABLE_SYNC_ERROR) {
+		return blocked(
+			`AgentPulse couldn't confirm that Claude stopped on ${machine}, so this session can't take prompts or be resumed yet. End it again, or stop the Claude process yourself.`,
+			false,
+			{ state: "disabled" },
+		);
+	}
+	const source = access.source ?? { state: "unknown" as const };
+	const lead = peer
+		? CLAUDE_FORK_DEGRADED_PEER.replace("{machine}", machine)
+		: error === CLAUDE_FORK_CHANGED_SYNC_ERROR
+			? `Claude Code on ${machine} changed how it was running, so AgentPulse stopped it. Its last turn may not all be here.`
+			: `Claude stopped running on ${machine}, so this session can't take prompts.`;
+	if (!access.canResume) {
+		if (hostReason !== null) return blocked(hostReason);
+		const who = session.ownerUserId ? "its owner or an admin" : "an admin";
+		// After a stranger's message the person to ask should look at it before anything else happens to it.
+		return blocked(
+			peer
+				? `${lead} Ask ${who} to read the message, then end the session or resume it.`
+				: `${lead} Ask ${who} to resume it.`,
+		);
+	}
+	if (session.hostControl?.state === "gone") return blocked(hostReason ?? "");
+	if (hostReason !== null) {
+		return blocked(
+			`${hostNameOf(session)} is offline. You can resume this session when it's back.`,
+			false,
+			{
+				state: "disabled",
+			},
+		);
+	}
+	if (peer) {
+		// The approvals card above says what the message was, when the server kept it; this stands on its own
+		// for the person who has only this box: what stopped it, then the way to leave the message behind.
+		return blocked(
+			`AgentPulse stopped this session because something else on ${machine} sent it a message. To leave it behind, end this session and ${continueAgain(source)}.`,
+			false,
+			{ state: "available", afterPeerMessage: true },
+		);
+	}
+	const tail =
+		error === CLAUDE_FORK_CHANGED_SYNC_ERROR
+			? " Resume it to keep going."
+			: " Resume it to keep going. A running turn didn't finish, and a request that was waiting didn't run. A command you'd already approved may still be finishing there.";
+	return blocked(`${lead}${tail}`, false, { state: "available" });
+}
+
+/** A continued Claude session's box: what its state allows (AGEN-117 T16). */
+function forkComposerMode(session: ModeSession, access: ComposerAccess): ComposerMode | null {
+	const managed = session.managedSession as NonNullable<ModeSession["managedSession"]>;
+	if (CODEX_HIDDEN_STATES.has(managed.managedState)) return null;
+	if (!access.canPrompt) return blocked(COMPOSER_BLOCKED_NOT_OWNER);
+	if (managed.managedState === "degraded") return degradedForkMode(session, access);
+	const hostReason = codexHostReason(session);
+	if (hostReason !== null) return blocked(hostReason);
+	if (managed.managedState === "managed") {
+		return { kind: "claude_taken_over", ...claudeForkCopy(session) };
+	}
+	return blocked(COMPOSER_BLOCKED_NOT_READY_CLAUDE);
+}
+
 /** The box to show, or null when there should be none. */
 export function composerMode(session: ModeSession, access: ComposerAccess): ComposerMode | null {
 	const managed = session.managedSession;
 	if (!managed) return null;
+	if (session.agentType === "claude_code" && forkInfo(session) !== null) {
+		return forkComposerMode(session, access);
+	}
 	if (session.agentType === "codex_cli") {
 		if (CODEX_HIDDEN_STATES.has(managed.managedState)) return null;
 		if (!access.canPrompt) return blocked(COMPOSER_BLOCKED_NOT_OWNER);
@@ -197,12 +353,29 @@ export function composerNotice(session: Pick<Session, "isWorking" | "metadata">)
 }
 
 /**
- * Whether the composer watches the control action after the 202. A Codex prompt and an interactive
- * Claude prompt are done when the host hands them off. A headless Claude action reports only when its
- * monitor resolves, so a healthy long turn would hit the 90 s lock and read as failed.
+ * How the composer watches the control action after the 202 (AGEN-91, AGEN-117 T16):
+ *  - `settle`: until the host says how it ended. A Codex prompt and an interactive Claude prompt are done
+ *    when the host hands them off, so "done" is a short wait.
+ *  - `accept`: until the host reports it took the prompt on (`metadata.acceptedAt`, stamped only from the host's
+ *    own report; a claim reads `running` too), not until the turn ends. A headless Claude action stays
+ *    `running` for the whole turn (it reports only when its monitor resolves, and renews its lock), so a
+ *    healthy long turn must not be waited out; but the host can refuse a second turn (one already running,
+ *    the conversation open elsewhere), and without watching, that refusal would reach only Control history,
+ *    collapsed on a phone, after the draft was gone. The box is read-only ("Sending…") until the action
+ *    leaves `queued`; `running` clears the draft; `failed` keeps it and says why.
+ *  - null: the 202 is the end of it.
  */
+export type FollowMode = "settle" | "accept";
+
+export function followModeOf(mode: ComposerMode | null): FollowMode | null {
+	if (mode?.kind === "codex" || mode?.kind === "claude_interactive") return "settle";
+	if (mode?.kind === "claude_headless" || mode?.kind === "claude_taken_over") return "accept";
+	return null;
+}
+
+/** Whether the composer watches the control action after the 202 at all. */
 export function followsAction(mode: ComposerMode | null): boolean {
-	return mode?.kind === "codex" || mode?.kind === "claude_interactive";
+	return followModeOf(mode) !== null;
 }
 
 export type SendPhase =
@@ -267,7 +440,8 @@ export function composerStatus(
 /** A refusal or error from the POST itself, as the sentence to show and whether it ends in "start a new session". */
 export function describeSendFailure(
 	error: unknown,
-	session: Pick<Session, "managedSession">,
+	session: Pick<Session, "managedSession"> &
+		Partial<Pick<Session, "agentType" | "forkedFromSessionId" | "metadata">>,
 ): { reason: string; startNew: boolean } {
 	const refusal = hostRefusalMessage(error, session);
 	if (refusal !== null) {
@@ -277,11 +451,28 @@ export function describeSendFailure(
 			startNew: code === "managed_state_not_continuable" || code === "host_upgrade_required",
 		};
 	}
+	// The slash refusal's words live with the AI tab's error table, which this page doesn't load: the same
+	// sentence the server and the host use is named here.
+	if (
+		error instanceof ApiError &&
+		error.code === "prompt_unsafe" &&
+		(error.body as { reason?: unknown } | null)?.reason === "slash_command"
+	) {
+		return { reason: CLAUDE_FORK_SLASH_MESSAGE, startNew: false };
+	}
 	if (
 		error instanceof ApiError &&
 		(error.body as { reason?: unknown } | null)?.reason === "control_busy"
 	) {
-		return { reason: COMPOSER_BUSY, startNew: false };
+		return {
+			reason:
+				session.agentType !== "claude_code"
+					? COMPOSER_BUSY
+					: forkInfo(session) !== null
+						? CLAUDE_FORK_BUSY_ERROR
+						: COMPOSER_BUSY_CLAUDE,
+			startNew: false,
+		};
 	}
 	return {
 		reason: describeApiError(error, "Couldn't send the prompt. Try again."),
@@ -295,22 +486,59 @@ export type FollowOutcome =
 	| { outcome: "unknown" }
 	| { outcome: "aborted" };
 
+/** Where a continued session runs and what it continued, for the sentences a host can only say generally. */
+export interface ForkFailureContext {
+	machine: string | null | undefined;
+	source: ForkSource;
+}
+
+/** The host's fixed sentences that say "this machine", mapped to the words with the machine's own name. */
+const HOST_MACHINE_SENTENCES: readonly string[] = [
+	CLAUDE_LOGIN_LOST_ERROR,
+	CLAUDE_API_ERROR_MESSAGE,
+	CLAUDE_FORK_TERMINAL_FOUND_ERROR,
+	CLAUDE_FORK_CHECK_FAILED_ERROR,
+	CLAUDE_FORK_NO_RUNTIME_ERROR,
+];
+
+/**
+ * A continued session's failed prompt, worded here with the machine and the original's name. The host can't
+ * know either, so it sends fixed sentences that say "this machine" and "the original session"; this keeps the
+ * host's own text for anything it doesn't recognise and replaces only the two phrases in the ones it does.
+ * A name never carries a backtick into a sentence (the sentence is drawn with its `code` spans).
+ */
+export function forkFailureSentence(error: string, ctx: ForkFailureContext): string {
+	const machine = forkSentenceName(ctx.machine, "this machine");
+	if (error === CLAUDE_FORK_FIRST_PROMPT_FAILED_ERROR) {
+		const head = "Claude didn't start the way AgentPulse expected, so it was stopped.";
+		return sourceUnavailable(ctx.source)
+			? `${head} Start a new session to try again.`
+			: `${head} Continue ${sourceLabel(ctx.source)} in a new session to try again.`;
+	}
+	if (HOST_MACHINE_SENTENCES.includes(error)) return error.replaceAll("this machine", machine);
+	return error;
+}
+
 /** What the box does with a finished follow; null when the follow was abandoned and nothing should change. */
 export function settleFollow(
 	result: FollowOutcome,
+	ctx?: ForkFailureContext,
 ): { phase: SendPhase; clearDraft: boolean } | null {
 	switch (result.outcome) {
 		case "succeeded":
 			return { phase: { step: "idle" }, clearDraft: true };
-		case "failed":
+		case "failed": {
+			const host = cleanHostText(result.error);
 			return {
 				phase: {
 					step: "failed",
-					reason: cleanHostText(result.error) ?? COMPOSER_FAILED_FALLBACK,
+					reason:
+						host === null ? COMPOSER_FAILED_FALLBACK : ctx ? forkFailureSentence(host, ctx) : host,
 					startNew: false,
 				},
 				clearDraft: false,
 			};
+		}
 		case "unknown":
 			return { phase: { step: "unknown" }, clearDraft: false };
 		case "aborted":
@@ -352,11 +580,14 @@ export function lockedNotice(
  */
 export function describeResumeFailure(
 	error: unknown,
-	session: Pick<Session, "managedSession">,
+	session: Pick<Session, "managedSession"> & Partial<Pick<Session, "agentType">>,
+	opts: { sourceName?: string | null } = {},
 ): { reason: string; startNew: boolean } {
 	const reason = bindRefusalMessage(error, {
 		host: session.managedSession?.hostName ?? null,
 		kind: "recovery",
+		agent: session.agentType === "claude_code" ? "claude_code" : "codex_cli",
+		sourceName: opts.sourceName ?? null,
 	});
 	return { reason, startNew: offersNewSession(reason) };
 }
@@ -371,6 +602,8 @@ export const FOLLOW_POLL_MS = 1500;
 export const FOLLOW_DEADLINE_MS = 100_000;
 
 export interface FollowDeps {
+	/** `accept` stops at the host taking the action; the default waits for its end. */
+	until?: FollowMode;
 	fetchActions: (
 		sessionId: string,
 		opts: { background: true },
@@ -381,8 +614,8 @@ export interface FollowDeps {
 }
 
 /**
- * Polls one control action until it settles. Bound to the session it started with: an action row that
- * belongs to another session is never read. A failed poll is not the action's failure; it is tried again.
+ * Polls one control action until it settles (or, for `until: "accept"`, until the host has taken it). Bound
+ * to the session it started with: an action row that belongs to another session is never read. A failed poll is not the action's failure; it is tried again.
  * An action whose lock ran out before the host reported has an unknown outcome (the prompt may have run).
  */
 export async function followPromptAction(
@@ -391,6 +624,7 @@ export async function followPromptAction(
 	deps: FollowDeps,
 ): Promise<FollowOutcome> {
 	const startedAt = deps.now();
+	let lastStatus: ControlAction["status"] | null = null;
 	for (;;) {
 		if (deps.signal?.aborted) return { outcome: "aborted" };
 		try {
@@ -398,6 +632,17 @@ export async function followPromptAction(
 			if (deps.signal?.aborted) return { outcome: "aborted" };
 			const action = controlActions.find((a) => a.id === actionId && a.sessionId === sessionId);
 			if (action?.status === "succeeded") return { outcome: "succeeded" };
+			lastStatus = action?.status ?? lastStatus;
+			// Taken by the host: its own acceptance report stamps `acceptedAt`. A claim also reads `running`, and a
+			// host can still refuse the prompt after it (a turn already going, the conversation open elsewhere),
+			// so `running` alone is not acceptance.
+			if (
+				deps.until === "accept" &&
+				action?.status === "running" &&
+				typeof (action.metadata as Record<string, unknown> | null)?.acceptedAt === "string"
+			) {
+				return { outcome: "succeeded" };
+			}
 			if (action?.status === "failed") {
 				return action.error === CONTROL_TIMEOUT_ERROR
 					? { outcome: "unknown" }
@@ -406,7 +651,14 @@ export async function followPromptAction(
 		} catch {
 			// The next poll will say; a dropped request is not the host's answer.
 		}
-		if (deps.now() - startedAt >= FOLLOW_DEADLINE_MS) return { outcome: "unknown" };
+		if (deps.now() - startedAt >= FOLLOW_DEADLINE_MS) {
+			// A host that never sends an acceptance (one older than this server) leaves a claimed prompt reading
+			// `running`: after the deadline that is taken as the old behaviour, accepted. An action nobody
+			// claimed in that time is genuinely unknown.
+			return deps.until === "accept" && lastStatus === "running"
+				? { outcome: "succeeded" }
+				: { outcome: "unknown" };
+		}
 		await deps.sleep(FOLLOW_POLL_MS);
 	}
 }

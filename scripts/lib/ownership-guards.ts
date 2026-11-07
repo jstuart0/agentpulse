@@ -30,6 +30,8 @@ export const OWNER_WRITERS_ALLOWED: Readonly<Record<string, string>> = {
 		"fills an empty owner when a launch is associated with the session it started",
 	"src/server/services/session-owner-admin.ts":
 		"the admin operations that claim unassigned sessions or change one session's owner",
+	"src/server/services/claude-takeover-settle.ts":
+		"creates the new fork's session row at a Claude takeover's settle, owned by the observed session's owner (else the intended one); never writes an existing row",
 	"src/server/services/service-keys.ts":
 		"hands a key's earlier sessions to its new owner, under the admin lock",
 };

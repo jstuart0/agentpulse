@@ -49,21 +49,22 @@ describe("CodexApprovalCard (AGEN-87)", () => {
 		expect(row?.maxGzip).toBeGreaterThan(0);
 	});
 
-	test("the entry chunk grew at most 200 B over its AGEN-87 base (the two take-over api methods and one error sentence, AGEN-115); the session page's limit is the one AGEN-115 re-based (25,900)", () => {
+	test("the entry chunk grew at most 200 B over its AGEN-87 base (the two take-over api methods and one error sentence, AGEN-115); the session page's limit is the one AGEN-117 P6 re-based (30,300: the fork's status block, prompt box states, End, the host failure sentences and the Claude refusal sentences measured 30,173 on a base of 27,742, see the budget file)", () => {
 		const index = BUDGETS.find((b) => b.chunk === "index");
 		const page = BUDGETS.find((b) => b.chunk === "SessionDetailPage");
 		expect(index?.measured as number).toBeLessThanOrEqual(base.index + 200);
 		expect(index?.maxGzip as number).toBeLessThanOrEqual(118_600);
-		expect(page?.maxGzip as number).toBeLessThanOrEqual(25_900);
+		expect(page?.maxGzip as number).toBeLessThanOrEqual(30_300);
 	});
 
-	test("the take-over card is a lazy chunk with a row of its own (AGEN-115), and the page's limit rose once for it", () => {
+	test("the take-over card is a lazy chunk with a row of its own (AGEN-115); its limit rose to 6,700 and then 6,950 for AGEN-117 P6's dialog, machine-list copy and the review's fixes", () => {
 		const takeover = BUDGETS.find((b) => b.chunk === "SessionTakeoverCard");
-		expect(takeover?.maxGzip).toBe(5_400);
+		expect(takeover?.maxGzip).toBe(6_950);
 	});
 
-	test("the card's own limit rose once, to 12,000, for the phase 6 review, and no further", () => {
-		expect(row?.maxGzip).toBe(12_000);
+	test("the card's own limit rose three times: to 12,000 for the AGEN-87 phase 6 review, to 13,600 for AGEN-117 P4 (the Claude request kinds, copy, peer notice and focus rule), and to 13,700 for AGEN-117 P6 (the focus plan and the notice, split out to be tested without a DOM), and no further", () => {
+		expect(row?.maxGzip).toBe(13_700);
+		expect(row?.measured as number).toBeLessThanOrEqual(13_616);
 	});
 });
 

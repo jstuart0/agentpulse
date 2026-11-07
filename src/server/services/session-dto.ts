@@ -70,6 +70,24 @@ export function deriveOwnerKind(
 	return "unassigned";
 }
 
+/**
+ * The two fields a continued Claude session (AGEN-117) carries at the top of its DTO, read from its own
+ * metadata with a shape check only: a string id, and one of the two modes. Anything else is left out, so a
+ * client never has to guess at a malformed value. The metadata keys are server-owned.
+ */
+function forkFieldsOf(metadata: Record<string, unknown>): {
+	forkedFromSessionId?: string;
+	forkPermissionBranch?: "ask" | "restricted";
+} {
+	const from = metadata.forkedFromSessionId;
+	if (typeof from !== "string" || from === "") return {};
+	const mode = metadata.forkPermissionBranch;
+	return {
+		forkedFromSessionId: from,
+		...(mode === "ask" || mode === "restricted" ? { forkPermissionBranch: mode } : {}),
+	};
+}
+
 export function mapSessionDto<
 	T extends SessionRowLike,
 	E extends Record<string, unknown> = Record<string, never>,
@@ -82,6 +100,8 @@ export function mapSessionDto<
 		nativeName: string | null;
 		ownerKind: OwnerKind;
 		operationalStatus: OperationalStatus;
+		forkedFromSessionId?: string;
+		forkPermissionBranch?: "ask" | "restricted";
 	} {
 	const metadata = (row.metadata ?? {}) as Record<string, unknown>;
 
@@ -101,6 +121,12 @@ export function mapSessionDto<
 	// ingestKeyId never leaves the server — removed here, not just
 	// left undefined, so it's absent from the serialized JSON too.
 	const { ingestKeyId: _ingestKeyId, ...rest } = row as T & { ingestKeyId?: string | null };
+	// The text of a message a stranger sent a takeover fork (AGEN-117 T3) is for the session's owner or an
+	// admin, through the approvals read, and nowhere else: a session DTO is read by every team member.
+	if ("peerTurn" in metadata) {
+		const { peerTurn: _peerTurn, ...publicMetadata } = metadata;
+		(rest as { metadata: unknown }).metadata = publicMetadata;
+	}
 
 	return {
 		...rest,
@@ -109,11 +135,14 @@ export function mapSessionDto<
 		nativeName,
 		ownerKind,
 		operationalStatus,
+		...forkFieldsOf(metadata),
 	} as Omit<T, "ingestKeyId"> &
 		E & {
 			nameSource: NameSource;
 			nativeName: string | null;
 			ownerKind: OwnerKind;
 			operationalStatus: OperationalStatus;
+			forkedFromSessionId?: string;
+			forkPermissionBranch?: "ask" | "restricted";
 		};
 }

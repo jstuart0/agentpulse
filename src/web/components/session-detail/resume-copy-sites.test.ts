@@ -58,3 +58,32 @@ describe("the sites that stay as they are", () => {
 		}
 	});
 });
+
+describe("a continued Claude session's way back (AGEN-117)", () => {
+	test("the composer's degraded sentences for a fork say 'Resume it', in the file already counted above", () => {
+		const composer = read("src/web/components/session-detail/prompt-composer-view.ts");
+		expect(composer).toContain(
+			"A running turn didn't finish, and a request that was waiting didn't run.",
+		);
+		expect(composer).toContain(" Resume it to keep going.");
+		// The count of sites is unchanged: a fork's sentences live in the composer's own file.
+		expect(CHANGED.filter((file) => read(file).includes("Resume it"))).toHaveLength(3);
+	});
+
+	test("the sites that only start or explain never promise a Resume the page doesn't offer", () => {
+		for (const file of [
+			"src/web/components/session-detail/claude-takeover-copy.ts",
+			"src/web/components/session-detail/fork-status-view.ts",
+			"src/shared/claude-fork-copy.ts",
+		]) {
+			expect(read(file), file).not.toContain("Resume it");
+		}
+	});
+
+	test("the host's and the server's stored sentences for a fork say 'Resume it' only where the dashboard shows Resume", () => {
+		const messages = read("src/shared/managed-messages.ts");
+		// Each of these three is shown where the composer offers Resume for a degraded fork.
+		expect(messages).toContain("Resume it to keep going.");
+		expect(messages.match(/Resume the session, then send your prompt again\./g)).toHaveLength(1);
+	});
+});

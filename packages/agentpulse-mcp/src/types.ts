@@ -269,6 +269,18 @@ export interface Session {
 	 * src/shared's OperationalStatus type.
 	 */
 	operationalStatus?: "waiting" | "working" | "idle" | "error" | "completed";
+	/** On a session AgentPulse made by continuing an observed Claude Code session: the id it was forked from. Absent otherwise and from an older server. */
+	forkedFromSessionId?: string;
+	/** With `forkedFromSessionId`: the mode the host picked for this fork from its Claude login, per fork. `restricted` ignores the person's own Claude settings; `ask` leaves them in force. */
+	forkPermissionBranch?: "ask" | "restricted";
+	/** On the observed session a fork was made from, detail response only: the newest fork, its name and whether it is still live. */
+	continuedIn?: { sessionId: string; name: string | null; live: boolean };
+	/** On a continued session, detail response only: the observed session it was forked from, by name, and whether it is still there, archived or deleted. Absent from an older server ("can't tell"). */
+	continuedFrom?: {
+		sessionId: string;
+		name: string | null;
+		state: "available" | "archived" | "deleted";
+	};
 }
 
 export interface SessionEvent {
@@ -987,7 +999,7 @@ export interface ActionRequest {
 
 export type CodexApprovalStatus = "pending" | "answered" | "closed";
 export type CodexApprovalDecision = "accept" | "decline" | "cancel";
-export type CodexApprovalRequestKind = "command" | "file_change";
+export type CodexApprovalRequestKind = "command" | "file_change" | "claude_tool";
 // The closed sets this version knows (held equal to src/shared/codex-approvals.ts by
 // src/shared/codex-approvals-mcp-parity.test.ts). A newer or older server can send a value
 // outside them; the tools only pass these through and never branch on them, so an unknown
@@ -1006,7 +1018,8 @@ export type CodexApprovalOutcome =
 	| "turn_ended"
 	| "codex_shut_down"
 	| "session_stopped"
-	| "approved_then_stopped";
+	| "approved_then_stopped"
+	| "decided_elsewhere";
 export type CodexApprovalNotApprovableReason =
 	| "redacted"
 	| "invisible_chars"
@@ -1020,7 +1033,13 @@ export type CodexApprovalNotApprovableReason =
 	| "network"
 	| "grant_root"
 	| "unknown_param"
-	| "accept_not_offered";
+	| "accept_not_offered"
+	| "unknown_tool"
+	| "requires_interaction"
+	| "symlink_target"
+	| "input_not_stable"
+	| "agent_memory"
+	| "path_not_absolute";
 
 export interface CodexApprovalHost {
 	state: "live" | "offline" | "gone";
@@ -1046,6 +1065,8 @@ export interface CodexApprovalPreview {
 	paths?: CodexApprovalPathPreview[];
 	pathOutsideCwd: boolean;
 	nonAscii: boolean;
+	tool?: string;
+	target?: string;
 }
 
 export interface CodexApprovalSummary {
@@ -1066,11 +1087,23 @@ export interface CodexApprovalSummary {
 	preview: CodexApprovalPreview | null;
 }
 
+/**
+ * The text of a message something other than AgentPulse sent a takeover fork (AGEN-117), as the server kept
+ * it: redacted, or, if redaction changed anything, no text and `hidden` true; no text and `hidden` false means the host found no
+ * line Claude tags as a peer's and the message was not captured. Owner or admin only.
+ */
+export interface ClaudePeerTurnNotice {
+	text: string | null;
+	hidden: boolean;
+}
+
 export interface CodexApprovalList {
 	v: 1;
 	approvals: CodexApprovalSummary[];
 	host: CodexApprovalHost;
 	viewer: CodexApprovalViewer;
+	/** Optional and additive: absent unless a takeover fork was stopped for a message it was sent. */
+	peerTurn?: ClaudePeerTurnNotice;
 }
 
 export interface CodexApprovalPresentationChange {
@@ -1087,6 +1120,17 @@ export interface CodexApprovalCommandPresentation {
 	cwd: string | null;
 	reason: string | null;
 	grantRoot: string | null;
+	blockedPath?: string | null;
+}
+
+export interface CodexApprovalClaudeToolPresentation {
+	v: 1;
+	requestKind: "claude_tool";
+	tool: string;
+	target: string | null;
+	cwd: string | null;
+	reason: string | null;
+	grantRoot: string | null;
 }
 
 export interface CodexApprovalFileChangePresentation {
@@ -1100,7 +1144,8 @@ export interface CodexApprovalFileChangePresentation {
 
 export type CodexApprovalPresentation =
 	| CodexApprovalCommandPresentation
-	| CodexApprovalFileChangePresentation;
+	| CodexApprovalFileChangePresentation
+	| CodexApprovalClaudeToolPresentation;
 
 export interface CodexApprovalDetail {
 	v: 1;
@@ -1112,6 +1157,7 @@ export interface CodexApprovalDetail {
 	 * read it as "can't tell", never as "inside".
 	 */
 	outsideCwd?: boolean[];
+	touchesAgentConfig?: boolean;
 	reasonText: string | null;
 }
 

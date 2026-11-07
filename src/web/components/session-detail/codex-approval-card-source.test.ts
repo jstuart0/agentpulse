@@ -169,7 +169,7 @@ describe("the chunk", () => {
 		const page = read("pages/SessionDetailPage.tsx");
 		expect(page).toMatch(/\.catch\(\(\) =>/);
 		expect(page).toMatch(/hasPendingCodexApproval\(session\) \?/);
-		expect(page).toMatch(/CHUNK_LOAD_FAILED_COPY/);
+		expect(page).toMatch(/chunkLoadFailedCopy/);
 	});
 
 	test("the person routes are called from the hook and the card, nowhere else", () => {

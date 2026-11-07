@@ -19,7 +19,7 @@ export type LaunchMetadata = {
 };
 
 export type HeadlessProgressUpdate = {
-	status: "running" | "completed" | "failed";
+	status: "running" | "completed" | "failed" | "cancelled";
 	pid?: number | null;
 	error?: string | null;
 	providerLaunchMetadata: Record<string, unknown>;
@@ -138,6 +138,9 @@ export function summarizeStreamLine(
 				: typeof payload.event === "string"
 					? payload.event
 					: "stream";
+		// A control request, its answer or its cancel is protocol, not activity: its `input`/`description` hold
+		// the very text (a command, a path) that never goes in a timeline row.
+		if (providerEventType.startsWith("control_")) return null;
 		const text = sanitizeCliText(extractVisibleText(payload));
 
 		if (typeof payload.tool_name === "string") {

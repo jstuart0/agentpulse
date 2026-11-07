@@ -405,6 +405,22 @@ describe("check-no-test-seam-leaks CLI exit code", () => {
 		expect(stderr).toContain("_setClockForTest");
 	});
 
+	test.each(["bin/cli.ts", "packages/agentpulse-mcp/src/server.ts"])(
+		"a stop-ladder kill seam imported by shipped code at %s exits 1",
+		(rel) => {
+			const root = tree({
+				"src/supervisor/process-stop.ts":
+					"export function __setGroupKillerForTests(k: unknown): unknown { return k; }\n",
+				[rel]:
+					'import { __setGroupKillerForTests } from "../src/supervisor/process-stop.js";\n__setGroupKillerForTests(null);',
+			});
+			const { code, stderr } = runGuard(root);
+			expect(code).toBe(1);
+			expect(stderr).toContain(rel);
+			expect(stderr).toContain("__setGroupKillerForTests");
+		},
+	);
+
 	test("a leak in a .tsx file is found", () => {
 		const root = tree({
 			"src/server/services/thing.ts": SEAM,
@@ -435,5 +451,77 @@ describe("the real repository has zero test-seam leaks today", () => {
 		const { join } = await import("node:path");
 		const violations = await collectTestSeamViolations(root, [join(root, "src", "server")]);
 		expect(violations).toEqual([]);
+	});
+});
+
+describe("the stop ladder's kill seams (AGEN-110, D10)", () => {
+	const STOP = "src/supervisor/process-stop.ts";
+	const DEFINITION = [
+		"export function __setDescendantKillerForTests(k: unknown): unknown { return k; }",
+		"export function __setGroupKillerForTests(k: unknown): unknown { return k; }",
+		"export function __trackGroupLeadersForTests(record: unknown): void { record; }",
+	].join("\n");
+	const seams = [
+		"__setDescendantKillerForTests",
+		"__setGroupKillerForTests",
+		"__trackGroupLeadersForTests",
+	];
+
+	test("they are found as seams", () => {
+		expect(extractTestSeamExports(DEFINITION)).toEqual(seams);
+	});
+
+	test.each(seams)(
+		"%s imported by shipped code (a service, bin, the MCP package) is a violation",
+		(seam) => {
+			for (const rel of [
+				"src/supervisor/index.ts",
+				"bin/cli.ts",
+				"packages/agentpulse-mcp/src/server.ts",
+			]) {
+				const files = [
+					{ rel: STOP, content: DEFINITION },
+					{
+						rel,
+						content: `import { ${seam} } from "../src/supervisor/process-stop.js";\n${seam}(null);`,
+					},
+				];
+				const violations = collectViolationsFromFiles(files);
+				expect(violations.length).toBeGreaterThan(0);
+				expect(violations.every((v) => v.startsWith(`${rel}:`))).toBe(true);
+			}
+		},
+	);
+
+	test("process-stop.ts itself calling one is a violation; the test preload (test-utils/) and tests are not", () => {
+		const own = collectViolationsFromFiles([
+			{ rel: STOP, content: `${DEFINITION}\nfunction boot() { __setGroupKillerForTests(null); }` },
+		]);
+		expect(own.length).toBeGreaterThan(0);
+		const ok = collectViolationsFromFiles([
+			{ rel: STOP, content: DEFINITION },
+			{
+				rel: "src/supervisor/test-utils/refuse-foreign-signals.ts",
+				content:
+					'import { __setGroupKillerForTests } from "../process-stop.js";\n__setGroupKillerForTests(null);',
+			},
+			{
+				rel: "src/supervisor/process-stop.test.ts",
+				content:
+					'import { __trackGroupLeadersForTests } from "./process-stop.js";\n__trackGroupLeadersForTests(() => {});',
+			},
+		]);
+		expect(ok).toEqual([]);
+	});
+
+	test("the real tree (src, bin, the MCP package) has no shipped use of any of them", async () => {
+		const { collectTestSeamViolations } = await import("./lib/test-seam-utils.js");
+		const root = `${new URL("..", import.meta.url).pathname}`;
+		const all = await collectTestSeamViolations(root, [
+			`${root}src`,
+			`${root}bin`,
+			`${root}packages/agentpulse-mcp/src`,
+		]);
+		expect(all.filter((v) => seams.some((seam) => v.includes(seam)))).toEqual([]);
 	});
 });

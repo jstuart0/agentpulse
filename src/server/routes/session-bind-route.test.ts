@@ -474,14 +474,19 @@ describe("the body is strict", () => {
 		await noRows(id);
 	});
 
-	test("a claude_code session is agent_not_supported, with no rows", async () => {
+	test("a claude_code session on a host that can't continue Claude is host_cannot_run_claude, with no rows; copilot_cli stays agent_not_supported", async () => {
 		const host = await seedHost();
-		const id = await seedObserved({ agentType: "claude_code" });
 		const user = await seedLocalUser("br-claude");
-		const res = await bind(id, await browser(user.id), confirmed(host));
+		const claudeId = await seedObserved({ agentType: "claude_code" });
+		const res = await bind(claudeId, await browser(user.id), confirmed(host));
 		expect(res.status).toBe(409);
-		expect(await errorOf(res)).toBe("agent_not_supported");
-		await noRows(id);
+		expect(await errorOf(res)).toBe("host_cannot_run_claude");
+		await noRows(claudeId);
+		const copilotId = await seedObserved({ agentType: "copilot_cli" });
+		const copilot = await bind(copilotId, await browser(user.id), confirmed(host));
+		expect(copilot.status).toBe(409);
+		expect(await errorOf(copilot)).toBe("agent_not_supported");
+		await noRows(copilotId);
 	});
 });
 

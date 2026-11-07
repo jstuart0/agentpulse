@@ -11,13 +11,17 @@
  * Every read in the locked body goes through `tx`, with no other await in it. The pre-reads outside the lock
  * only choose the cheapest refusal; each fact is read again inside it.
  */
-import { eq } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { SESSION_IDLE_TIMEOUT_MS, isLaunchable } from "../../shared/constants.js";
 import { privilegeCliArgs } from "../../shared/launch-privileges.js";
 import {
+	CLAUDE_FORK_DEADLINE_MS,
+	CLAUDE_TAKEOVER,
+	CLAUDE_TAKEOVER_PRIVILEGES,
 	RESUMES_SESSIONS,
 	type ResumeActionMetadata,
 	TAKEOVER_PRIVILEGES,
+	buildClaudeResumeActionMetadata,
 	buildResumeActionMetadata,
 	isResumableSessionId,
 } from "../../shared/session-resume.js";
@@ -31,11 +35,13 @@ import type { Actor, InstanceModeName } from "../auth/actor.js";
 import { awaitSeamInsideAdminLock, withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
 import { apiKeys, controlActions, managedSessions, sessions } from "../db/schema/index.js";
+import { jsonExtractText } from "../db/sql-helpers.js";
 import { requestWsRevalidation } from "../ws/revalidation.js";
 import { logAdminAction } from "./audit-log.js";
 import { mayBindToHost, refuseBindSession } from "./authorization.js";
 import { BindRefusal } from "./bind-refusal.js";
 import {
+	isClaudeTakeoverLaunch,
 	launchOwnedBySessionOwner,
 	mapControlAction,
 	resolveManagedLaunch,
@@ -126,15 +132,17 @@ async function readSession(
 
 function templateFor(session: SessionRow, cwd: string): SessionTemplateInput {
 	const label = session.displayName?.trim() || `session ${session.sessionId.slice(0, 8)}`;
+	const claude = session.agentType === "claude_code";
+	const privileges = claude ? CLAUDE_TAKEOVER_PRIVILEGES : TAKEOVER_PRIVILEGES;
 	return normalizeTemplateInput({
 		name: `Take over: ${label}`.slice(0, MAX_TEMPLATE_NAME),
-		agentType: "codex_cli",
+		agentType: claude ? "claude_code" : "codex_cli",
 		cwd,
 		baseInstructions: "",
 		taskPrompt: "",
 		model: null,
-		approvalPolicy: TAKEOVER_PRIVILEGES.approvalPolicy,
-		sandboxMode: TAKEOVER_PRIVILEGES.sandboxMode,
+		approvalPolicy: privileges.approvalPolicy,
+		sandboxMode: privileges.sandboxMode,
 		env: {},
 	});
 }
@@ -155,6 +163,17 @@ function judgeCandidateCwd(cwd: string | null, trustedRoots: string[]): string {
  */
 function refuseIfHostCannotRun(template: SessionTemplateInput, host: SupervisorRecord): void {
 	const features = host.capabilities.features ?? [];
+	if (template.agentType === "claude_code") {
+		// A Claude takeover needs its own feature, advertised only where `claude` resolves (T14); a Claude-only
+		// host has no Codex feature and doesn't need one.
+		if (!features.includes(CLAUDE_TAKEOVER)) throw new BindRefusal("host_cannot_run_claude");
+		// Supported on macOS only so far (the host's protocol gate refuses elsewhere); refused here, not queued.
+		if (host.capabilities.os !== "macos") throw new BindRefusal("host_cannot_run_claude");
+		if (validateAgainstSupervisor(template, host, "headless").errors.length > 0) {
+			throw new BindRefusal("host_cannot_run_claude");
+		}
+		return;
+	}
 	if (!features.includes(RESUMES_SESSIONS) || !features.includes(ENFORCES_LAUNCH_PRIVILEGES)) {
 		throw new BindRefusal("host_upgrade_required");
 	}
@@ -240,6 +259,105 @@ async function announceCommitted(sessionId: string, launchRequestId: string): Pr
 	}
 }
 
+interface ClaudeForkInput {
+	fresh: SessionRow;
+	cwd: string;
+	host: { id: string; hostName: string };
+	actor: Actor;
+	intendedOwner: string | null;
+	assignOwner: boolean;
+	now: () => number;
+	seam: (step: BindStep, tx: unknown) => Promise<void>;
+}
+
+/**
+ * The write of a Claude takeover (AGEN-117 T5), in the bind's lock: one `resume` action on the observed
+ * session S that names the fork N the server mints now, and nothing else. No session row, no launch, no
+ * managed row and no lock: those appear when the host's verified success report settles. S is refused
+ * `already_managed` while a takeover of it is open, or the newest one that succeeded names a fork still alive.
+ */
+async function queueClaudeFork(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	input: ClaudeForkInput,
+) {
+	const { fresh, cwd, host, actor, now } = input;
+	const sessionId = fresh.sessionId;
+	const history: Array<{ status: string; metadata: unknown }> = await tx
+		.select({ status: controlActions.status, metadata: controlActions.metadata })
+		.from(controlActions)
+		.where(
+			and(
+				eq(controlActions.sessionId, sessionId),
+				eq(controlActions.actionType, "resume"),
+				isNotNull(jsonExtractText(controlActions.metadata, "$.forkSessionId")),
+				inArray(controlActions.status, ["queued", "running", "succeeded"]),
+			),
+		)
+		.orderBy(desc(controlActions.createdAt));
+	if (history.some((row) => row.status !== "succeeded")) throw new BindRefusal("already_managed");
+	const newest = history[0]?.metadata as { forkSessionId?: unknown } | undefined;
+	if (typeof newest?.forkSessionId === "string") {
+		const [fork] = await tx
+			.select({ state: managedSessions.managedState })
+			.from(managedSessions)
+			.where(eq(managedSessions.sessionId, newest.forkSessionId))
+			.limit(1);
+		if (fork && ["pending", "managed", "degraded"].includes(fork.state)) {
+			throw new BindRefusal("already_managed");
+		}
+	}
+	await input.seam("checked", tx);
+
+	const forkSessionId = crypto.randomUUID();
+	const carrierLaunchId = crypto.randomUUID();
+	const controlActionId = crypto.randomUUID();
+	const timestamp = new Date(now()).toISOString();
+	const metadata = buildClaudeResumeActionMetadata({
+		resumeKind: "takeover",
+		threadId: sessionId,
+		candidateCwd: cwd,
+		expectedEnforcedArgs: privilegeCliArgs(
+			"claude_code",
+			CLAUDE_TAKEOVER_PRIVILEGES.approvalPolicy,
+			CLAUDE_TAKEOVER_PRIVILEGES.sandboxMode,
+		),
+		boundByUserId: actor.userId,
+		sessionName: fresh.displayName,
+		forkSessionId,
+		carrierLaunchId,
+		targetSupervisorId: host.id,
+		hostName: host.hostName,
+		intendedOwner: input.intendedOwner,
+		ownerAtBind: fresh.ownerUserId ?? null,
+		assignOwner: input.assignOwner,
+		forkDeadlineAt: new Date(now() + CLAUDE_FORK_DEADLINE_MS).toISOString(),
+	});
+	const [row] = await tx
+		.insert(controlActions)
+		.values({
+			id: controlActionId,
+			sessionId,
+			launchRequestId: null,
+			actionType: "resume",
+			requestedBy: actor.label,
+			requestedByUserId: actor.userId,
+			status: "queued",
+			metadata,
+			createdAt: timestamp,
+			updatedAt: timestamp,
+		})
+		.returning();
+	await input.seam("action", tx);
+	return {
+		action: mapControlAction(row),
+		launchRequestId: carrierLaunchId,
+		hostId: host.id,
+		intendedOwner: null as string | null,
+		forkOf: forkSessionId as string | null,
+	};
+}
+
 export async function bindObservedSession(
 	sessionId: string,
 	input: BindInput,
@@ -266,8 +384,11 @@ export async function bindObservedSession(
 	if (authority !== null || session === null)
 		throw new BindRefusal(authority ?? "session_not_found");
 	if (session.isArchived) throw new BindRefusal("session_not_found");
-	// An id that isn't a codex_cli session, or isn't launchable at all, is the same refusal.
-	if (!isLaunchable(session.agentType) || session.agentType !== "codex_cli") {
+	// Codex and Claude Code can be taken over; anything else (Copilot, an unknown type) is the same refusal.
+	if (
+		!isLaunchable(session.agentType) ||
+		(session.agentType !== "codex_cli" && session.agentType !== "claude_code")
+	) {
 		throw new BindRefusal("agent_not_supported");
 	}
 	if (!isResumableSessionId(sessionId)) throw new BindRefusal("session_id_unsupported");
@@ -315,7 +436,7 @@ export async function bindObservedSession(
 		});
 		if (freshHostVerdict !== null) throw new BindRefusal(freshHostVerdict);
 		if (fresh.isArchived) throw new BindRefusal("session_not_found");
-		if (fresh.agentType !== "codex_cli") throw new BindRefusal("agent_not_supported");
+		if (fresh.agentType !== session.agentType) throw new BindRefusal("agent_not_supported");
 		const trustedRoots = readTrustedRoots(hostNow.trustedRoots);
 		const cwd = judgeCandidateCwd(fresh.cwd, trustedRoots);
 		// The fresh host row, judged exactly as the pre-read judged the first one: it may have been
@@ -340,6 +461,18 @@ export async function bindObservedSession(
 		// nothing to undo. The launch row names who it will belong to, for the readers that scope by it.
 		const intendedOwner = fresh.ownerUserId ?? hostNow.ownerUserId ?? actor.userId;
 		const assignOwner = mode === "team" && fresh.ownerUserId === null && intendedOwner !== null;
+		if (fresh.agentType === "claude_code") {
+			return await queueClaudeFork(tx, {
+				fresh,
+				cwd,
+				host: { ...host, id: host.id, hostName: host.hostName },
+				actor,
+				intendedOwner,
+				assignOwner,
+				now,
+				seam,
+			});
+		}
 		const launchRequestId = crypto.randomUUID();
 		const controlActionId = crypto.randomUUID();
 		const timestamp = new Date(now()).toISOString();
@@ -439,10 +572,24 @@ export async function bindObservedSession(
 			launchRequestId,
 			hostId: host.id,
 			intendedOwner: assignOwner ? intendedOwner : null,
+			forkOf: null as string | null,
 		};
 	});
 
 	// ── after commit ──
+	if (committed.forkOf) {
+		// The session's row is unchanged (T5): the action lives on it and the new session doesn't exist yet,
+		// so `launchRequestId` names a carrier row that appears only at the settle. S is announced so a
+		// dashboard re-reads its actions (AGEN-117 P5-I3).
+		logAdminAction("session_bound", actor, {
+			sessionId,
+			supervisorId: committed.hostId,
+			launchRequestId: committed.launchRequestId,
+			forkSessionId: committed.forkOf,
+		});
+		await announceCommitted(sessionId, committed.launchRequestId);
+		return { action: committed.action, launchRequestId: committed.launchRequestId };
+	}
 	logAdminAction("session_bound", actor, {
 		sessionId,
 		supervisorId: committed.hostId,
@@ -451,6 +598,100 @@ export async function bindObservedSession(
 	});
 	await announceCommitted(sessionId, committed.launchRequestId);
 	return { action: committed.action, launchRequestId: committed.launchRequestId };
+}
+
+/** The name of the observed session a fork came from, for the sentences that point back to it; null if it is gone or unnamed. */
+async function forkSourceName(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	fork: SessionRow,
+): Promise<string | null> {
+	const sourceId = (fork.metadata as { forkedFromSessionId?: unknown } | null)?.forkedFromSessionId;
+	if (typeof sourceId !== "string" || sourceId === "") return null;
+	const [row]: Array<{ displayName: string | null }> = await tx
+		.select({ displayName: sessions.displayName })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sourceId))
+		.limit(1);
+	return row?.displayName ?? null;
+}
+
+/**
+ * Recovery of a fork (AGEN-117 T13), in `queueSessionResume`'s lock: the same `resume` action, on N, which
+ * the host runs under the mode its own record stored (nothing here names one, and nothing re-picks it).
+ */
+async function queueClaudeRecovery(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	input: {
+		sessionId: string;
+		fresh: SessionRow;
+		launch: { id: string; cwd: string | null };
+		managed: typeof managedSessions.$inferSelect;
+		actor: Actor;
+		now: () => number;
+	},
+) {
+	const { sessionId, fresh, launch, managed, actor, now } = input;
+	const hostId = await resolveSessionOwner(tx, sessionId);
+	if (hostId === null) throw new BindRefusal("host_gone");
+	const hostNow = await readHostState(tx, hostId, now());
+	if (hostNow.state === "gone") throw new BindRefusal("host_gone");
+	if (hostNow.state === "offline") throw new BindRefusal("host_offline");
+	const trustedRoots = readTrustedRoots(hostNow.trustedRoots);
+	const cwd = judgeCandidateCwd(launch.cwd, trustedRoots);
+	const template = normalizeTemplateInput({
+		name: "Resume",
+		agentType: "claude_code",
+		cwd,
+		model: null,
+		approvalPolicy: CLAUDE_TAKEOVER_PRIVILEGES.approvalPolicy,
+		sandboxMode: CLAUDE_TAKEOVER_PRIVILEGES.sandboxMode,
+		env: {},
+	});
+	refuseIfHostCannotRun(template, {
+		id: hostId,
+		hostName: managed.hostName ?? hostId,
+		platform: "",
+		arch: "",
+		version: "",
+		capabilities: withCapabilityDefaults(hostNow.capabilities),
+		trustedRoots,
+	} as SupervisorRecord);
+	const controlActionId = crypto.randomUUID();
+	const timestamp = new Date(now()).toISOString();
+	if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp, now))) {
+		throw new BindRefusal("not_resumable");
+	}
+	const metadata = buildClaudeResumeActionMetadata({
+		resumeKind: "recovery",
+		threadId: sessionId,
+		candidateCwd: cwd,
+		expectedEnforcedArgs: privilegeCliArgs(
+			"claude_code",
+			CLAUDE_TAKEOVER_PRIVILEGES.approvalPolicy,
+			CLAUDE_TAKEOVER_PRIVILEGES.sandboxMode,
+		),
+		boundByUserId: actor.userId,
+		sessionName: fresh.displayName,
+		sourceName: await forkSourceName(tx, fresh),
+	});
+	const [row] = await tx
+		.insert(controlActions)
+		.values({
+			id: controlActionId,
+			sessionId,
+			launchRequestId: launch.id,
+			actionType: "resume",
+			requestedBy: actor.label,
+			requestedByUserId: actor.userId,
+			status: "queued",
+			metadata,
+			createdAt: timestamp,
+			updatedAt: timestamp,
+		})
+		.returning();
+	return { action: mapControlAction(row), launchRequestId: launch.id, hostId };
 }
 
 /**
@@ -507,10 +748,28 @@ export async function queueSessionResume(
 		if (
 			!launch ||
 			launch.launchCorrelationId !== sessionId ||
-			launch.agentType !== "codex_cli" ||
+			(launch.agentType !== "codex_cli" && launch.agentType !== "claude_code") ||
 			!(await launchOwnedBySessionOwner(tx, sessionId, launch))
 		) {
 			throw new BindRefusal("not_resumable");
+		}
+		if (launch.agentType === "claude_code") {
+			// Only a fork this feature made is resumed (T13); a launched Claude session never is.
+			if (
+				!isClaudeTakeoverLaunch(launch) ||
+				!(fresh.metadata as Record<string, unknown> | null)?.forkedFromSessionId ||
+				threadId !== sessionId
+			) {
+				throw new BindRefusal("not_resumable");
+			}
+			return await queueClaudeRecovery(tx, {
+				sessionId,
+				fresh,
+				launch,
+				managed,
+				actor,
+				now,
+			});
 		}
 
 		const hostId = await resolveSessionOwner(tx, sessionId);

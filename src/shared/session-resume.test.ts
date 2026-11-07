@@ -70,6 +70,8 @@ test("the refusal-code union is exactly the plan's list, so a code without copy 
 			"already_managed",
 			"cwd_not_trusted",
 			"cwd_unknown",
+			"end_session_first",
+			"host_cannot_run_claude",
 			"host_cannot_run_codex",
 			"host_gone",
 			"host_not_allowed",

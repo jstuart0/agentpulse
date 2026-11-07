@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { STOP_FAILED_ERROR } from "../shared/managed-messages.js";
 import type { ControlAction } from "../shared/types.js";
 import { type ControlProviders, createControlActionHandler } from "./control-actions.js";
 import { CleanupError } from "./services/cleanup-workarea.js";
@@ -79,6 +80,8 @@ function harness(
 	});
 	const providers = {
 		hasManagedCodexRuntime: () => false,
+		hasClaudeStreamRuntime: () => false,
+		hasHeadlessRuntime: () => false,
 		stopManagedCodexSession: async (id: string) => {
 			ran.push(`stop:${id}`);
 			if (over.stopFails) throw new Error("runtime gone");
@@ -499,7 +502,8 @@ describe("an action that is allowed runs as before", () => {
 		await h.handle(action({ actionType: "stop" }));
 		expect(h.calls.at(-1)).toEqual({
 			path: statusPath(),
-			body: { status: "failed", error: "runtime gone" },
+			// Fixed words: the runtime's own error text stays in the host log, never in the report.
+			body: { status: "failed", error: STOP_FAILED_ERROR },
 		});
 	});
 

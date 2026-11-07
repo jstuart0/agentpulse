@@ -1,5 +1,8 @@
 import { and, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
-import { HOST_RESTARTED_SYNC_ERROR } from "../../shared/managed-messages.js";
+import {
+	HOST_RESTARTED_FORK_SYNC_ERROR,
+	HOST_RESTARTED_SYNC_ERROR,
+} from "../../shared/managed-messages.js";
 import { resumeFailureMessage } from "../../shared/session-resume.js";
 import { isWithinWindow } from "../../shared/time-window.js";
 import { parseStoredTimestamp } from "../../shared/timestamp.js";
@@ -20,8 +23,10 @@ import {
 	supervisors,
 	users,
 } from "../db/schema/index.js";
+import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
+import { stripAndRedact } from "./ai/redactor.js";
 import { closeApprovalsForSession } from "./codex-approvals.js";
 import { failResumeAction } from "./control-actions.js";
 import {
@@ -91,6 +96,14 @@ export async function getManagedSession(sessionId: string) {
 }
 
 /**
+ * Agents whose host reports when a turn is over, so a terminal or idle report can end the working state
+ * without waiting for a hook (AGEN-110: a stopped Claude session, which no Stop hook will ever reach).
+ */
+function endsWithManagedRuntime(agentType: string | null | undefined): boolean {
+	return agentType === "codex_cli" || agentType === "claude_code";
+}
+
+/**
  * A state report that says the managed session has ended: `status` completed or
  * failed, or a managed state of stopped, completed or failed. Mirrors the
  * supervisor gate's isTerminalReport. `degraded` is not terminal (a rename that
@@ -124,8 +137,19 @@ function withoutServerOwnedMetadata(
  * Keys of a session's metadata only the server writes. `permissionWait` is the record of what the session
  * is blocked on, from hook events and approval rows. `managedResumeAt` fences a resumed session against a
  * stale or forged `SessionEnd` and is never cleared (AGEN-115, D14): a supervisor can neither set nor clear it.
+ * `endedByEvent` is the hook terminal latch (D21); the server sets it for a stopped Claude row (AGEN-110).
  */
-const SERVER_OWNED_METADATA_KEYS = ["permissionWait", "managedResumeAt"] as const;
+const SERVER_OWNED_METADATA_KEYS = [
+	"permissionWait",
+	"managedResumeAt",
+	"endedByEvent",
+	// A takeover fork's markers (AGEN-117 T6, T18): `forkedFromSessionId` is what makes the hook path drop a
+	// session's posts, and `peerTurn` holds the redacted text of a message a stranger sent it. A supervisor
+	// report can write none of them.
+	"forkedFromSessionId",
+	"forkPermissionBranch",
+	"peerTurn",
+] as const;
 
 // Test seam (AGEN-115): runs after a report's open-action check and before its writes, so a test can land a
 // settle of the same action in that window.
@@ -171,6 +195,59 @@ async function inTransactionOf<T>(
 	return alreadyInside ? fn(db) : withTransaction(fn);
 }
 
+/**
+ * A stopped Claude row holds the hook terminal latch (D21's `endedByEvent`, 30 s) so a hook from the dying
+ * process can't reopen it, and a LIVE report that starts a new run on a stopped row (a managed prompt) lifts
+ * it, so the new run's own Stop hook isn't held. A replay (an outbox resend of something older) never lifts
+ * it: it says nothing about a run starting now. The hook path already sets, honours and exempts
+ * `UserPromptSubmit` and `SessionStart` from it; this is the managed path's half. Claude only, judged by the
+ * launch's agent type (what the host was asked to run) before the session row's, which a hook can create
+ * first with a type of its choosing. Codex hooks post under the thread id and never reach the session row.
+ * The launch is read only when a change is on the table, so an ordinary report costs nothing extra.
+ */
+async function claudeStopLatchChange(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	input: ManagedSessionStateInput,
+	existingManaged: { managedState: string } | undefined,
+	existingSession: { agentType: string | null } | undefined,
+	replay: boolean,
+): Promise<"set" | "clear" | null> {
+	const change: "set" | "clear" | null =
+		input.managedState === "stopped"
+			? "set"
+			: existingManaged?.managedState === "stopped" && !isTerminalStateReport(input) && !replay
+				? "clear"
+				: null;
+	if (change === null || !existingSession) return null;
+	const [launch] = await db
+		.select({ agentType: launchRequests.agentType })
+		.from(launchRequests)
+		.where(eq(launchRequests.launchCorrelationId, input.sessionId))
+		.limit(1);
+	return (launch?.agentType ?? existingSession.agentType) === "claude_code" ? change : null;
+}
+
+/** The most a message's text is kept at (the host cuts it to this too). */
+export const PEER_TURN_MAX_CHARS = 1024;
+
+/**
+ * What the server keeps of a message a stranger sent a fork: the text, run through the approval pipeline's
+ * redaction, or, if redaction (or the stripping of invisible characters) changed anything, no text at all and
+ * a flag, so the reader is shown fixed words instead of something that may hold a secret.
+ */
+export function peerTurnRecord(
+	text: string,
+	at: string,
+): { text: string | null; hidden: boolean; at: string } {
+	// The host found no line Claude tags as a peer's: stored as "not captured" (no text, not hidden), never guessed.
+	if (text.trim() === "") return { text: null, hidden: false, at };
+	const cut = text.slice(0, PEER_TURN_MAX_CHARS);
+	const { text: cleaned, hits } = stripAndRedact(cut);
+	const changed = hits.length > 0 || cleaned !== cut;
+	return changed ? { text: null, hidden: true, at } : { text: cleaned, hidden: false, at };
+}
+
 async function writeManagedSessionState(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	db: any,
@@ -201,16 +278,17 @@ async function writeManagedSessionState(
 	if (input.cwd !== undefined) sessionUpdates.cwd = input.cwd;
 	if (input.model !== undefined) sessionUpdates.model = input.model;
 
-	// A Codex runtime reporting idle means its turn is over (completed, failed to start, or the
-	// runtime closed), whatever event did or didn't arrive. Folded into the update this function
+	// A Codex or Claude host reporting idle means its turn is over (completed, failed to start, or the
+	// runtime closed), whatever event did or didn't arrive; for a stopped Claude session no Stop hook will
+	// ever come, so this is the only thing that ends the turn. Folded into the update this function
 	// already makes, so it costs no statement. A repeat after a Completed event moves nothing:
 	// the completion is stamped only if the session was still working.
 	// A terminal report ends the session, so a turn can't still be running (the excluded closing report included).
-	if (isTerminalStateReport(input) && existingSession?.agentType === "codex_cli") {
+	if (isTerminalStateReport(input) && endsWithManagedRuntime(existingSession?.agentType)) {
 		sessionUpdates.isWorking = false;
 		sessionUpdates.currentTurnStartedAt = null;
 	}
-	if (input.status === "idle" && existingSession?.agentType === "codex_cli") {
+	if (input.status === "idle" && endsWithManagedRuntime(existingSession?.agentType)) {
 		sessionUpdates.isWorking = false;
 		sessionUpdates.currentTurnStartedAt = null;
 		if (existingSession.isWorking) sessionUpdates.lastAgentTurnCompletedAt = timestamp;
@@ -265,7 +343,22 @@ async function writeManagedSessionState(
 	} else {
 		await inTransactionOf(db, inTx, async (tx) => {
 			const updates: Record<string, unknown> = { ...sessionUpdates };
-			if (supervisorMetadata) {
+			const latch = await claudeStopLatchChange(
+				tx,
+				input,
+				existingManaged,
+				existingSession,
+				options.replay === true,
+			);
+			// The text of a message a stranger sent a takeover fork, from the host's degraded report: kept only in
+			// the server-owned `peerTurn`, redacted, and only for a session the server itself marked as a fork.
+			const peerText =
+				input.managedState === "degraded" && typeof input.peerTurnText === "string"
+					? input.peerTurnText
+					: null;
+			// A successful resume leaves the stranger's message behind: it is cleared with the sync error it explained.
+			const clearsPeer = input.clearProviderSyncError === true && resumeActionId !== null;
+			if (supervisorMetadata || latch !== null || peerText !== null || clearsPeer) {
 				// Late read-modify-write inside the transaction: re-read metadata
 				// immediately before writing so a concurrent writer's keys (e.g.
 				// applyPermissionWaitTransition's permissionWait) aren't clobbered
@@ -276,10 +369,24 @@ async function writeManagedSessionState(
 					.from(sessions)
 					.where(eq(sessions.sessionId, input.sessionId))
 					.limit(1);
-				updates.metadata = {
+				const { endedByEvent: heldLatch, ...rest } = {
 					...(fresh?.metadata ?? {}),
 					...supervisorMetadata,
-				};
+				} as Record<string, unknown>;
+				// The latch is the server's: set when a Claude row is reported stopped, lifted when a new run
+				// starts on it, and otherwise left exactly as the row had it.
+				const merged: Record<string, unknown> =
+					latch === "set"
+						? { ...rest, endedByEvent: { at: timestamp } }
+						: latch === "clear" || heldLatch === undefined
+							? rest
+							: { ...rest, endedByEvent: heldLatch };
+				if (peerText !== null && typeof merged.forkedFromSessionId === "string") {
+					merged.peerTurn = peerTurnRecord(peerText, timestamp);
+				} else if (clearsPeer) {
+					merged.peerTurn = undefined;
+				}
+				updates.metadata = merged;
 			}
 			await tx.update(sessions).set(updates).where(eq(sessions.sessionId, input.sessionId));
 		});
@@ -310,7 +417,8 @@ async function writeManagedSessionState(
 		options.replay === true &&
 		!isTerminalStateReport(input) &&
 		existingManaged?.managedState === "degraded" &&
-		existingManaged.providerSyncError === HOST_RESTARTED_SYNC_ERROR;
+		(existingManaged.providerSyncError === HOST_RESTARTED_SYNC_ERROR ||
+			existingManaged.providerSyncError === HOST_RESTARTED_FORK_SYNC_ERROR);
 	const providerSyncState =
 		(heldDegraded ? undefined : input.providerSyncState) ??
 		existingManaged?.providerSyncState ??
@@ -572,36 +680,58 @@ export interface TurnBoundaryEvent {
 
 type TurnChange = "start" | "launch_start" | "end" | "stopped";
 
-/** What one event does to a managed Codex session's turn, or null. The marker is what makes it a Codex runtime's. */
-function turnChangeOf(event: TurnBoundaryEvent, late: boolean): TurnChange | null {
-	const marked = event.rawPayload?.codexRuntime === true;
+/**
+ * Which runtime's marker an event carries: a Codex app-server's (`codexRuntime`) or a takeover fork's
+ * long-lived Claude stream (`claudeStreamRuntime`, AGEN-117 T18). The marker decides which agent type's
+ * launch the event may move, so a Claude marker on a Codex row, or the reverse, changes nothing.
+ */
+type TurnAgent = "codex_cli" | "claude_code";
+
+function markerAgent(event: TurnBoundaryEvent): TurnAgent | null {
+	if (event.rawPayload?.codexRuntime === true) return "codex_cli";
+	if (event.rawPayload?.claudeStreamRuntime === true) return "claude_code";
+	return null;
+}
+
+/** What one event does to a managed session's turn, or null. The marker is what makes it a managed runtime's. */
+function turnChangeOf(
+	event: TurnBoundaryEvent,
+	late: boolean,
+): { change: TurnChange; agent: TurnAgent | null } | null {
+	const agent = markerAgent(event);
 	switch (event.eventType) {
 		case "HeadlessPromptSubmitted":
-			return marked && !late ? "start" : null;
+			return agent && !late ? { change: "start", agent } : null;
 		case "ManagedSessionStart":
-			return marked && !late ? "launch_start" : null;
+			return agent && !late ? { change: "launch_start", agent } : null;
 		case "HeadlessPromptCompleted":
 		case "HeadlessPromptFailed":
-			return marked ? "end" : null;
+			return agent ? { change: "end", agent } : null;
 		case "ManagedSessionStopped":
-			return "stopped";
+			return { change: "stopped", agent: null };
 		default:
 			return null;
 	}
 }
 
 /**
- * A managed Codex turn's working state, from the events a supervisor reports (AGEN-91 D5). Codex's
- * own hooks post under the thread id, not this session's id, so nothing else flips these columns.
- * The last relevant event in the batch wins. A late report (an outbox replay) can end a turn but
- * never start one. `db` is the receipt transaction's `tx` when there is one.
+ * A managed turn's working state, from the events a supervisor reports (AGEN-91 D5, AGEN-117 T18). Codex's
+ * own hooks post under the thread id, not this session's id, and a takeover fork's hooks are dropped
+ * outright, so nothing else flips these columns. The last relevant event in the batch wins. A late report
+ * (an outbox replay) can end a turn but never start one. `db` is the receipt transaction's `tx` when there is
+ * one.
  *
- * Statements: none for a batch with no relevant event (a Claude prompt or completion lacks the
- * marker, so no agent-type read is needed to decide that); one guarded UPDATE otherwise. That
- * includes ManagedSessionStopped, which carries no marker: on a Claude row it costs the one UPDATE
- * and changes nothing. The guard keeps a marker on another agent's row from changing anything, and
- * it reads the launch's agent type (what the host was asked to run) before the session row's, which
- * a hook can create first with a type of its choosing.
+ * A launched Claude's own hooks own its working state, so a launched Claude row is touched only by
+ * `ManagedSessionStopped` (AGEN-110): a stopped process will never send the Stop hook, so the host's stop
+ * event clears the working flag and the turn start. A takeover fork's turn events carry the Claude marker and
+ * move the row exactly as a Codex turn's do.
+ *
+ * Statements: none for a batch with no relevant event (a launched Claude's prompt or completion lacks the
+ * marker, so no agent-type read is needed to decide that); one guarded UPDATE otherwise. That includes
+ * ManagedSessionStopped, which carries no marker and clears working on either agent's row. The guard keeps
+ * a marker on a row of the other agent from changing anything, and it reads the launch's agent type (what
+ * the host was asked to run) before the session row's, which a hook can create first with a type of its
+ * choosing.
  */
 export async function applyManagedTurnBoundaries(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
@@ -610,15 +740,27 @@ export async function applyManagedTurnBoundaries(
 	incoming: readonly TurnBoundaryEvent[],
 	options: { late: boolean },
 ): Promise<void> {
-	let last: TurnChange | null = null;
+	let last: { change: TurnChange; agent: TurnAgent | null } | null = null;
 	for (const event of incoming) last = turnChangeOf(event, options.late) ?? last;
 	if (last === null) return;
+	// A Claude turn marker moves only a takeover fork's row. A launched Claude's own hooks own its working
+	// state, so the same marker on one of those changes nothing (the supervisor that owns it has no reason to
+	// send it). Read from the launch, which only a launch request writes; one extra statement, only for a batch
+	// that carries the Claude marker.
+	if (last.agent === "claude_code") {
+		const [launch] = await db
+			.select({ metadata: launchRequests.metadata })
+			.from(launchRequests)
+			.where(eq(launchRequests.launchCorrelationId, sessionId))
+			.limit(1);
+		if ((launch?.metadata as Record<string, unknown> | null)?.boundObservedSession !== true) return;
+	}
 
 	const now = new Date().toISOString();
 	const updates: Record<string, unknown> =
-		last === "stopped"
+		last.change === "stopped"
 			? { isWorking: false, currentTurnStartedAt: null }
-			: last === "end"
+			: last.change === "end"
 				? {
 						isWorking: false,
 						currentTurnStartedAt: null,
@@ -632,15 +774,22 @@ export async function applyManagedTurnBoundaries(
 						status: "active",
 						endedAt: null,
 						// A sent prompt acknowledges whatever came before it; the launch turn has nothing before it.
-						...(last === "start" ? { lastUserAcknowledgedAt: now } : {}),
+						...(last.change === "start" ? { lastUserAcknowledgedAt: now } : {}),
 					};
+	// A stop is reported by the host for either agent; every other change carries its runtime's marker.
+	const agents =
+		last.agent === null
+			? sql`in ('codex_cli', 'claude_code')`
+			: last.agent === "claude_code"
+				? sql`= 'claude_code'`
+				: sql`= 'codex_cli'`;
 	await db
 		.update(sessions)
 		.set(updates)
 		.where(
 			and(
 				eq(sessions.sessionId, sessionId),
-				sql`coalesce((select ${launchRequests.agentType} from ${launchRequests} where ${launchRequests.launchCorrelationId} = ${sessions.sessionId}), ${sessions.agentType}) = 'codex_cli'`,
+				sql`coalesce((select ${launchRequests.agentType} from ${launchRequests} where ${launchRequests.launchCorrelationId} = ${sessions.sessionId}), ${sessions.agentType}) ${agents}`,
 			),
 		);
 }
@@ -835,6 +984,137 @@ export async function degradeCodexSessionsOfRestartedHost(
 
 		await deps.afterWrites?.(tx);
 		return live.map((row) => row.sessionId);
+	});
+}
+
+/**
+ * A supervisor registered again, so the long-lived Claude process of every fork it held is gone (AGEN-117
+ * T10, P3-I19). The Codex pass above is keyed on the launch's agent type; a fork is a Claude launch whose
+ * session row names its source, so it needs its own. For the forks that host owns of record and that haven't
+ * ended: the row becomes `degraded` with HOST_RESTARTED_FORK_SYNC_ERROR (which a replayed report can't undo),
+ * the working flag clears (a cut turn reads WAITING), and the prompts and recovery resumes still open for
+ * them fail with fixed words and release their locks. A row already stamped is left alone, so a second
+ * restart writes nothing. Returns the sessions changed, to announce.
+ */
+export async function degradeClaudeForksOfRestartedHost(
+	supervisorId: string,
+	deps: { afterWrites?: (tx: unknown) => Promise<void> } = {},
+): Promise<string[]> {
+	return withTransaction(async (tx) => {
+		const forks: Array<{
+			sessionId: string;
+			isWorking: boolean;
+			stamped: boolean;
+			hostName: string | null;
+		}> = (
+			await tx
+				.select({
+					sessionId: managedSessions.sessionId,
+					isWorking: sessions.isWorking,
+					syncError: managedSessions.providerSyncError,
+					hostName: managedSessions.hostName,
+				})
+				.from(managedSessions)
+				.innerJoin(sessions, eq(sessions.sessionId, managedSessions.sessionId))
+				.leftJoin(launchRequests, ownerLaunchJoin)
+				.where(
+					and(
+						sessionOwnedBy(supervisorId),
+						isNotNull(jsonExtractText(sessions.metadata, "$.forkedFromSessionId")),
+						notInArray(managedSessions.managedState, [...TERMINAL_MANAGED_STATES]),
+					),
+				)
+		).map(
+			(row: {
+				sessionId: string;
+				isWorking: boolean;
+				syncError: string | null;
+				hostName: string | null;
+			}) => ({
+				sessionId: row.sessionId,
+				isWorking: row.isWorking,
+				stamped: row.syncError === HOST_RESTARTED_FORK_SYNC_ERROR,
+				hostName: row.hostName,
+			}),
+		);
+		if (forks.length === 0) return [];
+		const timestamp = nowIso();
+		const hostNames = new Map(forks.map((fork) => [fork.sessionId, fork.hostName]));
+
+		// Open actions of every fork this host holds, a stamped one included: the process they were for is gone.
+		// A recovery ends through the one resume settle (with the resume words); a prompt fails with its own.
+		for (const ids of inChunks(forks.map((fork) => fork.sessionId))) {
+			const open: Array<typeof controlActions.$inferSelect> = await tx
+				.select()
+				.from(controlActions)
+				.where(
+					and(
+						inArray(controlActions.sessionId, ids),
+						inArray(controlActions.actionType, ["prompt", "resume"]),
+						inArray(controlActions.status, ["queued", "running"]),
+					),
+				);
+			for (const action of open) {
+				if (action.actionType === "resume") {
+					await failResumeAction(
+						tx,
+						action,
+						resumeFailureMessage(
+							"restart",
+							hostNames.get(action.sessionId ?? "") ?? "The host",
+							"recovery",
+							"claude_code",
+						),
+					);
+				} else {
+					await tx
+						.update(controlActions)
+						.set({
+							status: "failed",
+							error: HOST_RESTARTED_PROMPT_ERROR,
+							finishedAt: timestamp,
+							updatedAt: timestamp,
+						})
+						.where(
+							and(
+								eq(controlActions.id, action.id),
+								inArray(controlActions.status, ["queued", "running"]),
+							),
+						);
+					await tx
+						.update(managedSessions)
+						.set({ activeControlActionId: null, controlLockExpiresAt: null, updatedAt: timestamp })
+						.where(eq(managedSessions.activeControlActionId, action.id));
+				}
+			}
+		}
+
+		const fresh = forks.filter((fork) => !fork.stamped);
+		for (const ids of inChunks(fresh.map((fork) => fork.sessionId))) {
+			await tx
+				.update(managedSessions)
+				.set({
+					managedState: "degraded",
+					providerSyncState: "failed",
+					providerSyncError: HOST_RESTARTED_FORK_SYNC_ERROR,
+					updatedAt: timestamp,
+				})
+				.where(inArray(managedSessions.sessionId, ids));
+			await tx
+				.update(sessions)
+				.set({ lastActivityAt: timestamp })
+				.where(inArray(sessions.sessionId, ids));
+		}
+		for (const ids of inChunks(
+			fresh.filter((fork) => fork.isWorking).map((fork) => fork.sessionId),
+		)) {
+			await tx
+				.update(sessions)
+				.set({ isWorking: false, currentTurnStartedAt: null, lastAgentTurnCompletedAt: timestamp })
+				.where(inArray(sessions.sessionId, ids));
+		}
+		await deps.afterWrites?.(tx);
+		return fresh.map((fork) => fork.sessionId);
 	});
 }
 

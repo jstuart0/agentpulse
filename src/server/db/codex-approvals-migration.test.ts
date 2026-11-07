@@ -170,9 +170,37 @@ describe("migration 0020 files", () => {
 			expect(previous).toBeDefined();
 			const entryWhen = entry?.when ?? Number.NEGATIVE_INFINITY;
 			expect(entryWhen).toBeGreaterThan(previous?.when ?? Number.POSITIVE_INFINITY);
-			expect(Math.max(...journal.entries.map((e) => e.when))).toBe(entryWhen);
+			// Later migrations may follow it, but none may be older.
+			const later = journal.entries.filter((e) => e.idx > 20);
+			for (const e of later) expect(e.when).toBeGreaterThan(entryWhen);
 			expect(existsSync(join(MIGRATIONS_ROOT, dialect, "0020_codex_approvals.sql"))).toBe(true);
 			expect(existsSync(join(MIGRATIONS_ROOT, dialect, "meta/0020_snapshot.json"))).toBe(true);
+		});
+	}
+});
+
+describe("migration 0021 (AGEN-117): the control-history index, one name on both paths", () => {
+	const FILE = "0021_control_actions_session_index.sql";
+	for (const dialect of ["sqlite", "postgres"] as const) {
+		test(`${dialect}: the journal entry is newest, its file creates the legacy init's index and is safe to repeat`, () => {
+			const journal = JSON.parse(
+				readFileSync(join(MIGRATIONS_ROOT, dialect, "meta/_journal.json"), "utf8"),
+			) as { entries: Array<{ idx: number; when: number; tag: string }> };
+			const entry = journal.entries.find((e) => e.tag === FILE.replace(".sql", ""));
+			expect(entry?.idx).toBe(21);
+			const entryWhen = entry?.when ?? Number.NEGATIVE_INFINITY;
+			expect(Math.max(...journal.entries.map((e) => e.when))).toBe(entryWhen);
+			const sql = readFileSync(join(MIGRATIONS_ROOT, dialect, FILE), "utf8");
+			expect(sql).toMatch(
+				/CREATE INDEX IF NOT EXISTS [`"]idx_control_actions_session[`"] ON [`"]control_actions[`"]/,
+			);
+			expect(sql.match(/CREATE/g)).toHaveLength(1);
+			expect(existsSync(join(MIGRATIONS_ROOT, dialect, "meta/0021_snapshot.json"))).toBe(true);
+			// The name is the legacy init's, so a database either path built ends with one index.
+			const client = readFileSync(join(import.meta.dir, "client.ts"), "utf8");
+			expect(client).toContain(
+				"CREATE INDEX IF NOT EXISTS idx_control_actions_session ON control_actions(session_id)",
+			);
 		});
 	}
 });

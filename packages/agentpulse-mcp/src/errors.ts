@@ -113,7 +113,7 @@ const ERROR_TABLE: ReadonlyArray<{
 					? String((body as { reason?: unknown }).reason)
 					: "";
 			if (reason === "control_busy") {
-				return "AgentPulse is busy: another action is already running on that session, so the prompt was NOT sent and the request is still open. Retryable: wait a few seconds and call decide_hitl again.";
+				return "AgentPulse is busy: another action is already running on that session, so the prompt was NOT sent and the request is still open. Retryable: wait until that action, or the agent's current turn, finishes, then call decide_hitl again.";
 			}
 			if (reason === "host_upgrade_required") {
 				return "AgentPulse can't type into that session: its host is running an older supervisor that can't send prompts to Codex. Update it, then start a new session for this work. Updating ends the sessions running there. The prompt was NOT sent and the request is still open; decline it, or start a new session.";
@@ -190,8 +190,22 @@ const ERROR_TABLE: ReadonlyArray<{
 	{
 		status: 400,
 		error: "prompt_unsafe",
+		message: (body) =>
+			body && typeof body === "object" && (body as { reason?: unknown }).reason === "slash_command"
+				? "A continued session takes no message that starts with a slash (slash commands are off there). Reword it so it starts with something else. Nothing was sent."
+				: "That prompt has characters AgentPulse won't type into a session. Nothing was sent and the request is still open.",
+	},
+	{
+		status: 403,
+		error: "human_required",
 		message:
-			"That prompt has characters AgentPulse won't type into a session. Nothing was sent and the request is still open.",
+			"AgentPulse refused: this needs a signed-in person, and an API key can't do it. For a continued session that runs under the person's own Claude settings, prompts come from a person at the dashboard.",
+	},
+	{
+		status: 409,
+		error: "end_session_first",
+		message:
+			"End this session first. Call stop_session, then delete or archive it. Nothing was changed.",
 	},
 	// Declining a managed Codex approval (decline_approval, list_pending_approvals).
 	{

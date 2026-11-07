@@ -5,7 +5,8 @@ import { ApiError, type DeliveryOutcome } from "./api.js";
 const HITL_MESSAGES: Record<string, string> = {
 	already_resolved: "Someone already answered this. The list has been refreshed.",
 	prompt_changed: "The agent changed its proposal while you were looking. Review the new one.",
-	control_busy: "That session is busy with another action. Try again in a moment.",
+	control_busy:
+		"That session is busy with another action, or Claude is working on its current turn. Try again when that finishes.",
 	empty_prompt: "There's no prompt to send.",
 	prompt_hash_required: "This key can only approve the exact prompt it was shown.",
 	expired: "This request has expired. Wait for the agent to ask again.",

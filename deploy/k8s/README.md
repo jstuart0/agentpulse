@@ -1139,6 +1139,24 @@ created per 10 minutes per session, 64 open per host) are counted from rows and 
 The wait's id list is updated by a read-modify-write in each process; under `RollingUpdate` a
 concurrent write can briefly restore a cleared id, and the next sweep repairs it.
 
+## Upgrading to migration 0021 (SQLite and Postgres): control-history index
+
+Migration `0021_control_actions_session_index` adds `idx_control_actions_session` on `control_actions(session_id)`.
+Legacy SQLite installs already had it (the legacy init creates the same name), so nothing changes for them; fresh
+SQLite installs and every Postgres install now get it too. Every read of a session's control history, and the
+session detail's lookup of the newest continued Claude session (AGEN-117), seeks by it; without it each of those
+scans the table (about 90 ms at 500,000 rows).
+
+It is a plain `CREATE INDEX IF NOT EXISTS`, which takes a write lock on `control_actions` while it builds. On a
+Postgres table with many rows, pre-create it without blocking writes before rolling out; the migration then finds
+the name and does nothing:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_control_actions_session ON control_actions USING btree (session_id);
+```
+
+Rollback is safe: the index is additive and can stay.
+
 ### Release checklist: Codex approvals
 
 Run this on every Codex release you want supervisors to answer approvals for, and when you touch the
@@ -1160,6 +1178,20 @@ approval code:
    (it spends real usage; no terminal UI is started and nothing is killed by name). It must exit 0. `--hold-minutes 60` on
    `bind-codex-daemon` records how long Codex's background service keeps a thread held after its last client leaves. There is
    no manifest or environment change for this feature, and with `DISABLE_AUTH=true` it carries the same posture as approvals.
+   **Claude Code forks (AGEN-117):** on every Claude Code release that moves the gate's range
+   (`CLAUDE_VERSION_RANGE_TEXT` in `src/supervisor/providers/claude-protocol.ts`), and when you touch the fork, login-mode,
+   approval or stop code, run the Claude canary (`scripts/claude-takeover-canary.ts`, started through `scripts/codex-approvals-live.ts`) with a real API key in the environment of the command only (never a file or
+   an argument): `ANTHROPIC_API_KEY=... bun scripts/codex-approvals-live.ts --real --only claude --login key --work <scratch directory>`
+   and the same with `--login helper` (the helper login puts the key under another name that an `apiKeyHelper` in the
+   throwaway user settings prints, which is what makes the fork pick `ask`). It spends a few cents on the cheapest model
+   under a total cap (`--cap-usd`, default 1.9), starts Claude only under a throwaway `HOME` and `CLAUDE_CONFIG_DIR`, and
+   signals only pids it started or processes naming its exact config directory. It must exit 0 (1 failure, 3 `instrumentInvalid`:
+   the run measured nothing, run it again). Then `--mutate all` once: each break must fail its one named expectation, else the
+   exit is 4 (`mutationSurvived`: a check that can't fail, or a layer the break didn't disable) or 5 (`mutationInvalid`).
+   The **token login can't be automated** (it is your credential): run `oauth-check2.sh` with a `claude setup-token` token,
+   logged in with and without `--restricted`, and compare `account` with the committed fixture before adding
+   `CLAUDE_CODE_OAUTH_TOKEN` to `KNOWN_RESTRICTED_LOGINS`. Server first, then supervisors; migration `0021`
+   (`idx_control_actions_session`, above) is the only schema change and can stay on rollback.
 2. A new approval shape that passes: add its hash to `SUPPORTED_CODEX_SHAPES` in
    `src/supervisor/providers/codex-protocol.ts` (`--schema-hash <generated schema directory>` in the same script prints it, from the output of `codex app-server generate-json-schema --experimental --out <dir>`), and
    record the new frames under `src/supervisor/providers/__fixtures__/`.
