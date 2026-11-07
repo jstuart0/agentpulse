@@ -1432,7 +1432,7 @@ describe("where an allow can be written", () => {
 // A real fake `claude` child, the stream runtime, and the real tracker's port.
 describe("through the stream runtime", () => {
 	const harnesses: Array<ReturnType<typeof createHarness>> = [];
-	const runtimes: Array<{ dispose(): Promise<void> }> = [];
+	const runtimes: Array<{ dispose(): Promise<unknown> }> = [];
 	afterEach(async () => {
 		for (const rt of runtimes.splice(0)) await rt.dispose().catch(() => {});
 		for (const h of harnesses.splice(0)) {

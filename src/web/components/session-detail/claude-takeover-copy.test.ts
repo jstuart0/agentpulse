@@ -24,6 +24,7 @@ import {
 	CLAUDE_FORK_CHANGED_SYNC_ERROR,
 	CLAUDE_FORK_PEER_SYNC_ERROR,
 	CLAUDE_FORK_SLASH_MESSAGE,
+	CLAUDE_FORK_UNSTOPPABLE_SYNC_ERROR,
 } from "../../../shared/managed-messages.js";
 import {
 	CLAUDE_TAKEOVER,
@@ -1116,6 +1117,14 @@ describe("the composer on a continued session", () => {
 			reason:
 				"Claude Code on studio changed how it was running, so AgentPulse stopped it. Its last turn may not all be here. Resume it to keep going.",
 		});
+	});
+
+	test("degraded because the host could not confirm the process ended: no Resume, and the way out is said (CX2-1)", () => {
+		const m = mode(fork("ask", "degraded", { syncError: CLAUDE_FORK_UNSTOPPABLE_SYNC_ERROR }));
+		expect(m).toMatchObject({ kind: "blocked", resume: { state: "disabled" } });
+		expect(m && "reason" in m ? m.reason : "").toBe(
+			"AgentPulse couldn't confirm that Claude stopped on studio, so this session can't take prompts or be resumed yet. End it again, or stop the Claude process yourself.",
+		);
 	});
 
 	test("degraded after a message something else sent: End and continue the original first, Resume anyway second; others see only the first sentence", () => {

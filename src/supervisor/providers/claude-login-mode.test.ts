@@ -468,7 +468,7 @@ describe("what a probe's child is given and how long it is waited for (X16, X22)
 		expect(fake.starts().map((s) => (s as unknown as { skip: string }).skip)).toEqual(["1", "1"]);
 	}, 30_000);
 
-	test("a child whose exit is never seen doesn't hang the probe: it returns after the wait and says so", async () => {
+	test("a child that is never confirmed ended refuses the probe, after a bounded wait, and says so (CX2-2)", async () => {
 		const logged: string[] = [];
 		const probe = createLoginProbe({
 			executable: "unused",
@@ -486,9 +486,39 @@ describe("what a probe's child is given and how long it is waited for (X16, X22)
 			})) as never,
 		});
 		const started = Date.now();
-		expect(await probe("ask")).toEqual({ ok: true, account: {} });
+		expect(await probe("ask")).toEqual({ ok: false, why: "not_stopped" });
 		expect(Date.now() - started).toBeLessThan(3_000);
 		expect(logged.some((l) => l.includes("did not exit"))).toBe(true);
+		expect(logged.some((l) => l.includes("could not be confirmed ended"))).toBe(true);
 		rmSync(join(tmpdir(), `claude-probe-exit-${process.pid}`), { recursive: true, force: true });
+	});
+
+	test("a stop that says not gone refuses even when the exit was seen, and the mode choice refuses the takeover (CX2-2)", async () => {
+		const spawnStuck = (async () => ({
+			link: {
+				initialize: async () => ({
+					account: {
+						apiProvider: "firstParty",
+						tokenSource: "none",
+						apiKeySource: "ANTHROPIC_API_KEY",
+					},
+				}),
+			},
+			pid: 1,
+			exited: Promise.resolve({ code: 0, signal: null }),
+			hasExited: () => true,
+			stderrBytes: () => 0,
+			stop: async () => ({ gone: false, checked: true }),
+		})) as never;
+		const probe = createLoginProbe({
+			executable: "unused",
+			env: {},
+			probeCwd: join(tmpdir(), `claude-probe-stuck-${process.pid}`),
+			log: () => {},
+			spawn: spawnStuck,
+		});
+		expect(await probe("restricted")).toEqual({ ok: false, why: "not_stopped" });
+		expect(await pickForkMode(probe)).toEqual({ refusal: "rejected", probes: 1 });
+		rmSync(join(tmpdir(), `claude-probe-stuck-${process.pid}`), { recursive: true, force: true });
 	});
 });

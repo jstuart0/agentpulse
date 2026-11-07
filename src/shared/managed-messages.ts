@@ -117,6 +117,13 @@ export const CLAUDE_FORK_CHANGED_SYNC_ERROR =
 export const CLAUDE_FORK_PEER_SYNC_ERROR =
 	"Something else on this machine sent this session a message, so AgentPulse stopped it.";
 
+/**
+ * AgentPulse tried to end a fork's process (a protocol violation, or a failed start) and could not confirm it
+ * ended. The host keeps holding the fork, so it cannot be resumed beside the process; End it again. Fixed.
+ */
+export const CLAUDE_FORK_UNSTOPPABLE_SYNC_ERROR =
+	"AgentPulse couldn't confirm that Claude stopped on this machine, so this session can't take prompts or be resumed yet. End it again, or stop the Claude process yourself.";
+
 /** The fork's process exited without a Stop. Fixed. */
 export const CLAUDE_FORK_EXITED_SYNC_ERROR =
 	"Claude stopped running on this machine, so this session can't take prompts. Resume it to keep going.";

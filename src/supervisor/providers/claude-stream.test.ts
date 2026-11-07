@@ -15,9 +15,10 @@ import {
 	CLAUDE_FORK_PEER_SYNC_ERROR,
 	CLAUDE_FORK_SLASH_MESSAGE,
 	CLAUDE_FORK_TERMINAL_FOUND_ERROR,
+	CLAUDE_FORK_UNSTOPPABLE_SYNC_ERROR,
 	CLAUDE_LOGIN_LOST_ERROR,
 } from "../../shared/managed-messages.js";
-import type { ProcessTable } from "../process-stop.js";
+import { type ProcessTable, systemProcessTable } from "../process-stop.js";
 import {
 	AWAIT,
 	FAST_TIMINGS,
@@ -50,9 +51,11 @@ import {
 	_resetClaudeStreamForTest,
 	claudeStreamRuntimeCount,
 	disposeAllClaudeStreamRuntimes,
+	getClaudeStreamRuntime,
 	hasClaudeStreamRuntime,
 	promptClaudeStreamSession,
 	readPeerTurnText,
+	reserveClaudeStreamSlot,
 	startClaudeStream,
 	stopClaudeStreamSession,
 } from "./claude-stream.js";
@@ -1637,6 +1640,81 @@ describe("a stop that finds something left running (X15)", () => {
 		// the descendant was signalled by the ladder, by pid, from the table (the guard's own list is empty: nothing real)
 		expect(kills.some(([pid]) => pid === 424242)).toBe(true);
 	}, 30_000);
+
+	/** The real process table, plus a descendant nobody can end under each child of this process while `state.leftover`. */
+	const stuckTable = (state: { leftover: boolean }): ProcessTable => ({
+		async list() {
+			const rows = await systemProcessTable.list();
+			if (!state.leftover) return rows;
+			return [
+				...rows,
+				...rows
+					.filter((row) => row.ppid === process.pid)
+					.map((row) => ({ pid: 424242, ppid: row.pid, started: "Mon Nov  6 06:00:01 2026" })),
+			];
+		},
+	});
+	const fastStop = { interruptMs: 0, stdinCloseMs: 200, termMs: 200, killMs: 200 };
+
+	test("a protocol violation whose stop finds something left keeps the fork held: degraded with fixed words, slot kept, Resume's check says held, a later Stop that succeeds releases (CX2-1)", async () => {
+		const peer = outLines("peer-injected-turn").find((m) => m.type === "command_lifecycle");
+		const trigger = join(mkdtempSync(join(tmpdir(), "inject-")), "go");
+		const h = harness({
+			unprompted: [{ ...(peer as Record<string, unknown>), session_id: FORK_ID }],
+			unpromptedTrigger: trigger,
+		});
+		const state = { leftover: true };
+		const rt = await h.start({
+			timings: fastStop,
+			stopReach: {
+				table: stuckTable(state),
+				killPid: () => {},
+				ownPid: process.pid,
+			},
+		});
+		rt.beginSettle();
+		rt.settled();
+		writeFileSync(trigger, "");
+		const deadline = Date.now() + 20_000;
+		while (!h.states.some((s) => s.managedState === "degraded") && Date.now() < deadline) {
+			await Bun.sleep(50);
+		}
+		rmSync(join(trigger, ".."), { recursive: true, force: true });
+		expect(h.states.find((s) => s.managedState === "degraded")).toMatchObject({
+			providerSyncError: CLAUDE_FORK_UNSTOPPABLE_SYNC_ERROR,
+		});
+		// Held: in the map (the takeover's Resume check), the slot reserved, the state not gone.
+		expect(rt.state).not.toBe("gone");
+		expect(rt.heldUnstoppable).toBe(true);
+		expect(hasClaudeStreamRuntime(FORK_ID)).toBe(true);
+		expect(() => reserveClaudeStreamSlot("another-fork", 1)).toThrow();
+		// Stop stays retryable: a Stop that finds everything gone releases the fork.
+		state.leftover = false;
+		expect((await rt.stop(fastStop)).gone).toBe(true);
+		expect(hasClaudeStreamRuntime(FORK_ID)).toBe(false);
+		reserveClaudeStreamSlot("another-fork", 1)();
+	}, 60_000);
+
+	test("a failed start whose cleanup finds something left keeps the runtime held under its id and its slot (CX2-1)", async () => {
+		const h = harness();
+		const state = { leftover: true };
+		await expect(
+			h.start({
+				ownIdWaitMs: 100,
+				listAgents: async () => ({ ok: true, entries: [] }),
+				timings: fastStop,
+				stopReach: { table: stuckTable(state), killPid: () => {}, ownPid: process.pid },
+			}),
+		).rejects.toBeInstanceOf(ClaudeStartRefusal);
+		expect(hasClaudeStreamRuntime(FORK_ID)).toBe(true);
+		expect(() => reserveClaudeStreamSlot("another-fork", 1)).toThrow();
+		const held = getClaudeStreamRuntime(FORK_ID);
+		expect(held?.heldUnstoppable).toBe(true);
+		state.leftover = false;
+		expect((await held?.stop(fastStop))?.gone).toBe(true);
+		expect(hasClaudeStreamRuntime(FORK_ID)).toBe(false);
+		reserveClaudeStreamSlot("another-fork", 1)();
+	}, 60_000);
 
 	test("the wait after SIGKILL is at least the table's own timeout plus a poll", async () => {
 		const process_ = await import("./claude-process.js");

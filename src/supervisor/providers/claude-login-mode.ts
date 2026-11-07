@@ -98,7 +98,7 @@ export function accountAgreesWithMode(account: unknown, mode: ClaudeForkMode): b
 
 export type ProbeResult =
 	| { ok: true; account: unknown }
-	| { ok: false; why: "timeout" | "spawn" | "initialize" };
+	| { ok: false; why: "timeout" | "spawn" | "initialize" | "not_stopped" };
 
 export type LoginProbe = (mode: ClaudeForkMode) => Promise<ProbeResult>;
 
@@ -165,29 +165,42 @@ export function createLoginProbe(deps: LoginProbeDeps): LoginProbe {
 			log(`[claude-login] the ${mode} probe could not be started`);
 			return { ok: false, why: "spawn" };
 		}
+		let result: ProbeResult;
 		try {
 			const answer = await child.link.initialize();
 			const account =
 				answer && typeof answer === "object"
 					? (answer as { account?: unknown }).account
 					: undefined;
-			return { ok: true, account };
+			result = { ok: true, account };
 		} catch (error) {
 			const timedOut = error instanceof Error && /no answer in time/.test(error.message);
 			log(`[claude-login] the ${mode} probe ${timedOut ? "timed out" : "did not initialize"}`);
-			return { ok: false, why: timedOut ? "timeout" : "initialize" };
-		} finally {
-			await child.stop();
-			// Bounded: a child the ladder could not end must not hang the takeover that is waiting on its probe.
-			const exited = await Promise.race([
-				child.exited.then(() => true),
-				new Promise<boolean>((resolve) => {
-					const timer = setTimeout(() => resolve(false), deps.exitWaitMs ?? PROBE_EXIT_WAIT_MS);
-					timer.unref?.();
-				}),
-			]);
-			if (!exited) log(`[claude-login] the ${mode} probe's process did not exit when asked`);
+			result = { ok: false, why: timedOut ? "timeout" : "initialize" };
 		}
+		// A probe's child must be confirmed dead before anything goes on (CX2-2): an answer from a process the
+		// ladder could not end would leave an untracked Claude running beside the fork the takeover starts. The
+		// takeover that is waiting on this probe releases its slot only after this returns.
+		let gone = false;
+		try {
+			gone = (await child.stop()).gone;
+		} catch {
+			gone = false;
+		}
+		// Bounded: a child the ladder could not end must not hang the takeover that is waiting on its probe.
+		const exited = await Promise.race([
+			child.exited.then(() => true),
+			new Promise<boolean>((resolve) => {
+				const timer = setTimeout(() => resolve(false), deps.exitWaitMs ?? PROBE_EXIT_WAIT_MS);
+				timer.unref?.();
+			}),
+		]);
+		if (!exited) log(`[claude-login] the ${mode} probe's process did not exit when asked`);
+		if (!gone || !exited) {
+			log(`[claude-login] the ${mode} probe's process could not be confirmed ended`);
+			return { ok: false, why: "not_stopped" };
+		}
+		return result;
 	};
 }
 

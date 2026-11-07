@@ -38,6 +38,7 @@ import {
 	CLAUDE_FORK_PEER_SYNC_ERROR,
 	CLAUDE_FORK_SLASH_MESSAGE,
 	CLAUDE_FORK_TERMINAL_FOUND_ERROR,
+	CLAUDE_FORK_UNSTOPPABLE_SYNC_ERROR,
 	CLAUDE_LOGIN_LOST_ERROR,
 	HOST_RESTARTED_TURN_ERROR,
 	STOPPED_BY_PERSON_ERROR,
@@ -351,6 +352,8 @@ export class ClaudeStreamRuntime {
 	private readonly ownUuids = new Set<string>();
 	private readonly sentTexts: string[] = [];
 	private fataling = false;
+	/** A stop found something left running: the runtime stays held (map, slot) until a later stop confirms it gone. */
+	private unstoppable = false;
 	private stopRequested = false;
 	private sourceBefore: { size: number; mtimeMs: number } | null = null;
 	private readonly callbacks: LaunchCallbacks;
@@ -965,11 +968,16 @@ export class ClaudeStreamRuntime {
 		const turn = this.turn;
 		this.proc.link.transportClosed(new Error("fatal"));
 		// Stopped before anything is read: the stranger's turn must not run on while the text is looked for.
-		await this.proc.stop(this.fatalStopOptions);
+		const stopped = await this.proc.stop(this.fatalStopOptions).catch(() => ({ gone: false }));
+		// Not confirmed ended (CX2-1): the fork stays held, so a Resume cannot start a second one beside it.
+		this.unstoppable = !stopped.gone;
 		let peerTurnText: string | undefined;
-		if (kind === "peer_turn") peerTurnText = await this.readPeerText();
-		const words =
-			kind === "peer_turn" ? CLAUDE_FORK_PEER_SYNC_ERROR : CLAUDE_FORK_CHANGED_SYNC_ERROR;
+		if (kind === "peer_turn" && stopped.gone) peerTurnText = await this.readPeerText();
+		const words = this.unstoppable
+			? CLAUDE_FORK_UNSTOPPABLE_SYNC_ERROR
+			: kind === "peer_turn"
+				? CLAUDE_FORK_PEER_SYNC_ERROR
+				: CLAUDE_FORK_CHANGED_SYNC_ERROR;
 		const events = [];
 		if (turn) {
 			events.push({
@@ -994,7 +1002,7 @@ export class ClaudeStreamRuntime {
 		});
 		this.turn = null;
 		turn?.resolve({ ok: false, code: "fatal", error: words });
-		this.finish();
+		if (!this.unstoppable) this.finish();
 	}
 
 	/** The process ended by itself (or by our ladder): report once, whatever state it was in. */
@@ -1003,7 +1011,18 @@ export class ClaudeStreamRuntime {
 		// A fatal ending finishes itself. A stop usually does too, but one that found something left running
 		// (gone: false) must not leave the slot held for good once the child itself has gone: the ladder is asked
 		// again (it runs the table check, and signals what is still there), and the slot is freed if all is gone.
-		if (this.fataling) return;
+		if (this.fataling) {
+			// The exit of a fork that could not be stopped: ask again, and let go only once everything is gone.
+			if (this.unstoppable) {
+				void this.proc
+					.stop({ timings: { interruptMs: 0 }, reach: this.options.stopReach })
+					.then((result) => {
+						if (result.gone) this.finish();
+					})
+					.catch(() => {});
+			}
+			return;
+		}
 		if (this.stopRequested) {
 			void this.proc
 				.stop({ timings: { interruptMs: 0 }, reach: this.options.stopReach })
@@ -1073,17 +1092,29 @@ export class ClaudeStreamRuntime {
 		return result;
 	}
 
-	/** Ends the process with no report: the start sequence refused, or the host is exiting. */
-	async dispose(timings?: Partial<ClaudeStopTimings>): Promise<void> {
+	/**
+	 * Ends the process with no report: the start sequence refused, or the host is exiting. A process that is not
+	 * confirmed gone leaves the runtime held (CX2-1); the answer says so.
+	 */
+	async dispose(timings?: Partial<ClaudeStopTimings>): Promise<{ gone: boolean }> {
 		this.stopRequested = true;
 		this.port?.dispose();
-		await this.proc.stop({
-			timings: { ...this.options.timings, ...timings },
-			reach: this.options.stopReach,
-		});
+		const result = await this.proc
+			.stop({
+				timings: { ...this.options.timings, ...timings },
+				reach: this.options.stopReach,
+			})
+			.catch(() => ({ gone: false }));
 		this.turn?.resolve({ ok: false, code: "exited", error: CLAUDE_FORK_EXITED_SYNC_ERROR });
 		this.turn = null;
-		this.finish();
+		if (result.gone) this.finish();
+		else this.unstoppable = true;
+		return { gone: result.gone };
+	}
+
+	/** Whether a stop found something it could not end: the runtime is still held and a later stop may release it. */
+	get heldUnstoppable() {
+		return this.unstoppable && this.state !== "gone";
 	}
 
 	// ---- the injected message ----
@@ -1263,10 +1294,19 @@ export async function startClaudeStream(
 		runtimes.set(options.sessionId, runtime);
 		return runtime;
 	} catch (error) {
-		if (runtime) await runtime.dispose({ interruptMs: 0, stdinCloseMs: 1_000 }).catch(() => {});
-		else if (proc)
-			await proc.stop({ timings: { interruptMs: 0, stdinCloseMs: 1_000 } }).catch(() => {});
-		release();
+		let gone = true;
+		if (runtime) {
+			gone = (await runtime.dispose({ interruptMs: 0, stdinCloseMs: 1_000 })).gone;
+			// Not confirmed ended (CX2-1): held under its id, with its slot, so nothing starts beside it.
+			if (!gone) runtimes.set(options.sessionId, runtime);
+		} else if (proc) {
+			gone = (
+				await proc
+					.stop({ timings: { interruptMs: 0, stdinCloseMs: 1_000 } })
+					.catch(() => ({ gone: false }))
+			).gone;
+		}
+		if (gone) release();
 		if (error instanceof ClaudeStartRefusal) throw error;
 		throw new ClaudeStartRefusal("rejected", "start");
 	}

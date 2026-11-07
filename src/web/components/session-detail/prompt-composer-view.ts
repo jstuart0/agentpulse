@@ -15,6 +15,7 @@ import {
 	CLAUDE_FORK_PEER_SYNC_ERROR,
 	CLAUDE_FORK_SLASH_MESSAGE,
 	CLAUDE_FORK_TERMINAL_FOUND_ERROR,
+	CLAUDE_FORK_UNSTOPPABLE_SYNC_ERROR,
 	CLAUDE_LOGIN_LOST_ERROR,
 	CONTROL_TIMEOUT_ERROR,
 	HOST_RESTARTED_SYNC_ERROR,
@@ -254,6 +255,15 @@ function degradedForkMode(session: ModeSession, access: ComposerAccess): Compose
 		return blocked(`Asking ${hostNameOf(session)} to resume this session…`, false, {
 			state: "in_flight",
 		});
+	}
+	// The host could not confirm the process ended and still holds the fork: Resume is refused there until a
+	// Stop finishes the job, so the box offers no Resume and says what to do (CX2-1).
+	if (error === CLAUDE_FORK_UNSTOPPABLE_SYNC_ERROR) {
+		return blocked(
+			`AgentPulse couldn't confirm that Claude stopped on ${machine}, so this session can't take prompts or be resumed yet. End it again, or stop the Claude process yourself.`,
+			false,
+			{ state: "disabled" },
+		);
 	}
 	const source = access.source ?? { state: "unknown" as const };
 	const lead = peer
