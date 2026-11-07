@@ -809,14 +809,52 @@ A Codex session you ran yourself (in a terminal, or `codex exec`) shows up as ob
 
 A Claude Code session you ran yourself shows up as observed. Open it and choose **Continue in a new session**, then the machine it ran on. AgentPulse does not write to your session. That machine's supervisor starts a **fork**: a new session that carries the same conversation forward (`claude --resume <id> --fork-session`), shown as `<name> (continued)`. Your original stays exactly as it was and you can keep using it in a terminal; the two don't share what happens next. A fork has the six tools Bash, Read, Write, Edit, NotebookEdit and WebFetch, and no subagents, no MCP servers and no slash commands. Anything that would write a file, fetch a page or run a command asks you first on the session page, with the same accept or decline cards as Codex (read-only commands such as `ls` and `cat` run unasked, as they do in Claude Code itself). **End session** stops the fork; you can fork the original again.
 
-- **It needs a login the supervisor can use.** Claude Code run by the supervisor does not use the login `claude` uses in a terminal (on 2.1.318 on macOS, a keychain login is "Not logged in" headless). If the supervisor has none, Continue says so and starts nothing: give the supervisor's environment a subscription token (`claude setup-token`, set as `CLAUDE_CODE_OAUTH_TOKEN`) or an API key (`ANTHROPIC_API_KEY`), then restart it. AgentPulse never stores, reads or sends either; Claude Code reads it.
-- **Two modes, picked from the login, and the page says which applied.** With `ANTHROPIC_API_KEY` in the supervisor's environment the fork runs `restricted`: your own allow rules, hooks and user `CLAUDE.md` are ignored, so every Write, Edit, NotebookEdit, WebFetch and Bash asks. With any other working login (for example an `apiKeyHelper`) it runs `ask`: your own settings apply, so a tool your rules already allow runs with no card, and your hooks run. A fork never takes either mode on a guess; a login AgentPulse hasn't measured gets `ask`.
+- **It needs a login the supervisor can use.** Claude Code run by the supervisor does not use the login `claude` uses in a terminal (on 2.1.318 on macOS, a keychain login is "Not logged in" headless). If the supervisor has none, Continue says so and starts nothing: give the supervisor's environment a subscription token (`claude setup-token`, set as `CLAUDE_CODE_OAUTH_TOKEN`) or an API key (`ANTHROPIC_API_KEY`), then restart it. AgentPulse never stores, reads or sends either; Claude Code reads it. The steps are in [Claude login for the supervisor](#claude-login-for-the-supervisor).
+- **Two modes, picked from the login, and the page says which applied.** With `ANTHROPIC_API_KEY` in the supervisor's environment the fork runs `restricted`: your own allow rules, hooks and user `CLAUDE.md` are ignored, so every Write, Edit, NotebookEdit, WebFetch and Bash asks. With any other working login (a `claude setup-token` token and an `apiKeyHelper` are the usual ones) it runs `ask`: your own settings apply, so a tool your rules already allow runs with no card, and your hooks run. A fork never takes either mode on a guess; a login AgentPulse hasn't measured gets `ask`.
 - **Project `CLAUDE.md`, hooks and `.mcp.json` are not loaded** in either mode, and none of your user MCP servers.
 - **A fork can't run Bash commands in the background.** A dev server or a long build stops at Claude Code's own Bash limit instead of carrying on after the turn; run those in your terminal.
 - **What the timeline shows.** A fixed line per tool call ("Write: ran, you approved it", "Bash: ran without asking", and so on), never the command, path or URL. The card shows those while it waits, and only the owner or an admin can read it. The tool count is hidden for a fork.
 - **If the fork's process is lost** (a supervisor restart, a crash) the session shows **Resume session**. An approved command that was already running can outlive the supervisor until it finishes; Resume says "still running" until then.
 - **Only a signed-in person** can continue a session or accept an approval; an API key can't. Claude Code 2.1.318 up to, not including, 2.2.0 is the tested range; another version is refused with the range named.
-- **Not measured.** Only macOS, Claude Code 2.1.318 and the API key login on a throwaway home were run end to end. A subscription token, Bedrock, Vertex, Linux and Windows hosts, and a person's own `settings.json` hooks were not.
+- **Not measured.** Only macOS, Claude Code 2.1.318 and 2.1.319, and the API key and `apiKeyHelper` logins on a throwaway home were run end to end. A subscription token, Bedrock, Vertex, Linux and Windows hosts, and a person's own `settings.json` hooks were not.
+
+## Claude login for the supervisor
+
+Claude Code started by the supervisor doesn't use the login `claude` uses in a terminal. On Claude Code 2.1.318 on macOS, a keychain login (the one `claude` sets up when you sign in with your subscription) answers "Not logged in" when run headless. This affects every Claude session the supervisor starts, a launched headless session as much as a continued one. AgentPulse never asks for, stores, reads, sends or moves a credential: the variable is in the supervisor's environment because you put it there, the Claude process inherits it, and Claude Code reads it.
+
+**Two ways to give it a login**
+
+- An API key, set as `ANTHROPIC_API_KEY` (`sk-ant-...`). A continued session then runs in the stricter `restricted` mode, where your own settings are ignored.
+- A subscription token, made by running `claude setup-token` in a terminal and set as `CLAUDE_CODE_OAUTH_TOKEN`. It works as a login, but a continued session gets `ask` mode, where your own settings apply, because AgentPulse hasn't yet measured this login against `restricted`. An `apiKeyHelper` in `~/.claude/settings.json` is the same: it works, in `ask` mode.
+
+Only an API key gets `restricted` today. The Continue dialog and the session's mode line say which mode applied.
+
+**Where to set it**
+
+The supervisor must be restarted for a new variable to take effect, and restarting it ends the continued sessions it is running; they come back through **Resume session**. Don't restart a supervisor that is in the middle of work you care about.
+
+- **macOS, installed service.** The supervisor runs from `~/Library/LaunchAgents/dev.agentpulse.supervisor.plist`. Add the variable inside its `EnvironmentVariables` dictionary:
+
+  ```xml
+  <key>ANTHROPIC_API_KEY</key><string>sk-ant-...</string>
+  ```
+
+  then `launchctl unload` and `launchctl load` the file. The installer writes the plist with mode 0600; keep it that way, since it now holds a credential.
+- **Linux, installed service.** The unit (`~/.config/systemd/user/agentpulse-supervisor.service`) already reads `EnvironmentFile=` `.env.local`, but the installer rewrites that file, so put the variable somewhere it doesn't touch: a drop-in from `systemctl --user edit agentpulse-supervisor` containing `[Service]` and `Environment=ANTHROPIC_API_KEY=sk-ant-...`, or an `EnvironmentFile=` of your own with mode 0600. Then `systemctl --user restart agentpulse-supervisor`. (Drop-ins weren't tried here; the installer writes only the unit file itself.)
+- **Run by hand.** Export the variable in the shell that starts `bun run supervisor`.
+- **A `.env` file in the install directory (`~/.agentpulse/app/.env`).** The services run with that directory as their working directory and Bun loads `.env` from it into the process environment, and the supervisor hands its environment to the Claude processes it starts. The installer never writes `.env` (it writes only `.env.local`), and the file is ignored by git, so unlike the plist it survives an install or upgrade. Costs: the AgentPulse server, started from the same directory, gets the variable too, and the file's mode is yours to set (`chmod 600`). A variable already set in the plist, the unit or the shell wins over `.env`.
+
+**Re-running the installer rewrites the plist, the systemd unit and `.env.local`**, so a variable added to any of those has to be added again after an install or an upgrade. A `.env` file or a systemd drop-in isn't rewritten.
+
+**A `claude setup-token` token expires.** When it does, prompts to a continued session fail with the "lost its login" words. Make a new token and restart the supervisor.
+
+**Checking it**
+
+`claude auth status` in a terminal isn't enough: it reports your terminal's login, not the supervisor's. Use **Continue** on an observed Claude session. The dialog's result says which mode applied, and `claude_not_logged_in` means the supervisor's environment gave Claude Code nothing it could use.
+
+**Not verified here**
+
+The `.env` route is from reading the installer and the supervisor's code and from running Bun against a scratch directory with `NODE_ENV=production` (the installed services set it): Bun put both `.env` and `.env.local` into `process.env`, and a child process inherited them. It was not tried on a running installed supervisor, and no real Claude was started with a token from `.env`. The plist edit and the systemd drop-in follow from how launchd and systemd work and the installer's output, and were not run on a live service. A token login has not been run end to end.
 
 ## What the setup script does
 

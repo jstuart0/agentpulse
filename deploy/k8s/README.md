@@ -1180,7 +1180,7 @@ approval code:
    no manifest or environment change for this feature, and with `DISABLE_AUTH=true` it carries the same posture as approvals.
    **Claude Code forks (AGEN-117):** on every Claude Code release that moves the gate's range
    (`CLAUDE_VERSION_RANGE_TEXT` in `src/supervisor/providers/claude-protocol.ts`), and when you touch the fork, login-mode,
-   approval or stop code, run the Claude canary with a real API key in the environment of the command only (never a file or
+   approval or stop code, run the Claude canary (`scripts/claude-takeover-canary.ts`, started through `scripts/codex-approvals-live.ts`) with a real API key in the environment of the command only (never a file or
    an argument): `ANTHROPIC_API_KEY=... bun scripts/codex-approvals-live.ts --real --only claude --login key --work <scratch directory>`
    and the same with `--login helper` (the helper login puts the key under another name that an `apiKeyHelper` in the
    throwaway user settings prints, which is what makes the fork pick `ask`). It spends a few cents on the cheapest model
