@@ -836,7 +836,7 @@ The owner of a continued session (and, in team mode, an admin) can open what eac
 
 - **Kept 7 days** (sooner if event retention is shorter). Visible only to a signed-in person who owns the session or is an admin: not to API keys or MCP (every key is refused `human_required`).
 - **Needs `AGENTPULSE_SECRETS_KEY` on the server.** The text is encrypted at rest with it; without it the feature is off and the lines show names and outcomes only. Migration `0022` adds the table; see `deploy/k8s/README.md`.
-- **Excluded places.** Nothing is kept for a call that touched a path an exclude rule covers, or for any Bash command or MCP call while a rule covers a place under the session's directory or the command names a rule's path. A command can still reach an excluded place by a route its text doesn't name (a variable of another name, a glob) when no rule lies under the directory; the exclude rule governs reporting, not what the command runs.
+- **Excluded places.** Nothing is kept for a call that touched a path an exclude rule covers (`~` and `$HOME` spellings included), or for any Bash command, helper start or MCP call while a rule covers a place under the session's directory or the command names a rule's path. A Bash, helper or MCP result that names a rule's path is left out, and so is a helper's result unless every call that helper made was kept. A rule you add later does not remove what was already kept (it stays for 7 days). A command can still reach an excluded place by a route its text doesn't name (a variable of another name, a glob) when no rule lies under the directory; the exclude rule governs reporting, not what the command runs.
 
 ### Subagents (off by default)
 
@@ -847,7 +847,7 @@ In the continue dialog, under "Options for this session", **Allow subagents** le
 - Helpers run in the foreground only. A helper can't outlive the turn: if one tries (a background run), the host ends the session and says so ("A subagent kept working after the turn ended"); Resume it to keep going. A Bash command a helper starts stops at Claude's Bash limit, as the fork's own does.
 - Stopping the turn stops the helper (an interrupt was measured to stop a running helper).
 - Helpers use more of your Claude usage.
-- Only on a Claude Code version AgentPulse measured it on (2.1.319 so far), in a team only on a machine you own, and only where the supervisor advertises `claude_fork_subagents`. The control says which of those is missing.
+- Only on a Claude Code version AgentPulse measured it on (2.1.319 so far), in a team only on a machine you own, and only where the supervisor advertises `claude_fork_subagents`. The control says which of those is missing. In a team, only the machine's owner who allowed subagents can prompt the session, resume it, or approve a helper's start afterwards.
 - Residuals: the built-in type is recognised by name, so an agent file that reuses the name `general-purpose` is not told apart from the built-in one (unmeasured; the helper still asks before every tool call). The helper's tool calls are asked about, but under the `ask` login your own allow rules and hooks apply to them as they do to Claude's (see [Claude login for the supervisor](#claude-login-for-the-supervisor)). The other built-in types (`claude`, `Explore`, `Plan`, `statusline-setup`) are not offered.
 
 ### Fork MCP servers (off by default)
@@ -869,7 +869,7 @@ A continued session can start MCP servers, but only the ones you list for it. Tu
 - At most 16 servers. A name is 1 to 32 letters, digits or hyphens (no underscore: Claude joins the server and tool names with `__`, and a name without one can be split only one way).
 - The file must be a plain file (not a link) owned by the account that runs the supervisor, mode `0600`, at most 64 KiB. Anything else makes the whole file invalid and no server starts. Try `chmod 600 ~/.agentpulse/claude-fork-mcp.json`.
 - It is read on the machine, by the supervisor. The server never sees it; it is told only the server names and a digest of each entry (a low-entropy secret in an entry could be guessed from its digest, and the digests are readable like any session metadata).
-- Only on a machine you own. In team mode an admin can't use a member's file, and nobody can use one on a machine that has no owner. Solo has no such rule.
+- Only on a machine you own. In team mode an admin can't use a member's file, and nobody can use one on a machine that has no owner. Solo has no such rule. In team mode only the machine's owner who agreed to the servers can then prompt that session, resume it, or approve its MCP calls (`fork_options_host_not_yours`); if an admin later hands the session to someone else, they can read and end it but not drive its servers. A Codex session takes no options (`fork_options_not_supported`).
 - Only on a Claude Code version AgentPulse has tested it on (2.1.319 today). Elsewhere the session starts without the servers and its status line says so.
 
 **What happens when you use it**

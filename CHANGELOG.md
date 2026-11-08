@@ -64,6 +64,22 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   `stopped`. Migration `0022_fork_tool_calls` (both dialects) is a new table; see `deploy/k8s/README.md`. Set
   `AGENTPULSE_SECRETS_KEY` to turn tool detail on. Follow-ups for the iOS companion app: AGEN-131 to AGEN-134.
 
+- **Fork follow-ups: review fixes (AGEN-119..123).** Team mode: MCP servers and subagents on a continued session belong to the
+  machine's owner who agreed to them, so only that person can prompt the session, resume it, or accept its MCP and helper
+  cards afterwards (`403 fork_options_host_not_yours`, also on the approval decision and on a HITL approve or Telegram
+  prompt that reaches it); solo is unchanged. A host's report of the options it applied is held to what the takeover asked
+  for. A Codex session asked for options answers `409 fork_options_not_supported`. A fork's timeline rows are whitelisted
+  because the session is a fork (not because the sender says so), and a call row's text must be the fixed words. Stored tool
+  detail: `view=index` now omits `input` and `output` (absent, not null; clients that read them from the index view get
+  `undefined`), the Host is checked when authentication is off (`403 bad_origin`), each read is audit-logged, texts are
+  bound to their session and call, an hourly cap per host is added, and Postgres serialises the per-session cap. The exclude
+  judge expands `~` and `$HOME` and withholds Bash, helper and MCP output that names a rule path. A fork can't write the
+  host's `~/.agentpulse` (decline-only `agentpulse_files`). Stop turn closes every open request of the session, whatever
+  turn id the host gave it. The supervisor checks the MCP copy directory's owner and removes leftover copies at start. New
+  wire values, all additive: refusal codes `fork_options_host_not_yours` (bind, resume, prompt, approval decision) and
+  `fork_options_not_supported`; decline-only reason `agentpulse_files`; audit line `fork_tool_detail_read`. Stated
+  residuals: a rule added after a call was kept does not remove it; a user agent file named `general-purpose`.
+
 - **Take over and resume: server first, then supervisors.** A host that doesn't advertise `resumes_sessions` is refused
   (`409 host_upgrade_required`) and a queued action that reaches one fails at claim. Sessions launched before the upgrade that
   lost their process can be resumed only if the thread is one this supervisor started (its record is written from this
