@@ -64,7 +64,7 @@ describe("CodexApprovalCard (AGEN-87)", () => {
 
 	test("the card's own limit rose four times: to 12,000 for the AGEN-87 phase 6 review, to 13,600 for AGEN-117 P4 (the Claude request kinds, copy, peer notice and focus rule), and to 13,700 for AGEN-117 P6 (the focus plan and the notice, split out to be tested without a DOM), and to 15,300 for AGEN-120/121 (the mcp and agent request kinds), and no further", () => {
 		expect(row?.maxGzip).toBe(15_300);
-		expect(row?.measured as number).toBeLessThanOrEqual(13_616);
+		expect(row?.measured as number).toBeLessThanOrEqual(15_022);
 	});
 });
 
