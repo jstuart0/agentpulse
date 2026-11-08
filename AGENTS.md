@@ -118,6 +118,7 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 - Dark theme is default
 - Hook ingestion always returns 200 (rate-limited/oversize drops are silent; counters in /health)
 - Hook deliveries are deduplicated by durable identity (`events.dedup_key`), not content comparison — repeated identical tool calls are all stored
+- Continued Claude session (fork) row payloads are rebuilt from a per-kind whitelist on the server (`services/fork-call-row.ts`); a call row carries `{ tool, toolOutcome, is_error, exit_code, tool_use_id }` and never the command, path, URL or output. What a call ran is in `fork_tool_calls`, owner-only (`services/fork-tool-detail.ts`). The options "Include my fork MCP servers" (`~/.agentpulse/claude-fork-mcp.json` on the host) and "Allow subagents" are chosen per continued session, off by default
 - An unrecognized `agent_type`/`agentType` filter on `/sessions`, `/templates`, `/search` returns `400 { error: "invalid_agent_type", value, allowed }` instead of silently matching zero rows
 - SQLite datetime: `"YYYY-MM-DD HH:MM:SS"` (no T/Z) — use `parseDate()` from `src/web/lib/utils.ts`
 - Session names: adjective-noun pairs from `name-generator.ts`
@@ -164,6 +165,9 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 **Taking over and resuming Codex sessions, and continuing Claude Code sessions (forks):**
 - `POST /api/v1/sessions/:id/bind` — `{ targetSupervisorId, sameMachineConfirmed: true }`; takes an observed Codex session over on that host, or forks an observed Claude Code session there (the original is never written; the fork is a new session, `<name> (continued)`). A signed-in person only, never an API key (`human_required`). Refusal codes are in `src/shared/session-resume.ts`
 - `POST /api/v1/sessions/:id/resume` — no body; resumes a managed Codex session or a Claude fork whose process is gone (`degraded`), under the mode the fork started with
+- `POST /api/v1/sessions/:id/interrupt` — Stop turn: ends a continued Claude session's running turn and keeps the session open (`manage` key or a signed-in person, never a `respond` key; owner or admin in team mode; 6 a minute per caller). MCP: `stop_session_turn`
+- `GET /api/v1/sessions/:id/tool-calls` and `GET /api/v1/sessions/:id/tool-calls/:toolUseId` — what a continued Claude session's tool calls ran, kept 7 days and encrypted with `AGENTPULSE_SECRETS_KEY`: a signed-in person only (the session's owner or an admin in team mode), every API key refused `human_required`; `view=index` omits the text. No MCP tool
+- `POST /api/v1/supervisors/:id/managed-sessions/:sessionId/tool-calls` — supervisor credential only: report what a fork's calls ran
 
 **Projects:**
 - `GET /api/v1/projects` — List projects, full detail (`manage`-scoped only)

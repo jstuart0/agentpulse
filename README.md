@@ -807,16 +807,88 @@ A Codex session you ran yourself (in a terminal, or `codex exec`) shows up as ob
 
 ## Continuing a Claude Code session you started by hand
 
-A Claude Code session you ran yourself shows up as observed. Open it and choose **Continue in a new session**, then the machine it ran on. AgentPulse does not write to your session. That machine's supervisor starts a **fork**: a new session that carries the same conversation forward (`claude --resume <id> --fork-session`), shown as `<name> (continued)`. Your original stays exactly as it was and you can keep using it in a terminal; the two don't share what happens next. A fork has the six tools Bash, Read, Write, Edit, NotebookEdit and WebFetch, and no subagents, no MCP servers and no slash commands. Anything that would write a file, fetch a page or run a command asks you first on the session page, with the same accept or decline cards as Codex (read-only commands such as `ls` and `cat` run unasked, as they do in Claude Code itself). **End session** stops the fork; you can fork the original again.
+A Claude Code session you ran yourself shows up as observed. Open it and choose **Continue in a new session**, then the machine it ran on. AgentPulse does not write to your session. That machine's supervisor starts a **fork**: a new session that carries the same conversation forward (`claude --resume <id> --fork-session`), shown as `<name> (continued)`. Your original stays exactly as it was and you can keep using it in a terminal; the two don't share what happens next. A fork has the six tools Bash, Read, Write, Edit, NotebookEdit and WebFetch, and, unless you turn an option on (below), no subagents, no MCP servers and no slash commands. Anything that would write a file, fetch a page or run a command asks you first on the session page, with the same accept or decline cards as Codex (read-only commands such as `ls` and `cat` run unasked, as they do in Claude Code itself). **End session** stops the fork; you can fork the original again. **Stop turn** ends what Claude is doing and keeps the session open; it is in the prompt box in place of Send while a turn runs.
 
 - **It needs a login the supervisor can use.** Claude Code run by the supervisor does not use the login `claude` uses in a terminal (on 2.1.318 on macOS, a keychain login is "Not logged in" headless). If the supervisor has none, Continue says so and starts nothing: give the supervisor's environment a subscription token (`claude setup-token`, set as `CLAUDE_CODE_OAUTH_TOKEN`) or an API key (`ANTHROPIC_API_KEY`), then restart it. AgentPulse never stores, reads or sends either; Claude Code reads it. The steps are in [Claude login for the supervisor](#claude-login-for-the-supervisor).
 - **Two modes, picked from the login, and the page says which applied.** With `ANTHROPIC_API_KEY` in the supervisor's environment the fork runs `restricted`: your own allow rules, hooks and user `CLAUDE.md` are ignored, so every Write, Edit, NotebookEdit, WebFetch and Bash asks. With any other working login (a `claude setup-token` token and an `apiKeyHelper` are the usual ones) it runs `ask`: your own settings apply, so a tool your rules already allow runs with no card, and your hooks run. A fork never takes either mode on a guess; a login AgentPulse hasn't measured gets `ask`.
 - **Project `CLAUDE.md`, hooks and `.mcp.json` are not loaded** in either mode, and none of your user MCP servers.
 - **A fork can't run Bash commands in the background.** A dev server or a long build stops at Claude Code's own Bash limit instead of carrying on after the turn; run those in your terminal.
-- **What the timeline shows.** A fixed line per tool call ("Write: ran, you approved it", "Bash: ran without asking", and so on), never the command, path or URL. The card shows those while it waits, and only the owner or an admin can read it. The tool count is hidden for a fork.
+- **What the timeline shows.** A fixed line per tool call ("Write: ran, you approved it", "Bash: ran without asking", "stopped when you stopped the turn", and so on), never the command, path or URL. The card shows those while it waits, and only the owner or an admin can read it. The tool count is hidden for a fork. Each call's row records how it ended (ran, failed, declined, refused, stopped) and, for a failed Bash command, the exit code Claude printed; the Summary counts an observed tool call without storing its command, and the session classifier counts only calls that actually failed.
 - **If the fork's process is lost** (a supervisor restart, a crash) the session shows **Resume session**. An approved command that was already running can outlive the supervisor until it finishes; Resume says "still running" until then.
 - **Only a signed-in person** can continue a session or accept an approval; an API key can't. Claude Code 2.1.318 up to, not including, 2.2.0 is the tested range; another version is refused with the range named.
 - **Not measured.** Only macOS, Claude Code 2.1.318 and 2.1.319, and the API key and `apiKeyHelper` logins on a throwaway home were run end to end. A subscription token, Bedrock, Vertex, Linux and Windows hosts, and a person's own `settings.json` hooks were not.
+
+### Stop turn
+
+While a continued session's turn runs, the prompt box shows **Stop turn** in place of Send (on a phone the overflow menu has it too, above End session). It ends what Claude is doing and the session stays open: the process, the conversation and the session keep going, and the next prompt runs. Nothing is signalled; Claude's own interrupt is used. A command it was running is ended by Claude, and anything it left in the background keeps running, as with any stop.
+
+- The turn's open approval cards close as "stopped" and can't be answered.
+- A Stop turn pressed before the prompt reached Claude cancels the send and puts your text back in the box.
+- A stopped turn is not an alarm: the session reads IDLE, the timeline line isn't amber, and the watcher sends no "didn't finish" note.
+- If Claude doesn't stop within 30 seconds, the stop fails and says so; try again or end the session.
+- A signed-in person or a `manage` API key (MCP: `stop_session_turn`), the session's owner or an admin in team mode, 6 a minute. Only continued sessions can be stopped this way.
+- Upgrade the server first, then the supervisors: a supervisor that predates it is refused with `host_upgrade_required`.
+- Not measured: a stop landing between the prompt being written and Claude's first reply (the canary slows the pre-send checks to reach the cancel branch and records the other as a normal interrupt), nested subagents, Linux and Windows.
+
+### Tool details
+
+The owner of a continued session (and, in team mode, an admin) can open what each tool call ran: a **Details** control on a call's line in Progress, and **Show what ran** under a turn's "Ran without asking you" line in Conversation. You see the input and output, with anything that looks like a secret hidden, each cut to 16 KB.
+
+- **Kept 7 days** (sooner if event retention is shorter). Visible only to a signed-in person who owns the session or is an admin: not to API keys or MCP (every key is refused `human_required`).
+- **Needs `AGENTPULSE_SECRETS_KEY` on the server.** The text is encrypted at rest with it; without it the feature is off and the lines show names and outcomes only. Migration `0022` adds the table; see `deploy/k8s/README.md`.
+- **Excluded places.** Nothing is kept for a call that touched a path an exclude rule covers, or for any Bash command or MCP call while a rule covers a place under the session's directory or the command names a rule's path. A command can still reach an excluded place by a route its text doesn't name (a variable of another name, a glob) when no rule lies under the directory; the exclude rule governs reporting, not what the command runs.
+
+### Subagents (off by default)
+
+In the continue dialog, under "Options for this session", **Allow subagents** lets Claude hand parts of a turn to built-in helpers. It is chosen per continued session and stays as chosen for that session's life; to change it, continue again.
+
+- The helper's commands, file changes and fetches wait for you the same way Claude's own do. Each card says "Asked by a subagent". The helper's words are never shown as Claude's.
+- Starting a helper is itself a card ("Claude asks to start a helper (general-purpose)") showing the whole prompt the helper would be told. Only the `general-purpose` helper that ships with Claude Code can be approved. A helper you defined yourself (an agent file in your Claude settings) and a helper that starts another helper can only be declined: an agent file's own hooks run with no card, and `isolation: worktree` moves the helper out of the directory the cards describe (measured on Claude Code 2.1.319).
+- Helpers run in the foreground only. A helper can't outlive the turn: if one tries (a background run), the host ends the session and says so ("A subagent kept working after the turn ended"); Resume it to keep going. A Bash command a helper starts stops at Claude's Bash limit, as the fork's own does.
+- Stopping the turn stops the helper (an interrupt was measured to stop a running helper).
+- Helpers use more of your Claude usage.
+- Only on a Claude Code version AgentPulse measured it on (2.1.319 so far), in a team only on a machine you own, and only where the supervisor advertises `claude_fork_subagents`. The control says which of those is missing.
+- Residuals: the built-in type is recognised by name, so an agent file that reuses the name `general-purpose` is not told apart from the built-in one (unmeasured; the helper still asks before every tool call). The helper's tool calls are asked about, but under the `ask` login your own allow rules and hooks apply to them as they do to Claude's (see [Claude login for the supervisor](#claude-login-for-the-supervisor)). The other built-in types (`claude`, `Explore`, `Plan`, `statusline-setup`) are not offered.
+
+### Fork MCP servers (off by default)
+
+A continued session can start MCP servers, but only the ones you list for it. Turn on **Include my fork MCP servers** in the continue dialog (chosen for the life of that session). AgentPulse never reads Claude's own `~/.claude.json`, your plugins or your account's connectors for this: the file below is the whole list.
+
+**The file** is `~/.agentpulse/claude-fork-mcp.json` on the machine that runs the session, in Claude's `mcpServers` shape:
+
+```json
+{
+  "mcpServers": {
+    "docs": { "command": "npx", "args": ["-y", "some-mcp-server"], "env": { "API_TOKEN": "..." } },
+    "wiki": { "type": "http", "url": "https://mcp.example.com/mcp", "headers": { "X-Team": "docs" } }
+  }
+}
+```
+
+- Each server is stdio (`command`, optional `args`, `env`) or `http`/`sse` (`url`, optional `headers`).
+- At most 16 servers. A name is 1 to 32 letters, digits or hyphens (no underscore: Claude joins the server and tool names with `__`, and a name without one can be split only one way).
+- The file must be a plain file (not a link) owned by the account that runs the supervisor, mode `0600`, at most 64 KiB. Anything else makes the whole file invalid and no server starts. Try `chmod 600 ~/.agentpulse/claude-fork-mcp.json`.
+- It is read on the machine, by the supervisor. The server never sees it; it is told only the server names and a digest of each entry (a low-entropy secret in an entry could be guessed from its digest, and the digests are readable like any session metadata).
+- Only on a machine you own. In team mode an admin can't use a member's file, and nobody can use one on a machine that has no owner. Solo has no such rule.
+- Only on a Claude Code version AgentPulse has tested it on (2.1.319 today). Elsewhere the session starts without the servers and its status line says so.
+
+**What happens when you use it**
+
+- The supervisor writes exactly those servers into a private copy for that session (`~/.agentpulse/claude-fork-mcp/`, directory `0700`, file `0600`, removed when the session ends), starts Claude with it, and keeps `--strict-mcp-config` on, so nothing else loads.
+- The first thing Claude reports must name exactly those servers. If it names another (a plugin, a synced connector, a user-scope server), AgentPulse ends the session.
+- Resuming the session after it was interrupted compares the file with what the session was started with, server by server. If a server was added, removed or edited, Resume is refused ("The MCP servers this session was started with have changed"). Continue the original session again to use the new list.
+- Every tool call gets a card; none runs unless you answer it, with two exceptions: a rule or a hook in **your own** Claude settings can allow a call first (under the `ask` login), and a server can act on its own once it is running. The card shows the tool's name verbatim, the server, and the call's whole input. It says what AgentPulse can't tell: what the tool does or what it will change. Accepting is for a signed-in person; an API key (and so an agent) can read the card and decline it, never accept.
+
+**What you are trusting**
+
+- A server you list is a program that runs as you, on that machine, with whatever access you gave it. It also sees Claude's own login (the environment of the Claude process: an API key or token, if that is how it logs in).
+- A server can ask Claude to answer a question for it (an "elicitation"); the link doesn't carry that request type, so it is answered with an error and logged by name. Servers can't ask Claude to run a model for them (Claude Code doesn't offer that).
+- Ending a session stops the servers it started. A server that detaches itself (double-forks) is outside what the stop sequence reaches.
+
+**Not tested**
+
+- Servers synced from your Claude account (claude.ai connectors): they need an OAuth account login, which the test harness could not use. The first-report check above is what would catch one; it is a safety net, not a measured property. If you log in with a `CLAUDE_CODE_OAUTH_TOKEN`, continue a session once with the option on and look at the session's "Fork MCP servers" line.
+- Linux and Windows (the feature is macOS-only like the rest of continuing a Claude session), `http`/`sse` servers' lifetime, `mode: "url"` elicitations, and any Claude Code other than 2.1.319.
 
 ## Claude login for the supervisor
 
