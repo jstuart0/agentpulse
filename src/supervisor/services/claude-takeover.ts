@@ -30,17 +30,23 @@ import { forkChildEnv } from "../../shared/launch-env-policy.js";
 import { privilegeCliArgs } from "../../shared/launch-privileges.js";
 import { CLAUDE_FORK_EXITED_SYNC_ERROR } from "../../shared/managed-messages.js";
 import {
+	type AppliedForkOptions,
 	CLAUDE_TAKEOVER_PRIVILEGES,
 	type ClaudeForkMode,
+	type ForkOptionsRequest,
 	RESUME_REFUSED_MESSAGE,
 	type ResumeFailureKind,
 	type ResumeKind,
 	isResumableSessionId,
+	parseAppliedForkOptions,
+	parseForkOptionsRequest,
 	resumeFailureMessage,
 } from "../../shared/session-resume.js";
 import type { ControlAction } from "../../shared/types.js";
 import { listClaudeAgentEntries } from "../providers/claude-agents.js";
 import { forkArgv, inPlaceArgv } from "../providers/claude-argv.js";
+import { ForkOptionsRefusal } from "../providers/claude-fork-mcp.js";
+import { type PreparedForkOptions, prepareForkOptions } from "../providers/claude-fork-tools.js";
 import { type LoginProbe, createLoginProbe, pickForkMode } from "../providers/claude-login-mode.js";
 import {
 	CLAUDE_VERSION_RANGE_TEXT,
@@ -60,6 +66,8 @@ import {
 } from "../providers/claude-stream.js";
 import type { ApprovalLaunch, CodexApprovalTracker } from "../providers/codex-approvals.js";
 import type { Verdict } from "../providers/codex-protocol.js";
+import { createDetailJudge, createOutputGuard } from "../providers/fork-tool-record.js";
+import { forkTurnObserver } from "../providers/fork-turn-observer.js";
 import { parseVersion } from "../providers/version-range.js";
 import type { ClaudeForkRecord } from "./claude-fork-record.js";
 import { findSourceDirectory } from "./claude-source-dir.js";
@@ -77,6 +85,8 @@ export interface ClaudeTakeoverDeps {
 	/** A fixed, empty, private directory the probes and the `agents` calls run in; never S's. */
 	probeCwd: string;
 	tracker: Pick<CodexApprovalTracker, "attachClaude">;
+	/** Whether the server offers a feature (from register and every heartbeat). Absent: none, so no call detail is sent. */
+	serverHas?: (feature: string) => boolean;
 	log?: (line: string) => void;
 	/** Test seams. Each defaults to the real thing. */
 	resolve?: typeof resolveClaude;
@@ -226,6 +236,7 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 		cwd: string,
 		mode: ClaudeForkMode,
 		verdict: Verdict,
+		applied: AppliedForkOptions,
 	): ClaudeApprovalPort {
 		const launch: ApprovalLaunch & { cwd: string } = {
 			sessionId,
@@ -245,7 +256,7 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 				}
 			},
 		};
-		return deps.tracker.attachClaude(launch, { mode, configDir, verdict });
+		return deps.tracker.attachClaude(launch, { mode, configDir, verdict, applied });
 	}
 
 	/** Spawns and verifies the child; every refusal inside leaves no process behind (`startClaudeStream`). */
@@ -258,9 +269,22 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 		args: string[];
 		spawnDir: string;
 		verdict: Verdict;
+		/** What the fork's options came to; its policy built `args`, and its cleanup runs when the fork ends. */
+		prepared: PreparedForkOptions;
 		reservedSlot?: () => void;
 	}): Promise<ClaudeStreamRuntime> {
-		const approvals = approvalFor(input.sessionId, input.spawnDir, input.mode, input.verdict);
+		const approvals = approvalFor(
+			input.sessionId,
+			input.spawnDir,
+			input.mode,
+			input.verdict,
+			input.prepared.applied,
+		);
+		const observer = forkTurnObserver(input.sessionId, {
+			send: (sessionId, body) => gate.reportToolCalls(sessionId, body),
+			serverHas: deps.serverHas,
+			log,
+		});
 		try {
 			return await start({
 				sessionId: input.sessionId,
@@ -278,6 +302,19 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 				},
 				configDir: configDir ?? undefined,
 				approvals,
+				policy: input.prepared.policy,
+				cleanup: input.prepared.cleanup,
+				onTurnFinished: (turn) => observer.onTurnFinished(turn),
+				onCallResulted: (call) => observer.onCallResulted(call),
+				detailJudge: createDetailJudge({
+					cwd: input.spawnDir,
+					excludesPath: (path) => gate.excludesPath(path),
+					excludeScope: () => gate.excludeScope(),
+				}),
+				detailOutputGuard: createOutputGuard({
+					cwd: input.spawnDir,
+					excludeScope: () => gate.excludeScope(),
+				}),
 				agentsCwd: deps.probeCwd,
 				...(input.reservedSlot ? { reservedSlot: input.reservedSlot } : {}),
 				log,
@@ -465,6 +502,17 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 		if (!gate.noteLaunch(carrierId, forkId, found.dir)) {
 			throw new Refusal("rejected", "the gate can't take another launch");
 		}
+		const askedOptions = parseForkOptionsRequest(meta.forkOptions) ?? {};
+		let prepared: PreparedForkOptions;
+		try {
+			prepared = await prepareForkOptions(askedOptions, {
+				claudeVersion: binary.version,
+				log,
+			});
+		} catch (error) {
+			gate.forgetLaunch(carrierId, forkId);
+			throw error;
+		}
 		let runtime: ClaudeStreamRuntime;
 		try {
 			runtime = await spawnFork({
@@ -473,12 +521,14 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 				source: sourceId,
 				sourceFile: found.transcript,
 				mode,
-				args: forkArgv({ source: sourceId, fork: forkId, mode }),
+				args: forkArgv({ source: sourceId, fork: forkId, mode, policy: prepared.policy }),
 				spawnDir,
 				verdict,
+				prepared,
 				reservedSlot: input.release,
 			});
 		} catch (error) {
+			await prepared.cleanup();
 			gate.forgetLaunch(carrierId, forkId);
 			throw error;
 		}
@@ -492,7 +542,12 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 			throw new Refusal("rejected", "the fork can't be recorded");
 		}
 		runtime.beginSettle();
-		const body = { status: "succeeded", provedCwd: found.dir, permissionMode: mode } as const;
+		const body = {
+			status: "succeeded",
+			provedCwd: found.dir,
+			permissionMode: mode,
+			applied: prepared.applied,
+		} as const;
 
 		/**
 		 * What an answer means for the child. After any attempt that may have reached the server, the child is
@@ -601,42 +656,79 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 		const spawnDir = await judgeDirectory(record.dir);
 		const own = fileExistsFor(forkId);
 		if (own === "many") throw new Refusal("rejected", "more than one transcript for the fork");
-		let args: string[];
+		// What the fork was started with comes from the resume action the server built, never from anything the
+		// host could read about the session; an action without it (a server older than the options) is "none".
+		const stored: AppliedForkOptions | null = parseAppliedForkOptions(
+			(action.metadata as { storedForkOptions?: unknown } | null)?.storedForkOptions,
+		);
+		const askedOptions: ForkOptionsRequest = stored
+			? { mcp: stored.mcpServers.length > 0, subagents: stored.subagents }
+			: {};
+		const prepared = await prepareForkOptions(askedOptions, {
+			claudeVersion: binary.version,
+			stored,
+			log,
+		});
+		// A fork started with MCP servers is never resumed without them (a Claude Code version nobody measured
+		// applies none): the person continues the original again.
+		if ((stored?.mcpServers.length ?? 0) > 0 && prepared.applied.mcpServers.length === 0) {
+			await prepared.cleanup();
+			throw new Refusal("mcp_servers_changed", "the fork's MCP servers can't be started here");
+		}
+		let args: string[] = [];
 		let source: string | undefined;
 		let sourceFile: string | null = null;
-		if (own === "one") {
-			args = inPlaceArgv({
-				fork: forkId,
-				record: { source: record.source, mode: record.mode },
-				mode: record.mode,
-			});
-		} else {
-			// Never prompted: no file, so it can't be resumed; fork again from S under the same N (0b-a4).
-			if (listed.has(record.source)) throw new Refusal("running", "S is listed by agents");
-			const found = findSourceDirectory({
-				configDir,
-				sessionId: record.source,
-				candidate: record.dir,
-			});
-			if (!found.ok) throw new Refusal(found.kind, "the source can't be proved");
-			judgeWorkedDirectories(found.cwds, record.dir);
-			args = forkArgv({ source: record.source, fork: forkId, mode: record.mode });
-			source = record.source;
-			sourceFile = found.transcript;
+		try {
+			if (own === "one") {
+				args = inPlaceArgv({
+					fork: forkId,
+					record: { source: record.source, mode: record.mode },
+					mode: record.mode,
+					policy: prepared.policy,
+				});
+			} else {
+				// Never prompted: no file, so it can't be resumed; fork again from S under the same N (0b-a4).
+				if (listed.has(record.source)) throw new Refusal("running", "S is listed by agents");
+				const found = findSourceDirectory({
+					configDir,
+					sessionId: record.source,
+					candidate: record.dir,
+				});
+				if (!found.ok) throw new Refusal(found.kind, "the source can't be proved");
+				judgeWorkedDirectories(found.cwds, record.dir);
+				args = forkArgv({
+					source: record.source,
+					fork: forkId,
+					mode: record.mode,
+					policy: prepared.policy,
+				});
+				source = record.source;
+				sourceFile = found.transcript;
+			}
+		} catch (error) {
+			await prepared.cleanup();
+			throw error;
 		}
 
 		input.handedOver();
-		const runtime = await spawnFork({
-			binary,
-			sessionId: forkId,
-			...(source ? { source } : {}),
-			sourceFile,
-			mode: record.mode,
-			args,
-			spawnDir,
-			verdict,
-			reservedSlot: input.release,
-		});
+		let runtime: ClaudeStreamRuntime;
+		try {
+			runtime = await spawnFork({
+				binary,
+				sessionId: forkId,
+				...(source ? { source } : {}),
+				sourceFile,
+				mode: record.mode,
+				args,
+				spawnDir,
+				verdict,
+				prepared,
+				reservedSlot: input.release,
+			});
+		} catch (error) {
+			await prepared.cleanup();
+			throw error;
+		}
 		const dispose = () => runtime.dispose({ interruptMs: 0, stdinCloseMs: 1_000 }).catch(() => {});
 		runtime.beginSettle();
 		const stateBody = {
@@ -754,6 +846,12 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 				if (resumeKind === "recovery") await recover(action, sessionId);
 				else await takeover(action, sessionId);
 			} catch (error) {
+				// A recovery whose fork MCP file changed (AGEN-121): the same refusal as any other, in its own words.
+				if (error instanceof ForkOptionsRefusal) {
+					const mode =
+						resumeKind === "recovery" ? deps.forkRecord.lookup(sessionId)?.mode : undefined;
+					return refuseWith(action, resumeKind, error.kind, "the fork MCP servers changed", mode);
+				}
 				if (error instanceof Refusal) {
 					const mode =
 						resumeKind === "recovery" ? deps.forkRecord.lookup(sessionId)?.mode : undefined;

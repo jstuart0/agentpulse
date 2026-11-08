@@ -41,6 +41,21 @@ describe("api: taking a session over and resuming one", () => {
 		expect(JSON.stringify(calls[0]?.headers)).toContain("application/json");
 	});
 
+	test("bindSession sends forkOptions only when something is turned on", async () => {
+		stub(() => json(202, { action: { id: "a" }, launchRequestId: "l" }));
+		await api.bindSession("s1", { targetSupervisorId: "h1", forkOptions: {} });
+		await api.bindSession("s1", { targetSupervisorId: "h1", forkOptions: { mcp: true } });
+		expect(JSON.parse(String(calls[0]?.body))).toEqual({
+			targetSupervisorId: "h1",
+			sameMachineConfirmed: true,
+		});
+		expect(JSON.parse(String(calls[1]?.body))).toEqual({
+			targetSupervisorId: "h1",
+			sameMachineConfirmed: true,
+			forkOptions: { mcp: true },
+		});
+	});
+
 	test("resumeSession posts no body at all", async () => {
 		stub(() => json(202, { action: { id: "a" }, launchRequestId: "l" }));
 		await api.resumeSession("s1");

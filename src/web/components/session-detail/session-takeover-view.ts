@@ -15,6 +15,7 @@ import {
 	END_SESSION_FIRST_MESSAGE,
 	type ResumeKind,
 	TAKEOVER_IN_PROGRESS_MESSAGE,
+	forkOptionsHostNotYoursMessage,
 	hostCannotRunClaudeMessage,
 	hostCannotRunCodexMessage,
 	resumeAgentOf,
@@ -201,6 +202,9 @@ const REFUSALS: Record<string, RefusalWords> = {
 	host_cannot_run_claude: (host, kind, sourceName) =>
 		hostCannotRunClaudeMessage(host, kind, sourceName),
 	end_session_first: () => END_SESSION_FIRST_MESSAGE,
+	fork_options_host_not_yours: (host) => forkOptionsHostNotYoursMessage(host),
+	fork_options_not_supported: () =>
+		"MCP servers and subagents are for Claude Code sessions. A Codex session takes neither.",
 	session_key_mismatch: (host) =>
 		`This session was reported by a key that isn't tied to ${host}. Ask an admin to take it over.`,
 	rate_limited: () => "Too many attempts. Try again in a minute.",

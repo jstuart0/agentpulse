@@ -16,6 +16,12 @@
  * attributed to the break).
  */
 
+import { T119_MUTATIONS } from "./claude-canary-scenarios/t119-mutations.js";
+import { T120_MUTATIONS } from "./claude-canary-scenarios/t120-mutations.js";
+import { T121_MUTATIONS } from "./claude-canary-scenarios/t121-mutations.js";
+import { T122_MUTATIONS } from "./claude-canary-scenarios/t122-mutations.js";
+import { T123_MUTATIONS } from "./claude-canary-scenarios/t123-mutations.js";
+
 export type ExpectationKind = "instrument" | "precondition" | "claim";
 
 export interface Expectation {
@@ -80,7 +86,7 @@ export function mutationTargets(name: string): MutationTarget[] {
  * The plan's table: each mutation lists every layer it disables and the one expectation it must fail.
  * The scenario's own expectation names are what `expectation` is matched against.
  */
-export const MUTATIONS: Record<string, Mutation> = {
+const BASE_MUTATIONS: Record<string, Mutation> = {
 	"drop-fork+skip-own-id+skip-source-check": {
 		scenario: "takeover",
 		layers: [
@@ -228,6 +234,16 @@ export const MUTATIONS: Record<string, Mutation> = {
 		],
 		expectation: "resumed",
 	},
+};
+
+/** The base mutations, then each fork follow-up ticket's own (empty until that ticket's track adds some). */
+export const MUTATIONS: Record<string, Mutation> = {
+	...BASE_MUTATIONS,
+	...T119_MUTATIONS,
+	...T120_MUTATIONS,
+	...T121_MUTATIONS,
+	...T122_MUTATIONS,
+	...T123_MUTATIONS,
 };
 
 export function classifyScenario(result: ScenarioResult): Verdict {

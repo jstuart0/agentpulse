@@ -1,0 +1,86 @@
+{
+	"int-bash-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement int-bash-key"
+	},
+	"int-sub-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement int-sub-key"
+	},
+	"int-sub-helper.jsonl": {
+		"restricted": false,
+		"source": "claude 2.1.319 measurement int-sub-helper"
+	},
+	"s1-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement s1-key"
+	},
+	"s1-helper.jsonl": {
+		"restricted": false,
+		"source": "claude 2.1.319 measurement s1-helper"
+	},
+	"s2-key-bgoff.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement s2-key-bgoff"
+	},
+	"s2-key-bgon.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement s2-key-bgon"
+	},
+	"s5-general-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement s5-general-key"
+	},
+	"s5b-custom-helper.jsonl": {
+		"restricted": false,
+		"source": "claude 2.1.319 measurement s5b-custom-helper"
+	},
+	"m1-base-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement m1-base-key"
+	},
+	"m1-base-helper.jsonl": {
+		"restricted": false,
+		"source": "claude 2.1.319 measurement m1-base-helper"
+	},
+	"m1-allowrule-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement m1-allowrule-key"
+	},
+	"m1-usercfg-strict-helper.jsonl": {
+		"restricted": false,
+		"source": "claude 2.1.319 measurement m1-usercfg-strict-helper"
+	},
+	"m1-usercfg-nostrict-helper.jsonl": {
+		"restricted": false,
+		"source": "claude 2.1.319 measurement m1-usercfg-nostrict-helper"
+	},
+	"g5-norule-allow-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement g5-norule-allow-key"
+	},
+	"g5-rule-allow-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement g5-rule-allow-key"
+	},
+	"g5-rule-allow-helper.jsonl": {
+		"restricted": false,
+		"source": "claude 2.1.319 measurement g5-rule-allow-helper"
+	},
+	"g5-rule-deny-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement g5-rule-deny-key"
+	},
+	"g6-rule-allowall-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement g6-rule-allowall-key"
+	},
+	"g6-rule-denynested-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement g6-rule-denynested-key"
+	},
+	"g7-with-helper.jsonl": {
+		"restricted": false,
+		"source": "claude 2.1.319 measurement g7-with-helper"
+	}
+}

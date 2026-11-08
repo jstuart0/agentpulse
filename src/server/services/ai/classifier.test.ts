@@ -154,6 +154,76 @@ describe("classifier", () => {
 			).not.toBe("repeated_tool_failure");
 		});
 
+		describe("a continued Claude session's call rows (AGEN-122)", () => {
+			const forkCall = (toolOutcome: string, over: Partial<SessionEvent> = {}) =>
+				makeEvent({
+					eventType: "HeadlessStatus",
+					category: "progress_update",
+					rawPayload: {
+						source: "claude_stream",
+						kind: "call",
+						claudeStreamRuntime: true,
+						tool: "Bash",
+						toolOutcome,
+						is_error: toolOutcome === "failed",
+						tool_use_id: "toolu_1",
+					},
+					...over,
+				});
+			const three = (build: () => SessionEvent) => [build(), build(), build()];
+
+			test("three failed calls make the session stuck, as three failed hook calls do", () => {
+				expect(verdict(three(() => forkCall("failed")))).toBe("repeated_tool_failure");
+			});
+
+			test("stopped, declined, refused, elsewhere, approved and unasked calls never count", () => {
+				for (const outcome of [
+					"stopped",
+					"declined",
+					"refused",
+					"elsewhere",
+					"local_decline",
+					"no_result",
+					"approved",
+					"unasked",
+				]) {
+					expect(verdict(three(() => forkCall(outcome))), outcome).not.toBe(
+						"repeated_tool_failure",
+					);
+				}
+			});
+
+			test("a HeadlessStatus row without the host's marker, or of another kind, is not a failed call", () => {
+				const unmarked = () =>
+					makeEvent({
+						eventType: "HeadlessStatus",
+						category: "progress_update",
+						rawPayload: { kind: "call", toolOutcome: "failed" },
+					});
+				expect(verdict(three(unmarked))).not.toBe("repeated_tool_failure");
+				const otherKind = () =>
+					forkCall("failed", {
+						rawPayload: { kind: "turn_unasked", claudeStreamRuntime: true, toolOutcome: "failed" },
+					});
+				expect(verdict(three(otherKind))).not.toBe("repeated_tool_failure");
+			});
+
+			test("the distinct-tool rule reads the row's tool: three failures over three tools are not stuck", () => {
+				const by = (tool: string) =>
+					forkCall("failed", {
+						rawPayload: {
+							source: "claude_stream",
+							kind: "call",
+							claudeStreamRuntime: true,
+							tool,
+							toolOutcome: "failed",
+						},
+					});
+				expect(verdict([by("Bash"), by("Bash"), by("Bash")])).toBe("repeated_tool_failure");
+				expect(verdict([by("Bash"), by("Edit"), by("Read")])).not.toBe("repeated_tool_failure");
+			});
+		});
+
 		test("a call the user interrupted is not the session being stuck", () => {
 			expect(
 				verdict(three({ eventType: "PostToolUseFailure", rawPayload: { is_interrupt: true } })),

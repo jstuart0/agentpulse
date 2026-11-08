@@ -6,6 +6,17 @@
  */
 import { forkModeLine, forkSentenceName } from "../../../shared/claude-fork-copy.js";
 import {
+	FORK_MCP_OFF_REASONS,
+	forkMcpAppliedLine,
+	forkMcpOffLine,
+} from "../../../shared/claude-fork-mcp.js";
+import { subagentsStatusLine } from "../../../shared/claude-fork-subagents.js";
+import {
+	type AppliedForkOptions,
+	FORK_OPTION_MEASURED_VERSIONS,
+	type ForkOptionsRequest,
+} from "../../../shared/session-resume.js";
+import {
 	type ForkInfo,
 	type ForkSource,
 	KEEP_WORKING_GONE,
@@ -20,11 +31,67 @@ export const FORK_CLAUDE_MD_NOT_LOADED = "Not loaded in this session.";
 
 /** Why Tools and Noisy are off on a continued session: its tool calls are short lines, not events with details. */
 export const FORK_TOOLS_REASON = "This session records tool activity as short lines.";
+/** The same for a viewer who may open what a line ran (the owner, an admin, or anyone in solo). */
+export const FORK_TOOLS_REASON_WITH_DETAIL = `${FORK_TOOLS_REASON} Open a line to see what it ran.`;
+
+export function forkToolsReason(canReadDetail: boolean): string {
+	return canReadDetail ? FORK_TOOLS_REASON_WITH_DETAIL : FORK_TOOLS_REASON;
+}
 export const FORK_SOURCE_DELETED = "Continued from a session that was deleted.";
 
 export type ForkLink =
 	| { kind: "link"; sourceId: string; text: string }
 	| { kind: "text"; text: string };
+
+/**
+ * The line that says which fork options a session was started with, and which it asked for but didn't get
+ * (a version AgentPulse hasn't measured them on, no usable file, a supervisor that can't). Null when the session
+ * has no option to report, so a session without options shows exactly what it showed before. `requested` is
+ * known only where the person just chose (the dialog); a stored session has what the host applied.
+ */
+export function forkOptionsLine(
+	requested: ForkOptionsRequest | null | undefined,
+	applied: AppliedForkOptions | null | undefined,
+	_machine: string | null | undefined,
+): string | null {
+	const lines = [mcpOptionLine(requested, applied), subagentsOptionLine(requested, applied)];
+	const present = lines.filter((line): line is string => line !== null);
+	return present.length > 0 ? present.join(" ") : null;
+}
+
+function mcpOptionLine(
+	requested: ForkOptionsRequest | null | undefined,
+	applied: AppliedForkOptions | null | undefined,
+): string | null {
+	const names = (applied?.mcpServers ?? []).map((s) => s.name);
+	if (names.length > 0) return forkMcpAppliedLine(names);
+	if (requested?.mcp !== true) return null;
+	// Nothing applied: the host's reported version says which of the fixed reasons it is.
+	const version = applied?.claudeVersion ?? "";
+	const reason =
+		version === ""
+			? FORK_MCP_OFF_REASONS.old_supervisor
+			: !FORK_OPTION_MEASURED_VERSIONS.includes(version)
+				? FORK_MCP_OFF_REASONS.unmeasured_version
+				: FORK_MCP_OFF_REASONS.no_file;
+	return forkMcpOffLine(reason);
+}
+
+/** AGEN-120: on when applied; off with a reason when it was asked for (known only in the dialog) and not applied. */
+function subagentsOptionLine(
+	requested: ForkOptionsRequest | null | undefined,
+	applied: AppliedForkOptions | null | undefined,
+): string | null {
+	if (applied?.subagents === true) return subagentsStatusLine(true);
+	if (requested?.subagents !== true) return null;
+	const version = applied?.claudeVersion ?? "";
+	const reason = FORK_OPTION_MEASURED_VERSIONS.includes(version)
+		? "The machine didn't apply it."
+		: version === ""
+			? "The machine didn't say which options it applied."
+			: `AgentPulse hasn't checked subagents with Claude Code ${version}.`;
+	return subagentsStatusLine(false, reason);
+}
 
 export interface ForkStatusView {
 	heading: string;
@@ -32,6 +99,8 @@ export interface ForkStatusView {
 	line: string;
 	/** Which settings apply; null when the row doesn't say which mode it runs under. */
 	modeLine: string | null;
+	/** Which fork options the session runs with; null when it has none. */
+	optionsLine: string | null;
 	/** Shown once the session has been ended. */
 	endedLine: string | null;
 	link: ForkLink;
@@ -62,6 +131,7 @@ export function forkStatusView(input: ForkStatusInput): ForkStatusView {
 					unavailable,
 				)
 			: null,
+		optionsLine: forkOptionsLine(null, input.fork.options ?? null, input.machine),
 		endedLine:
 			input.managedState === "stopped"
 				? `You ended this session. ${

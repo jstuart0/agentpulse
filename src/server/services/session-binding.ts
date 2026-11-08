@@ -18,12 +18,16 @@ import {
 	CLAUDE_FORK_DEADLINE_MS,
 	CLAUDE_TAKEOVER,
 	CLAUDE_TAKEOVER_PRIVILEGES,
+	FORK_OPTIONS_OFF,
+	type ForkOptionsRequest,
 	RESUMES_SESSIONS,
 	type ResumeActionMetadata,
 	TAKEOVER_PRIVILEGES,
 	buildClaudeResumeActionMetadata,
 	buildResumeActionMetadata,
+	forkOptionsRequested,
 	isResumableSessionId,
+	parseAppliedForkOptions,
 } from "../../shared/session-resume.js";
 import type {
 	ControlAction,
@@ -38,7 +42,12 @@ import { apiKeys, controlActions, managedSessions, sessions } from "../db/schema
 import { jsonExtractText } from "../db/sql-helpers.js";
 import { requestWsRevalidation } from "../ws/revalidation.js";
 import { logAdminAction } from "./audit-log.js";
-import { mayBindToHost, refuseBindSession } from "./authorization.js";
+import {
+	mayBindToHost,
+	mayDriveForkOptions,
+	mayUseForkOptionsOnHost,
+	refuseBindSession,
+} from "./authorization.js";
 import { BindRefusal } from "./bind-refusal.js";
 import {
 	isClaudeTakeoverLaunch,
@@ -47,7 +56,7 @@ import {
 	resolveManagedLaunch,
 	takeControlLock,
 } from "./control-actions.js";
-import { getMode } from "./instance-mode.js";
+import { getMode, getModeOn } from "./instance-mode.js";
 import {
 	ENFORCES_LAUNCH_PRIVILEGES,
 	buildLaunchSpec,
@@ -73,6 +82,8 @@ export interface BindInput {
 	targetSupervisorId: string;
 	/** The person's statement that this is the machine the session ran on, and that it has ended there. */
 	sameMachineConfirmed: boolean;
+	/** Claude Code only: the fork options the person asked for. Absent means none. */
+	forkOptions?: ForkOptionsRequest;
 }
 
 export type BindStep = "checked" | "claimed" | "locked" | "action";
@@ -260,6 +271,7 @@ async function announceCommitted(sessionId: string, launchRequestId: string): Pr
 }
 
 interface ClaudeForkInput {
+	forkOptions: ForkOptionsRequest;
 	fresh: SessionRow;
 	cwd: string;
 	host: { id: string; hostName: string };
@@ -332,6 +344,7 @@ async function queueClaudeFork(
 		ownerAtBind: fresh.ownerUserId ?? null,
 		assignOwner: input.assignOwner,
 		forkDeadlineAt: new Date(now() + CLAUDE_FORK_DEADLINE_MS).toISOString(),
+		...(forkOptionsRequested(input.forkOptions) ? { forkOptions: input.forkOptions } : {}),
 	});
 	const [row] = await tx
 		.insert(controlActions)
@@ -402,6 +415,16 @@ export async function bindObservedSession(
 		host ? { ownerUserId: host.ownerUserId ?? null, enrollmentState: host.enrollmentState } : null,
 	);
 	if (hostVerdict !== null || host === null) throw new BindRefusal(hostVerdict ?? "host_gone");
+	const forkOptions = input.forkOptions ?? {};
+	const wantsOptions = forkOptionsRequested(forkOptions);
+	if (wantsOptions) {
+		// Options are a Claude Code fork's; and they run the person's own configuration, so on the machine's owner only.
+		if (session.agentType !== "claude_code") throw new BindRefusal("fork_options_not_supported");
+		const optionsVerdict = mayUseForkOptionsOnHost(actor, mode, {
+			ownerUserId: host.ownerUserId ?? null,
+		});
+		if (optionsVerdict !== null) throw new BindRefusal(optionsVerdict);
+	}
 
 	const candidateCwd = judgeCandidateCwd(session.cwd, host.trustedRoots);
 	const template = templateFor(session, candidateCwd);
@@ -435,6 +458,12 @@ export async function bindObservedSession(
 			enrollmentState: hostNow.enrollmentState,
 		});
 		if (freshHostVerdict !== null) throw new BindRefusal(freshHostVerdict);
+		if (wantsOptions) {
+			const freshOptionsVerdict = mayUseForkOptionsOnHost(actor, mode, {
+				ownerUserId: hostNow.ownerUserId,
+			});
+			if (freshOptionsVerdict !== null) throw new BindRefusal(freshOptionsVerdict);
+		}
 		if (fresh.isArchived) throw new BindRefusal("session_not_found");
 		if (fresh.agentType !== session.agentType) throw new BindRefusal("agent_not_supported");
 		const trustedRoots = readTrustedRoots(hostNow.trustedRoots);
@@ -463,6 +492,7 @@ export async function bindObservedSession(
 		const assignOwner = mode === "team" && fresh.ownerUserId === null && intendedOwner !== null;
 		if (fresh.agentType === "claude_code") {
 			return await queueClaudeFork(tx, {
+				forkOptions,
 				fresh,
 				cwd,
 				host: { ...host, id: host.id, hostName: host.hostName },
@@ -633,6 +663,14 @@ async function queueClaudeRecovery(
 	},
 ) {
 	const { sessionId, fresh, launch, managed, actor, now } = input;
+	// Resuming restarts the fork's MCP servers and subagents with the host owner's configuration: only the owner
+	// who consented to them may do that (review H1).
+	const optionsVerdict = mayDriveForkOptions(
+		actor,
+		actor.mode ?? (await getModeOn(tx)),
+		fresh.metadata,
+	);
+	if (optionsVerdict !== null) throw new BindRefusal(optionsVerdict);
 	const hostId = await resolveSessionOwner(tx, sessionId);
 	if (hostId === null) throw new BindRefusal("host_gone");
 	const hostNow = await readHostState(tx, hostId, now());
@@ -675,6 +713,10 @@ async function queueClaudeRecovery(
 		boundByUserId: actor.userId,
 		sessionName: fresh.displayName,
 		sourceName: await forkSourceName(tx, fresh),
+		// Read from the fork's own server-owned record; a session from before the options reads as none.
+		storedForkOptions:
+			parseAppliedForkOptions((fresh.metadata as { forkOptions?: unknown } | null)?.forkOptions) ??
+			FORK_OPTIONS_OFF,
 	});
 	const [row] = await tx
 		.insert(controlActions)

@@ -57,3 +57,33 @@ export const NOTES_BLOCKED_REASON =
 
 /** What the session name says when someone who can't rename tries to. The detail page has no other owner-gated control that explains itself. */
 export const RENAME_BLOCKED_REASON = "Only the owner or an admin can rename this session.";
+
+/**
+ * What the viewer may do with the stored detail of a continued session's tool calls (AGEN-123). Display
+ * only: the server decides (`mayReadToolDetail`), and this mirrors it so a viewer who would be refused isn't
+ * offered a control. Deliberately not derived from `sessionActionAccess`: that rule treats an unowned team
+ * session as open to every member, and detail does not (an unowned session's detail is an admin's).
+ *  - `allowed`: solo, or the session's owner.
+ *  - `admin_on_others`: an admin on a session that is someone else's, or nobody's.
+ *  - `denied`: a member on any session but their own.
+ */
+export type ToolDetailAccess = "allowed" | "admin_on_others" | "denied";
+
+export function toolDetailAccess(
+	ui: OwnershipUi,
+	session: { ownerUserId?: string | null },
+	viewer: { userId?: string | null; effectiveRole?: "admin" | "member" | null },
+): ToolDetailAccess {
+	if (!ui.ownerGatesSessionActions) return "allowed";
+	const owner = session.ownerUserId ?? null;
+	if (owner !== null && viewer.userId != null && viewer.userId === owner) return "allowed";
+	return viewer.effectiveRole === "admin" ? "admin_on_others" : "denied";
+}
+
+export function canReadToolDetail(
+	ui: OwnershipUi,
+	session: { ownerUserId?: string | null },
+	viewer: { userId?: string | null; effectiveRole?: "admin" | "member" | null },
+): boolean {
+	return toolDetailAccess(ui, session, viewer) !== "denied";
+}

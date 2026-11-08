@@ -47,8 +47,11 @@ import {
 	showsStatusHint,
 } from "../components/session-detail/session-takeover-view.js";
 import {
+	STOP_TURN_ANNOUNCE_START,
 	canStopSession,
+	canStopTurn,
 	stopRequestFailure,
+	stopTurnRequestFailure,
 	stoppingText,
 } from "../components/session-detail/stop-view.js";
 import { useDirectoryInitials } from "../hooks/useDirectoryInitials.js";
@@ -57,7 +60,7 @@ import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
 import { useResumeAttempt } from "../hooks/useResumeAttempt.js";
 import { useSessionSummaryPage } from "../hooks/useSessionSummaryPage.js";
 import { useStopConfirm } from "../hooks/useStopConfirm.js";
-import { useStopFollow } from "../hooks/useStopFollow.js";
+import { useStopFollow, useStopTurnFollow } from "../hooks/useStopFollow.js";
 import { api } from "../lib/api.js";
 import {
 	chunkLoadFailedCopy,
@@ -294,6 +297,19 @@ export function SessionDetailPage() {
 		announce: setLiveAnnouncement,
 	});
 
+	// A Stop turn in flight is followed the same way; one that fails stays on the page, and one that works puts
+	// focus back in the prompt box.
+	const stopTurnFollow = useStopTurnFollow({
+		sessionId,
+		controlActions,
+		reload: loadSessionWorkspace,
+		announce: setLiveAnnouncement,
+	});
+	// The last refusal of a Stop turn, kept with the session it was about so another session never shows it.
+	const [refused, setRefused] = useState<{ sessionId: string; text: string } | null>(null);
+	const interruptRefusal =
+		refused !== null && refused.sessionId === sessionId ? refused.text : null;
+
 	// Warm the header from the cached dashboard list so switching tabs feels instant.
 	useEffect(() => {
 		if (!sessionId) return;
@@ -349,6 +365,12 @@ export function SessionDetailPage() {
 			focusLandingAfterRender();
 		}
 	}, [stopApplies, stopConfirm.open, stopConfirm.cancel]);
+	// Stop turn replaces Send in the prompt box while a continued session's turn runs (AGEN-119). The server
+	// advertises it as `claudeStopTurn`; this page is served by that server, so it is always there.
+	const stopTurnAvailable =
+		session !== null &&
+		(stopTurnFollow.stoppingTurn ||
+			canStopTurn(session, controlActions, { mayChange: mayChangeSession, advertised: true }));
 	const noteUnknownUser = useUsersStore((s) => s.noteUnknown);
 	const applySessionUpdate = useSessionStore((s) => s.applySessionUpdate);
 	const ackedTurnKeyRef = useRef<string | null>(null);
@@ -640,6 +662,27 @@ export function SessionDetailPage() {
 		return null;
 	}
 
+	/** Queues the Stop turn. A refusal is shown beside the prompt box; no dialog first (F12: it keeps the session). */
+	async function performInterrupt(): Promise<void> {
+		if (!sessionId || stopTurnFollow.stoppingTurn) return;
+		setRefused(null);
+		setLiveAnnouncement(STOP_TURN_ANNOUNCE_START);
+		try {
+			await api.interruptSession(sessionId);
+		} catch (error) {
+			console.error("Failed to stop the turn:", error);
+			const reason = stopTurnRequestFailure(error, stoppable);
+			setRefused({ sessionId, text: reason });
+			setLiveAnnouncement(reason);
+			return;
+		}
+		try {
+			await loadSessionWorkspace();
+		} catch (error) {
+			console.error("Failed to refresh the session after a Stop turn:", error);
+		}
+	}
+
 	// Manual acknowledge actions for the header. Unlike the auto-acknowledge
 	// effect above, these are explicit — in particular ERROR is NEVER
 	// cleared automatically; only handleDismissError (via "dismiss-error")
@@ -815,6 +858,11 @@ export function SessionDetailPage() {
 				onRefresh={loadSessionWorkspace}
 				onStop={stopConfirm.request}
 				stopping={stopFollow.stopping}
+				stopTurn={{
+					available: stopTurnAvailable,
+					inFlight: stopTurnFollow.stoppingTurn,
+					onStop: () => void performInterrupt(),
+				}}
 				mayStop={mayChangeSession}
 				ackAction={ackAction}
 				headerRef={headerRef}
@@ -975,6 +1023,8 @@ export function SessionDetailPage() {
 							mode={mode}
 							onScroll={handleTimelineScroll}
 							loadingContext={reveal.loadingContext}
+							session={session}
+							allEvents={allEvents}
 						/>
 					</>
 				) : workspaceTab === "notes" ? (
@@ -1049,6 +1099,9 @@ export function SessionDetailPage() {
 				/>
 			)}
 			{stopFollow.failure !== null && <StopFailureAlert text={stopFollow.failure} />}
+			{(interruptRefusal ?? stopTurnFollow.failure) !== null && (
+				<StopFailureAlert text={(interruptRefusal ?? stopTurnFollow.failure) as string} />
+			)}
 			{(() => {
 				switch (bottomSlot(session, attempt)) {
 					case "takeover_progress":
@@ -1062,10 +1115,15 @@ export function SessionDetailPage() {
 							<SessionComposerSlot
 								session={session}
 								attempt={attempt}
-								focusToken={focusToken + arrivalToken}
+								focusToken={focusToken + arrivalToken + stopTurnFollow.succeeded}
 								onSubmitted={loadSessionWorkspace}
 								stoppingText={stopFollow.stopping ? stoppingText(session) : null}
 								onEnd={stopConfirm.request}
+								stopTurn={{
+									available: stopTurnAvailable,
+									inFlight: stopTurnFollow.stoppingTurn,
+									onStop: () => void performInterrupt(),
+								}}
 							/>
 						);
 					case "takeover":

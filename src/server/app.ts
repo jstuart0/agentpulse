@@ -40,6 +40,7 @@ import { channelsRouter, telegramWebhookRouter } from "./routes/channels.js";
 import { codexApprovalsRouter } from "./routes/codex-approvals.js";
 import { cspReportRouter } from "./routes/csp-report.js";
 import { devicesRouter } from "./routes/devices.js";
+import { forkToolCallsRouter } from "./routes/fork-tool-calls.js";
 import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
 import { instanceRouter } from "./routes/instance.js";
@@ -116,6 +117,7 @@ api.route("/v1", capabilitiesRouter);
 api.route("/v1", pairingCodesRouter);
 api.route("/v1", devicesRouter);
 api.route("/v1", codexApprovalsRouter);
+api.route("/v1", forkToolCallsRouter);
 api.route("/v1", channelsRouter);
 
 // Public Telegram webhook lives OUTSIDE the `api` bundle. Other routers

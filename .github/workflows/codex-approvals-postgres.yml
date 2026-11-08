@@ -18,6 +18,7 @@ on:
       - "src/server/services/codex-approval*"
       - "src/server/routes/codex-approvals*"
       - "src/server/routes/session-bind*"
+      - "src/server/routes/sessions-interrupt*"
       - "src/server/services/session-binding*"
       - "src/server/services/session-resume-lifecycle*"
       - "src/server/services/control-actions.ts"
@@ -36,6 +37,9 @@ on:
       - "src/server/services/ai/action-requests-service.ts"
       - "src/server/services/ask/ask-session-action-handler.ts"
       - "src/server/services/claude-approvals*"
+      - "src/server/services/claude-tool-report*"
+      - "src/server/services/claude-mcp-approval*"
+      - "src/server/services/claude-agent-approval*"
       - "src/shared/codex-approvals.ts"
       - "src/shared/claude-approvals.ts"
       - "src/server/routes/health.ts"
@@ -45,6 +49,14 @@ on:
       - "src/server/services/session-owner-admin.ts"
       - "src/server/services/session-detail*"
       - "src/server/services/session-dto.ts"
+      - "src/server/services/ai/classifier*" # AGEN-122
+      - "src/server/services/ai/session-summary/**" # AGEN-122
+      - "src/server/services/session-summary-service.ts" # AGEN-122
+      - "src/server/services/fork-call-row*" # AGEN-122
+      # AGEN-123: the owner-only tool detail
+      - "src/server/services/fork-tool-detail*"
+      - "src/server/routes/fork-tool-calls*"
+      - "src/server/services/retention-service.ts"
       - ".github/workflows/codex-approvals-postgres.yml"
 
 concurrency:
@@ -110,6 +122,16 @@ jobs:
           src/server/services/session-resume-lifecycle.test.ts
           src/server/services/managed-turn-state.test.ts
           src/server/services/session-detail-fork.test.ts
+          src/server/services/fork-call-row.test.ts
+          src/server/services/managed-session-state.test.ts
+          src/server/services/ai/classifier.test.ts
+          src/server/services/ai/session-summary/evidence-loader.test.ts
+          src/server/services/ai/session-summary/ledger.test.ts
+          src/server/services/session-summary-plans.test.ts
+          src/server/services/fork-tool-detail.test.ts
+          src/server/routes/fork-tool-calls.test.ts
+          src/server/routes/fork-tool-calls-leak.test.ts
+          src/server/services/retention-service.test.ts
 
       - name: Claude turn guard and Stop (Postgres backend; a skipped test fails the job)
         env:
@@ -124,10 +146,15 @@ jobs:
             src/server/routes/supervisor-claude-turn-monitor.test.ts \
             src/server/services/claude-fork-server.test.ts \
             src/server/services/claude-approvals.test.ts \
+            src/server/services/claude-agent-approval-e2e.test.ts \
             src/server/services/session-binding-claude.test.ts \
             src/server/services/fork-live-paths.test.ts \
             src/server/routes/claude-fork-routes.test.ts \
-            src/server/services/ai/continue-decision-fork.test.ts 2>&1 | tee claude-turn.log
+            src/server/services/ai/continue-decision-fork.test.ts \
+            src/server/services/control-actions-claude-interrupt.test.ts \
+            src/server/services/codex-approvals-turn-fence.test.ts \
+            src/server/routes/sessions-interrupt.test.ts \
+            src/server/services/claude-mcp-approval-e2e.test.ts 2>&1 | tee claude-turn.log
           if grep -Eq '^ *[1-9][0-9]* skip' claude-turn.log; then
             echo "A Claude turn guard test was skipped on Postgres." >&2
             exit 1

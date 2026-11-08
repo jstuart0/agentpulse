@@ -97,3 +97,52 @@ export async function fenceApprovalsForStop(
 	}
 	return result;
 }
+
+/**
+ * The turn fence of Stop turn (AGEN-119, F5/F36): the same three steps as the Stop's, closing `turn_stopped`,
+ * because the session stays alive. It covers every open row of the session, whatever `turn_id` the host gave
+ * it: only one turn runs at a time, and the turn id is the host's word, so a request naming another turn must
+ * not escape a person's Stop (review M5). `turnId` is the interrupted turn, for the caller's records. An accept
+ * issued before this committed keeps its own later outcome ("may have run"); the issue and answer paths then
+ * refuse (`interruptActiveFor`).
+ */
+export async function fenceApprovalsForTurn(
+	tx: Tx,
+	sessionId: string,
+	_turnId: string,
+	nowMs: number,
+): Promise<StopFenceResult> {
+	const open = await tx
+		.select({ id: codexApprovals.id })
+		.from(codexApprovals)
+		.where(
+			and(
+				eq(codexApprovals.sessionId, sessionId),
+				inArray(codexApprovals.status, ["pending", "answered"]),
+			),
+		);
+	const result: StopFenceResult = { closed: [], fenced: 0 };
+	const at = new Date(nowMs).toISOString();
+	for (const row of open as Array<{ id: string }>) {
+		const closed = await closeApproval(tx, row.id, "turn_stopped", nowMs, {
+			onlyUndelivered: true,
+		});
+		if (closed) {
+			result.closed.push(closed);
+			continue;
+		}
+		const fenced = await tx
+			.update(codexApprovals)
+			.set({ fencedAt: at, updatedAt: at })
+			.where(
+				and(
+					eq(codexApprovals.id, row.id),
+					eq(codexApprovals.status, "answered"),
+					isNull(codexApprovals.fencedAt),
+				),
+			)
+			.returning({ id: codexApprovals.id });
+		result.fenced += fenced.length;
+	}
+	return result;
+}

@@ -2,12 +2,19 @@ import { constants, accessSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { arch, homedir, hostname, platform } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
+import { CLAUDE_FORK_MCP } from "../shared/claude-fork-mcp.js";
+import { CLAUDE_FORK_SUBAGENTS } from "../shared/claude-fork-subagents.js";
 import { CLAUDE_STOP, CLAUDE_TURN_CONTROL, CODEX_FOLLOW_UP_PROMPTS } from "../shared/constants.js";
 import {
 	tightenPrivateFilePermissionsSync,
 	writePrivateFileSyncNoFollow,
 } from "../shared/private-file.js";
-import { CLAUDE_TAKEOVER, RESUMES_SESSIONS } from "../shared/session-resume.js";
+import {
+	CLAUDE_TAKEOVER,
+	FORK_OPTION_MEASURED_VERSIONS,
+	RESUMES_SESSIONS,
+} from "../shared/session-resume.js";
+import { CLAUDE_TURN_INTERRUPT } from "../shared/stop-turn.js";
 import type { SupervisorRegistrationInput } from "../shared/types.js";
 
 export interface SupervisorConfig {
@@ -90,6 +97,7 @@ export function buildDefaultConfig(): SupervisorConfig {
 				"headless_claude",
 				CLAUDE_STOP,
 				CLAUDE_TURN_CONTROL,
+				CLAUDE_TURN_INTERRUPT,
 				"enforces_launch_privileges",
 				"offline_outbox",
 			],
@@ -255,6 +263,7 @@ export async function withExecutableCapabilities(
 				"headless_claude",
 				CLAUDE_STOP,
 				CLAUDE_TURN_CONTROL,
+				CLAUDE_TURN_INTERRUPT,
 				"enforces_launch_privileges",
 				"offline_outbox",
 				...(git.resolvedPath ? ["can_scaffold_workarea", "can_clone_repo"] : []),
@@ -262,6 +271,15 @@ export async function withExecutableCapabilities(
 				...(interactiveTerminalControl.available ? ["interactive_terminal_control"] : []),
 				...(codex.resolvedPath ? ["managed_codex", CODEX_FOLLOW_UP_PROMPTS, RESUMES_SESSIONS] : []),
 				...(claude.resolvedPath && currentOs() === "macos" ? [CLAUDE_TAKEOVER] : []),
+				// AGEN-121: starts the servers in the person's fork MCP file in a continued session.
+				...(claude.resolvedPath && currentOs() === "macos" ? [CLAUDE_FORK_MCP] : []),
+				// AGEN-120: subagents on a continued session, only for a Claude Code version they were measured on.
+				...(claude.resolvedPath &&
+				currentOs() === "macos" &&
+				claudeVersion !== null &&
+				FORK_OPTION_MEASURED_VERSIONS.includes(claudeVersion)
+					? [CLAUDE_FORK_SUBAGENTS]
+					: []),
 			],
 			interactiveTerminalControl,
 			executables: {

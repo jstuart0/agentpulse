@@ -58,7 +58,9 @@ export interface ClaudeFinding {
 
 /** Files a Claude canary is made of: scanned for ways to signal a process by name or a command substitution. */
 export const isClaudeCanaryFile = (path: string): boolean =>
-	/^scripts\/(lib\/)?claude-[\w-]+\.(ts|mjs|js|sh)$/.test(path) && path !== CLAUDE_RULES_FILE;
+	(/^scripts\/(lib\/)?claude-[\w-]+\.(ts|mjs|js|sh)$/.test(path) ||
+		/^scripts\/claude-canary-scenarios\/[\w-]+\.ts$/.test(path)) &&
+	path !== CLAUDE_RULES_FILE;
 
 export function scanClaudeText(path: string, raw: string): ClaudeFinding[] {
 	if (path === CLAUDE_RULES_FILE || /\.test\.ts$/.test(path)) return [];

@@ -90,6 +90,11 @@ export type ClaudeLinkOptions = {
 	controlTimeoutMs?: number;
 	/** A fresh id for a control request of ours. Default: `init-`/`req-` plus 8 hex. */
 	newRequestId?: (kind: "init" | "req") => string;
+	/**
+	 * Called with the subtype's name only when Claude sends a control request the link does not carry (it is
+	 * answered with an error at once). Nothing else of the request is read or kept.
+	 */
+	onUnsupportedRequest?: (subtype: string) => void;
 };
 
 const DEFAULT_TIMERS: RpcTimers = {
@@ -116,6 +121,7 @@ export class ClaudeLink implements RpcLink {
 	private readonly maxFrameBytes: number;
 	private readonly timers: RpcTimers;
 	private readonly controlTimeoutMs: number;
+	private readonly onUnsupportedRequest: ((subtype: string) => void) | undefined;
 	private readonly newRequestId: (kind: "init" | "req") => string;
 	private readonly pending = new Map<string, PendingControl>();
 	/** Open `can_use_tool` request ids, and whether the request's `input` occurs byte-for-byte in the line it came in. */
@@ -134,6 +140,7 @@ export class ClaudeLink implements RpcLink {
 		this.maxFrameBytes = options.maxFrameBytes ?? CLAUDE_MAX_FRAME_BYTES;
 		this.timers = options.timers ?? DEFAULT_TIMERS;
 		this.controlTimeoutMs = options.controlTimeoutMs ?? CLAUDE_CONTROL_TIMEOUT_MS;
+		this.onUnsupportedRequest = options.onUnsupportedRequest;
 		this.newRequestId =
 			options.newRequestId ??
 			((kind) => `${kind}-${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`);
@@ -289,6 +296,11 @@ export class ClaudeLink implements RpcLink {
 		if (body.subtype !== "can_use_tool") {
 			// Never silence: Claude waits for an answer to a request it sent.
 			this.writeLine(controlErrorLine(requestId, CLAUDE_UNSUPPORTED_REPLY_TEXT));
+			try {
+				this.onUnsupportedRequest?.(typeof body.subtype === "string" ? body.subtype : "");
+			} catch {
+				// a logging hook never breaks the wire
+			}
 			return;
 		}
 		if (this.openRequestIds.has(requestId)) {

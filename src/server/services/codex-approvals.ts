@@ -1,3 +1,18 @@
+import {
+	and,
+	asc,
+	desc,
+	eq,
+	gt,
+	gte,
+	inArray,
+	isNull,
+	lt,
+	ne,
+	notExists,
+	or,
+	sql,
+} from "drizzle-orm";
 /**
  * Answering managed Codex approvals from AgentPulse (AGEN-87): the one service
  * that owns the `codex_approvals` and `codex_approval_audit` tables.
@@ -17,21 +32,7 @@
  * Nothing the agent wrote reaches a log line or an event: events carry fixed
  * words, logs carry ids and enum values.
  */
-import {
-	and,
-	asc,
-	desc,
-	eq,
-	gt,
-	gte,
-	inArray,
-	isNull,
-	lt,
-	ne,
-	notExists,
-	or,
-	sql,
-} from "drizzle-orm";
+import { AGENT_OPENED_WORDS } from "../../shared/claude-fork-subagents.js";
 import {
 	APPROVAL_DECISIONS,
 	APPROVAL_REQUEST_KINDS,
@@ -71,6 +72,7 @@ import {
 	type TrackerOutcome,
 	approvalWaitId,
 } from "../../shared/codex-approvals.js";
+import { parseAppliedForkOptions } from "../../shared/session-resume.js";
 import type { Actor, InstanceModeName } from "../auth/actor.js";
 import { getDb } from "../db/client.js";
 import {
@@ -82,6 +84,7 @@ import {
 	sessions,
 	users,
 } from "../db/schema/index.js";
+import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { logAdminAction } from "./audit-log.js";
 import {
@@ -89,7 +92,9 @@ import {
 	assertCanAnswerApproval,
 	canReadSession,
 	mayAnswerApproval,
+	mayDriveForkOptions,
 } from "./authorization.js";
+import { mcpReportServerApplied, parseClaudeToolReport } from "./claude-tool-report.js";
 import {
 	type BuiltPresentation,
 	type PresentationAgent,
@@ -238,6 +243,8 @@ function outcomeOfClosed(
 			return "may_have_run";
 		case "interrupted":
 			return "turn_ended";
+		case "turn_stopped":
+			return "turn_stopped";
 		case "runtime_gone":
 			return "codex_shut_down";
 		case "decided_elsewhere":
@@ -266,6 +273,56 @@ function stopActiveFor(tx: Tx) {
 		);
 }
 
+/**
+ * A Stop turn (AGEN-119) covers this approval: an `interrupt` action of the session that is queued or running
+ * (whatever turn the approval names: the turn id is the host's word, and only one turn runs at a time, review
+ * M5), or one done (`succeeded`) whose `targetPromptActionId` is the approval's `turn_id`. A failed one (the
+ * turn didn't stop, the host dropped it) lifts the fence, matching the host, which lifts its own. It takes no
+ * lock, so unlike a Stop it is found by the session, not through the session's lock holder.
+ */
+function interruptActiveFor(tx: Tx) {
+	return tx
+		.select({ one: sql`1` })
+		.from(controlActions)
+		.where(
+			and(
+				eq(controlActions.sessionId, codexApprovals.sessionId),
+				eq(controlActions.actionType, "interrupt"),
+				or(
+					inArray(controlActions.status, ["queued", "running"]),
+					and(
+						eq(controlActions.status, "succeeded"),
+						eq(
+							jsonExtractText(controlActions.metadata, "$.targetPromptActionId"),
+							codexApprovals.turnId,
+						),
+					),
+				),
+			),
+		);
+}
+
+async function turnHasActiveInterrupt(tx: Tx, sessionId: string, turnId: string): Promise<boolean> {
+	const rows = await tx
+		.select({ one: sql`1` })
+		.from(controlActions)
+		.where(
+			and(
+				eq(controlActions.sessionId, sessionId),
+				eq(controlActions.actionType, "interrupt"),
+				or(
+					inArray(controlActions.status, ["queued", "running"]),
+					and(
+						eq(controlActions.status, "succeeded"),
+						eq(jsonExtractText(controlActions.metadata, "$.targetPromptActionId"), turnId),
+					),
+				),
+			),
+		)
+		.limit(1);
+	return rows.length > 0;
+}
+
 async function sessionHasActiveStop(tx: Tx, sessionId: string): Promise<boolean> {
 	const rows = await tx
 		.select({ one: sql`1` })
@@ -292,8 +349,10 @@ export interface OpenedApproval {
 	fileCount: number;
 	/** Whose request: the session's agent, from its row. */
 	agent: PresentationAgent;
-	/** A `claude_tool` request's tool (`WebFetch` or `Read`). */
+	/** A `claude_tool` request's tool (`WebFetch`, `Read` or `Agent`). */
 	tool: string | null;
+	/** A subagent of the turn asked (AGEN-120). */
+	fromSubagent?: boolean;
 }
 
 // ── side effects, after commit ──────────────────────────────────────────────
@@ -321,6 +380,7 @@ function resolvedWord(reason: ApprovalClosedReason, decision: ApprovalDecision |
 		case "runtime_gone":
 			return "ended";
 		case "session_stopped":
+		case "turn_stopped":
 			return "stopped";
 	}
 }
@@ -376,11 +436,15 @@ function logEffectFailure(kind: string, sessionId: string): void {
 
 /** The timeline line for a request opening: fixed words and counts, never anything the agent wrote. */
 export function openedWords(
-	opened: Pick<OpenedApproval, "requestKind" | "fileCount" | "agent" | "tool">,
+	opened: Pick<OpenedApproval, "requestKind" | "fileCount" | "agent" | "tool" | "fromSubagent">,
 ): string {
-	const who = opened.agent === "claude" ? "Claude" : "Codex";
+	const who =
+		opened.fromSubagent === true ? "A subagent" : opened.agent === "claude" ? "Claude" : "Codex";
 	if (opened.requestKind === "command") return `${who} asks to run a command`;
 	if (opened.requestKind === "claude_tool") {
+		// An MCP tool is worded without its names: they are the server's, and the timeline is shared.
+		if (opened.tool === "mcp") return `${who} asks to use an MCP tool`;
+		if (opened.tool === "Agent") return `${who} ${AGENT_OPENED_WORDS}`;
 		return opened.tool === "Read" ? `${who} asks to read a file` : `${who} asks to fetch a URL`;
 	}
 	return `${who} asks to change ${opened.fileCount} ${opened.fileCount === 1 ? "file" : "files"}`;
@@ -515,7 +579,8 @@ export function parseApprovalReport(body: unknown): CodexApprovalReportRequest |
 	) {
 		return null;
 	}
-	if (b.requestKind === "claude_tool" && tool !== "WebFetch" && tool !== "Read") return null;
+	const slots = parseClaudeToolReport(b);
+	if (slots === null) return null;
 	if (
 		(command === undefined && b.command !== undefined) ||
 		(cwd === undefined && b.cwd !== undefined) ||
@@ -564,6 +629,7 @@ export function parseApprovalReport(body: unknown): CodexApprovalReportRequest |
 		...(tool !== undefined ? { tool } : {}),
 		...(target !== undefined ? { target } : {}),
 		...(blockedPath !== undefined ? { blockedPath } : {}),
+		...slots,
 	};
 }
 
@@ -696,7 +762,11 @@ export async function recordApprovalRequest(
 	try {
 		result = await withTransaction(async (tx): Promise<RecordedApproval> => {
 			const [session] = await tx
-				.select({ sessionId: sessions.sessionId, launchAgentType: launchRequests.agentType })
+				.select({
+					sessionId: sessions.sessionId,
+					launchAgentType: launchRequests.agentType,
+					metadata: sessions.metadata,
+				})
 				.from(sessions)
 				.leftJoin(launchRequests, eq(launchRequests.launchCorrelationId, sessions.sessionId))
 				.where(eq(sessions.sessionId, sessionId))
@@ -711,8 +781,23 @@ export async function recordApprovalRequest(
 			if (report.requestKind === "claude_tool" && agent !== "claude") {
 				throw new ApprovalRefusal("invalid_body");
 			}
-			built = buildPresentation(report, agent);
+			// So is a subagent's mark or a helper card: only a Claude fork has subagents.
+			if ((report.fromSubagent !== undefined || report.agent !== undefined) && agent !== "claude") {
+				throw new ApprovalRefusal("invalid_body");
+			}
+			// The servers the fork was started with are the only ones an MCP tool call may name (AGEN-121).
+			const applied = parseAppliedForkOptions(
+				(session.metadata as { forkOptions?: unknown } | null)?.forkOptions,
+			);
+			if (!mcpReportServerApplied(report, applied)) throw new ApprovalRefusal("invalid_body");
+			built = buildPresentation(report, agent, {
+				mcpServers: applied?.mcpServers.map((s) => s.name),
+			});
 			if (await sessionHasActiveStop(tx, sessionId)) throw new ApprovalRefusal("session_stopping");
+			// A request on a turn a person has already stopped: the host declines that one request.
+			if (await turnHasActiveInterrupt(tx, sessionId, report.turnId)) {
+				throw new ApprovalRefusal("turn_interrupted");
+			}
 
 			const sameRequest = and(
 				eq(codexApprovals.sessionId, sessionId),
@@ -804,6 +889,7 @@ export async function recordApprovalRequest(
 					built.presentation.requestKind === "file_change" ? built.presentation.changes.length : 0,
 				agent,
 				tool: built.presentation.requestKind === "claude_tool" ? built.presentation.tool : null,
+				...(built.presentation.fromSubagent === true ? { fromSubagent: true } : {}),
 			};
 			return { created: true, response: reportResponse(row, nowMs) };
 		});
@@ -924,11 +1010,43 @@ function isDecision(value: unknown): value is ApprovalDecision {
 function refusalForRow(effective: EffectiveApproval): ApprovalRefusal | null {
 	if (effective.state === "closed") {
 		if (effective.closedReason === "session_stopped") return new ApprovalRefusal("session_stopped");
+		if (effective.closedReason === "turn_stopped") return new ApprovalRefusal("turn_interrupted");
 		if (effective.closedReason === "expired") return new ApprovalRefusal("expired");
 		return new ApprovalRefusal("already_resolved");
 	}
 	if (effective.state === "answered") return new ApprovalRefusal("already_resolved");
 	return null;
+}
+
+/**
+ * An accept of an MCP tool or Agent card on a fork that runs the host owner's MCP servers or subagents: in team
+ * mode only that owner (review H1). Declines and every other card are not touched.
+ */
+async function refuseForkOptionCardUnlessConsenter(
+	tx: Tx,
+	caller: ApprovalCaller,
+	sessionId: string,
+	row: ApprovalRow,
+): Promise<void> {
+	if (row.requestKind !== "claude_tool" || row.presentation === null) return;
+	let isOptionCard = false;
+	try {
+		const parsed = JSON.parse(row.presentation) as { mcp?: unknown; agent?: unknown };
+		isOptionCard = parsed.mcp !== undefined || parsed.agent !== undefined;
+	} catch {
+		return;
+	}
+	if (!isOptionCard) return;
+	const [session] = await tx
+		.select({ metadata: sessions.metadata, storedMode: storedModeColumn })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	if (!session) return;
+	const mode = caller.actor.mode ?? modeFromStoredColumn(session.storedMode);
+	if (mayDriveForkOptions(caller.actor, mode, session.metadata) !== null) {
+		throw new ApprovalRefusal("fork_options_host_not_yours");
+	}
 }
 
 /**
@@ -979,6 +1097,7 @@ export async function answerApproval(
 		}
 		hash = input.presentationHash;
 		if (!row.approvable) throw new ApprovalRefusal("not_approvable");
+		await refuseForkOptionCardUnlessConsenter(db, caller, sessionId, row);
 	}
 	if (decision === "cancel" && !row.canCancel) throw new ApprovalRefusal("invalid_decision");
 
@@ -1000,6 +1119,7 @@ export async function answerApproval(
 			eq(codexApprovals.status, "pending"),
 			gt(codexApprovals.expiresAt, at),
 			notExists(stopActiveFor(tx)),
+			notExists(interruptActiveFor(tx)),
 		];
 		if (decision === "accept" && hash !== null) {
 			conditions.push(
@@ -1068,6 +1188,9 @@ async function refusalAfterLostRace(
 	const stateRefusal = refusalForRow(deriveApprovalOutcome(row, nowMs));
 	if (stateRefusal) return stateRefusal;
 	if (await sessionHasActiveStop(db, sessionId)) return new ApprovalRefusal("session_stopped");
+	if (await turnHasActiveInterrupt(db, sessionId, row.turnId)) {
+		return new ApprovalRefusal("turn_interrupted");
+	}
 	if (hash !== null && row.presentationHash !== hash)
 		return new ApprovalRefusal("presentation_changed");
 	if (hash !== null && !row.approvable) return new ApprovalRefusal("not_approvable");
@@ -1534,6 +1657,7 @@ async function issueOrRefuse(
 				isNull(codexApprovals.fencedAt),
 				or(ne(codexApprovals.decision, "accept"), gte(codexApprovals.answeredAt, cutoff)),
 				notExists(stopActiveFor(tx)),
+				notExists(interruptActiveFor(tx)),
 			),
 		)
 		.returning({ id: codexApprovals.id });
@@ -1557,6 +1681,21 @@ async function issueOrRefuse(
 	const undelivered = now.firstDeliveredAt === null;
 	if (stopped) {
 		if (undelivered) return closeNow("session_stopped");
+		await tx
+			.update(codexApprovals)
+			.set({ fencedAt: at, updatedAt: at })
+			.where(
+				and(
+					eq(codexApprovals.id, row.id),
+					eq(codexApprovals.status, "answered"),
+					isNull(codexApprovals.fencedAt),
+				),
+			);
+		return decline();
+	}
+	if (await turnHasActiveInterrupt(tx, row.sessionId, row.turnId)) {
+		// The turn was stopped after this was answered: never issued if it hadn't been, fenced if it had.
+		if (undelivered) return closeNow("turn_stopped");
 		await tx
 			.update(codexApprovals)
 			.set({ fencedAt: at, updatedAt: at })

@@ -13,6 +13,18 @@
  * says "working", "waiting", "idle" or "error" as a state: the operational
  * badge is the one place a state is said.
  */
+import {
+	FORK_MCP_ARRIVAL,
+	FORK_MCP_CONFIRM,
+	forkMcpHeading,
+} from "../../../shared/claude-fork-mcp.js";
+import {
+	CUSTOM_AGENT_COPY,
+	NESTED_AGENT_COPY,
+	SUBAGENT_EYEBROW,
+	agentRequestHeading,
+	subagentArrival,
+} from "../../../shared/claude-fork-subagents.js";
 import type {
 	ApprovalDecision,
 	ClaudePeerTurnNotice,
@@ -206,8 +218,12 @@ const NOT_APPROVABLE_COPY: Record<
 	input_not_stable: () =>
 		"AgentPulse can't be sure it would send this back exactly as it arrived, so it can't show what approving would mean.",
 	agent_memory: () => "Claude can't save memories in this session.",
+	agentpulse_files: ({ host }) =>
+		`This changes AgentPulse's own files on ${host} (its exclude rules, MCP servers and settings). A continued session can't do that.`,
 	path_not_absolute: () =>
 		"This path isn't a full path, so AgentPulse can't tell which file it means.",
+	custom_agent: () => CUSTOM_AGENT_COPY,
+	nested_agent: () => NESTED_AGENT_COPY,
 };
 
 const GRANT_ROOT_FALLBACK = "a directory";
@@ -282,6 +298,11 @@ const OUTCOME_LINES: Record<CodexApprovalOutcome, (ctx: OutcomeCtx) => string> =
 		decision === "accept"
 			? "You approved this, but the turn ended before it was sent. Nothing ran."
 			: "The turn ended before this was answered. Nothing ran.",
+	// A person pressed Stop turn: the session is still open, so the words say the turn, not the session.
+	turn_stopped: ({ decision }) =>
+		decision === "accept"
+			? "You approved this, but the turn was stopped before it was sent. That request didn't run."
+			: "The turn was stopped before this was answered. That request didn't run.",
 	codex_shut_down: ({ decision, agent }) => {
 		// The outcome keeps its stored name (a rename would break every client that decodes it); a Claude
 		// fork says it stopped running.
@@ -376,6 +397,46 @@ export function crossedTwoMinutes(previous: number, now: number): boolean {
 
 // ── what a request says about itself ────────────────────────────────────────
 
+/**
+ * What a Claude `claude_tool` request is, for the words around it. Every place that words one switches over
+ * this and ends in `exhaustive`, so a kind added later is a compile error here rather than a card that says
+ * "fetch" about a tool it does not fetch with (AGEN-119..123 Track 0). `mcp` and `agent` are filled in by their
+ * tickets; until then they say "a tool", which is true of both.
+ */
+export type ClaudeToolKind = "read" | "webfetch" | "mcp" | "agent";
+
+export function claudeToolKind(input: {
+	tool?: string | null;
+	mcp?: unknown;
+	agent?: unknown;
+}): ClaudeToolKind {
+	if (input.agent !== undefined && input.agent !== null) return "agent";
+	if (input.mcp !== undefined && input.mcp !== null) return "mcp";
+	const tool = input.tool ?? "";
+	if (tool === "Read") return "read";
+	if (tool === "Agent" || tool === "Task") return "agent";
+	if (tool === "mcp" || tool.startsWith("mcp__")) return "mcp";
+	// WebFetch, and any name an older client never saw: worded as it always was.
+	return "webfetch";
+}
+
+export function exhaustiveToolKind(value: never): never {
+	throw new Error(`unhandled tool kind: ${String(value)}`);
+}
+
+/** The server and tool a list preview's `target` names for an MCP call (`server/tool`), or null when it is not that. */
+export function mcpNamesFromTarget(
+	target: string | null | undefined,
+): { server: string; tool: string } | null {
+	if (!target) return null;
+	const at = target.indexOf("/");
+	if (at <= 0 || at === target.length - 1) return null;
+	return { server: target.slice(0, at), tool: target.slice(at + 1) };
+}
+
+/** "Claude asks to use a tool": the words for the kinds whose own copy has not been written. */
+const USE_A_TOOL = "asks to use a tool";
+
 export function requestHeading(
 	approval: Pick<CodexApprovalSummary, "requestKind" | "preview">,
 	agent: ApprovalAgent = "codex",
@@ -384,13 +445,38 @@ export function requestHeading(
 	if (approval.requestKind === "command") return `${name} asks to run a command`;
 	if (approval.requestKind === "claude_tool") {
 		const target = approval.preview?.target;
-		const verb = approval.preview?.tool === "Read" ? "read" : "fetch";
-		return target ? `${name} asks to ${verb} ${target}` : `${name} asks to ${verb} something`;
+		const kind = claudeToolKind({ tool: approval.preview?.tool });
+		switch (kind) {
+			case "read":
+			case "webfetch": {
+				const verb = kind === "read" ? "read" : "fetch";
+				return target ? `${name} asks to ${verb} ${target}` : `${name} asks to ${verb} something`;
+			}
+			case "mcp": {
+				// The list names the call `server/tool` (the server's own split); neither part holds a slash.
+				const named = mcpNamesFromTarget(target);
+				return named ? forkMcpHeading(named.tool, named.server) : `${name} asks to use an MCP tool`;
+			}
+			case "agent":
+				return agentRequestHeading(name, target ?? null);
+			default:
+				return exhaustiveToolKind(kind);
+		}
 	}
 	const n = approval.preview?.fileCount ?? 0;
 	return n > 0
 		? `${name} asks to change ${plural(n, "file", "files")}`
 		: `${name} asks to change files`;
+}
+
+/** The small line above the heading of a request a subagent made (AGEN-120); null for the fork's own. */
+export function requestEyebrow(
+	approval: Pick<CodexApprovalSummary, "preview">,
+	presentation?: Pick<CodexApprovalPresentation, "fromSubagent"> | null,
+): string | null {
+	return approval.preview?.fromSubagent === true || presentation?.fromSubagent === true
+		? SUBAGENT_EYEBROW
+		: null;
 }
 
 /** `{host} · …/{dir}`: one truncated line for a phone. The full path is in the dialog. */
@@ -718,6 +804,8 @@ export function confirmCopy(input: {
 	owner?: string | null;
 	/** A Claude request's tool, for a `claude_tool` card. */
 	tool?: string;
+	/** Set when the card knows the kind from the presentation's slots (an MCP tool, the Agent call). */
+	toolKind?: ClaudeToolKind;
 	/** The kind of the one file a Claude Write changes (`write`, `add`, `write_unchecked`), for its title. */
 	writeKind?: string | null;
 }): ConfirmCopy {
@@ -739,15 +827,42 @@ export function confirmCopy(input: {
 		};
 	}
 	if (input.requestKind === "claude_tool") {
-		const read = input.tool === "Read";
-		return {
-			title: read ? "Let Claude read this file?" : `Fetch this URL from ${host}?`,
-			confirmLabel: read ? "Allow reading it" : "Fetch it",
-			cancelLabel: "Back",
-			closing: read
-				? ["Claude will see what's in it. Runs once.", ...closing.slice(1)]
-				: ["A URL can carry data out. Runs once.", ...closing.slice(1)],
-		};
+		const kind = input.toolKind ?? claudeToolKind({ tool: input.tool });
+		switch (kind) {
+			case "read":
+				return {
+					title: "Let Claude read this file?",
+					confirmLabel: "Allow reading it",
+					cancelLabel: "Back",
+					closing: ["Claude will see what's in it. Runs once.", ...closing.slice(1)],
+				};
+			case "webfetch":
+				return {
+					title: `Fetch this URL from ${host}?`,
+					confirmLabel: "Fetch it",
+					cancelLabel: "Back",
+					closing: ["A URL can carry data out. Runs once.", ...closing.slice(1)],
+				};
+			case "mcp":
+				return {
+					title: FORK_MCP_CONFIRM.title,
+					confirmLabel: FORK_MCP_CONFIRM.confirmLabel,
+					cancelLabel: FORK_MCP_CONFIRM.cancelLabel,
+					closing: [FORK_MCP_CONFIRM.lead, ...closing.slice(1)],
+				};
+			case "agent":
+				return {
+					title: "Let Claude start this helper?",
+					confirmLabel: "Start the helper",
+					cancelLabel: "Back",
+					closing: [
+						"The helper's commands and file changes wait for you the same way. Runs once.",
+						...closing.slice(1),
+					],
+				};
+			default:
+				return exhaustiveToolKind(kind);
+		}
 	}
 	if (
 		input.writeKind === "write" ||
@@ -881,6 +996,21 @@ export function shouldRefetchOnSession(input: {
 
 // ── announcements and focus ─────────────────────────────────────────────────
 
+function toolAnnouncement(kind: ClaudeToolKind): string {
+	switch (kind) {
+		case "read":
+			return "asks to read a file";
+		case "webfetch":
+			return "asks to fetch a URL";
+		case "mcp":
+			return FORK_MCP_ARRIVAL;
+		case "agent":
+			return "asks to start a helper";
+		default:
+			return exhaustiveToolKind(kind);
+	}
+}
+
 export function arrivalAnnouncement(input: {
 	requestKind: CodexApprovalSummary["requestKind"];
 	fileCount: number;
@@ -889,14 +1019,22 @@ export function arrivalAnnouncement(input: {
 	agent?: ApprovalAgent;
 	/** A `claude_tool` request's tool: spoken without its target, which can be a long URL or path. */
 	tool?: string;
+	toolKind?: ClaudeToolKind;
+	/** A subagent made the request (AGEN-120): said first, in the tool's own verb. */
+	fromSubagent?: boolean;
 }): string {
 	if (input.pendingCount > 1) return `${input.pendingCount} requests need an answer.`;
 	const name = agentName(input.agent ?? "codex");
-	const asks =
-		input.requestKind === "command"
+	const toolKind =
+		input.requestKind === "claude_tool"
+			? (input.toolKind ?? claudeToolKind({ tool: input.tool }))
+			: null;
+	const asks = input.fromSubagent
+		? subagentArrival(toolKind === "agent" ? "agent" : input.requestKind)
+		: input.requestKind === "command"
 			? `${name} asks to run a command.`
 			: input.requestKind === "claude_tool"
-				? `${name} asks to ${input.tool === "Read" ? "read a file" : "fetch a URL"}.`
+				? `${name} ${toolAnnouncement(input.toolKind ?? claudeToolKind({ tool: input.tool }))}.`
 				: `${name} asks to change ${plural(input.fileCount, "file", "files")}.`;
 	return input.declinesAt ? `${asks} Declines at ${input.declinesAt}.` : asks;
 }

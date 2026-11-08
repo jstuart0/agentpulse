@@ -108,6 +108,10 @@ export const INTENTIONALLY_MANAGE_ONLY: ReadonlySet<string> = new Set([
 	// reads them; no other scope does, and nothing is in SCOPE_GRANTS.respond until the iOS follow-up (D12).
 	"/sessions/:sessionId/approvals",
 	"/sessions/:sessionId/approvals/:approvalId",
+	// What a fork's tool calls ran (AGEN-123, F21): 7 days of tool output. Manage-only here so no other scope
+	// reaches the handler, and the handler then refuses every API key, a manage key included.
+	"/sessions/:sessionId/tool-calls",
+	"/sessions/:sessionId/tool-calls/:toolUseId",
 	// F23 — leaking DTO (arbitrary notes/metadata, githubRepoUrl userinfo)
 	"/projects",
 	// Deliberately manage-only surfaces (settings, keys, channels, labs, etc.)
@@ -386,6 +390,7 @@ export const OWNER_CHECKED_ROUTES: ReadonlySet<string> = new Set([
 	// The session-changing routes the app's composer uses, and the Ask cancel (the asker only).
 	"POST /sessions/:sessionId/prompt",
 	"POST /sessions/:sessionId/stop",
+	"POST /sessions/:sessionId/interrupt",
 	"POST /sessions/:sessionId/retry",
 	// Taking an observed session over: strict owner-or-admin (an unowned session is an admin's), a signed-in
 	// person only, and in no scope grant. Judged in the handler by assertCanBindSession.
@@ -397,6 +402,9 @@ export const OWNER_CHECKED_ROUTES: ReadonlySet<string> = new Set([
 	"POST /ai/ask/threads/:id/cancel",
 	// Codex approvals: judged by the approval service against the session's owner; accept also needs a signed-in person.
 	"POST /sessions/:sessionId/approvals/:approvalId/decision",
+	// AGEN-123: owner or admin and a signed-in person, judged by the detail service.
+	"GET /sessions/:sessionId/tool-calls",
+	"GET /sessions/:sessionId/tool-calls/:toolUseId",
 	// Ask threads belong to whoever asked: the list shows a member only their own, and a read or an archive
 	// of someone else's answers 404 (ask-service.ts threadAccessCondition).
 	"GET /ai/ask/threads",

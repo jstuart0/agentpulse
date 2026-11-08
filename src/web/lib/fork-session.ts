@@ -9,6 +9,7 @@ import {
 	ORIGINAL_SESSION_FALLBACK,
 	forkSentenceName,
 } from "../../shared/claude-fork-copy.js";
+import { type AppliedForkOptions, parseAppliedForkOptions } from "../../shared/session-resume.js";
 import type { Session } from "../../shared/types.js";
 
 type ForkFields = Partial<
@@ -20,6 +21,8 @@ export interface ForkInfo {
 	sourceId: string;
 	/** The mode the host picked for it; null when the row doesn't say (an older fork). */
 	mode: ForkMode | null;
+	/** What the host applied of the options the person asked for (AGEN-121); absent for a session from before them. */
+	options?: AppliedForkOptions;
 }
 
 function asMode(value: unknown): ForkMode | null {
@@ -30,9 +33,11 @@ export function forkInfo(session: ForkFields): ForkInfo | null {
 	const meta = session.metadata ?? null;
 	const from = session.forkedFromSessionId ?? meta?.forkedFromSessionId;
 	if (typeof from !== "string" || from === "") return null;
+	const options = parseAppliedForkOptions(meta?.forkOptions);
 	return {
 		sourceId: from,
 		mode: asMode(session.forkPermissionBranch ?? meta?.forkPermissionBranch),
+		...(options ? { options } : {}),
 	};
 }
 

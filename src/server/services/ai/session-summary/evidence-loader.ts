@@ -122,11 +122,85 @@ export function effectiveCategory(alias: string): SQL {
 		ELSE NULL END)`;
 }
 
-/** 'spine' (narrative), 'action' (a finished tool call that is not read-class), or NULL (not evidence). */
-export function classExpression(alias: string): SQL {
+/**
+ * A continued Claude session's host writes one `HeadlessStatus` row per tool call (AGEN-122): category
+ * `progress_update` (a spine category), no tool name, no input, no response. These outcomes mean the call ran,
+ * so the row is an action; the other outcomes (declined, refused, stopped, ...) stay narrative rows.
+ */
+const FORK_ACTION_OUTCOMES = ["approved", "unasked", "failed"] as const;
+
+/** The keys of a fork call row the statement reads, written into it as literals so no bind position moves. */
+export const FORK_ROW_KEYS = ["claudeStreamRuntime", "kind", "toolOutcome", "tool"] as const;
+type ForkRowKey = (typeof FORK_ROW_KEYS)[number];
+
+function forkRowText(alias: string, key: ForkRowKey): SQL {
+	if (!(FORK_ROW_KEYS as readonly string[]).includes(key))
+		throw new Error("forkRowText: unknown key");
+	const raw = sql.raw(`${alias}.raw_payload`);
+	return config.dialect === "postgres"
+		? sql`(CAST(${raw} AS json) ->> ${sql.raw(`'${key}'`)})`
+		: sql`json_extract(${raw}, ${sql.raw(`'$.${key}'`)})`;
+}
+
+/**
+ * `postgresReadable`'s test with its two patterns written into the statement, so this branch binds no
+ * parameter (the chunk statement's bind positions are asserted by position, and this branch sits ahead of
+ * the limits). Standard-conforming strings, so a backslash in these literals is a backslash.
+ */
+const PG_BACKSLASH_U_LITERAL = sql.raw("'\\u'");
+const PG_UNREADABLE_ESCAPE_LITERAL = sql.raw("'\\\\u(0000|[dD][89a-fA-F][0-9a-fA-F]{2})'");
+
+function forkPayloadReadable(raw: SQL): SQL {
+	if (config.dialect !== "postgres") return jsonReadable(raw);
+	return sql`(strpos(CAST(${raw} AS text), ${PG_BACKSLASH_U_LITERAL}) = 0 OR CAST(${raw} AS text) !~ ${PG_UNREADABLE_ESCAPE_LITERAL})`;
+}
+
+/**
+ * The fork call row's marker is the JSON boolean `true`: a string "true" is not the host's marker. SQLite's
+ * `json_extract` gives 1 for a boolean and the string for a string, so the type is asked for directly.
+ */
+function forkMarkerIsTrue(alias: string): SQL {
+	const raw = sql.raw(`${alias}.raw_payload`);
+	return config.dialect === "postgres"
+		? sql`CAST((CAST(${raw} AS json) -> 'claudeStreamRuntime') AS text) = 'true'`
+		: sql`json_type(${raw}, '$.claudeStreamRuntime') = 'true'`;
+}
+
+/**
+ * One key of a fork call row: the outcome or the tool, NULL for any row that is not one. Only a
+ * `HeadlessStatus` row is parsed, under the size and readability guards `callIdOf` uses, nested because an
+ * AND is not ordered.
+ */
+function forkCallField(alias: string, key: "toolOutcome" | "tool"): SQL {
 	const a = sql.raw(alias);
+	const raw = sql.raw(`${alias}.raw_payload`);
+	const readable = forkPayloadReadable(raw);
+	return sql`CASE WHEN ${a}.event_type = 'HeadlessStatus' THEN
+		CASE WHEN ${storedBytes(raw)} <= ${literalInt(PAIR_RAW_PAYLOAD_MAX_BYTES)} THEN
+			CASE WHEN ${readable} THEN
+				CASE WHEN ${forkMarkerIsTrue(alias)}
+					AND ${forkRowText(alias, "kind")} = 'call'
+					AND ${forkRowText(alias, "toolOutcome")} IN (${literalList(FORK_ACTION_OUTCOMES)})
+				THEN ${forkRowText(alias, key)} END
+			END
+		END
+	END`;
+}
+
+/**
+ * 'spine' (narrative), 'action' (a finished tool call that is not read-class), or NULL (not evidence).
+ * The fork-call branch comes first: a fork call row's category is a spine category, and it would otherwise
+ * be narrative (C-L1). The activity probe has no `raw_payload` in its sub-select and turns the branch off.
+ */
+export function classExpression(alias: string, options: { forkCalls?: boolean } = {}): SQL {
+	const a = sql.raw(alias);
+	const forkBranch =
+		options.forkCalls === false
+			? sql``
+			: sql`WHEN ${forkCallField(alias, "toolOutcome")} IS NOT NULL THEN 'action'
+		`;
 	return sql`CASE
-		WHEN ${effectiveCategory(alias)} IN (${literalList(SPINE_CATEGORIES)}) THEN 'spine'
+		${forkBranch}WHEN ${effectiveCategory(alias)} IN (${literalList(SPINE_CATEGORIES)}) THEN 'spine'
 		WHEN ${effectiveCategory(alias)} = 'tool_event'
 			AND ${a}.event_type IN ('PostToolUse', 'PostToolUseFailure')
 			AND (${a}.tool_name IS NULL OR lower(${a}.tool_name) NOT IN (${literalList(READ_CLASS_TOOLS)}))
@@ -148,7 +222,8 @@ function shellToolTest(alias: string): SQL {
 /**
  * Every key the loader reads out of a row's `raw_payload` (an untrusted document
  * that can hold anything): the call id for pairing, and the failure text of a row
- * with no response. A key is read only through `rawKey`, so this list is the whole set.
+ * with no response. A key is read only through `rawKey`, so this list is the whole set. (The fork call row's
+ * own keys are `FORK_ROW_KEYS`, read only by `forkRowText`.)
  */
 export const RAW_PAYLOAD_KEYS = ["tool_use_id", "error", "error_message"] as const;
 type RawPayloadKey = (typeof RAW_PAYLOAD_KEYS)[number];
@@ -295,7 +370,7 @@ export function buildChunkStatement(params: ChunkParams): SQL {
 		? sql`1 = 1`
 		: sql`lower(e.tool_name) = 'unknown_tool'`;
 	const callId = orNull(
-		sql`CASE WHEN p.cls = 'action' AND e.tool_input IS NULL AND ${mayPair} THEN ${callIdOf("e")} END`,
+		sql`CASE WHEN p.cls = 'action' AND e.event_type IN ('PostToolUse', 'PostToolUseFailure') AND e.tool_input IS NULL AND ${mayPair} THEN ${callIdOf("e")} END`,
 	);
 	const shell = shellToolTest("e");
 	const response = wantAction
@@ -323,7 +398,9 @@ export function buildChunkStatement(params: ChunkParams): SQL {
 		e.category AS category, e.tool_name AS tool_name,
 		${content} AS content, ${filePath} AS file_path, ${command} AS command_text,
 		${description} AS description_text, ${response} AS response_text, ${responseTail} AS response_tail,
-		${callId} AS call_id
+		${callId} AS call_id,
+		CASE WHEN p.cls = 'action' THEN ${forkCallField("e", "tool")} END AS fork_tool,
+		CASE WHEN p.cls = 'action' THEN ${forkCallField("e", "toolOutcome")} END AS fork_outcome
 	FROM picked p ${JOIN} events e ON e.id = p.id
 	${pg && inputs ? postgresKeyLateral("e", inputGuard) : sql``}
 )`;
@@ -350,7 +427,7 @@ paired AS (
 		COALESCE(ex.file_path, ${cut(sql`COALESCE(${preField("file_path")}, ${preField("path")})`, TOOL_INPUT_FIELD_SQL_CAP)}) AS file_path,
 		COALESCE(ex.command_text, ${preField("command")}, ${preField("cmd")}) AS command_text,
 		ex.description_text AS description_text, ex.response_text AS response_text,
-		ex.response_tail AS response_tail
+		ex.response_tail AS response_tail, ex.fork_tool AS fork_tool, ex.fork_outcome AS fork_outcome
 	FROM ex
 	LEFT JOIN pair ON pair.id = ex.id
 	LEFT JOIN events pre ON pre.id = pair.pre_id
@@ -389,7 +466,8 @@ SELECT meta.chunk_lo, meta.chunk_rows, meta.spine_total, meta.action_total,
 	(SELECT created_at FROM events WHERE id = meta.chunk_lo) AS chunk_lo_at,
 	${source}.id, ${source}.cls, ${source}.created_at, ${source}.event_type, ${source}.category,
 	${source}.tool_name, ${source}.content, ${source}.file_path, ${source}.command_text,
-	${source}.description_text, ${source}.response_text, ${source}.response_tail
+	${source}.description_text, ${source}.response_text, ${source}.response_tail,
+	${source}.fork_tool, ${source}.fork_outcome
 FROM meta LEFT JOIN ${source} ON 1 = 1
 ORDER BY ${source}.id DESC`;
 }
@@ -467,6 +545,10 @@ function toEvidenceRow(raw: RawRow): EvidenceRow {
 		description: text(raw.description_text),
 		response: text(raw.response_text),
 		responseTail: text(raw.response_tail),
+		forkCall:
+			raw.fork_outcome === null || raw.fork_outcome === undefined
+				? null
+				: { tool: text(raw.fork_tool), outcome: String(raw.fork_outcome) },
 	};
 }
 

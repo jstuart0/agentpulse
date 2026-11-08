@@ -286,6 +286,50 @@ export async function resolveSessionHost(
 }
 
 /**
+ * Whether a launch row is the carrier of a continued Claude session (a fork): `boundObservedSession` is written
+ * only by the takeover's settle, in the same transaction that marks the session row `forkedFromSessionId`.
+ */
+function isForkLaunch(launch: { agentType?: string | null; metadata?: unknown } | null): boolean {
+	return (
+		launch?.agentType === "claude_code" &&
+		(launch.metadata as Record<string, unknown> | null | undefined)?.boundObservedSession === true
+	);
+}
+
+/**
+ * The owner of record for a session and whether the session is a fork, in the one statement the owner read
+ * already was (the launch row is joined anyway). Null owner: nobody owns it.
+ */
+export async function resolveSessionOwnerInfo(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	db: any,
+	sessionId: string,
+): Promise<{ owner: string | null; isFork: boolean }> {
+	const [managedOwnerRow] = await db
+		.select({
+			owner: sessionOwnerSql,
+			launchAgentType: launchRequests.agentType,
+			launchMetadata: launchRequests.metadata,
+		})
+		.from(managedSessions)
+		.leftJoin(launchRequests, ownerLaunchJoin)
+		.where(eq(managedSessions.sessionId, sessionId))
+		.limit(1);
+	if (managedOwnerRow) {
+		return {
+			owner: managedOwnerRow.owner ?? null,
+			isFork: isForkLaunch({
+				agentType: managedOwnerRow.launchAgentType,
+				metadata: managedOwnerRow.launchMetadata,
+			}),
+		};
+	}
+
+	const launch = await findLaunchRowByCorrelationId(sessionId, db);
+	return { owner: launch?.claimedBySupervisorId ?? null, isFork: isForkLaunch(launch ?? null) };
+}
+
+/**
  * Resolve the owner of record for a session (D5). Returns null when nobody
  * owns it (no managed row and no claimed launch).
  */
@@ -294,18 +338,7 @@ export async function resolveSessionOwner(
 	db: any,
 	sessionId: string,
 ): Promise<string | null> {
-	const [managedOwnerRow] = await db
-		.select({ owner: sessionOwnerSql })
-		.from(managedSessions)
-		.leftJoin(launchRequests, ownerLaunchJoin)
-		.where(eq(managedSessions.sessionId, sessionId))
-		.limit(1);
-	if (managedOwnerRow) {
-		return managedOwnerRow.owner ?? null;
-	}
-
-	const launch = await findLaunchRowByCorrelationId(sessionId, db);
-	return launch?.claimedBySupervisorId ?? null;
+	return (await resolveSessionOwnerInfo(db, sessionId)).owner;
 }
 
 /**
@@ -320,7 +353,19 @@ export async function assertSupervisorCanWriteSession(
 	sessionId: string,
 	opts?: { launchRequestId?: string | null },
 ): Promise<void> {
-	const owner = await resolveSessionOwner(getDb(), sessionId);
+	await assertSupervisorCanWriteSessionInfo(supervisorId, sessionId, opts);
+}
+
+/**
+ * The same check, and it says whether the session is a continued Claude session (a fork), read in the owner
+ * statement the check already makes. For a writer that must treat a fork's rows differently.
+ */
+export async function assertSupervisorCanWriteSessionInfo(
+	supervisorId: string,
+	sessionId: string,
+	opts?: { launchRequestId?: string | null },
+): Promise<{ isFork: boolean }> {
+	const { owner, isFork } = await resolveSessionOwnerInfo(getDb(), sessionId);
 	if (owner === null) {
 		throw new SessionOwnershipError("no_owner", `No owner of record for session ${sessionId}`);
 	}
@@ -332,14 +377,14 @@ export async function assertSupervisorCanWriteSession(
 	}
 
 	const launchRequestId = opts?.launchRequestId;
-	if (!launchRequestId) return;
+	if (!launchRequestId) return { isFork };
 
 	const [managedRow] = await getDb()
 		.select({ launchRequestId: managedSessions.launchRequestId })
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
-	if (managedRow && managedRow.launchRequestId === launchRequestId) return;
+	if (managedRow && managedRow.launchRequestId === launchRequestId) return { isFork };
 
 	const [launchRow] = await getDb()
 		.select()
@@ -356,6 +401,7 @@ export async function assertSupervisorCanWriteSession(
 			`launchRequestId ${launchRequestId} does not name a launch ${supervisorId} claimed for session ${sessionId}`,
 		);
 	}
+	return { isFork };
 }
 
 /**

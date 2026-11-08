@@ -3,7 +3,9 @@ import { ownershipUi } from "./ownership-ui.js";
 import {
 	NOTES_BLOCKED_REASON,
 	RENAME_BLOCKED_REASON,
+	canReadToolDetail,
 	sessionActionAccess,
+	toolDetailAccess,
 } from "./session-action-access.js";
 import { sessionBindAccess } from "./session-bind-access.js";
 
@@ -161,5 +163,46 @@ describe("sessionBindAccess: taking over, or resuming, a session", () => {
 			"canPrompt",
 			"canRename",
 		]);
+	});
+});
+
+describe("tool detail of a continued session (AGEN-123)", () => {
+	const solo = ownershipUi("solo", { effectiveRole: "member" });
+	const team = ownershipUi("team", { effectiveRole: "member" });
+
+	test("solo: the signed-in person reads, whoever the session is attributed to", () => {
+		expect(toolDetailAccess(solo, { ownerUserId: "alice" }, { userId: "bob" })).toBe("allowed");
+		expect(canReadToolDetail(solo, { ownerUserId: null }, {})).toBe(true);
+	});
+
+	test("team: the owner reads; an admin on someone else's session reads, told whose it is; a member does not", () => {
+		const viewer = (userId: string, effectiveRole: "admin" | "member") => ({
+			userId,
+			effectiveRole,
+		});
+		expect(toolDetailAccess(team, { ownerUserId: "alice" }, viewer("alice", "member"))).toBe(
+			"allowed",
+		);
+		expect(toolDetailAccess(team, { ownerUserId: "alice" }, viewer("bob", "admin"))).toBe(
+			"admin_on_others",
+		);
+		expect(toolDetailAccess(team, { ownerUserId: "alice" }, viewer("bob", "member"))).toBe(
+			"denied",
+		);
+		expect(canReadToolDetail(team, { ownerUserId: "alice" }, viewer("bob", "member"))).toBe(false);
+	});
+
+	test("an unowned team session is an admin's alone, unlike the other session actions, which any member may take", () => {
+		const member = { userId: "bob", effectiveRole: "member" as const };
+		const admin = { userId: "root", effectiveRole: "admin" as const };
+		expect(toolDetailAccess(team, { ownerUserId: null }, member)).toBe("denied");
+		expect(toolDetailAccess(team, { ownerUserId: undefined }, member)).toBe("denied");
+		expect(toolDetailAccess(team, { ownerUserId: null }, admin)).toBe("admin_on_others");
+		// The rule that treats an unowned session as open to members is a different one.
+		expect(sessionActionAccess(team, { ownerUserId: null }, member).canPrompt).toBe(true);
+	});
+
+	test("a viewer with no identity is never the owner", () => {
+		expect(toolDetailAccess(team, { ownerUserId: "alice" }, { userId: null })).toBe("denied");
 	});
 });

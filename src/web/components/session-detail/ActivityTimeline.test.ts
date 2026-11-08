@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { createElement, createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { SessionEvent } from "../../../shared/types.js";
-import { ActivityTimeline } from "./ActivityTimeline.js";
+import { ActivityTimeline, type ForkDetail, rowDetails } from "./ActivityTimeline.js";
 
 const STORED_MS = Date.now();
 const STORED = new Date(STORED_MS).toISOString();
@@ -173,5 +173,96 @@ describe("ActivityTimeline plain-text rows", () => {
 	test("positive control: an ordinary assistant message still renders Markdown", () => {
 		const html = render([event({ category: "assistant_message", content: IMAGE })]);
 		expect(html).toContain("<img");
+	});
+});
+
+describe("Details on a continued session's rows (AGEN-123)", () => {
+	const TURN_UNASKED =
+		"Ran without asking you this turn: Bash (1). Claude treated these as read-only.";
+	const detailRow = (kind: string, toolUseId: string | null, content: string, seconds: number) =>
+		event({
+			eventType: "HeadlessStatus",
+			category: "progress_update",
+			content,
+			createdAt: new Date(STORED_MS + seconds * 1000).toISOString(),
+			rawPayload: {
+				source: "claude_stream",
+				kind,
+				...(toolUseId ? { tool_use_id: toolUseId } : {}),
+			},
+		});
+	const marker = (eventType: string, seconds: number) =>
+		event({
+			eventType,
+			category: "system_event",
+			content: eventType,
+			createdAt: new Date(STORED_MS + seconds * 1000).toISOString(),
+		});
+	const stored = (toolUseId: string, outcome: string, tool = "Bash") => ({
+		toolUseId,
+		tool,
+		outcome,
+		fromSubagent: false,
+		input: null,
+		inputTruncated: false,
+		output: null,
+		outputTruncated: false,
+		redacted: false,
+		createdAt: STORED,
+	});
+
+	const events = [
+		marker("HeadlessPromptSubmitted", 0),
+		detailRow("call", "toolu_a", "Bash: ran without asking", 1),
+		detailRow("call", "toolu_b", "Write: ran, you approved it", 2),
+		detailRow("call", "toolu_c", "Read: ran without asking", 3),
+		detailRow("turn_unasked", null, TURN_UNASKED, 4),
+		marker("HeadlessPromptCompleted", 5),
+	];
+	const detail = (calls: ReturnType<typeof stored>[], working = false): ForkDetail => ({
+		context: { sessionId: "s1", access: "allowed", ownerName: null },
+		calls: new Map(calls.map((c) => [c.toolUseId, c])),
+		allEvents: events,
+		working,
+	});
+	const positions = new Map(events.map((e, i) => [e.id, i]));
+	const html = (node: unknown) => renderToStaticMarkup(node as never);
+
+	test("a call row with a stored record gets Details; one without gets nothing", () => {
+		const d = detail([stored("toolu_a", "unasked")]);
+		const withRecord = rowDetails(events[1] as SessionEvent, d, positions);
+		expect(html(withRecord)).toContain('aria-label="Show what Bash ran"');
+		expect(rowDetails(events[2] as SessionEvent, d, positions)).toBeNull();
+	});
+
+	test("the turn's line gets 'Show what ran' for its unasked calls only, and nothing when none was stored", () => {
+		const d = detail([
+			stored("toolu_a", "unasked"),
+			stored("toolu_b", "approved", "Write"),
+			stored("toolu_c", "unasked", "Read"),
+		]);
+		const row = rowDetails(events[4] as SessionEvent, d, positions);
+		expect(html(row)).toContain(">Show what ran<");
+		expect(
+			rowDetails(
+				events[4] as SessionEvent,
+				detail([stored("toolu_b", "approved", "Write")]),
+				positions,
+			),
+		).toBeNull();
+		expect(rowDetails(events[4] as SessionEvent, detail([]), positions)).toBeNull();
+	});
+
+	test("any other row, and a row the page doesn't hold, gets nothing", () => {
+		const d = detail([stored("toolu_a", "unasked")]);
+		expect(rowDetails(events[0] as SessionEvent, d, positions)).toBeNull();
+		expect(rowDetails(events[5] as SessionEvent, d, positions)).toBeNull();
+		expect(rowDetails(events[1] as SessionEvent, d, new Map())).toBeNull();
+	});
+
+	test("with no session given, the timeline draws no Details control at all", () => {
+		const out = render([detailRow("call", "toolu_a", "Bash: ran without asking", 1)]);
+		expect(out).not.toContain("Details");
+		expect(out).not.toContain("Show what ran");
 	});
 });

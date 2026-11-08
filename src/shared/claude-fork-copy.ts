@@ -101,3 +101,72 @@ export function isForkTurnSummary(content: string | null | undefined): boolean {
 		(content.startsWith(TURN_UNASKED_PREFIX) || content.startsWith(TURN_REFUSED_PREFIX))
 	);
 }
+
+/**
+ * What a fork call row can say happened, one list for rows and for stored detail (AGEN-122, AGEN-123): the
+ * host's `CallRowKind` values plus `stopped`, a call cut short by a person's Stop turn.
+ */
+export const FORK_CALL_OUTCOMES = [
+	"approved",
+	"unasked",
+	"failed",
+	"declined",
+	"refused",
+	"elsewhere",
+	"local_decline",
+	"no_result",
+	"stopped",
+] as const;
+export type ForkCallOutcome = (typeof FORK_CALL_OUTCOMES)[number];
+
+/** What a call row says after the tool name, one sentence per outcome. The server holds a fork's rows to these words. */
+export const FORK_CALL_ROW_WORDS: Readonly<Record<ForkCallOutcome, string>> = {
+	approved: "ran, you approved it",
+	unasked: "ran without asking",
+	failed: "didn't succeed",
+	declined: "you declined it",
+	refused: "refused",
+	elsewhere: "may have run",
+	local_decline: "AgentPulse declined it; you weren't asked",
+	no_result: "called, no result seen",
+	stopped: "stopped when you stopped the turn",
+};
+
+/** The fixed tail of the per-turn "ran without asking" row, by mode. */
+export const FORK_UNASKED_TAIL: Readonly<Record<ForkMode, string>> = {
+	ask: "These were read-only, or your Claude settings allowed them.",
+	restricted: "Claude treated these as read-only.",
+};
+
+/** The tools a fork has when no option adds one. An `mcp__<server>__<tool>` name is reported as `mcp`, never by name. */
+export const FORK_TOOL_NAMES = [
+	"Bash",
+	"Read",
+	"Write",
+	"Edit",
+	"NotebookEdit",
+	"WebFetch",
+] as const;
+export type ForkToolName = (typeof FORK_TOOL_NAMES)[number];
+
+/** The prefix Claude gives a tool a user MCP server provides. */
+export const MCP_TOOL_PREFIX = "mcp__";
+
+/** The helper-starting tool, present only when the person applied subagents to the takeover. */
+export const FORK_AGENT_TOOL = "Agent";
+
+/**
+ * Every name a row or a stored call may carry for its tool: the six, the Agent call, and `mcp` for any MCP
+ * tool. Kept apart from `FORK_TOOL_NAMES`, which stays the six a fork has when no option adds one.
+ */
+export const FORK_REPORTED_TOOLS = [...FORK_TOOL_NAMES, FORK_AGENT_TOOL, "mcp"] as const;
+export type ForkReportedTool = (typeof FORK_REPORTED_TOOLS)[number];
+
+/** What a row or a stored call may say about the tool: a name from the six or `Agent`, `mcp` for any MCP tool, else null. */
+export function reportedForkTool(name: string): ForkReportedTool | null {
+	if (name.startsWith(MCP_TOOL_PREFIX)) return "mcp";
+	if (name === "mcp") return null;
+	return (FORK_REPORTED_TOOLS as readonly string[]).includes(name)
+		? (name as ForkReportedTool)
+		: null;
+}

@@ -212,6 +212,59 @@ describe("ComposerBody states", () => {
 		}
 	});
 
+	describe("Stop turn in place of Send (AGEN-119)", () => {
+		const forkMode = composerMode(
+			session("claude_code", "managed", {
+				forkedFromSessionId: "src-1",
+				forkPermissionBranch: "ask",
+			}),
+			{ canPrompt: true, canResume: true },
+		) as Exclude<ComposerMode, { kind: "blocked" }>;
+		const turn = { available: true, inFlight: false, onStop: () => {} };
+
+		test("a running turn: Stop turn replaces Send at every width, the box stays writable, and the notice says the session stays open", () => {
+			const out = body({ mode: forkMode, notice: "unused", stopTurn: turn });
+			expect(out).toMatch(/<button[^>]*data-stop-turn=""[^>]*>[\s\S]*Stop turn<\/button>/);
+			expect(out).not.toContain("Send prompt");
+			expect(out).toContain(
+				"Claude is working. Stop turn ends what it&#x27;s doing; the session stays open.",
+			);
+			expect(out).not.toMatch(/<textarea[^>]*readonly/i);
+			// Not hidden at any width, a touch target on a phone, a fixed width so the layout doesn't shift.
+			const button = /<button[^>]*data-stop-turn=""[^>]*>/.exec(out)?.[0] ?? "";
+			expect(button).not.toContain("hidden");
+			expect(button).toContain("min-h-[44px]");
+			expect(button).toContain("min-w-[8.5rem]");
+			expect(button).not.toContain("bg-primary");
+		});
+
+		test("while the stop is in flight the button reads 'Stopping turn…' and is off", () => {
+			const out = body({ mode: forkMode, stopTurn: { ...turn, inFlight: true } });
+			expect(out).toMatch(
+				/<button[^>]*data-stop-turn=""[^>]*disabled=""[^>]*>[\s\S]*Stopping turn…<\/button>/,
+			);
+		});
+
+		test.each([
+			["not available", { ...turn, available: false }],
+			["no control at all", null],
+		])("%s: Send, as always", (_name, stopTurn) => {
+			const out = body({ mode: forkMode, stopTurn });
+			expect(out).not.toContain("data-stop-turn");
+			expect(out).toContain("Send prompt");
+		});
+
+		test("the whole-session stop's line wins over Stop turn (both can't be on)", () => {
+			const out = body({
+				mode: forkMode,
+				stopTurn: turn,
+				stoppingNotice: "Stopping Claude on studio…",
+			});
+			expect(out).not.toContain("data-stop-turn");
+			expect(out).toContain("Stopping Claude on studio…");
+		});
+	});
+
 	test("with no stop the same body is unchanged: the notice shows, the box is writable", () => {
 		const out = body({ notice: "A plain notice" });
 		expect(out).toContain("A plain notice");

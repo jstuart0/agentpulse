@@ -83,6 +83,40 @@ describe("list_pending_approvals", () => {
 		expect(body.host).toEqual({ state: "live", name: "build-box" });
 	});
 
+	test("an MCP tool call comes through as tool mcp and server/tool, with no input", async () => {
+		const mcp: CodexApprovalSummary = {
+			...summary("m", "pending"),
+			requestKind: "claude_tool",
+			preview: {
+				cwd: "/work",
+				tool: "mcp",
+				target: "probe/echo_note",
+				pathOutsideCwd: false,
+				nonAscii: false,
+			},
+		};
+		const client = fakeClient({
+			listApprovals: async () => ({
+				v: 1,
+				approvals: [mcp],
+				host: { state: "live", name: "build-box" },
+				viewer: { canAccept: false },
+			}),
+		});
+		const { mcpClient } = await connect(client);
+		const result = await mcpClient.callTool({
+			name: "list_pending_approvals",
+			arguments: { session_id: "s1" },
+		});
+		const [approval] = JSON.parse(text(result)).approvals;
+		expect(approval.preview).toMatchObject({ tool: "mcp", target: "probe/echo_note" });
+		expect(approval.requestKind).toBe("claude_tool");
+		const { tools } = await mcpClient.listTools();
+		expect(tools.find((t) => t.name === "list_pending_approvals")?.description).toContain(
+			"MCP tool",
+		);
+	});
+
 	test("a bare 404 (a server without the routes) is the one fixed message", async () => {
 		const client = fakeClient({
 			listApprovals: async () => {

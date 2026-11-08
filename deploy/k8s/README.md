@@ -1199,3 +1199,35 @@ approval code:
    supervisor release.
 4. The pull-request workflow `.github/workflows/codex-approvals-postgres.yml` must be green for any
    change under the approval paths.
+
+## Upgrading to migration 0022 (SQLite and Postgres): owner-only tool detail for continued sessions
+
+Migration `0022_fork_tool_calls` adds the table `fork_tool_calls` (AGEN-123): what each tool call of a continued
+Claude Code session ran (its input and output), kept for the session's owner or an admin to open on the session
+page. It is a plain `CREATE TABLE` with a cascade foreign key to `sessions`, a unique key on
+`(session_id, tool_use_id)` and two small indexes, all on an empty table, so it takes no lock worth planning
+around. Legacy SQLite installs get the same table from the legacy init. Nothing reads or writes it until a
+supervisor sends detail, so an upgraded server with older supervisors behaves as before.
+
+- **`AGENTPULSE_SECRETS_KEY` is required for this feature.** The input and output are encrypted at rest with it
+  (the scheme push send tokens use), so a database copy or a backup alone yields no tool text. Without the key
+  the server advertises neither the `fork_tool_detail` server feature (supervisors then send nothing) nor the
+  `forkToolDetail` capability, the routes answer `503 detail_unavailable`, and nothing is stored. Changing or
+  losing the key makes the stored detail unreadable (a row then reads as having no text); detail is kept 7 days
+  at most, so there is nothing to migrate.
+- **Retention.** Detail is kept 7 days, or the event-retention window when that is positive and shorter
+  (Settings → Session Configuration → Event Retention). The retention pass prunes it in batches of 1,000 and
+  does so **even when event retention is off**; `GET /api/v1/health`'s `retention.lastRun.forkToolCallsDeleted`
+  reports how many a pass removed. A row older than the cutoff is never served, even before the pass reaches
+  it. Deleting a session deletes its detail.
+- **Volume.** At most 2,000 calls are kept per session (the oldest go first) and at most 1,200 calls an hour are
+  stored per session and at most 6,000 an hour per host across all its sessions (both counted in memory, per
+  replica). A host may report 300 times a minute. Each detail read writes one `fork_tool_detail_read` audit line
+  (who read which call), so a busy reader shows up in the logs.
+- **Who can read it.** Only a signed-in person who owns the session or is an admin (an unowned session: admins).
+  No API key of any scope can, an admin-owned or manage key included, and there is no MCP tool for it.
+  `DISABLE_AUTH=true` counts every caller as a person, as for every other human-only route.
+- **Upgrade order.** Server first, then supervisors, as for every supervisor feature: an older server never
+  advertises `fork_tool_detail`, so a newer supervisor sends nothing to it.
+- **Rollback.** Rolling the server back below `0022` leaves the table and its ciphertext in place and nothing
+  prunes it. Drop it by hand when you are sure: `DROP TABLE fork_tool_calls;`.

@@ -173,6 +173,18 @@ describePostgresOnly("on Postgres, at the trap shape", () => {
 	}, 120_000);
 });
 
+test("AGEN-122 the activity probe does not read raw_payload: the fork-call branch of the action class is off there, so its plan is unchanged", async () => {
+	await H.seedSession(SID);
+	const ids = await H.seedEvents(
+		SID,
+		Array.from({ length: 20 }, () => readEvent()),
+	);
+	await H.seedReadySummary(SID, { throughEventId: ids[10], firstEventId: ids[0] });
+	const { activity } = await probeStatements();
+	expect(activity.text).not.toMatch(/raw_payload/i);
+	expect(activity.text).not.toContain("HeadlessStatus");
+});
+
 describeSqliteOnly("on SQLite", () => {
 	test("TC-5.64c both probes search a session_id index and use no temporary b-tree for the order", async () => {
 		await H.seedSession(SID);

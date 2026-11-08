@@ -26,6 +26,7 @@ export {
 	codexApprovalsSqlite as codexApprovals,
 	codexApprovalAuditSqlite as codexApprovalAudit,
 } from "./core/codex-approvals.js";
+export { forkToolCallsSqlite as forkToolCalls } from "./core/fork-tool-calls.js";
 export { usersSqlite as users } from "./core/users.js";
 export { authSessionsSqlite as authSessions } from "./core/auth-sessions.js";
 export { apiKeysSqlite as apiKeys } from "./core/api-keys.js";

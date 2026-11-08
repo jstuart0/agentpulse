@@ -1,0 +1,1269 @@
+{
+	"bash-fail.jsonl": {
+		"turns": 2,
+		"outcomes": [
+			{
+				"ok": true
+			},
+			{
+				"ok": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Bash: you declined it",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "call",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "The `touch denied.txt` command was denied by the environment (\"Denied by the cell\"), so the file was not created. I didn't try a workaround, since the denial looks like a deliberate restriction. If you want the file created, you'll need to approve the command or allow it in your permission settings, and then I can run it again.",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Bash: didn't succeed",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "call",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "The command ran as requested. It wrote `oops` to stderr and exited with code 3, which the tool reported as \"Exit code 3\" followed by \"oops\".",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			},
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	},
+	"cancel-hook-allow.jsonl": {
+		"turns": 1,
+		"outcomes": [
+			{
+				"ok": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Bash: ran without asking",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "call",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "done",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Ran without asking you this turn: Bash (1). These were read-only, or your Claude settings allowed them.",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "turn_unasked",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	},
+	"cancel-hook-deny.jsonl": {
+		"turns": 1,
+		"outcomes": [
+			{
+				"ok": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Bash: refused",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "call",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "I couldn't run the command. A hook rejected `echo X > e_deny.txt` with \"hook says no\", so `e_deny.txt` was not created. I didn't retry, since the hook denied it. The hook's reason isn't shown, so I can't tell whether it's a policy on this file or on writes in general. If you want the file written, tell me whether to try another way or whether the hook should be changed.",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Claude tried this and was refused: Bash (1).",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "turn_refused",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	},
+	"cancel-interrupt.jsonl": {
+		"turns": 2,
+		"outcomes": [
+			{
+				"ok": false,
+				"code": "turn_error",
+				"error": "Claude ended this turn with an error."
+			},
+			{
+				"ok": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Bash: refused",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "call",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Claude tried this and was refused: Bash (1).",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "turn_refused",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptFailed",
+				"category": "system_event",
+				"content": "Claude ended this turn with an error.",
+				"rawPayload": {
+					"status": "turn_error",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "alive",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			},
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	},
+	"helper-ask.jsonl": {
+		"turns": 1,
+		"outcomes": [
+			{
+				"ok": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "ok",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	},
+	"helper-restricted.jsonl": {
+		"turns": 1,
+		"outcomes": [
+			{
+				"ok": false,
+				"code": "login_lost",
+				"error": "Claude Code on this machine lost its login. If the supervisor uses a token from `claude setup-token`, it may have expired. Give the supervisor a new token or an API key, restart it, then resume this session and send your prompt again."
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptFailed",
+				"category": "system_event",
+				"content": "Claude Code on this machine lost its login. If the supervisor uses a token from `claude setup-token`, it may have expired. Give the supervisor a new token or an API key, restart it, then resume this session and send your prompt again.",
+				"rawPayload": {
+					"status": "login_lost",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	},
+	"id-swap-clear.jsonl": {
+		"turns": 9,
+		"outcomes": [
+			{
+				"ok": true
+			},
+			{
+				"ok": true
+			},
+			{
+				"ok": true
+			},
+			{
+				"ok": false,
+				"code": "fatal",
+				"error": "Claude Code on this machine changed how it was running, so AgentPulse stopped it. Its last turn may not all be here. Resume it to keep going."
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptFailed",
+				"category": "system_event",
+				"content": "Claude Code on this machine changed how it was running, so AgentPulse stopped it. Its last turn may not all be here. Resume it to keep going.",
+				"rawPayload": {
+					"status": "id_changed",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			},
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			},
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			},
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "degraded",
+				"status": "idle",
+				"providerSyncState": "failed",
+				"providerSyncError": "Claude Code on this machine changed how it was running, so AgentPulse stopped it. Its last turn may not all be here. Resume it to keep going."
+			}
+		]
+	},
+	"key-ask-bash.jsonl": {
+		"turns": 1,
+		"outcomes": [
+			{
+				"ok": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Bash: ran without asking",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "call",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "The command ran and completed with no output, so `a.txt` should now contain `a`. I did not verify the file contents.",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Ran without asking you this turn: Bash (1). These were read-only, or your Claude settings allowed them.",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "turn_unasked",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	},
+	"key-fork-restricted-write-deny.jsonl": {
+		"turns": 2,
+		"outcomes": [
+			{
+				"ok": true
+			},
+			{
+				"ok": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "SENT57AB16A17F",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Write: you declined it",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "call",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "The Write tool refused to create `n_fw.txt` in the working directory. The error was just \"bench deny\", with no reason given. I haven't tried another path or method, so the file doesn't exist yet. Do you want me to retry, or write it somewhere else?",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			},
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	},
+	"key-restricted-clean.jsonl": {
+		"turns": 6,
+		"outcomes": [
+			{
+				"ok": true
+			},
+			{
+				"ok": true
+			},
+			{
+				"ok": true
+			},
+			{
+				"ok": true
+			},
+			{
+				"ok": true
+			},
+			{
+				"ok": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "I ran `ls` in the working directory. It printed no output, so the directory appears to be empty.",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			},
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			},
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			},
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			},
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			},
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	},
+	"no-login-ask.jsonl": {
+		"turns": 1,
+		"outcomes": [
+			{
+				"ok": false,
+				"code": "login_lost",
+				"error": "Claude Code on this machine lost its login. If the supervisor uses a token from `claude setup-token`, it may have expired. Give the supervisor a new token or an API key, restart it, then resume this session and send your prompt again."
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptFailed",
+				"category": "system_event",
+				"content": "Claude Code on this machine lost its login. If the supervisor uses a token from `claude setup-token`, it may have expired. Give the supervisor a new token or an API key, restart it, then resume this session and send your prompt again.",
+				"rawPayload": {
+					"status": "login_lost",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	},
+	"peer-injected-turn.jsonl": {
+		"turns": 1,
+		"outcomes": [
+			{
+				"hung": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Write: you declined it",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "call",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Read: didn't succeed",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "call",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "The earlier write did not create the file, so I'm retrying once.",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Write: refused",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "call",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": []
+	},
+	"plain-fork-init.jsonl": {
+		"turns": 1,
+		"outcomes": [
+			{
+				"hung": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": []
+	},
+	"t8-fork-init.jsonl": {
+		"turns": 1,
+		"outcomes": [
+			{
+				"hung": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": []
+	},
+	"unknown-request.jsonl": {
+		"turns": 2,
+		"outcomes": [
+			{
+				"ok": true
+			},
+			{
+				"ok": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Write: refused",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "call",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "The write failed with a permission-request error, not an explicit denial. I'll retry once.",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Write: refused",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "call",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "I couldn't create `e.txt`. The Write tool failed twice with the same permission-request error (`p0 error reply`), so the file was not written.\n\nI didn't try another route, such as writing the file through Bash, because that would get around the permission failure. The file should be `e.txt` in `/scratch/p0/work/unknownreq-proj/`, containing `hi`. If you fix the permission issue or approve a different method, I can retry.",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Claude tried this and was refused: Write (2).",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "turn_refused",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "ok",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			},
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	},
+	"user-reject.jsonl": {
+		"turns": 1,
+		"outcomes": [
+			{
+				"ok": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessStatus",
+				"category": "progress_update",
+				"content": "Write: you declined it",
+				"rawPayload": {
+					"source": "claude_stream",
+					"kind": "call",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "The file was not created. The Write call to `f2_hook_then_deny.txt` came back as \"person declined,\" so I haven't retried it or tried another way to write the file. If you want it created, approve the write or tell me another approach.",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	},
+	"uuid-fork.jsonl": {
+		"turns": 1,
+		"outcomes": [
+			{
+				"ok": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "ok",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	},
+	"uuid-fresh.jsonl": {
+		"turns": 1,
+		"outcomes": [
+			{
+				"ok": true
+			}
+		],
+		"events": [
+			{
+				"eventType": "HeadlessPromptSubmitted",
+				"category": "prompt",
+				"content": "go",
+				"rawPayload": {
+					"source": "agentpulse_workspace",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessAssistantMessage",
+				"category": "assistant_message",
+				"content": "ok",
+				"rawPayload": {
+					"source": "claude_stream",
+					"claudeStreamRuntime": true
+				}
+			},
+			{
+				"eventType": "HeadlessPromptCompleted",
+				"category": "system_event",
+				"content": "Claude finished this turn.",
+				"rawPayload": {
+					"status": "completed",
+					"claudeStreamRuntime": true
+				}
+			}
+		],
+		"states": [
+			{
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"agentType": "claude_code",
+				"managedState": "managed",
+				"status": "idle"
+			}
+		]
+	}
+}

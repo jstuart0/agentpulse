@@ -8,6 +8,7 @@
  * hard-asserted only on SQLite, at the plan's hard limit.
  */
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { loadavg } from "node:os";
 import { dirname } from "node:path";
@@ -544,6 +545,7 @@ describe("what SQL selects", () => {
 				"description",
 				"eventType",
 				"filePath",
+				"forkCall",
 				"id",
 				"response",
 				"responseTail",
@@ -569,6 +571,12 @@ describe("what SQL selects", () => {
 			.replace(/\(?\w+\.raw_payload(?:::json)?\)?\s*->>?\s*\$\d+/g, "")
 			.replace(/json_extract\(\w+\.raw_payload, \?\)/g, "")
 			.replace(/json_valid\(\w+\.raw_payload\)/g, "")
+			// The fork call row's reads (AGEN-122): literal paths, only the keys of FORK_ROW_KEYS.
+			.replace(/json_type\(\w+\.raw_payload, '\$\.claudeStreamRuntime'\)/g, "")
+			.replace(/json_extract\(\w+\.raw_payload, '\$\.(?:kind|toolOutcome|tool)'\)/g, "")
+			.replace(/CAST\(\w+\.raw_payload AS json\)/g, "")
+			.replace(/strpos\(CAST\(\w+\.raw_payload AS text\), '\\u'\)/g, "")
+			.replace(/CAST\(\w+\.raw_payload AS text\) !~ '\\\\u\([^']*'/g, "")
 			.replace(/strpos\(CAST\(\w+\.raw_payload AS text\), \$\d+\)/g, "")
 			.replace(/CAST\(\w+\.raw_payload AS text\) !~ \$\d+/g, "")
 			.replace(
@@ -2094,4 +2102,110 @@ describe("TC-3.H2 raw_payload is read for exactly the intended keys", () => {
 		);
 	});
 });
-const EXPECTED_RAW_MENTIONS = { sqlite: 9, postgres: 12 };
+// 9 / 12 before AGEN-122; the fork-call branch reads six / seven mentions in each of its three sites.
+const EXPECTED_RAW_MENTIONS = { sqlite: 27, postgres: 33 };
+
+describe("AGEN-122 fork call rows are actions with a status and no command", () => {
+	const forkRow = (sid: string, rawPayload: Record<string, unknown>, over: Partial<Seed> = {}) =>
+		ev(sid, {
+			eventType: "HeadlessStatus",
+			category: "progress_update",
+			content: "Bash: didn't succeed",
+			rawPayload,
+			...over,
+		});
+	const call = (outcome: string, extra: Record<string, unknown> = {}) => ({
+		source: "claude_stream",
+		kind: "call",
+		claudeStreamRuntime: true,
+		tool: "Bash",
+		toolOutcome: outcome,
+		is_error: outcome === "failed",
+		tool_use_id: `toolu_${outcome}`,
+		...extra,
+	});
+
+	test("the FORK_ROW_KEYS list is pinned and a fork row's three outcomes load as forkCall rows (never as narrative)", async () => {
+		expect([...loader.FORK_ROW_KEYS]).toEqual([
+			"claudeStreamRuntime",
+			"kind",
+			"toolOutcome",
+			"tool",
+		]);
+		const sid = await newSession("fk1");
+		await seed([
+			promptEv(sid, "do it"),
+			forkRow(sid, call("approved"), { content: "Bash: ran, you approved it" }),
+			forkRow(sid, call("failed", { exit_code: 3 })),
+			forkRow(sid, call("unasked", { tool: "Read" }), { content: "Read: ran without asking" }),
+		]);
+		const evidence = await loadEvidence(sid);
+		const forks = evidence.rows.filter((r) => r.forkCall);
+		// Newest first.
+		expect(forks.map((r) => r.forkCall)).toEqual([
+			{ tool: "Read", outcome: "unasked" },
+			{ tool: "Bash", outcome: "failed" },
+			{ tool: "Bash", outcome: "approved" },
+		]);
+		const text = buildLedger(evidence).text;
+		expect(text).toContain("Bash call: FAILED (observed; command not recorded)");
+		expect(text).toContain("Bash call: ok (observed; command not recorded)");
+		// Never the narrative one-liner form, and no content text from the row.
+		expect(text).not.toMatch(/progress: "Bash/);
+		expect(text).not.toContain("didn't succeed");
+	});
+
+	test("the chunk statement names only the FORK_ROW_KEYS as literal paths, and no tool input is read for a fork row", async () => {
+		const sid = await newSession("fk0");
+		await seed([promptEv(sid, "do it"), forkRow(sid, call("failed"))]);
+		const { statements } = await capture(() => loadEvidence(sid));
+		const chunk = statements.find((x) => /ROW_NUMBER/i.test(x.text)) as Captured;
+		const literalKeys = new Set(
+			[...chunk.text.matchAll(/'\$\.(\w+)'|->>? '(\w+)'/g)].map((m) => m[1] ?? m[2]),
+		);
+		expect([...literalKeys].sort()).toEqual([...loader.FORK_ROW_KEYS].sort());
+	});
+
+	test("population: a row that is not the host's, or whose outcome did not run, is not an action", async () => {
+		const sid = await newSession("fk2");
+		await seed([
+			promptEv(sid, "do it"),
+			// No marker, a string marker, the wrong kind, an outcome that did not run, a row type that is not HeadlessStatus.
+			forkRow(sid, { ...call("failed"), claudeStreamRuntime: undefined }),
+			forkRow(sid, call("failed", { claudeStreamRuntime: "true" })),
+			forkRow(sid, call("failed", { kind: "turn_unasked" })),
+			forkRow(sid, call("declined")),
+			forkRow(sid, call("stopped")),
+			ev(sid, {
+				eventType: "ManagedWarning",
+				category: "progress_update",
+				rawPayload: call("failed"),
+			}),
+		]);
+		const evidence = await loadEvidence(sid);
+		expect(evidence.rows.filter((r) => r.forkCall)).toEqual([]);
+		expect(buildLedger(evidence).text).not.toContain("call: FAILED");
+	});
+
+	test("the fork call row is an action in the scan's counts, ahead of the spine branch", async () => {
+		const sid = await newSession("fk3");
+		await seed([
+			promptEv(sid, "do it"),
+			forkRow(sid, call("failed")),
+			forkRow(sid, call("unasked"), { content: "Bash: ran without asking" }),
+		]);
+		const evidence = await loadEvidence(sid);
+		const entries = buildLedger(evidence);
+		expect(entries.text.match(/call: /g)).toHaveLength(2);
+	});
+
+	test("an untrusted payload cannot widen the read: a huge payload is not parsed", async () => {
+		const sid = await newSession("fk4");
+		await seed([
+			promptEv(sid, "do it"),
+			forkRow(sid, call("failed", { padding: randomBytes(40_000).toString("hex") })),
+		]);
+		const evidence = await loadEvidence(sid);
+		expect(evidence.rows.filter((r) => r.forkCall)).toEqual([]);
+	});
+});

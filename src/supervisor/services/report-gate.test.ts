@@ -1745,6 +1745,8 @@ const SESSION_DATA_FRAGMENTS: [string, RegExp][] = [
 	["managed-sessions/<id>/events", /managed-sessions\/[^\n"'`]*events/],
 	["managed-sessions/<id>/approvals", /managed-sessions\/[^\n"'`]*approvals/],
 	["approvals/sync", /approvals\/sync/],
+	// AGEN-123
+	["managed-sessions/<id>/tool-calls", /managed-sessions\/[^\n"'`]*tool-calls/],
 	["control-actions/<id>/status", /control-actions\/[^\n"'`]*status/],
 	["launches/<id>/status", /launches\/[^\n"'`]*status/],
 ];
@@ -2475,5 +2477,88 @@ describe("approvals through the gate", () => {
 		writeRules([work]);
 		expect(gate.excludesPath(join(work, "sub", "file.txt"))).toBe(true);
 		expect(gate.excludesPath(elsewhere)).toBe(false);
+	});
+});
+
+describe("tool-call detail through the gate (AGEN-123)", () => {
+	const body = {
+		v: 1 as const,
+		calls: [
+			{
+				toolUseId: "toolu_1",
+				turnActionId: "act-1",
+				tool: "Bash",
+				outcome: "unasked",
+				fromSubagent: false,
+				input: "{}",
+				inputTruncated: false,
+				output: "ok",
+				outputTruncated: false,
+			},
+		],
+	};
+
+	function toolGate(respond: (call: Call) => unknown = () => ({ stored: 1, dropped: 0 })) {
+		const calls: Call[] = [];
+		const headers: Array<Record<string, string> | undefined> = [];
+		const outbox = createReportOutbox({ home, supervisorId: SUPERVISOR_ID, now: () => clock });
+		const gate = createReportGate({
+			request: async (path: string, options?: RequestInit) => {
+				const call: Call = {
+					path,
+					method: options?.method ?? "GET",
+					body: options?.body ? JSON.parse(String(options.body)) : undefined,
+				};
+				calls.push(call);
+				headers.push(options?.headers as Record<string, string> | undefined);
+				return respond(call);
+			},
+			supervisorId: SUPERVISOR_ID,
+			home,
+			version: "9.9.9",
+			now: () => clock,
+			outbox,
+		});
+		return { gate, calls, headers, outbox };
+	}
+
+	test("a session no rule covers goes to its own path, as itself: no replay header, nothing queued", async () => {
+		const { gate, calls, headers, outbox } = toolGate();
+		gate.noteCwd("sess-1", work);
+		expect(await gate.reportToolCalls("sess-1", body)).toEqual({ outcome: "sent" });
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.path).toBe(`${BASE}/managed-sessions/sess-1/tool-calls`);
+		expect(calls[0]?.body).toEqual(body);
+		expect(headers[0]).toBeUndefined();
+		expect(outbox.summary().pending).toBe(0);
+	});
+
+	test("a rule added mid-turn that now covers the session withholds everything; invalid rules send nothing", async () => {
+		const { gate, calls } = toolGate();
+		gate.noteCwd("sess-1", work);
+		expect(await gate.reportToolCalls("sess-1", body)).toEqual({ outcome: "sent" });
+		writeRules([work]);
+		expect(await gate.reportToolCalls("sess-1", body)).toEqual({ outcome: "excluded" });
+		writeRules(["not a rule line ~~~ [invalid"]);
+		expect(await gate.reportToolCalls("sess-1", body)).toEqual({ outcome: "blocked" });
+		expect(calls).toHaveLength(1);
+	});
+
+	test("with the server unreachable it throws, latches offline and keeps nothing", async () => {
+		const { gate, outbox } = toolGate(() => {
+			throw new SupervisorNetworkError();
+		});
+		gate.noteCwd("sess-1", work);
+		await expect(gate.reportToolCalls("sess-1", body)).rejects.toBeInstanceOf(
+			SupervisorNetworkError,
+		);
+		expect(gate.isOffline()).toBe(true);
+		expect(outbox.summary().pending).toBe(0);
+	});
+
+	test("the endpoint path is in the gate and appears nowhere else under src/supervisor (the drift list has it)", () => {
+		expect(SESSION_DATA_FRAGMENTS.map(([name]) => name)).toContain(
+			"managed-sessions/<id>/tool-calls",
+		);
 	});
 });

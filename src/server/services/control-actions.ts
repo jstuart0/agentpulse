@@ -9,6 +9,7 @@ import {
 	CLAUDE_FORK_SLASH_MESSAGE,
 	CLAUDE_STOP_UPGRADE_MESSAGE,
 	CONTROL_TIMEOUT_ERROR,
+	FORK_OPTIONS_NOT_YOURS_PROMPT_MESSAGE,
 	FORK_PROMPT_NEEDS_PERSON_MESSAGE,
 	HOST_RESTARTED_TURN_ERROR,
 	HOST_UPGRADE_REQUIRED_MESSAGE,
@@ -20,7 +21,9 @@ import {
 	type ResumeKind,
 	SESSION_RESUMED_CONTENT,
 	SESSION_RESUMED_EVENT_TYPE,
+	forkOptionsAreOff,
 	forkSessionIdOf,
+	parseAppliedForkOptions,
 	resumeAgentOf,
 	resumeFailureMessage,
 } from "../../shared/session-resume.js";
@@ -32,6 +35,14 @@ import {
 	TERMINAL_MANAGED_STATES,
 	isClaudeStopRuntime,
 } from "../../shared/stop-runtime.js";
+import {
+	CLAUDE_TURN_INTERRUPT,
+	INTERRUPT_CLAIM_TTL_MS,
+	SESSION_ENDED_FIRST,
+	STOP_TURN_UPGRADE_MESSAGE,
+	TURN_ALREADY_ENDED,
+	interruptExpiredMessage,
+} from "../../shared/stop-turn.js";
 import type {
 	ControlAction,
 	ControlActionStatus,
@@ -62,10 +73,13 @@ import { withTransaction } from "../db/with-transaction.js";
 import { requestWsRevalidation } from "../ws/revalidation.js";
 import { CONTINUABLE_MANAGED_STATES } from "./ai/continuability.js";
 import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
+import { logAdminAction } from "./audit-log.js";
+import { mayDriveForkOptions } from "./authorization.js";
 import { BindRefusal } from "./bind-refusal.js";
 import { ForkSettleRollback, settleClaudeTakeover } from "./claude-takeover-settle.js";
-import { fenceApprovalsForStop } from "./codex-approvals-fence.js";
+import { fenceApprovalsForStop, fenceApprovalsForTurn } from "./codex-approvals-fence.js";
 import { type ClosedApproval, runApprovalClosedEffects } from "./codex-approvals.js";
+import { getModeOn } from "./instance-mode.js";
 import { buildStoredCliArgs, validateAgainstSupervisor } from "./launch-compatibility.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { notifySessionCreated, notifySessionUpdated } from "./notifier.js";
@@ -300,7 +314,7 @@ interface ResumeActionRef {
 interface ResumeSettleDeps {
 	afterWrites?: (tx: unknown) => Promise<void>;
 	/** What the host proved and picked, for a Claude takeover's settle (AGEN-117 T5). Judged, never trusted. */
-	fork?: { provedCwd: unknown; permissionMode: unknown };
+	fork?: { provedCwd: unknown; permissionMode: unknown; applied?: unknown };
 	/** Test seam: runs inside the fork settle's locked transaction, after the action is flipped, before it is judged. */
 	afterFlip?: (tx: unknown) => Promise<void>;
 }
@@ -1022,6 +1036,18 @@ export class HumanRequiredError extends Error {
 	}
 }
 
+/**
+ * A prompt to a fork that runs MCP servers or subagents, from someone who isn't the host owner who consented to
+ * them (team mode, AGEN-119..123 review H1). The options use that person's own configuration and credentials.
+ */
+export class ForkOptionsHostNotYoursError extends Error {
+	readonly code = "fork_options_host_not_yours";
+	constructor() {
+		super(FORK_OPTIONS_NOT_YOURS_PROMPT_MESSAGE);
+		this.name = "ForkOptionsHostNotYoursError";
+	}
+}
+
 /** A Stop on a session started in a terminal: nothing here can stop it, so nothing is queued (AGEN-110). */
 export class StopNotSupportedError extends Error {
 	readonly code = "stop_not_supported";
@@ -1040,7 +1066,27 @@ export class NothingToStopError extends Error {
 	}
 }
 
+/** Stop turn on a session whose runtime can't stop a turn and stay open (only a fork's can). */
+export class InterruptNotSupportedError extends Error {
+	readonly code = "interrupt_not_supported";
+	constructor() {
+		super("This session can't stop a turn and stay open. Use End session instead.");
+		this.name = "InterruptNotSupportedError";
+	}
+}
+
+/** Stop turn when no Claude prompt is running: the turn had already finished. */
+export class NoTurnRunningError extends Error {
+	readonly code = "no_turn_running";
+	constructor() {
+		super("Claude had already finished the turn.");
+		this.name = "NoTurnRunningError";
+	}
+}
+
 export type EnqueueRefusal =
+	| "interrupt_not_supported"
+	| "no_turn_running"
 	| "stop_not_supported"
 	| "nothing_to_stop"
 	| "not_managed"
@@ -1053,7 +1099,8 @@ export type EnqueueRefusal =
 	| "host_upgrade_required"
 	| "managed_state"
 	| "prompt_unsafe"
-	| "human_required";
+	| "human_required"
+	| "fork_options_host_not_yours";
 
 function refusalToError(reason: EnqueueRefusal): Error {
 	switch (reason) {
@@ -1079,10 +1126,16 @@ function refusalToError(reason: EnqueueRefusal): Error {
 			return new PromptUnsafeError();
 		case "human_required":
 			return new HumanRequiredError();
+		case "fork_options_host_not_yours":
+			return new ForkOptionsHostNotYoursError();
 		case "nothing_to_stop":
 			return new NothingToStopError();
 		case "stop_not_supported":
 			return new StopNotSupportedError();
+		case "interrupt_not_supported":
+			return new InterruptNotSupportedError();
+		case "no_turn_running":
+			return new NoTurnRunningError();
 	}
 }
 
@@ -1444,6 +1497,8 @@ export async function enqueueStopInTx(
 	} else if (!(await takeControlLock(tx, sessionId, controlActionId, timestamp, clock))) {
 		return { ok: false, reason: "control_busy" };
 	}
+	// End session is the one authoritative terminal state: a Stop turn still queued or running reads failed.
+	await failOpenInterruptsInTx(tx, sessionId, SESSION_ENDED_FIRST, timestamp);
 	// The Stop fence for Codex approvals: no accept is issued after this commits. It runs
 	// only once the lock is ours (a Stop refused control_busy fences nothing) and on this
 	// transaction, so the fence and the lock commit or roll back together.
@@ -1464,6 +1519,177 @@ export async function enqueueStopInTx(
 		})
 		.returning();
 	return { ok: true, action: mapControlAction(action), fencedApprovals: fence.closed };
+}
+
+/** The interrupts of a session still in flight, optionally only those naming one prompt. */
+async function openInterrupts(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	sessionId: string,
+	targetPromptActionId?: string,
+): Promise<Array<typeof controlActions.$inferSelect>> {
+	return tx
+		.select()
+		.from(controlActions)
+		.where(
+			and(
+				eq(controlActions.sessionId, sessionId),
+				eq(controlActions.actionType, "interrupt"),
+				inArray(controlActions.status, ["queued", "running"]),
+				targetPromptActionId === undefined
+					? undefined
+					: eq(
+							jsonExtractText(controlActions.metadata, "$.targetPromptActionId"),
+							targetPromptActionId,
+						),
+			),
+		);
+}
+
+/**
+ * Queue a Stop turn on `tx` (AGEN-119): ends what a fork's Claude is doing and keeps the session. No expected
+ * outcome throws. It takes NO lock: the running prompt keeps it until its `result`, so a turn that finishes
+ * before the host claims this reads as it ended, not as "stopped". The turn's approvals are fenced in the same
+ * transaction, so no accept is issued for the turn after this commits.
+ */
+export async function enqueueInterruptInTx(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	input: { sessionId: string; actor: Actor; controlActionId?: string; now?: Clock },
+): Promise<
+	| {
+			ok: true;
+			action: ControlAction;
+			fencedApprovals: ClosedApproval[];
+			targetPromptActionId: string;
+			created: boolean;
+	  }
+	| { ok: false; reason: EnqueueRefusal }
+> {
+	const { sessionId, actor } = input;
+	const clock = input.now ?? Date.now;
+	await expireStaleControlLock(tx, sessionId, clock);
+	const [managed] = await tx
+		.select()
+		.from(managedSessions)
+		.where(eq(managedSessions.sessionId, sessionId))
+		.limit(1);
+	if (!managed) {
+		const [known] = await tx
+			.select({ sessionId: sessions.sessionId })
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+		return { ok: false, reason: known ? "not_managed" : "session_missing" };
+	}
+	const launch = await resolveManagedLaunch(tx, sessionId, managed.launchRequestId);
+	if (!launch || !(await launchOwnedBySessionOwner(tx, sessionId, launch))) {
+		return { ok: false, reason: "launch_mismatch" };
+	}
+	if (stopRuntimeOf(launch) !== STOP_RUNTIMES.claudeStream) {
+		return { ok: false, reason: "interrupt_not_supported" };
+	}
+	// The holder must be a running Claude prompt. A Stop already queued or running holds the lock instead, so
+	// this also covers "End session first".
+	const holderId: string | null = managed.activeControlActionId ?? null;
+	if (!holderId || !(await runningClaudePrompt(tx, holderId))) {
+		return { ok: false, reason: "no_turn_running" };
+	}
+	const hostRefused = await hostRefusal(tx, sessionId, clock);
+	if (hostRefused) return { ok: false, reason: hostRefused };
+	if (!(await hostHasFeature(tx, sessionId, CLAUDE_TURN_INTERRUPT))) {
+		return { ok: false, reason: "host_upgrade_required" };
+	}
+
+	const [existing] = await openInterrupts(tx, sessionId, holderId);
+	if (existing) {
+		return {
+			ok: true,
+			action: mapControlAction(existing),
+			fencedApprovals: [],
+			targetPromptActionId: holderId,
+			created: false,
+		};
+	}
+
+	const nowMs = clock();
+	const fence = await fenceApprovalsForTurn(tx, sessionId, holderId, nowMs);
+	const timestamp = nowIso(clock);
+	const [action] = await tx
+		.insert(controlActions)
+		.values({
+			id: input.controlActionId ?? crypto.randomUUID(),
+			sessionId,
+			launchRequestId: managed.launchRequestId,
+			actionType: "interrupt",
+			requestedBy: actor.label,
+			requestedByUserId: actor.userId,
+			status: "queued",
+			metadata: { runtime: STOP_RUNTIMES.claudeStream, targetPromptActionId: holderId },
+			createdAt: timestamp,
+			updatedAt: timestamp,
+		})
+		.returning();
+	return {
+		ok: true,
+		action: mapControlAction(action),
+		fencedApprovals: fence.closed,
+		targetPromptActionId: holderId,
+		created: true,
+	};
+}
+
+/**
+ * Queues a Stop turn in its own admin-locked transaction. The timeline and wait effects of the approvals it
+ * closed run after the commit; the audit line names the person and the key.
+ */
+export async function queueInterruptAction(
+	sessionId: string,
+	actor: Actor,
+	options: { keyId?: string | null; now?: Clock } = {},
+) {
+	const result = await withAdminLock((own) =>
+		enqueueInterruptInTx(own, { sessionId, actor, now: options.now }),
+	);
+	if (!result.ok) {
+		throw result.reason === "host_upgrade_required"
+			? new HostUpgradeRequiredError(STOP_TURN_UPGRADE_MESSAGE)
+			: refusalToError(result.reason);
+	}
+	if (result.created) {
+		logAdminAction("session_turn_interrupted", actor, {
+			sessionId,
+			actionId: result.action.id,
+			targetPromptActionId: result.targetPromptActionId,
+			keyId: options.keyId ?? null,
+		});
+		await runApprovalClosedEffects(result.fencedApprovals, { now: options.now });
+	}
+	return result.action;
+}
+
+/**
+ * Fails the interrupts of a session that are still queued or running, with `error`, in the caller's
+ * transaction. End session overtakes a Stop turn, and so does a host that restarted: the interrupt then reads
+ * `failed`, never `succeeded`, because the guarded update of a host's late report matches nothing.
+ */
+async function failOpenInterruptsInTx(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+	sessionId: string,
+	error: string,
+	timestamp: string,
+): Promise<void> {
+	await tx
+		.update(controlActions)
+		.set({ status: "failed", error, finishedAt: timestamp, updatedAt: timestamp })
+		.where(
+			and(
+				eq(controlActions.sessionId, sessionId),
+				eq(controlActions.actionType, "interrupt"),
+				inArray(controlActions.status, ["queued", "running"]),
+			),
+		);
 }
 
 /**
@@ -1549,6 +1775,17 @@ export async function enqueuePromptInTx(
 		!isPersonActor(actor)
 	) {
 		return { ok: false, reason: "human_required" };
+	}
+	// A fork running MCP servers or subagents uses the host owner's own configuration: in team mode only that
+	// owner drives it (H1). Judged on every path that ends here: the route, MCP, a decision, Telegram, Ask.
+	if (
+		isClaudeTakeover &&
+		!forkOptionsAreOff(
+			parseAppliedForkOptions((session.metadata as { forkOptions?: unknown } | null)?.forkOptions),
+		) &&
+		mayDriveForkOptions(actor, actor.mode ?? (await getModeOn(tx)), session.metadata) !== null
+	) {
+		return { ok: false, reason: "fork_options_host_not_yours" };
 	}
 	const promptHostRefusal = await hostRefusal(tx, sessionId);
 	if (promptHostRefusal) return { ok: false, reason: promptHostRefusal };
@@ -1948,6 +2185,39 @@ async function claimRefusalForStop(
 		: CLAUDE_STOP_UPGRADE_MESSAGE;
 }
 
+/**
+ * Why a queued Stop turn must not be handed to this supervisor, or null (AGEN-119, C-M1): it waited more than a
+ * minute; the host no longer advertises `claude_turn_interrupt`; or its target prompt is no longer the running
+ * turn that holds the session's lock (finished, or failed by an End session), which a handed-over interrupt
+ * could otherwise land on the next turn.
+ */
+async function claimRefusalForInterrupt(
+	action: typeof controlActions.$inferSelect,
+	supervisorId: string,
+): Promise<string | null> {
+	const createdMs = parseDbTimestamp(action.createdAt);
+	if (createdMs !== null && Date.now() - createdMs > INTERRUPT_CLAIM_TTL_MS) {
+		const [host] = await getDb()
+			.select({ name: supervisors.hostName })
+			.from(supervisors)
+			.where(eq(supervisors.id, supervisorId))
+			.limit(1);
+		return interruptExpiredMessage(host?.name?.trim() ? host.name : "The host");
+	}
+	if (!(await supervisorHasFeature(getDb(), supervisorId, CLAUDE_TURN_INTERRUPT))) {
+		return STOP_TURN_UPGRADE_MESSAGE;
+	}
+	const target = (action.metadata as Record<string, unknown> | null)?.targetPromptActionId;
+	if (typeof target !== "string" || !action.sessionId) return TURN_ALREADY_ENDED;
+	const [row] = await getDb()
+		.select({ status: controlActions.status, holder: managedSessions.activeControlActionId })
+		.from(controlActions)
+		.innerJoin(managedSessions, eq(managedSessions.sessionId, controlActions.sessionId))
+		.where(and(eq(controlActions.id, target), eq(managedSessions.sessionId, action.sessionId)))
+		.limit(1);
+	return row?.status === "running" && row.holder === target ? null : TURN_ALREADY_ENDED;
+}
+
 /** Fail an unclaimed action (an AI prompt past its TTL, or a prompt or stop this host must not take), release its lock and close its audit row. */
 async function failUnclaimedAction(action: typeof controlActions.$inferSelect, error: string) {
 	const timestamp = nowIso();
@@ -2053,6 +2323,14 @@ export async function claimNextControlAction(supervisorId: string) {
 			}
 		}
 
+		if (candidate.actionType === "interrupt") {
+			const refusal = await claimRefusalForInterrupt(candidate, supervisorId);
+			if (refusal) {
+				await failUnclaimedAction(candidate, refusal);
+				continue;
+			}
+		}
+
 		if (candidate.actionType === "stop") {
 			const refusal = await claimRefusalForStop(candidate, supervisorId);
 			if (refusal) {
@@ -2113,6 +2391,8 @@ export async function updateControlAction(
 		/** A Claude takeover's success report: the directory the host proved and the mode it picked (T5). */
 		provedCwd?: unknown;
 		permissionMode?: unknown;
+		/** What the host applied of the fork options; judged, never trusted. */
+		applied?: unknown;
 	},
 	seam: UpdateControlActionSeam = {},
 ) {
@@ -2139,7 +2419,11 @@ export async function updateControlAction(
 			);
 		} else if (forkSessionIdOf(current.metadata) !== null) {
 			await completeResumeAction(null, current, {
-				fork: { provedCwd: input.provedCwd, permissionMode: input.permissionMode },
+				fork: {
+					provedCwd: input.provedCwd,
+					permissionMode: input.permissionMode,
+					applied: input.applied,
+				},
 			});
 		} else {
 			// The host says it worked. If the row never became `managed`, it didn't: that's a failure.
@@ -2250,7 +2534,8 @@ export async function updateControlAction(
 		.returning();
 	if (!updated) return mapControlAction(await readControlAction(current.id, current));
 
-	if (current.sessionId) {
+	// A Stop turn takes no lock, so finishing one never releases anyone's.
+	if (current.sessionId && current.actionType !== "interrupt") {
 		await getDb()
 			.update(managedSessions)
 			.set({
@@ -2328,6 +2613,7 @@ async function readControlAction(
 export async function failRunningClaudePromptsOfRestartedHost(
 	supervisorId: string,
 ): Promise<number> {
+	await failInterruptsOfRestartedHost(supervisorId);
 	return withTransaction(async (tx) => {
 		const running: Array<{ id: string }> = await tx
 			.select({ id: controlActions.id })
@@ -2356,6 +2642,53 @@ export async function failRunningClaudePromptsOfRestartedHost(
 			.update(managedSessions)
 			.set({ activeControlActionId: null, controlLockExpiresAt: null, updatedAt: timestamp })
 			.where(inArray(managedSessions.activeControlActionId, ids));
+		return ids.length;
+	});
+}
+
+/**
+ * A supervisor registered again (AGEN-119, F54): its process is gone, so a Stop turn it had claimed (running) or
+ * that was waiting for it (queued) can never mean the turn it named, and a new process must not receive it.
+ * Fails both with the restart's words. Returns how many failed.
+ */
+async function failInterruptsOfRestartedHost(supervisorId: string): Promise<number> {
+	return withTransaction(async (tx) => {
+		const queued: Array<{ id: string }> = await tx
+			.select({ id: controlActions.id })
+			.from(controlActions)
+			.innerJoin(managedSessions, eq(managedSessions.sessionId, controlActions.sessionId))
+			.leftJoin(launchRequests, ownerLaunchJoin)
+			.where(
+				and(
+					eq(controlActions.actionType, "interrupt"),
+					eq(controlActions.status, "queued"),
+					sessionOwnedBy(supervisorId),
+				),
+			);
+		const running: Array<{ id: string }> = await tx
+			.select({ id: controlActions.id })
+			.from(controlActions)
+			.where(
+				and(
+					eq(controlActions.actionType, "interrupt"),
+					eq(controlActions.status, "running"),
+					eq(controlActions.claimedBySupervisorId, supervisorId),
+				),
+			);
+		const ids = [...queued, ...running].map((row) => row.id);
+		if (ids.length === 0) return 0;
+		const timestamp = nowIso();
+		await tx
+			.update(controlActions)
+			.set({
+				status: "failed",
+				error: HOST_RESTARTED_TURN_ERROR,
+				finishedAt: timestamp,
+				updatedAt: timestamp,
+			})
+			.where(
+				and(inArray(controlActions.id, ids), inArray(controlActions.status, ["queued", "running"])),
+			);
 		return ids.length;
 	});
 }

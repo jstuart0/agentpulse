@@ -45,8 +45,10 @@ export interface ParsedApproval {
 /** What a Claude `can_use_tool` request carries beyond the Codex-shaped fields. */
 export interface ClaudeParsedExtras {
 	tool: string;
-	/** A `claude_tool` request's URL or path. */
+	/** A `claude_tool` request's URL or path; for an MCP tool call (AGEN-121), the input as JSON text. */
 	target: string | null;
+	/** An MCP tool call (AGEN-121): the server, the tool and the wire name, split against the applied servers. */
+	mcp?: { server: string; tool: string; rawToolName: string };
 	/** A Bash request's `blocked_path`, as given. */
 	blockedPath: string | null;
 	/** The edits a Write, Edit or NotebookEdit makes, built from the input (never from the model's description). */
@@ -55,6 +57,10 @@ export interface ClaudeParsedExtras {
 	input: Record<string, unknown>;
 	/** Every path the exclude rules must judge: the directory, the named path and where it really points. */
 	excludePaths: string[];
+	/** The request came from a subagent of the turn (`agent_id` on the request). Absent otherwise. */
+	fromSubagent?: boolean;
+	/** The Agent call (AGEN-120): the helper it would start. `builtIn` is the host's judgement; the server recomputes it. */
+	agent?: { subagentType: string; prompt: string; builtIn: boolean };
 }
 
 /** One changed file as Codex's `fileChange` item states it. */

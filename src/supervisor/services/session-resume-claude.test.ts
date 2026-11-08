@@ -13,6 +13,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	readdirSync,
 	realpathSync,
 	rmSync,
 	symlinkSync,
@@ -24,6 +25,8 @@ import { join } from "node:path";
 import type { ControlAction } from "../../shared/types.js";
 import { __setDescendantKillerForTests } from "../process-stop.js";
 import { makeFakeClaude } from "../providers/__fixtures__/claude-fake.js";
+import { parseForkMcpText } from "../providers/claude-fork-mcp-file.js";
+import { configureForkMcp } from "../providers/claude-fork-mcp.js";
 import { createLoginProbe } from "../providers/claude-login-mode.js";
 import { claudeProtocolVerdict } from "../providers/claude-protocol.js";
 import {
@@ -179,6 +182,7 @@ function build(
 		log: (line) => logs.push(line),
 	});
 	const disposed: string[] = [];
+	const attached: Array<Record<string, unknown>> = [];
 	const killPid = (pid: number, signal: NodeJS.Signals) => {
 		for (const start of fake.starts()) guard.allow(start.pid);
 		guard.killPid(pid, signal);
@@ -192,16 +196,20 @@ function build(
 		env,
 		probeCwd: join(home, ".agentpulse", "claude-probe"),
 		tracker: {
-			attachClaude: () =>
-				({
+			attachClaude: (_launch, options) => {
+				attached.push(options as never);
+				return {
 					handle: { sessionId: N, epoch: "e" },
 					onToolRequest() {},
 					cancel() {},
 					toolResult() {},
 					turnEnded() {},
+					fenceTurn() {},
+					liftTurnFence() {},
 					fence() {},
 					dispose: () => void disposed.push("disposed"),
-				}) as never,
+				} as never;
+			},
 		},
 		log: (line) => logs.push(line),
 		resolve: async () => ({
@@ -260,7 +268,7 @@ function build(
 		},
 		retryBaseMs: 1,
 	});
-	return { gate, posts, logs, takeover, forkRecord, disposed, env };
+	return { gate, posts, logs, takeover, forkRecord, disposed, env, attached };
 }
 type World = ReturnType<typeof build>;
 
@@ -340,6 +348,31 @@ describe("a takeover", () => {
 		expect(hash(file)).toBe(before);
 		// The gate learned N under the carrier, so later reports about N are judged by the proved directory.
 		expect(w.gate.verdict(N, work)).toBe("send");
+	});
+
+	test("the success report says what was applied of the fork options: none in Track 0, even when some were asked for", async () => {
+		writeTranscript(S, work);
+		const w = build();
+		await w.takeover.run(action({ forkOptions: { mcp: true, subagents: true } }), S);
+		const [report] = statusPosts(w);
+		expect(report.body.applied).toEqual({
+			mcpServers: [],
+			subagents: false,
+			claudeVersion: "2.1.318",
+		});
+		// The fork got exactly the argv it always got: the six tools, strict MCP config, no --mcp-config.
+		const argv = forkStarts()[0].argv;
+		expect(argv).toContain("--strict-mcp-config");
+		expect(argv).not.toContain("--mcp-config");
+		expect(argv[argv.indexOf("--tools") + 1]).toBe("Bash,Read,Write,Edit,NotebookEdit,WebFetch");
+	});
+
+	test("a malformed forkOptions in the action is none, and a refusal leaves nothing to clean up", async () => {
+		writeTranscript(S, work);
+		const w = build();
+		await w.takeover.run(action({ forkOptions: { mcp: "yes", other: 1 } }), S);
+		expect(statusPosts(w)[0].body.applied).toMatchObject({ subagents: false });
+		expect(forkStarts().length).toBe(1);
 	});
 
 	test("an apiKeyHelper login is mode ask, picked by the second probe", async () => {
@@ -1092,5 +1125,137 @@ describe("a malformed `agents --json` through the takeover (P5-T7)", () => {
 		const ok = build({ realAgents: true });
 		await ok.takeover.run(action(), S);
 		expect(statusPosts(ok)[0].body.status).toBe("succeeded");
+	});
+});
+
+describe("MCP servers on a fork (AGEN-121)", () => {
+	const PROBE = { command: "node", args: ["probe.js"], env: { TOKEN: "secret-value" } };
+	const MEASURED = "2.1.319";
+	const forkFile = () => join(home, ".agentpulse", "claude-fork-mcp.json");
+	const writeForkFile = (servers: Record<string, unknown>, mode = 0o600) => {
+		rmSync(forkFile(), { force: true });
+		writeFileSync(forkFile(), JSON.stringify({ mcpServers: servers }), { mode });
+		chmodSync(forkFile(), mode);
+	};
+	const copies = () => {
+		try {
+			return readdirSync(join(home, ".agentpulse", "claude-fork-mcp"));
+		} catch {
+			return [];
+		}
+	};
+	const storedFor = (servers: Record<string, unknown>) => {
+		const parsed = parseForkMcpText(JSON.stringify({ mcpServers: servers }));
+		if (!parsed.ok) throw new Error("bad fixture");
+		return {
+			mcpServers: parsed.servers.map((s) => ({ name: s.name, digest: s.digest })),
+			subagents: false,
+			claudeVersion: MEASURED,
+		};
+	};
+
+	beforeEach(() => configureForkMcp({ agentpulseDir: join(home, ".agentpulse") }));
+	afterEach(() => configureForkMcp(null));
+
+	test("a takeover with MCP on a measured version starts the fork with a private --mcp-config, reports the servers it applied, and hands the parser the same list", async () => {
+		writeTranscript(S, work);
+		writeForkFile({ probe: PROBE });
+		const w = build({ version: MEASURED });
+		await w.takeover.run(action({ forkOptions: { mcp: true } }), S);
+		const [report] = statusPosts(w);
+		expect(report.body.applied.mcpServers.map((s: { name: string }) => s.name)).toEqual(["probe"]);
+		expect(report.body.applied.claudeVersion).toBe(MEASURED);
+
+		const argv = forkStarts()[0].argv;
+		expect(argv).toContain("--strict-mcp-config");
+		const path = argv[argv.indexOf("--mcp-config") + 1];
+		expect(path.startsWith(join(home, ".agentpulse", "claude-fork-mcp"))).toBe(true);
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+			mcpServers: { probe: { type: "stdio", ...PROBE } },
+		});
+		// The tracker's parser is told which servers the fork was started with.
+		expect(w.attached.at(-1)?.applied).toEqual(report.body.applied);
+		// The report to the server carries names and digests, never the file's contents.
+		expect(JSON.stringify(report.body)).not.toContain("secret-value");
+		expect(JSON.stringify(report.body)).not.toContain("probe.js");
+	});
+
+	test("an invalid file is not a refusal: the fork starts without MCP and the report says none were applied", async () => {
+		writeTranscript(S, work);
+		writeForkFile({ probe: PROBE }, 0o644);
+		const w = build({ version: MEASURED });
+		await w.takeover.run(action({ forkOptions: { mcp: true } }), S);
+		expect(statusPosts(w)[0].body.applied.mcpServers).toEqual([]);
+		expect(forkStarts()[0].argv).not.toContain("--mcp-config");
+		expect(copies()).toEqual([]);
+	});
+
+	test("a version nobody measured applies nothing, whatever the file says", async () => {
+		writeTranscript(S, work);
+		writeForkFile({ probe: PROBE });
+		const w = build({ version: "2.1.318" });
+		await w.takeover.run(action({ forkOptions: { mcp: true } }), S);
+		expect(statusPosts(w)[0].body.applied.mcpServers).toEqual([]);
+		expect(copies()).toEqual([]);
+	});
+
+	function seedFork() {
+		const w = build({ version: MEASURED });
+		w.forkRecord.write({ forkId: N, source: S, mode: "ask", dir: work });
+		writeTranscript(S, work);
+		writeTranscript(N, work);
+		return w;
+	}
+
+	test("a recovery with the same file starts the same servers again", async () => {
+		writeForkFile({ probe: PROBE });
+		const w = seedFork();
+		await w.takeover.run(recovery({ storedForkOptions: storedFor({ probe: PROBE }) }), N);
+		const argv = fake.starts()[0].argv;
+		expect(argv).toContain("--resume");
+		expect(argv).toContain("--mcp-config");
+		expect(statusPosts(w).at(-1)?.body.status).toBe("succeeded");
+		expect(w.attached.at(-1)?.applied).toMatchObject({ mcpServers: [{ name: "probe" }] });
+	});
+
+	for (const [what, change] of [
+		[
+			"a server's command was edited",
+			() => writeForkFile({ probe: { ...PROBE, command: "evil" } }),
+		],
+		["a server was added", () => writeForkFile({ probe: PROBE, extra: PROBE })],
+		["the file was deleted", () => rmSync(forkFile())],
+	] as const) {
+		test(`a recovery after ${what}: refused mcp_servers_changed in its words, nothing started, nothing left on disk`, async () => {
+			writeForkFile({ probe: PROBE });
+			const w = seedFork();
+			change();
+			await w.takeover.run(recovery({ storedForkOptions: storedFor({ probe: PROBE }) }), N);
+			expect(fake.starts().length).toBe(0);
+			expect(failedWords(w)).toMatch(/MCP servers this session was started with have changed/);
+			expect(failedWords(w)).not.toContain("secret-value");
+			expect(statusPosts(w).filter((p) => p.body.status === "succeeded").length).toBe(0);
+			expect(copies()).toEqual([]);
+		});
+	}
+
+	test("a recovery on a Claude Code version nobody measured refuses rather than resume without the servers", async () => {
+		writeForkFile({ probe: PROBE });
+		const w = build({ version: "2.1.318" });
+		w.forkRecord.write({ forkId: N, source: S, mode: "ask", dir: work });
+		writeTranscript(S, work);
+		writeTranscript(N, work);
+		await w.takeover.run(recovery({ storedForkOptions: storedFor({ probe: PROBE }) }), N);
+		expect(fake.starts().length).toBe(0);
+		expect(failedWords(w)).toMatch(/MCP servers this session was started with have changed/);
+		expect(copies()).toEqual([]);
+	});
+
+	test("a recovery of a fork started without MCP is not affected by the file", async () => {
+		writeForkFile({ probe: PROBE }, 0o644);
+		const w = seedFork();
+		await w.takeover.run(recovery(), N);
+		expect(fake.starts()[0].argv).not.toContain("--mcp-config");
+		expect(statusPosts(w).at(-1)?.body.status).toBe("succeeded");
 	});
 });

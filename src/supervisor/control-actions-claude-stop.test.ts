@@ -73,6 +73,7 @@ function harness(
 			calls.push(`stream:${id}`);
 			return opts.stream ?? { hadChild: true, gone: true, unchecked: false };
 		},
+		interruptClaudeStreamSession: async () => ({ status: "not_interrupted" as const }),
 		hasManagedCodexRuntime: () => false,
 		hasClaudeStreamRuntime: () => false,
 		hasHeadlessRuntime: () => false,

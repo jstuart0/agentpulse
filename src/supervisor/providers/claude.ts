@@ -10,6 +10,7 @@ export {
 } from "./claude-headless.js";
 export {
 	hasClaudeStreamRuntime,
+	interruptClaudeStreamSession,
 	promptClaudeStreamSession,
 	stopClaudeStreamSession,
 } from "./claude-stream.js";

@@ -1,3 +1,4 @@
+import { FORK_MCP_INPUT_MAX_CHARS, splitForkMcpToolName } from "../../shared/claude-fork-mcp.js";
 /**
  * What a person is shown for a Codex approval, built from the supervisor's
  * report (pure, no I/O). The server builds, redacts and hashes the text itself;
@@ -9,6 +10,7 @@
  * supervisor removes Approve. `presentationHash` is an ETag for the stored
  * presentation, not proof that a person read it or that it matches execution.
  */
+import { AGENT_PROMPT_MAX_CHARS, isBuiltInAgentType } from "../../shared/claude-fork-subagents.js";
 import {
 	CODEX_APPROVAL_LIMITS,
 	type CodexApprovalClaudeToolPresentation,
@@ -48,8 +50,11 @@ export function hashPresentation(presentation: CodexApprovalPresentation): strin
 /** Precedence when more than one reason applies: what the supervisor already knows first, then what the server finds. */
 const REASON_PRECEDENCE: readonly NotApprovableReason[] = [
 	"unknown_tool",
+	"nested_agent",
+	"custom_agent",
 	"requires_interaction",
 	"agent_memory",
+	"agentpulse_files",
 	"path_not_absolute",
 	"symlink_target",
 	"input_not_stable",
@@ -195,9 +200,16 @@ export function urlHostLooksLikeAnother(url: string): boolean {
 	return authority.includes("@") || /\P{ASCII}/u.test(authority) || /(^|\.)xn--/i.test(authority);
 }
 
+/** What the server knows about the session that the report can't be trusted to say. */
+export interface PresentationContext {
+	/** The MCP servers the fork was started with; an MCP report is split against them again here. */
+	mcpServers?: readonly string[];
+}
+
 export function buildPresentation(
 	report: CodexApprovalReportRequest,
 	agent: PresentationAgent = "codex",
+	context: PresentationContext = {},
 ): BuiltPresentation {
 	const findings = newFindings();
 	const reasons = new Set<NotApprovableReason>(validDeclineOnly(report.declineOnly));
@@ -215,7 +227,35 @@ export function buildPresentation(
 	if (grantRoot !== null) reasons.add("grant_root");
 
 	let presentation: CodexApprovalPresentation;
-	if (report.requestKind === "claude_tool") {
+	let mcpSlot = report.mcp;
+	if (report.requestKind === "claude_tool" && report.mcp) {
+		// An MCP tool call (AGEN-121). `tool` says only "mcp"; the names are in the slot, which the server
+		// derives again from the wire name against the servers this session was started with. A host value that
+		// differs makes the request decline-only, and the card shows the server's own split.
+		const recomputed = splitForkMcpToolName(report.mcp.rawToolName, context.mcpServers ?? []);
+		if (
+			recomputed === null ||
+			recomputed.server !== report.mcp.server ||
+			recomputed.tool !== report.mcp.tool
+		) {
+			reasons.add("unknown_param");
+		}
+		if (recomputed !== null) mcpSlot = recomputed;
+		const input = cleanField(report.target, FORK_MCP_INPUT_MAX_CHARS, findings, {
+			truncated,
+			split: "whitespace",
+		});
+		if (isBlank(input)) reasons.add("no_command");
+		presentation = {
+			v: 1,
+			requestKind: "claude_tool",
+			tool: "mcp",
+			target: input,
+			cwd,
+			reason: null,
+			grantRoot: null,
+		};
+	} else if (report.requestKind === "claude_tool") {
 		const tool = cleanField(report.tool, 32, findings) ?? "";
 		const isUrl = tool === "WebFetch";
 		const target = cleanField(report.target, CODEX_APPROVAL_LIMITS.pathChars, findings, {
@@ -293,6 +333,49 @@ export function buildPresentation(
 		}
 		if (changes.length === 0 || anyMissingDiff) reasons.add("no_diff");
 		presentation = { v: 1, requestKind: "file_change", changes, cwd, reason, grantRoot };
+	}
+
+	// Slots reserved for the MCP and subagent tracks: part of the presentation, and so of its hash, only when
+	// the report has them. A report without them builds the presentation it always built.
+	if (report.fromSubagent === true) presentation = { ...presentation, fromSubagent: true };
+	if (presentation.requestKind === "claude_tool") {
+		if (mcpSlot) {
+			// Lookalike text in either name is not approvable: the names are what a person reads the call by.
+			const checks = { split: "segments" } as const;
+			presentation = {
+				...presentation,
+				mcp: {
+					server: cleanField(mcpSlot.server, 128, findings, checks) ?? "",
+					tool: cleanField(mcpSlot.tool, 256, findings, checks) ?? "",
+					rawToolName: cleanField(mcpSlot.rawToolName, 512, findings, checks) ?? "",
+				},
+			};
+		}
+		if (report.agent) {
+			const subagentType = cleanField(report.agent.subagentType, 64, findings) ?? "";
+			// The prompt is what the helper is told: shown whole and checked like a command, so nothing hides in it.
+			const prompt =
+				cleanField(report.agent.prompt, AGENT_PROMPT_MAX_CHARS, findings, {
+					truncated,
+					split: "whitespace",
+					approvableMax: CODEX_APPROVAL_LIMITS.approvableCommandChars,
+				}) ?? "";
+			if (isBlank(prompt)) reasons.add("no_command");
+			// The server decides what ships with Claude Code; the host's word is not taken for it.
+			if (report.agent.builtIn !== true || !isBuiltInAgentType(subagentType)) {
+				reasons.add("custom_agent");
+			}
+			// A helper's own Agent call is a nested spawn, whatever the host called it.
+			if (report.fromSubagent === true) reasons.add("nested_agent");
+			presentation = {
+				...presentation,
+				agent: {
+					subagentType,
+					prompt,
+					builtIn: report.agent.builtIn === true && isBuiltInAgentType(subagentType),
+				},
+			};
+		}
 	}
 
 	if (findings.tooLong) reasons.add("too_long");
@@ -402,6 +485,24 @@ export function touchesAgentConfig(presentation: CodexApprovalPresentation): boo
 
 /** The list-sized view of a presentation: bounded to 4 KiB, no full diff. */
 export function buildPreview(presentation: CodexApprovalPresentation): CodexApprovalPreview {
+	const preview = buildPreviewBody(presentation);
+	// A subagent's request says so in the list too, where the card's heading and the announcement are built.
+	return presentation.fromSubagent === true ? { ...preview, fromSubagent: true } : preview;
+}
+
+function buildPreviewBody(presentation: CodexApprovalPresentation): CodexApprovalPreview {
+	if (presentation.requestKind === "claude_tool" && presentation.mcp) {
+		// The list names the call as `server/tool` (the server's own split; neither part holds a slash), never
+		// the input, which is only in the detail a person opens before answering.
+		const { server, tool } = presentation.mcp;
+		return {
+			cwd: presentation.cwd,
+			tool: "mcp",
+			target: `${server}/${tool}`,
+			pathOutsideCwd: false,
+			nonAscii: NON_ASCII_RE.test(server) || NON_ASCII_RE.test(tool),
+		};
+	}
 	if (presentation.requestKind === "claude_tool") {
 		const target = presentation.target ?? "";
 		return {

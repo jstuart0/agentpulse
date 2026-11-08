@@ -67,7 +67,8 @@ export type ControlActionType =
 	| "resume"
 	| "rename"
 	| "prompt"
-	| "cleanup_workarea";
+	| "cleanup_workarea"
+	| "interrupt";
 export type ControlActionStatus = "queued" | "running" | "succeeded" | "failed";
 export type EventSource =
 	| "observed_hook"
@@ -1016,6 +1017,7 @@ export type CodexApprovalOutcome =
 	| "revision_changed"
 	| "may_have_run"
 	| "turn_ended"
+	| "turn_stopped"
 	| "codex_shut_down"
 	| "session_stopped"
 	| "approved_then_stopped"
@@ -1039,7 +1041,10 @@ export type CodexApprovalNotApprovableReason =
 	| "symlink_target"
 	| "input_not_stable"
 	| "agent_memory"
-	| "path_not_absolute";
+	| "path_not_absolute"
+	| "agentpulse_files"
+	| "custom_agent"
+	| "nested_agent";
 
 export interface CodexApprovalHost {
 	state: "live" | "offline" | "gone";
@@ -1067,6 +1072,7 @@ export interface CodexApprovalPreview {
 	nonAscii: boolean;
 	tool?: string;
 	target?: string;
+	fromSubagent?: boolean;
 }
 
 export interface CodexApprovalSummary {
@@ -1121,6 +1127,19 @@ export interface CodexApprovalCommandPresentation {
 	reason: string | null;
 	grantRoot: string | null;
 	blockedPath?: string | null;
+	fromSubagent?: boolean;
+}
+
+export interface CodexApprovalMcpSlot {
+	server: string;
+	tool: string;
+	rawToolName: string;
+}
+
+export interface CodexApprovalAgentSlot {
+	subagentType: string;
+	prompt: string;
+	builtIn: boolean;
 }
 
 export interface CodexApprovalClaudeToolPresentation {
@@ -1131,6 +1150,9 @@ export interface CodexApprovalClaudeToolPresentation {
 	cwd: string | null;
 	reason: string | null;
 	grantRoot: string | null;
+	mcp?: CodexApprovalMcpSlot;
+	agent?: CodexApprovalAgentSlot;
+	fromSubagent?: boolean;
 }
 
 export interface CodexApprovalFileChangePresentation {
@@ -1140,6 +1162,7 @@ export interface CodexApprovalFileChangePresentation {
 	cwd: string | null;
 	reason: string | null;
 	grantRoot: string | null;
+	fromSubagent?: boolean;
 }
 
 export type CodexApprovalPresentation =
@@ -1165,3 +1188,50 @@ export interface CodexApprovalDecisionResponse {
 	v: 1;
 	approval: CodexApprovalSummary;
 }
+
+// ---- Fork follow-ups (AGEN-119..123), vendored by Track 0 so no later track edits this file ----
+
+/** A call row's outcome on a continued Claude Code session. An unknown value is shown, not thrown on. */
+export type ForkCallOutcome =
+	| "approved"
+	| "unasked"
+	| "failed"
+	| "declined"
+	| "refused"
+	| "elsewhere"
+	| "local_decline"
+	| "no_result"
+	| "stopped";
+
+/** The options a person can turn on when continuing a Claude Code session. */
+export interface ForkOptionsRequest {
+	mcp?: boolean;
+	subagents?: boolean;
+}
+
+/** What the host applied for a continued session. */
+export interface AppliedForkOptions {
+	mcpServers: { name: string; digest: string }[];
+	subagents: boolean;
+	claudeVersion: string;
+}
+
+/** Refusals `POST /sessions/:id/interrupt` adds (AGEN-119). */
+export type StopTurnRefusalCode = "interrupt_not_supported" | "no_turn_running" | "rate_limited";
+
+/** One fork tool call's stored detail (AGEN-123). Signed-in owner or admin only; no MCP tool reads it. */
+export interface ForkToolCallDto {
+	toolUseId: string;
+	tool: string;
+	outcome: string;
+	fromSubagent: boolean;
+	input: string | null;
+	inputTruncated: boolean;
+	output: string | null;
+	outputTruncated: boolean;
+	redacted: boolean;
+	createdAt: string;
+}
+
+/** The index view of a stored call: the same without `input` and `output` (the keys are absent). */
+export type ForkToolCallIndexEntry = Omit<ForkToolCallDto, "input" | "output">;

@@ -103,6 +103,8 @@ export const APPROVAL_CLOSED_REASONS = [
 	"runtime_gone",
 	"session_stopped",
 	"decided_elsewhere",
+	// AGEN-119: the turn the request belonged to was stopped by a person (Stop turn); the session stays open.
+	"turn_stopped",
 ] as const;
 export type ApprovalClosedReason = (typeof APPROVAL_CLOSED_REASONS)[number];
 
@@ -142,6 +144,12 @@ export const NOT_APPROVABLE_REASONS = [
 	// A path that isn't a full path (relative, or starting with ~): which file it means depends on a directory
 	// the host can't be sure Claude is in.
 	"path_not_absolute",
+	// AGEN-120: the Agent call of a fork with subagents on. A helper type that doesn't ship with Claude Code runs
+	// frontmatter hooks of its own with no card, and a helper that starts a helper is one level too deep.
+	"custom_agent",
+	"nested_agent",
+	// AGEN-119..123 review M4: a path under the host's own ~/.agentpulse (exclude rules, MCP consent, credentials).
+	"agentpulse_files",
 ] as const;
 export type NotApprovableReason = (typeof NOT_APPROVABLE_REASONS)[number];
 
@@ -157,6 +165,8 @@ export const CODEX_APPROVAL_OUTCOMES = [
 	"revision_changed",
 	"may_have_run",
 	"turn_ended",
+	// AGEN-119: a person stopped the turn this request belonged to (Stop turn); the session stays open.
+	"turn_stopped",
 	"codex_shut_down",
 	"session_stopped",
 	"approved_then_stopped",
@@ -243,6 +253,8 @@ export interface CodexApprovalPreview {
 	/** `claude_tool` only: the tool and its target, the target cut to fit. */
 	tool?: string;
 	target?: string;
+	/** The request came from a subagent of the turn (AGEN-120). Absent otherwise. */
+	fromSubagent?: boolean;
 }
 
 export interface CodexApprovalSummary {
@@ -306,6 +318,7 @@ export interface CodexApprovalCommandPresentation {
 	grantRoot: string | null;
 	/** A Claude Bash request only: the path Claude says the command would touch, shown as given. Absent for Codex. */
 	blockedPath?: string | null;
+	fromSubagent?: boolean;
 }
 export interface CodexApprovalFileChangePresentation {
 	v: 1;
@@ -314,7 +327,23 @@ export interface CodexApprovalFileChangePresentation {
 	cwd: string | null;
 	reason: string | null;
 	grantRoot: string | null;
+	fromSubagent?: boolean;
 }
+/**
+ * Slots reserved by AGEN-119..123 Track 0 and filled by later tracks. Each is absent from the presentation
+ * (and so from its canonical JSON and hash) unless the request has it, so every stored hash is unchanged.
+ */
+export interface CodexApprovalMcpSlot {
+	server: string;
+	tool: string;
+	rawToolName: string;
+}
+export interface CodexApprovalAgentSlot {
+	subagentType: string;
+	prompt: string;
+	builtIn: boolean;
+}
+
 /** A takeover fork's web fetch or read outside its directory. `target` is the URL or the path. */
 export interface CodexApprovalClaudeToolPresentation {
 	v: 1;
@@ -324,6 +353,9 @@ export interface CodexApprovalClaudeToolPresentation {
 	cwd: string | null;
 	reason: string | null;
 	grantRoot: string | null;
+	mcp?: CodexApprovalMcpSlot;
+	agent?: CodexApprovalAgentSlot;
+	fromSubagent?: boolean;
 }
 export type CodexApprovalPresentation =
 	| CodexApprovalCommandPresentation
@@ -391,6 +423,10 @@ export interface CodexApprovalReportRequest {
 	target?: string | null;
 	/** Claude Bash only: the path Claude named as the one the command would touch. */
 	blockedPath?: string | null;
+	/** Reserved (AGEN-119..123): the request came from a subagent, an MCP tool or the Agent call. The server refuses a report carrying them until a track accepts them. */
+	mcp?: CodexApprovalMcpSlot;
+	agent?: CodexApprovalAgentSlot;
+	fromSubagent?: boolean;
 }
 
 /** 201 for a new row, 200 for the same key again. */
@@ -444,6 +480,8 @@ export const APPROVAL_REPORT_REFUSALS = [
 	"invalid_body",
 	"identity_conflict",
 	"session_not_owned",
+	// AGEN-119: a request reported on a turn a person has already stopped; the host declines that one request.
+	"turn_interrupted",
 ] as const;
 export type ApprovalReportRefusal = (typeof APPROVAL_REPORT_REFUSALS)[number];
 
@@ -461,6 +499,10 @@ export const APPROVAL_ANSWER_REFUSALS = [
 	"host_offline",
 	"host_gone",
 	"presentation_changed",
+	// AGEN-119: the turn was stopped before this answer; it is declined and nothing ran.
+	"turn_interrupted",
+	// AGEN-119..123 review H1: team mode, an MCP or Agent card of a fork whose options another person agreed to.
+	"fork_options_host_not_yours",
 ] as const;
 export type ApprovalAnswerRefusal = (typeof APPROVAL_ANSWER_REFUSALS)[number];
 

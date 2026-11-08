@@ -49,6 +49,7 @@ import {
 	normalizeHookEvent,
 	normalizeStatusEvents,
 } from "./event-normalizer.js";
+import { isForkRowEvent } from "./fork-call-row.js";
 import { getMode } from "./instance-mode.js";
 import { associateObservedSession } from "./launch-dispatch.js";
 import { generateSessionName } from "./name-generator.js";
@@ -349,7 +350,9 @@ async function insertDeliveryReceipt(
  * a turn that ends the same way twice are two occurrences, and a fixed-template prompt like
  * "continue" repeats by design) and Codex's agent message (a repeated "Should I continue?" must
  * still be the newest assistant text the human gate reads). A retry is stopped by the receipt, not
- * by this window.
+ * by this window. A continued Claude session's own rows (`isForkRowEvent`: a `HeadlessStatus` with the
+ * host's marker and a `kind`) are kept by predicate, not by type, so other sessions' repeated
+ * `HeadlessStatus` rows still dedupe.
  */
 const MANAGED_KEEP_EVENT_TYPES: ReadonlySet<string> = new Set([
 	...TURN_START_EVENT_TYPES,
@@ -389,7 +392,11 @@ export async function insertManagedEvents(
 			return { events: [], replay: true };
 		}
 		const plan = planEventInsert({
-			policy: { kind: "content_window", keepEventTypes: MANAGED_KEEP_EVENT_TYPES },
+			policy: {
+				kind: "content_window",
+				keepEventTypes: MANAGED_KEEP_EVENT_TYPES,
+				keepEvent: isForkRowEvent,
+			},
 			recent: await loadRecentRows(sessionId, tx),
 			incoming: normalizedEvents,
 			nowIso: now.toISOString(),

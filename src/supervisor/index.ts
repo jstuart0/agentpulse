@@ -9,11 +9,13 @@ import {
 } from "./config.js";
 import { createControlActionHandler } from "./control-actions.js";
 import { createLaunchDispatcher } from "./launch-dispatch.js";
+import { configureForkMcp, sweepLeftoverMcpCopies } from "./providers/claude-fork-mcp.js";
 import { headlessRuntimeCount } from "./providers/claude-headless.js";
 import { claudeStreamRuntimeCount } from "./providers/claude-stream.js";
 import {
 	hasClaudeStreamRuntime,
 	hasHeadlessRuntime,
+	interruptClaudeStreamSession,
 	launchClaudeHeadlessRequest,
 	launchClaudeInteractiveRequest,
 	promptClaudeHeadlessSession,
@@ -215,6 +217,10 @@ async function main() {
 	// Sessions this host is resuming (D16): the observer reads their lines and posts nothing, so a resumed
 	// turn can't also arrive as a second UserPromptSubmit and Stop beside the managed one.
 	const resumingSessions = new Set<string>();
+	// Where the person's fork MCP file is looked for (AGEN-121); an unconfigured host applies no MCP server.
+	configureForkMcp({ agentpulseDir: join(home, ".agentpulse") });
+	// Private MCP copies an earlier process left behind hold credentials: no fork exists yet, so none is in use.
+	sweepLeftoverMcpCopies();
 	const forkRecord = createClaudeForkRecord({
 		path: join(home, ".agentpulse", "claude-forks.json"),
 	});
@@ -356,6 +362,7 @@ async function main() {
 		env: process.env,
 		probeCwd: join(home, ".agentpulse", "claude-probe"),
 		tracker: approvalsWiring.approvals,
+		serverHas: serverFeatures.has,
 	});
 	const resumeSession = createSessionResumer({
 		gate,
@@ -380,6 +387,7 @@ async function main() {
 			stopHeadlessClaude,
 			promptClaudeStreamSession,
 			stopClaudeStreamSession,
+			interruptClaudeStreamSession,
 			hasClaudeStreamRuntime,
 			hasHeadlessRuntime,
 		},

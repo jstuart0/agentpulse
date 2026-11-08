@@ -201,6 +201,9 @@ describe("one test per reason", () => {
 		input_not_stable: () => commandReport({ declineOnly: ["input_not_stable"] }),
 		agent_memory: () => commandReport({ declineOnly: ["agent_memory"] }),
 		path_not_absolute: () => commandReport({ declineOnly: ["path_not_absolute"] }),
+		custom_agent: () => commandReport({ declineOnly: ["custom_agent"] }),
+		nested_agent: () => commandReport({ declineOnly: ["nested_agent"] }),
+		agentpulse_files: () => commandReport({ declineOnly: ["agentpulse_files"] }),
 	};
 
 	for (const reason of NOT_APPROVABLE_REASONS) {
@@ -617,5 +620,167 @@ describe("the parameter allowlist (D5)", () => {
 			}
 		}
 		expect(scanned).toBeGreaterThanOrEqual(4);
+	});
+});
+
+describe("reserved presentation slots (AGEN-119..123 Track 0)", () => {
+	const toolReport = (extra: Record<string, unknown> = {}) =>
+		({
+			...commandReport(),
+			requestKind: "claude_tool",
+			tool: "WebFetch",
+			target: "https://example.com/x",
+			...extra,
+		}) as Parameters<typeof buildPresentation>[0];
+
+	test("a report without a slot builds the presentation it always built: no slot key in the canonical JSON", () => {
+		for (const built of [
+			buildPresentation(commandReport()),
+			buildPresentation(fileChangeReport()),
+			buildPresentation(toolReport()),
+			buildPresentation(commandReport(), "claude"),
+		]) {
+			for (const slot of ["mcp", "agent", "fromSubagent"]) {
+				expect(built.presentationJson).not.toContain(`"${slot}"`);
+			}
+		}
+	});
+
+	const slots: Array<[string, Record<string, unknown>, string]> = [
+		// The mcp slot has its own tests below: an MCP report is a different presentation, not a slot on a fetch.
+		[
+			"agent",
+			{ agent: { subagentType: "general-purpose", prompt: "look", builtIn: true } },
+			"general-purpose",
+		],
+		["fromSubagent", { fromSubagent: true }, "fromSubagent"],
+	];
+	for (const [name, extra, marker] of slots) {
+		test(`the ${name} slot is part of the hash: dropping it from the canonical input changes the hash`, () => {
+			const without = buildPresentation(toolReport());
+			const withSlot = buildPresentation(toolReport(extra));
+			expect(withSlot.presentationJson).toContain(marker);
+			expect(withSlot.hash).not.toBe(without.hash);
+			// Dropping the slot from the canonical input gives the slotless hash back: the slot is all that differs.
+			const dropped = JSON.parse(withSlot.presentationJson);
+			delete dropped[name];
+			expect(hashPresentation(dropped)).toBe(without.hash);
+		});
+	}
+
+	test("fromSubagent also covers a command and a file change", () => {
+		for (const report of [commandReport(), fileChangeReport()]) {
+			const plain = buildPresentation(report);
+			const marked = buildPresentation({ ...report, fromSubagent: true });
+			expect(marked.hash).not.toBe(plain.hash);
+			expect(marked.presentationJson).toContain('"fromSubagent":true');
+		}
+	});
+
+	test("a slot's text is cleaned like any other field: a secret in the Agent prompt makes the request unapprovable", () => {
+		const built = buildPresentation(
+			toolReport({ agent: { subagentType: "general-purpose", prompt: SECRET, builtIn: true } }),
+		);
+		expect(built.approvable).toBe(false);
+		expect(built.notApprovableReason).toBe("redacted");
+		expect(built.presentationJson).not.toContain(SECRET);
+	});
+});
+
+describe("an MCP tool call (AGEN-121)", () => {
+	const mcpReport = (extra: Record<string, unknown> = {}) =>
+		({
+			...commandReport(),
+			requestKind: "claude_tool",
+			tool: "mcp__probe__echo_note",
+			target: '{\n  "text": "hello"\n}',
+			mcp: { server: "probe", tool: "echo_note", rawToolName: "mcp__probe__echo_note" },
+			...extra,
+		}) as Parameters<typeof buildPresentation>[0];
+	const ctx = { mcpServers: ["probe"] };
+
+	test("the presentation says only `mcp` as its tool, holds the input and the slot, and is approvable", () => {
+		const built = buildPresentation(mcpReport(), "claude", ctx);
+		expect(built.presentation).toMatchObject({
+			requestKind: "claude_tool",
+			tool: "mcp",
+			target: '{\n  "text": "hello"\n}',
+			mcp: { server: "probe", tool: "echo_note", rawToolName: "mcp__probe__echo_note" },
+		});
+		expect(built.approvable).toBe(true);
+	});
+
+	test("the mcp slot is part of the hash: dropping it changes it, and the slot's names change it", () => {
+		const built = buildPresentation(mcpReport(), "claude", ctx);
+		const { mcp: _slot, ...dropped } = JSON.parse(built.presentationJson);
+		expect(hashPresentation(dropped)).not.toBe(built.hash);
+		const other = buildPresentation(
+			mcpReport({
+				tool: "mcp__probe__other",
+				mcp: { server: "probe", tool: "other", rawToolName: "mcp__probe__other" },
+			}),
+			"claude",
+			ctx,
+		);
+		expect(other.hash).not.toBe(built.hash);
+	});
+
+	test("the server splits the wire name again: a host value that differs makes the request decline-only, and the card shows the server's split", () => {
+		const built = buildPresentation(
+			mcpReport({
+				mcp: { server: "prob", tool: "e_echo_note", rawToolName: "mcp__probe__echo_note" },
+			}),
+			"claude",
+			ctx,
+		);
+		expect(built.approvable).toBe(false);
+		expect(built.notApprovableReason).toBe("unknown_param");
+		expect(built.presentation).toMatchObject({ mcp: { server: "probe", tool: "echo_note" } });
+	});
+
+	test("a server that was not applied is decline-only here too", () => {
+		const built = buildPresentation(mcpReport(), "claude", { mcpServers: ["other"] });
+		expect(built.approvable).toBe(false);
+		expect(built.notApprovableReason).toBe("unknown_param");
+	});
+
+	test("a secret in the input makes it unapprovable and is not stored", () => {
+		const built = buildPresentation(mcpReport({ target: `{"token":"${SECRET}"}` }), "claude", ctx);
+		expect(built.approvable).toBe(false);
+		expect(built.notApprovableReason).toBe("redacted");
+		expect(built.presentationJson).not.toContain(SECRET);
+	});
+
+	test("an input past 16 KiB is cut and not approvable", () => {
+		const built = buildPresentation(
+			mcpReport({
+				target: `{"a":"${"x".repeat(17_000)}"}`,
+				truncated: true,
+				declineOnly: ["too_long"],
+			}),
+			"claude",
+			ctx,
+		);
+		expect(built.approvable).toBe(false);
+		expect(built.notApprovableReason).toBe("too_long");
+	});
+
+	test("the list preview names the call as server/tool and carries no input", () => {
+		const built = buildPresentation(mcpReport(), "claude", ctx);
+		const preview = buildPreview(built.presentation);
+		expect(preview.tool).toBe("mcp");
+		expect(preview.target).toBe("probe/echo_note");
+		expect(JSON.stringify(preview)).not.toContain("hello");
+	});
+
+	test("a Latin and Cyrillic mix in a name is lookalike text", () => {
+		const built = buildPresentation(
+			mcpReport({
+				mcp: { server: "probe", tool: "echo_nоte", rawToolName: "mcp__probe__echo_nоte" },
+			}),
+			"claude",
+			ctx,
+		);
+		expect(built.approvable).toBe(false);
 	});
 });

@@ -835,3 +835,53 @@ describe("codex approvals (AGEN-87)", () => {
 		expect(await rowsOf("ca3")).toEqual([]);
 	});
 });
+
+const { forkToolCalls } = await import("../db/schema/index.js");
+
+describe("fork tool-call detail (AGEN-123)", () => {
+	const DAY = 24 * 60 * 60 * 1000;
+
+	async function seedCall(sessionId: string, toolUseId: string, ageMs: number) {
+		await getDb()
+			.insert(forkToolCalls)
+			.values({
+				id: `ret-${toolUseId}`,
+				sessionId,
+				toolUseId,
+				tool: "Bash",
+				outcome: "unasked",
+				createdAt: new Date(Date.now() - ageMs).toISOString(),
+			});
+	}
+	const remaining = async () =>
+		(await getDb().select().from(forkToolCalls)).map((r) => r.toolUseId).sort();
+
+	test("pruned after 7 days even when event retention is off, and the run reports forkToolCallsDeleted", async () => {
+		await seedSession("f1");
+		await seedCall("f1", "old", 7 * DAY + 60_000);
+		await seedCall("f1", "fresh", 6 * DAY);
+		const result = await runRetentionPass();
+		expect(result.disabled, "event retention is off").toBe(true);
+		expect(result.forkToolCallsDeleted).toBe(1);
+		expect(await remaining()).toEqual(["fresh"]);
+		expect(getRetentionStatus().lastRun?.forkToolCallsDeleted).toBe(1);
+	});
+
+	test("a positive event retention shorter than 7 days prunes sooner; the enabled path reports it too", async () => {
+		await seedSession("f2");
+		await upsertSetting("eventsRetentionDays", 3);
+		await seedCall("f2", "four-days", 4 * DAY);
+		await seedCall("f2", "two-days", 2 * DAY);
+		const result = await runRetentionPass();
+		expect(result.disabled).toBe(false);
+		expect(result.forkToolCallsDeleted).toBe(1);
+		expect(await remaining()).toEqual(["two-days"]);
+	});
+
+	test("the session's deletion takes its detail with it", async () => {
+		await seedSession("f3");
+		await seedCall("f3", "cascade", DAY);
+		await getDb().delete(sessions).where(eq(sessions.sessionId, "f3"));
+		expect(await remaining()).toEqual([]);
+	});
+});

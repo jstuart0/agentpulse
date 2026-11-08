@@ -23,6 +23,11 @@
  * `mayBindToHost`), stricter than both.
  */
 import { and, eq, inArray, isNull } from "drizzle-orm";
+import {
+	FORK_OPTIONS_CONSENT_KEY,
+	forkOptionsAreOff,
+	parseAppliedForkOptions,
+} from "../../shared/session-resume.js";
 import type { Actor, InstanceModeName } from "../auth/actor.js";
 import { getDb } from "../db/client.js";
 import {
@@ -342,6 +347,47 @@ export function mayBindToHost(
 }
 
 /**
+ * May this actor start a fork's options (MCP servers, subagents) on this host? Those run the person's own
+ * configuration on the machine, so only the machine's owner may ask for them (AGEN-119..123, C-H4, F53):
+ *  - Solo: yes.
+ *  - Team: only a signed-in actor who owns the host. An admin is refused on a host someone else owns, and
+ *    anyone is refused on a host nobody owns. Null means yes.
+ * A bind that asks for no option never calls this.
+ */
+export function mayUseForkOptionsOnHost(
+	actor: Actor,
+	mode: InstanceModeName,
+	host: { ownerUserId: string | null } | null,
+): "fork_options_host_not_yours" | null {
+	if (mode === "solo") return null;
+	if (actor.userId === null || host === null || host.ownerUserId !== actor.userId) {
+		return "fork_options_host_not_yours";
+	}
+	return null;
+}
+
+/**
+ * May this actor drive (prompt, resume, answer a tool card of) a fork that runs MCP servers or subagents?
+ * Those run the host owner's own configuration, and the owner consented to them at bind (review H1). Solo
+ * and a fork with no options: yes. Team: only the consenting host owner; a fork with options and no recorded
+ * consent (the field is server-owned) is refused to everyone. Null means yes.
+ */
+export function mayDriveForkOptions(
+	actor: Actor,
+	mode: InstanceModeName,
+	sessionMetadata: unknown,
+): "fork_options_host_not_yours" | null {
+	if (mode === "solo") return null;
+	const meta = (sessionMetadata ?? {}) as Record<string, unknown>;
+	if (forkOptionsAreOff(parseAppliedForkOptions(meta.forkOptions))) return null;
+	const consent = meta[FORK_OPTIONS_CONSENT_KEY];
+	if (typeof consent !== "string" || actor.userId === null || actor.userId !== consent) {
+		return "fork_options_host_not_yours";
+	}
+	return null;
+}
+
+/**
  * Throws `BindRefusal` unless the actor may use this host for a takeover (see `mayBindToHost`). Recovery of a
  * managed session doesn't call it: the host is the launch's own.
  */
@@ -391,6 +437,26 @@ export function mayAnswerApproval(
 	if (actor.role === "admin") return true;
 	if (session === null) return false;
 	if (session.ownerUserId === null) return decision !== "accept" && actor.userId !== null;
+	return actor.userId !== null && actor.userId === session.ownerUserId;
+}
+
+/**
+ * May this actor read what a fork's tool calls ran (AGEN-123, F21)? The pure rule; the caller has already
+ * required a signed-in person (an API key of any scope is refused `human_required` before this runs).
+ *  - Solo: allowed.
+ *  - Team: a host credential (role `none`) never; an admin always; a missing session, nobody else; an
+ *    unowned session is an admin's alone (unlike an accept's decline, there is nothing safe about reading
+ *    it); an owned session its owner.
+ */
+export function mayReadToolDetail(
+	actor: Actor,
+	mode: InstanceModeName,
+	session: { ownerUserId: string | null } | null,
+): boolean {
+	if (mode === "solo") return true;
+	if (actor.role === "none") return false;
+	if (actor.role === "admin") return true;
+	if (session === null || session.ownerUserId === null) return false;
 	return actor.userId !== null && actor.userId === session.ownerUserId;
 }
 

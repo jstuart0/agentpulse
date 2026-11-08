@@ -67,6 +67,8 @@ const REFUSAL_STATUS: Readonly<Record<ApprovalRefusalCode, 400 | 403 | 404 | 409
 	session_stopping: 409,
 	identity_conflict: 409,
 	session_not_owned: 403,
+	turn_interrupted: 409,
+	fork_options_host_not_yours: 403,
 };
 
 function refuse(c: Context, code: ApprovalRefusalCode): Response {
@@ -110,6 +112,8 @@ function serializePreview(preview: CodexApprovalPreview | null): CodexApprovalPr
 		nonAscii: preview.nonAscii,
 		...(preview.tool !== undefined ? { tool: preview.tool } : {}),
 		...(preview.target !== undefined ? { target: preview.target } : {}),
+		// A subagent made the request (AGEN-120); absent for the fork's own, so those responses are unchanged.
+		...(preview.fromSubagent === true ? { fromSubagent: true } : {}),
 	};
 }
 
@@ -147,6 +151,7 @@ function serializePresentation(
 			grantRoot: p.grantRoot,
 			// A Claude Bash request only; a Codex row never has the key, so its response is unchanged.
 			...(p.blockedPath !== undefined ? { blockedPath: p.blockedPath } : {}),
+			...(p.fromSubagent === true ? { fromSubagent: true } : {}),
 		};
 	}
 	if (p.requestKind === "claude_tool") {
@@ -158,6 +163,28 @@ function serializePresentation(
 			cwd: p.cwd,
 			reason: p.reason,
 			grantRoot: p.grantRoot,
+			// An MCP tool call (AGEN-121): the slot is part of what the hash covers, so it travels with it.
+			...(p.mcp !== undefined
+				? {
+						mcp: {
+							server: p.mcp.server,
+							tool: p.mcp.tool,
+							rawToolName: p.mcp.rawToolName,
+						},
+					}
+				: {}),
+			// Slots of the Agent call and of a subagent's request (AGEN-120). The hash covers them, so the person
+			// must be shown them: an allowlist that dropped one would approve text nobody read.
+			...(p.agent
+				? {
+						agent: {
+							subagentType: p.agent.subagentType,
+							prompt: p.agent.prompt,
+							builtIn: p.agent.builtIn,
+						},
+					}
+				: {}),
+			...(p.fromSubagent === true ? { fromSubagent: true } : {}),
 		};
 	}
 	return {
@@ -172,6 +199,7 @@ function serializePresentation(
 		cwd: p.cwd,
 		reason: p.reason,
 		grantRoot: p.grantRoot,
+		...(p.fromSubagent === true ? { fromSubagent: true } : {}),
 	};
 }
 

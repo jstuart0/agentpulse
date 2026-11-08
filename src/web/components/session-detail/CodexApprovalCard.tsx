@@ -1,4 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from "react";
+import { forkMcpCardLine, forkMcpHeading } from "../../../shared/claude-fork-mcp.js";
+import { SUBAGENT_EYEBROW } from "../../../shared/claude-fork-subagents.js";
 import type {
 	ApprovalDecision,
 	CodexApprovalDetail,
@@ -39,6 +41,7 @@ import {
 	availabilityHint,
 	cardStateOf,
 	changeSummary,
+	claudeToolKind,
 	commandStats,
 	commandTail,
 	confirmCopy,
@@ -48,6 +51,7 @@ import {
 	defaultDiffsOpen,
 	detailMatchesRow,
 	diffDeltaLabel,
+	exhaustiveToolKind,
 	filesSummary,
 	focusAfterClose,
 	forkModeOf,
@@ -69,6 +73,7 @@ import {
 	outsideFirst,
 	peerTurnLines,
 	queuePosition,
+	requestEyebrow,
 	requestHeading,
 	revisionChangedLine,
 	secondsLeft,
@@ -93,6 +98,12 @@ interface Props {
 	announce: (text: string) => void;
 }
 
+/** The helper's prompt can be long and scrolls: reachable by keyboard and named, like a cut command. */
+const HELPER_PROMPT_REGION = {
+	tabIndex: 0,
+	role: "region",
+	"aria-label": "What the helper would be told",
+} as const;
 const PRE_CLASS =
 	"overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/50 p-2 font-mono text-xs text-foreground";
 // Touch targets shrink only for a fine pointer: a tablet at desktop width is still touched.
@@ -256,6 +267,7 @@ export function CodexApprovalCard({ session, announce }: Props) {
 					pendingCount: rows.pending.length,
 					agent,
 					...(first.preview?.tool ? { tool: first.preview.tool } : {}),
+					...(first.preview?.fromSubagent ? { fromSubagent: true } : {}),
 				}),
 			);
 		}
@@ -740,15 +752,26 @@ function PendingCard(props: PendingProps) {
 	const answerable = state !== "host_offline" && state !== "host_gone";
 	const outsideFlags = Array.isArray(detail?.outsideCwd) ? detail.outsideCwd : null;
 
+	// An MCP call's heading names a tool and a server of the server's choosing: one line here, whole in the confirm step.
+	const heading = requestHeading(approval, agent);
+	const clipHeading =
+		approval.requestKind === "claude_tool" && claudeToolKind({ tool: preview?.tool }) === "mcp";
+
 	return (
 		<div className="space-y-2">
+			{requestEyebrow(approval, presentation) ? (
+				<p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+					{requestEyebrow(approval, presentation)}
+				</p>
+			) : null}
 			<div className="flex items-baseline justify-between gap-2">
 				<h2
 					id={props.headingId}
 					tabIndex={-1}
-					className={`text-sm font-semibold text-foreground ${FOCUS_TARGET}`}
+					title={clipHeading ? heading : undefined}
+					className={`text-sm font-semibold text-foreground ${clipHeading ? "min-w-0 truncate" : ""} ${FOCUS_TARGET}`}
 				>
-					{requestHeading(approval, agent)}
+					{heading}
 				</h2>
 				{props.total > 1 ? (
 					<span className="flex-shrink-0 text-xs text-muted-foreground">
@@ -911,6 +934,45 @@ function CommandLines({ text }: { text: string }) {
 	));
 }
 
+/**
+ * An MCP tool call (AGEN-121): the raw tool name verbatim, what the card can and can't say about it, and the
+ * input exactly as the host will send it. The server and tool names are the server's own split against the
+ * servers this session was started with; the raw name is shown beside them so a person never relies on the
+ * split alone.
+ */
+function McpCallBody({
+	presentation,
+	full = false,
+}: {
+	presentation: Extract<CodexApprovalPresentation, { requestKind: "claude_tool" }>;
+	/** The confirm step shows the whole input; the card caps its height. */
+	full?: boolean;
+}) {
+	const mcp = presentation.mcp;
+	return (
+		<div className="space-y-1">
+			{mcp ? (
+				<>
+					<p className="break-all font-mono text-xs text-foreground">{mcp.rawToolName}</p>
+					<p className="break-words text-sm text-foreground">
+						{forkMcpCardLine(mcp.server, mcp.tool)}
+					</p>
+				</>
+			) : (
+				<p className="break-words text-sm text-foreground">Claude asks to use a tool</p>
+			)}
+			{presentation.target ? (
+				<pre
+					{...(full ? {} : { tabIndex: 0, role: "region", "aria-label": "Tool input" })}
+					className={`${PRE_CLASS} ${full ? "" : "max-h-48"}`}
+				>
+					{presentation.target}
+				</pre>
+			) : null}
+		</div>
+	);
+}
+
 function RequestBody({
 	host,
 	touchesAgentConfig,
@@ -944,18 +1006,42 @@ function RequestBody({
 			</p>
 		) : null;
 	if (presentation?.requestKind === "claude_tool") {
-		const read = presentation.tool === "Read";
-		return (
-			<div className="space-y-1">
-				<p className="break-words text-sm text-foreground">
-					{read ? "Claude asks to read " : "Claude asks to fetch "}
-					<span className="font-mono">{presentation.target ?? ""}</span>
-				</p>
-				{read ? null : (
-					<p className="text-xs font-medium text-foreground">A URL can carry data out.</p>
-				)}
-			</div>
-		);
+		const kind = claudeToolKind(presentation);
+		switch (kind) {
+			case "read":
+			case "webfetch":
+				return (
+					<div className="space-y-1">
+						<p className="break-words text-sm text-foreground">
+							{kind === "read" ? "Claude asks to read " : "Claude asks to fetch "}
+							<span className="font-mono">{presentation.target ?? ""}</span>
+						</p>
+						{kind === "read" ? null : (
+							<p className="text-xs font-medium text-foreground">A URL can carry data out.</p>
+						)}
+					</div>
+				);
+			case "mcp":
+				return <McpCallBody presentation={presentation} />;
+			case "agent":
+				return (
+					<div className="space-y-1">
+						<p className="break-words text-sm text-foreground">
+							Claude asks to start a helper of type{" "}
+							<span className="font-mono">{presentation.agent?.subagentType ?? ""}</span>. This is
+							what it would be told:
+						</p>
+						<pre className={`${PRE_CLASS} max-h-64`} {...HELPER_PROMPT_REGION}>
+							{markBlankRuns(presentation.agent?.prompt ?? "")}
+						</pre>
+						<p className="text-xs text-muted-foreground">
+							The helper's commands and file changes wait for you the same way.
+						</p>
+					</div>
+				);
+			default:
+				return exhaustiveToolKind(kind);
+		}
 	}
 	if (presentation?.requestKind === "file_change") {
 		const flags =
@@ -1212,7 +1298,9 @@ function DialogFor({
 		host,
 		declinesAt,
 		owner: showOwner ? owner : null,
-		...(presentation.requestKind === "claude_tool" ? { tool: presentation.tool } : {}),
+		...(presentation.requestKind === "claude_tool"
+			? { tool: presentation.tool, toolKind: claudeToolKind(presentation) }
+			: {}),
 		...(presentation.requestKind === "file_change" && files.length === 1
 			? { writeKind: (files[0] as { kind: string }).kind }
 			: {}),
@@ -1247,6 +1335,7 @@ function DialogFor({
 			) : null}
 			{tail ? (
 				<div className="space-y-2" id={bodyId}>
+					{presentation.fromSubagent ? <p className="font-semibold">{SUBAGENT_EYEBROW}.</p> : null}
 					<p>
 						{commandStats(
 							presentation.requestKind === "command" ? (presentation.command ?? "") : "",
@@ -1256,9 +1345,23 @@ function DialogFor({
 					<pre className={PRE_CLASS}>{tail.text}</pre>
 					{presentation.cwd ? <p className="break-words">In {presentation.cwd}</p> : null}
 				</div>
+			) : presentation.requestKind === "claude_tool" && presentation.mcp ? (
+				<div className="space-y-2" id={bodyId}>
+					<p className="break-words">
+						{forkMcpHeading(presentation.mcp.tool, presentation.mcp.server)}
+					</p>
+					<McpCallBody presentation={presentation} full />
+					{presentation.cwd ? <p className="break-words">In {presentation.cwd}</p> : null}
+				</div>
 			) : presentation.requestKind === "claude_tool" ? (
 				<div className="space-y-2" id={bodyId}>
+					{presentation.fromSubagent ? <p className="font-semibold">{SUBAGENT_EYEBROW}.</p> : null}
 					<p className="break-words font-mono">{presentation.target ?? ""}</p>
+					{presentation.agent ? (
+						<pre className={`${PRE_CLASS} max-h-48`} {...HELPER_PROMPT_REGION}>
+							{markBlankRuns(presentation.agent.prompt)}
+						</pre>
+					) : null}
 					{presentation.cwd ? <p className="break-words">In {presentation.cwd}</p> : null}
 				</div>
 			) : (

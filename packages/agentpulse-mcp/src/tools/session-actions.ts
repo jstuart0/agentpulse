@@ -65,6 +65,16 @@ export function registerSessionActionTools(ctx: ToolContext, flags: ScopeFlags):
 	registerMutatingTool(
 		ctx,
 		{
+			name: "stop_session_turn",
+			description: `Stop what a continued Claude session is doing right now and keep the session open (it can take another prompt). Only a continued session (a fork AgentPulse started) with a running turn can be stopped this way: a session that can't stop a turn and stay open is refused with interrupt_not_supported, and one with nothing running with no_turn_running. Unlike stop_session, nothing is signalled and the process stays; the turn's pending approvals are closed as declined. Six calls a minute per caller. The server also checks the session's owner (or an admin) in team mode. ${MANAGED_ONLY_NOTE} ${CONFIRMATION_PORTABILITY_NOTE}`,
+			inputSchema: { session_id: z.string() },
+		},
+		async (args, client) => client.interruptSession(args.session_id),
+	);
+
+	registerMutatingTool(
+		ctx,
+		{
 			name: "retry_launch",
 			description: `Re-launch a session's original launch request as a new one (same template/spec, fresh correlation id). ${MANAGED_ONLY_NOTE} ${CONFIRMATION_PORTABILITY_NOTE}`,
 			inputSchema: { session_id: z.string() },

@@ -91,6 +91,10 @@ export const RESUME_REFUSAL_CODES = [
 	"not_resumable",
 	"host_cannot_run_claude",
 	"end_session_first",
+	// AGEN-119..123: a fork option (MCP servers, subagents) asked for on a machine the actor doesn't own.
+	"fork_options_host_not_yours",
+	// A fork option asked for on a session that isn't a Claude Code one (Codex takes none).
+	"fork_options_not_supported",
 ] as const;
 export type ResumeRefusalCode = (typeof RESUME_REFUSAL_CODES)[number];
 
@@ -123,11 +127,124 @@ const CLAUDE_FAILURE_KINDS = [
 	"unsupported_claude",
 	"insecure_transport",
 	"unsupported_platform",
+	// AGEN-121: the MCP servers a fork was started with changed before it was resumed.
+	"mcp_servers_changed",
 ] as const;
 
 export const RESUME_FAILURE_KINDS = [...CODEX_FAILURE_KINDS, ...CLAUDE_FAILURE_KINDS] as const;
 export type ResumeFailureKind = (typeof RESUME_FAILURE_KINDS)[number];
 type CodexFailureKind = (typeof CODEX_FAILURE_KINDS)[number];
+
+// ---- Fork options (AGEN-119..123, Track 0) ----
+
+/** What a person asks for on the bind body. Exactly these keys; both default off. */
+export interface ForkOptionsRequest {
+	mcp?: boolean;
+	subagents?: boolean;
+}
+
+/** What the host actually applied, reported with the takeover's success and stored on the fork (server-owned). */
+export interface AppliedForkOptions {
+	mcpServers: { name: string; digest: string }[];
+	subagents: boolean;
+	claudeVersion: string;
+}
+
+/** No options. `claudeVersion` is empty: a host that applied nothing has nothing to record about it. */
+export const FORK_OPTIONS_OFF: AppliedForkOptions = Object.freeze({
+	mcpServers: Object.freeze([]) as unknown as { name: string; digest: string }[],
+	subagents: false,
+	claudeVersion: "",
+});
+
+/**
+ * The Claude Code versions the options were measured on (F45). Elsewhere the host reports an option not
+ * applied. The per-release canary adds a version here.
+ */
+export const FORK_OPTION_MEASURED_VERSIONS: readonly string[] = ["2.1.319"];
+
+const FORK_OPTION_KEYS = new Set(["mcp", "subagents"]);
+
+/** The bind body's `forkOptions`: absent means none; anything but an object of those two booleans is null (invalid). */
+export function parseForkOptionsRequest(value: unknown): ForkOptionsRequest | null {
+	if (value === undefined) return {};
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+	const out: ForkOptionsRequest = {};
+	for (const [key, v] of Object.entries(value)) {
+		if (!FORK_OPTION_KEYS.has(key) || typeof v !== "boolean") return null;
+		(out as Record<string, boolean>)[key] = v;
+	}
+	return out;
+}
+
+/** Whether a request asks for any option. */
+export function forkOptionsRequested(request: ForkOptionsRequest | undefined | null): boolean {
+	return request?.mcp === true || request?.subagents === true;
+}
+
+const SERVER_NAME = /^[A-Za-z0-9-]{1,32}$/;
+const DIGEST = /^[0-9a-f]{64}$/;
+
+/** A host's report of what it applied, checked strictly. Null when it is not that shape. */
+export function parseAppliedForkOptions(value: unknown): AppliedForkOptions | null {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+	const v = value as Record<string, unknown>;
+	if (
+		Object.keys(v).some((k) => k !== "mcpServers" && k !== "subagents" && k !== "claudeVersion")
+	) {
+		return null;
+	}
+	if (!Array.isArray(v.mcpServers) || v.mcpServers.length > 16) return null;
+	if (typeof v.subagents !== "boolean") return null;
+	if (typeof v.claudeVersion !== "string" || v.claudeVersion.length > 32) return null;
+	const mcpServers: { name: string; digest: string }[] = [];
+	for (const entry of v.mcpServers) {
+		if (typeof entry !== "object" || entry === null) return null;
+		const { name, digest, ...rest } = entry as Record<string, unknown>;
+		if (Object.keys(rest).length > 0) return null;
+		if (typeof name !== "string" || !SERVER_NAME.test(name)) return null;
+		if (typeof digest !== "string" || !DIGEST.test(digest)) return null;
+		mcpServers.push({ name, digest });
+	}
+	return { mcpServers, subagents: v.subagents, claudeVersion: v.claudeVersion };
+}
+
+/**
+ * `sessions.metadata` key on a fork: the user id of the host owner who consented to its options at bind. Server-owned.
+ * In team mode only that person may drive a fork that runs those options (AGEN-119..123, review H1).
+ */
+export const FORK_OPTIONS_CONSENT_KEY = "forkOptionsConsentUserId";
+
+/**
+ * Clamp what a host says it applied to what the bind asked for. A host that reports an option nobody asked for
+ * gets it forced off, so a lying or buggy host can't create consent. `requested` is the bind's own request.
+ */
+export function clampAppliedToRequested(
+	applied: AppliedForkOptions,
+	requested: ForkOptionsRequest,
+): AppliedForkOptions {
+	return {
+		mcpServers: requested.mcp === true ? applied.mcpServers : [],
+		subagents: requested.subagents === true ? applied.subagents : false,
+		claudeVersion: applied.claudeVersion,
+	};
+}
+
+/** True when nothing but the version differs from `FORK_OPTIONS_OFF`. */
+export function forkOptionsAreOff(applied: AppliedForkOptions | null | undefined): boolean {
+	return !applied || (applied.mcpServers.length === 0 && applied.subagents === false);
+}
+
+/** The sentence for a fork option asked for on a machine the actor doesn't own (`fork_options_host_not_yours`). */
+export function forkOptionsHostNotYoursMessage(host: string, owner?: string | null): string {
+	const tail =
+		owner === undefined
+			? `${host} isn't yours.`
+			: owner === null
+				? `${host} has no owner.`
+				: `${host} belongs to ${owner}.`;
+	return `Your MCP servers and subagents can be used only on a machine you own. ${tail}`;
+}
 
 /** What a `resume` control action carries in its metadata. No env, no model, no prompt. */
 export interface ResumeActionMetadata {
@@ -202,6 +319,10 @@ export interface ClaudeResumeActionMetadata {
 	ownerAtBind?: string | null;
 	assignOwner?: true;
 	forkDeadlineAt?: string;
+	/** Takeover only: the options the person asked for (default none). */
+	forkOptions?: ForkOptionsRequest;
+	/** Recovery only: what the fork was started with, read by the server from N's stored `metadata.forkOptions`. */
+	storedForkOptions?: AppliedForkOptions;
 }
 
 export function buildClaudeResumeActionMetadata(
@@ -363,6 +484,8 @@ const CLAUDE_TAKEOVER_WORDS: Record<ResumeFailureKind, Words> = {
 	insecure_transport: (host) =>
 		`${host} doesn't reach AgentPulse over https, so it can't answer approvals. Nothing was started.`,
 	unsupported_platform: () => "AgentPulse can do this only on macOS so far.",
+	mcp_servers_changed: (host) =>
+		`The MCP servers this session was started with have changed on ${host}, so it wasn't resumed. End it and continue the original session again.`,
 };
 
 /** A recovery of a fork: the same, worded for a session that already exists and a mode already stored on it. */

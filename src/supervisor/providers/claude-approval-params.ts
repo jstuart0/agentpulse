@@ -12,6 +12,7 @@
  * No text from a request is put into a log line or a warning.
  */
 import { lstatSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import {
 	CLAUDE_APPROVAL_TOOLS,
@@ -19,14 +20,25 @@ import {
 	CLAUDE_TOOL_INPUT_TREATMENTS,
 	type ClaudeApprovalTool,
 	commandNamesAgentMemory,
+	commandNamesAgentpulseHome,
 	isAgentMemoryPath,
+	isAgentpulseHomePath,
 } from "../../shared/claude-approvals.js";
+import {
+	FORK_MCP_INPUT_MAX_CHARS,
+	forkMcpInputText,
+	splitForkMcpToolName,
+} from "../../shared/claude-fork-mcp.js";
+import { AGENT_PROMPT_MAX_CHARS } from "../../shared/claude-fork-subagents.js";
 import {
 	CODEX_APPROVAL_LIMITS,
 	type CodexApprovalChange,
 	type CodexApprovalReportRequest,
 	type NotApprovableReason,
 } from "../../shared/codex-approvals.js";
+import type { AppliedForkOptions } from "../../shared/session-resume.js";
+import { AGENT_INPUT_TREATMENTS, parseAgentInput } from "./claude-fork-subagents.js";
+import { claudeToolKind } from "./claude-fork-tools.js";
 import type { BufferedChange, ParsedApproval } from "./codex-approval-params.js";
 
 const ID_MAX = 128;
@@ -70,6 +82,10 @@ export type ClaudeParseContext = {
 	configDir: string | null;
 	/** The input's JSON text occurs in the raw line unchanged (the wire checks it). */
 	inputStable: boolean;
+	/** What the fork was started with; decides which tool names are known. Absent: no options. */
+	applied?: AppliedForkOptions;
+	/** The account's home directory, whose `.agentpulse` a fork never writes. Default: the process's home. */
+	homeDir?: string;
 	fs?: ClaudeFsPort;
 };
 
@@ -164,12 +180,21 @@ export function parseClaudeRequest(
 		if (!CLAUDE_REQUEST_META_KEYS.includes(key)) reasons.add("unknown_param");
 	}
 
-	const known = (CLAUDE_APPROVAL_TOOLS as readonly string[]).includes(toolName);
-	const treatments = known
-		? CLAUDE_TOOL_INPUT_TREATMENTS[toolName as ClaudeApprovalTool]
-		: undefined;
-	if (!known || !treatments) reasons.add("unknown_tool");
-	for (const [key, value] of Object.entries(input)) {
+	const kind = claudeToolKind(toolName, ctx.applied);
+	const isMcp = kind === "mcp";
+	const isAgent = kind === "agent";
+	const known =
+		isAgent || (kind !== null && (CLAUDE_APPROVAL_TOOLS as readonly string[]).includes(kind));
+	const treatments = isAgent
+		? AGENT_INPUT_TREATMENTS
+		: known
+			? CLAUDE_TOOL_INPUT_TREATMENTS[toolName as ClaudeApprovalTool]
+			: undefined;
+	if (!isMcp && (!known || !treatments)) reasons.add("unknown_tool");
+	// `agent_id` is the id of the helper that is asking. Absent on the fork's own requests.
+	const fromSubagent = typeof params.agent_id === "string" && params.agent_id !== "";
+	// An MCP tool's input is the server's own schema: any object is shown whole, and nothing in it is interpreted.
+	for (const [key, value] of Object.entries(isMcp ? {} : input)) {
 		if (value === null || value === undefined) continue;
 		const treatment = treatments && Object.hasOwn(treatments, key) ? treatments[key] : undefined;
 		if (treatment === undefined) reasons.add("unknown_param");
@@ -196,6 +221,7 @@ export function parseClaudeRequest(
 		changes,
 		input,
 		excludePaths: [ctx.cwd, ...(blockedPath ? [blockedPath] : []), ...excludePaths],
+		...(fromSubagent ? { fromSubagent: true } : {}),
 	});
 
 	/** Where a file path in the input really points; a link to somewhere else is decline-only. */
@@ -216,12 +242,98 @@ export function parseClaudeRequest(
 				: /\/projects\/[^/]+\/memory(\/|$)/i.test(real) || /\/\.claude(\/|$)/i.test(real);
 		if (named) reasons.add("agent_memory");
 	};
+	const home = ctx.homeDir ?? homedir();
+	const guardAgentpulse = (real: string, abs: string) => {
+		const homes = new Set([home, resolveThroughLinksChecked(home, port).real]);
+		for (const h of homes) {
+			if (isAgentpulseHomePath(real, h) || isAgentpulseHomePath(abs, h)) {
+				reasons.add("agentpulse_files");
+				return;
+			}
+		}
+	};
+
+	if (isMcp) {
+		// The split is made against the applied servers' names, which hold no underscore, so it is unique.
+		const split = splitForkMcpToolName(
+			toolName,
+			(ctx.applied?.mcpServers ?? []).map((s) => s.name),
+		);
+		if (split === null) {
+			reasons.add("unknown_param");
+		}
+		// Claude names the server it is calling; a name that disagrees with the split, or a server that isn't
+		// one of ours (a plugin, an account connector), is never approvable (xander M3).
+		const named = isRecord(params.mcp_server) ? params.mcp_server : null;
+		if (
+			!split ||
+			named === null ||
+			named.name !== split.server ||
+			named.source !== "dynamic" ||
+			Object.keys(named).some((k) => k !== "name" && k !== "source")
+		) {
+			reasons.add("unknown_param");
+		}
+		const inputText = forkMcpInputText(input);
+		if (inputText.length > FORK_MCP_INPUT_MAX_CHARS) reasons.add("too_long");
+		return {
+			kind: "claude_tool",
+			...base,
+			command: null,
+			cwd: ctx.cwd,
+			reason: null,
+			declineOnly: [...reasons],
+			claude: {
+				...extras(toolName, inputText, [], []),
+				...(split ? { mcp: split } : {}),
+			},
+		};
+	}
+	const unknownTool = (): ParsedApproval => ({
+		// A tool outside the six: reported decline-only so a person sees that it was asked for and why it can't be approved.
+		kind: "command",
+		...base,
+		command: null,
+		cwd: ctx.cwd,
+		reason: null,
+		declineOnly: [...reasons],
+		claude: extras("unknown", null, [], []),
+	});
 
 	switch (toolName) {
+		case "Agent": {
+			if (!isAgent) return unknownTool();
+			const agent = parseAgentInput(input);
+			if (agent === null) return null;
+			// A helper that starts a helper is one level too deep; a type that doesn't ship with Claude Code runs
+			// frontmatter hooks of its own with no card. Either way the call can only be declined.
+			if (fromSubagent) reasons.add("nested_agent");
+			if (!agent.builtIn) reasons.add("custom_agent");
+			if (agent.prompt.length > AGENT_PROMPT_MAX_CHARS) reasons.add("too_long");
+			return {
+				kind: "claude_tool",
+				...base,
+				command: null,
+				cwd: ctx.cwd,
+				reason: agent.description,
+				declineOnly: [...reasons],
+				claude: {
+					...extras("Agent", agent.subagentType, [], []),
+					agent: {
+						subagentType: agent.subagentType,
+						prompt: agent.prompt,
+						builtIn: agent.builtIn,
+					},
+				},
+			};
+		}
 		case "Bash": {
 			const command = text(input.command);
 			if (command !== null && commandNamesAgentMemory(command, ctx.configDir ?? "")) {
 				reasons.add("agent_memory");
+			}
+			if (command !== null && commandNamesAgentpulseHome(command, home)) {
+				reasons.add("agentpulse_files");
 			}
 			return {
 				kind: "command",
@@ -239,6 +351,7 @@ export function parseClaudeRequest(
 			if (path === null || path === "" || content === null) return null;
 			const { abs, real, paths } = judgePath(path);
 			guardMemory(real);
+			guardAgentpulse(real, abs);
 			const existence = port.exists(abs);
 			const kind = existence === "yes" ? "write" : existence === "no" ? "add" : "write_unchecked";
 			return {
@@ -258,6 +371,7 @@ export function parseClaudeRequest(
 			if (path === null || path === "" || oldText === null || newText === null) return null;
 			const { abs, real, paths } = judgePath(path);
 			guardMemory(real);
+			guardAgentpulse(real, abs);
 			const diff = editDiff(oldText, newText, input.replace_all === true);
 			return {
 				kind: "file_change",
@@ -277,6 +391,7 @@ export function parseClaudeRequest(
 			if (path === null || path === "" || source === null) return null;
 			const { abs, real, paths } = judgePath(path);
 			guardMemory(real);
+			guardAgentpulse(real, abs);
 			const diff = notebookDiff(text(input.cell_id), text(input.cell_type), editMode, source);
 			return {
 				kind: "file_change",
@@ -321,16 +436,7 @@ export function parseClaudeRequest(
 			};
 		}
 		default:
-			// A tool outside the six: reported decline-only so a person sees that it was asked for and why it can't be approved.
-			return {
-				kind: "command",
-				...base,
-				command: null,
-				cwd: ctx.cwd,
-				reason: null,
-				declineOnly: [...reasons],
-				claude: extras("unknown", null, [], []),
-			};
+			return unknownTool();
 	}
 }
 
@@ -368,6 +474,7 @@ export function buildClaudeReportBody(input: ClaudeReportInputs): CodexApprovalR
 		revision: input.revision,
 	};
 	const reason = parsed.reason === null ? null : note(cut(parsed.reason, limits.reasonChars));
+	const subagent = claude?.fromSubagent === true ? { fromSubagent: true as const } : {};
 	const cwd = parsed.cwd === null ? null : note(cut(parsed.cwd, limits.pathChars));
 	const declineOnly = [...parsed.declineOnly];
 
@@ -381,18 +488,33 @@ export function buildClaudeReportBody(input: ClaudeReportInputs): CodexApprovalR
 			blockedPath: claude?.blockedPath ? note(cut(claude.blockedPath, limits.pathChars)) : null,
 			truncated,
 			declineOnly,
+			...subagent,
 		};
 	}
 	if (parsed.kind === "claude_tool") {
+		// Cut before `truncated` is read below: a prompt past the card's bound says so.
+		const agent = claude?.agent
+			? {
+					subagentType: claude.agent.subagentType,
+					prompt: note(cut(claude.agent.prompt, AGENT_PROMPT_MAX_CHARS)),
+					builtIn: claude.agent.builtIn,
+				}
+			: null;
 		return {
 			...base,
 			tool: claude?.tool ?? null,
-			target: claude?.target ? note(cut(claude.target, limits.pathChars)) : null,
+			// An MCP call's target is its input as JSON, which has the command's bound, not a path's.
+			target: claude?.target
+				? note(cut(claude.target, claude.mcp ? limits.command : limits.pathChars))
+				: null,
 			cwd,
 			reason,
 			grantRoot: null,
 			truncated,
 			declineOnly,
+			...(claude?.mcp ? { mcp: claude.mcp } : {}),
+			...subagent,
+			...(agent ? { agent } : {}),
 		};
 	}
 	const changes: CodexApprovalChange[] = [];
@@ -407,5 +529,5 @@ export function buildClaudeReportBody(input: ClaudeReportInputs): CodexApprovalR
 			diff: note(diff),
 		});
 	}
-	return { ...base, cwd, reason, grantRoot: null, changes, truncated, declineOnly };
+	return { ...base, cwd, reason, grantRoot: null, changes, truncated, declineOnly, ...subagent };
 }

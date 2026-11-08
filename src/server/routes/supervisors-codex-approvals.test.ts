@@ -142,6 +142,8 @@ describe("what register and heartbeat say", () => {
 			"codex_approvals",
 			"claude_approvals",
 			"claude_turn_control",
+			// AGEN-123: offered while the secrets key is set (the test environment sets one).
+			"fork_tool_detail",
 		]);
 
 		const again = await register({ id: first.id, hostName: "p5-fresh" }, first.token);
@@ -151,6 +153,8 @@ describe("what register and heartbeat say", () => {
 			"codex_approvals",
 			"claude_approvals",
 			"claude_turn_control",
+			// AGEN-123: offered while the secrets key is set (the test environment sets one).
+			"fork_tool_detail",
 		]);
 		expect(body.supervisor.id).toBe(first.id);
 
@@ -166,6 +170,8 @@ describe("what register and heartbeat say", () => {
 			"codex_approvals",
 			"claude_approvals",
 			"claude_turn_control",
+			// AGEN-123: offered while the secrets key is set (the test environment sets one).
+			"fork_tool_detail",
 		]);
 		expect(beatBody.supervisor.id).toBe(first.id);
 	});
@@ -188,6 +194,8 @@ describe("what register and heartbeat say", () => {
 			"codex_approvals",
 			"claude_approvals",
 			"claude_turn_control",
+			// AGEN-123: offered while the secrets key is set (the test environment sets one).
+			"fork_tool_detail",
 		]);
 		hostA = { id: hostA.id, token: body.supervisorCredential };
 		expect((await rowOf(id))?.closedReason).toBe("runtime_gone");

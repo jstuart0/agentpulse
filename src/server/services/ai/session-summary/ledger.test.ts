@@ -39,6 +39,7 @@ function base(id: number): EvidenceRow {
 		description: null,
 		response: null,
 		responseTail: null,
+		forkCall: null,
 	};
 }
 const prompt = (id: number, content: string): EvidenceRow => ({
@@ -1894,5 +1895,52 @@ describe("TC-3.K3 the ledger carries the operands and a dry-run flag with the ve
 		});
 		expect("operands" in stored).toBe(false);
 		expect("dryRun" in stored).toBe(false);
+	});
+});
+
+describe("AGEN-122 fork call rows", () => {
+	const forkCall = (id: number, outcome: string, tool: string | null = "Bash"): EvidenceRow => ({
+		...base(id),
+		eventType: "HeadlessStatus",
+		category: "progress_update",
+		toolName: null,
+		content: "Bash: didn't succeed",
+		forkCall: { tool, outcome },
+	});
+
+	test("an observed action with a status and no command, never a progress one-liner", () => {
+		const { entries, ids } = (() => {
+			const ledger = build([
+				prompt(1, "go"),
+				forkCall(2, "failed"),
+				forkCall(3, "approved", "Write"),
+			]);
+			return { entries: ledger.text, ids: ledger.ids };
+		})();
+		expect(entries).toContain("E2");
+		expect(entries).toContain("OBSERVED Bash call: FAILED (observed; command not recorded)");
+		expect(entries).toContain("OBSERVED Write call: ok (observed; command not recorded)");
+		expect(entries).not.toMatch(/progress|didn't succeed/);
+		expect(ids.get("E2")).toMatchObject({ kind: "tool", result: "failed", observed: true });
+		expect(ids.get("E3")).toMatchObject({ kind: "tool", result: "ok", observed: true });
+	});
+
+	test("an unknown tool name is a neutral word, and the row's content text is never printed", () => {
+		const text = build([prompt(1, "go"), forkCall(2, "unasked", null)]).text;
+		expect(text).toContain("OBSERVED tool call: ok");
+		const tampered = { ...forkCall(3, "failed"), content: "rm -rf / --no-preserve-root" };
+		expect(build([prompt(1, "go"), tampered]).text).not.toContain("rm -rf");
+	});
+
+	test("a HeadlessStatus row with no forkCall (the loader found no marker) is the one-liner it always was", () => {
+		const plain: EvidenceRow = { ...forkCall(2, "failed"), forkCall: null, content: "x" };
+		const text = build([prompt(1, "go"), plain]).text;
+		expect(text).toContain("CLAIMED progress:");
+		expect(text).not.toContain("call:");
+	});
+
+	test("a fork call never upgrades a validation (F16): no command class comes from it", () => {
+		const ledger = build([prompt(1, "go"), forkCall(2, "approved")]);
+		expect([...ledger.ids.values()].some((f) => f.kind === "validation")).toBe(false);
 	});
 });

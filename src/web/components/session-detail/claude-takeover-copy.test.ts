@@ -49,16 +49,23 @@ import {
 	CLAUDE_NO_HOST_SOLO,
 	CLAUDE_NO_HOST_TEAM,
 	CLAUDE_QUIET_WAIT,
+	FORK_OPTIONS_CLOSING,
+	FORK_OPTIONS_LEGEND,
+	FORK_OPTION_CONTROLS,
 	claudeConfirmLabel,
 	claudeContinuedAs,
 	claudeDialogLines,
 	claudeProgress,
 	claudeResumeCommand,
 	claudeStaleWorking,
+	forkOptionControlState,
+	notInSessionLine,
+	toolDetailLine,
 } from "./claude-takeover-copy.js";
 import {
 	FORK_CLAUDE_MD_NOT_LOADED,
 	FORK_TOOLS_REASON,
+	forkOptionsLine,
 	forkStatusView,
 } from "./fork-status-view.js";
 import { controlBlockedReason, hostControlHint } from "./host-control-view.js";
@@ -285,7 +292,6 @@ describe("the dialog: one text for both modes, committing to neither", () => {
 			"subagents",
 			"slash commands",
 			"saving memories",
-			"Tools show in the timeline by name and outcome, with no details.",
 		]) {
 			expect(out, item).toContain(item);
 		}
@@ -1541,5 +1547,170 @@ describe("the words, scanned across the whole Claude side", () => {
 			endedFork: null,
 		});
 		expect(dialog.paragraphs.map((p) => p.text).join(" ")).not.toMatch(/take[ns]? over/i);
+	});
+});
+
+describe("copy structure for the fork options (AGEN-119..123 Track 0)", () => {
+	const base = {
+		sessionName: "n",
+		machine: "studio",
+		cwd: "/w",
+		ownerName: null,
+		endedFork: null,
+	};
+
+	test("with no option the 'Not in this session' sentence is word for word what it was", () => {
+		expect(notInSessionLine()).toBe(
+			"your project's CLAUDE.md, hooks and MCP servers, your own MCP servers, subagents, slash commands and saving memories.",
+		);
+		expect(notInSessionLine({})).toBe(notInSessionLine());
+		expect(notInSessionLine({ mcp: false, subagents: false })).toBe(notInSessionLine());
+		const out = claudeDialogLines(base).paragraphs.find((p) => p.label === "Not in this session:");
+		expect(out?.text).toBe(notInSessionLine());
+	});
+
+	test("an option that is turned on is no longer listed as missing", () => {
+		expect(notInSessionLine({ mcp: true })).not.toContain("your own MCP servers");
+		expect(notInSessionLine({ mcp: true })).toContain("subagents");
+		expect(notInSessionLine({ subagents: true })).not.toContain("subagents");
+		expect(notInSessionLine({ mcp: true, subagents: true })).toBe(
+			"your project's CLAUDE.md, hooks and MCP servers, slash commands and saving memories.",
+		);
+		// The project's own MCP servers stay out whatever is chosen.
+		expect(notInSessionLine({ mcp: true, subagents: true })).toContain("hooks and MCP servers");
+	});
+
+	test("the 'Not in this session' line says only what is absent; what tool detail there is has its own paragraph", () => {
+		expect(notInSessionLine()).not.toMatch(/details?|timeline/i);
+		expect(toolDetailLine("solo", null)).toBe("You can open what each tool call ran, for 7 days.");
+		expect(toolDetailLine("team", "you")).toBe(
+			"You and admins can open what each tool call ran, for 7 days, when signed in. Others see only the tool's name and outcome.",
+		);
+		expect(toolDetailLine("team", "Ana")).toMatch(/^Ana and admins can open /);
+		expect(toolDetailLine("team", null)).toBe(
+			"Admins can open what each tool call ran, for 7 days, when signed in. Others see only the tool's name and outcome.",
+		);
+		const solo = claudeDialogLines(base).paragraphs.find((p) => p.label === "Tool details:");
+		expect(solo?.text).toBe(toolDetailLine("solo", null) as string);
+		const team = claudeDialogLines({ ...base, ownerName: "you" }).paragraphs.find(
+			(p) => p.label === "Tool details:",
+		);
+		expect(team?.text).toBe(toolDetailLine("team", "you") as string);
+		// The MCP option (AGEN-121) and the subagents option (AGEN-120) are the controls.
+		expect(FORK_OPTION_CONTROLS.map((c) => c.key)).toEqual(["mcp", "subagents"]);
+		expect(FORK_OPTIONS_LEGEND).toBe("Options for this session (off by default)");
+		expect(FORK_OPTIONS_CLOSING).toBe(
+			"These stay as chosen for this session. To change them, continue again.",
+		);
+	});
+});
+
+describe("the MCP option in the dialog and on the status line (AGEN-121)", () => {
+	const control = FORK_OPTION_CONTROLS.find((c) => c.key === "mcp");
+	if (!control) throw new Error("the MCP control is missing");
+	const features = new Set(["claudeForkMcp"]);
+
+	test("the control's label and description are the plan's words", () => {
+		expect(control.label).toBe("Include my fork MCP servers");
+		expect(control.help("studio")).toBe(
+			"Starts the MCP servers listed in ~/.agentpulse/claude-fork-mcp.json on studio, with whatever access they have; they also see Claude's own login. Each tool call waits for you unless your own Claude settings allow it, a server can act on its own once running, and AgentPulse can't tell what a tool does.",
+		);
+		expect(control.capability).toBe("claudeForkMcp");
+		expect(control.hostFeature).toBe("claude_fork_mcp");
+	});
+
+	test("it is drawn only when the server advertises claudeForkMcp, and not before the features are known", () => {
+		expect(forkOptionControlState(control, features, null, null).shown).toBe(true);
+		expect(forkOptionControlState(control, new Set(), null, null).shown).toBe(false);
+		expect(forkOptionControlState(control, null, null, null).shown).toBe(false);
+	});
+
+	test("with no machine chosen it is usable; a machine whose supervisor lacks the feature disables it and says why", () => {
+		const none = forkOptionControlState(control, features, null, null);
+		expect(none.disabled).toBe(false);
+		expect(none.help).toContain("on the chosen machine");
+
+		const old = forkOptionControlState(control, features, "studio", ["claude_takeover"]);
+		expect(old).toMatchObject({ shown: true, disabled: true });
+		expect(old.help).toBe("studio's supervisor can't do this yet. Update it to use this.");
+
+		const able = forkOptionControlState(control, features, "studio", ["claude_fork_mcp"]);
+		expect(able.disabled).toBe(false);
+		expect(able.help).toContain("on studio");
+	});
+
+	test("the dialog adds the fragment only when the option is on, and the 'Not in this session' line drops 'your own MCP servers'", () => {
+		const base = {
+			sessionName: "Fix login",
+			machine: "studio",
+			cwd: "/w",
+			ownerName: null,
+			endedFork: null,
+		};
+		const off = claudeDialogLines(base).paragraphs;
+		expect(off.some((p) => p.label === "Fork MCP servers:")).toBe(false);
+		const on = claudeDialogLines({ ...base, requested: { mcp: true } }).paragraphs;
+		const fragment = on.find((p) => p.label === "Fork MCP servers:");
+		expect(fragment?.text).toBe(
+			"Your fork MCP servers start in this session. Their tool calls wait for you; what each tool does, AgentPulse can't tell.",
+		);
+		const absent = on.find((p) => p.label === "Not in this session:");
+		expect(absent?.text).not.toContain("your own MCP servers");
+		expect(on.indexOf(fragment as never)).toBeLessThan(on.indexOf(absent as never));
+	});
+
+	test("the status line names the applied servers, and says nothing for a session without any", () => {
+		const applied = (names: string[], claudeVersion = "2.1.319") => ({
+			mcpServers: names.map((name) => ({ name, digest: "a".repeat(64) })),
+			subagents: false,
+			claudeVersion,
+		});
+		expect(forkOptionsLine(null, applied(["probe", "docs"]), "studio")).toBe(
+			"Fork MCP servers: probe, docs.",
+		);
+		expect(forkOptionsLine(null, applied([]), "studio")).toBeNull();
+		expect(forkOptionsLine(null, null, "studio")).toBeNull();
+		expect(forkOptionsLine({}, applied([]), "studio")).toBeNull();
+	});
+
+	test("asked for and not applied, the line says off and gives the reason from what the host reported", () => {
+		const off = (claudeVersion: string) => ({ mcpServers: [], subagents: false, claudeVersion });
+		expect(forkOptionsLine({ mcp: true }, off(""), "studio")).toBe(
+			"Fork MCP servers: off. That machine's supervisor can't do this yet. Update it to use this.",
+		);
+		expect(forkOptionsLine({ mcp: true }, null, "studio")).toContain(
+			"supervisor can't do this yet",
+		);
+		expect(forkOptionsLine({ mcp: true }, off("2.1.318"), "studio")).toContain(
+			"hasn't been tested with it",
+		);
+		expect(forkOptionsLine({ mcp: true }, off("2.1.319"), "studio")).toContain(
+			"There is no valid ~/.agentpulse/claude-fork-mcp.json on that machine.",
+		);
+	});
+
+	test("the status view of a stored fork carries the line", () => {
+		const view = forkStatusView({
+			fork: {
+				sourceId: "src",
+				mode: "ask",
+				options: {
+					mcpServers: [{ name: "probe", digest: "a".repeat(64) }],
+					subagents: false,
+					claudeVersion: "2.1.319",
+				},
+			},
+			source: { state: "unknown" },
+			machine: "studio",
+			managedState: "managed",
+		});
+		expect(view.optionsLine).toBe("Fork MCP servers: probe.");
+		const plain = forkStatusView({
+			fork: { sourceId: "src", mode: "ask" },
+			source: { state: "unknown" },
+			machine: "studio",
+			managedState: "managed",
+		});
+		expect(plain.optionsLine).toBeNull();
 	});
 });

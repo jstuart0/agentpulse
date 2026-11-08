@@ -8,6 +8,7 @@ import {
 	CODEX_APPROVAL_LIMITS,
 } from "../../shared/codex-approvals.js";
 import { CLAUDE_TURN_CONTROL } from "../../shared/constants.js";
+import { FORK_TOOL_DETAIL, FORK_TOOL_DETAIL_LIMITS } from "../../shared/fork-tool-calls.js";
 import { DELIVERY_ID_HEADER, REPLAY_HEADER } from "../../shared/hook-headers.js";
 import { privilegeCliArgs } from "../../shared/launch-privileges.js";
 import {
@@ -57,6 +58,12 @@ import {
 	updateControlAction,
 } from "../services/control-actions.js";
 import { parseDeliveryId } from "../services/event-dedup.js";
+import {
+	ForkToolDetailRefusal,
+	forkToolDetailAvailable,
+	parseForkToolCallsReport,
+	recordForkToolCalls,
+} from "../services/fork-tool-detail.js";
 import {
 	claimNextLaunchRequest,
 	failRunningHeadlessLaunchesOfRestartedHost,
@@ -252,6 +259,14 @@ const SERVER_FEATURES = [
 ] as const;
 
 /**
+ * The features this server offers right now. `fork_tool_detail` (AGEN-123) is offered only while the secrets
+ * key that encrypts the detail is set, so a host never sends text a server can't keep safely.
+ */
+function currentServerFeatures(): string[] {
+	return [...SERVER_FEATURES, ...(forkToolDetailAvailable() ? [FORK_TOOL_DETAIL] : [])];
+}
+
+/**
  * A supervisor registered again, so its previous process (and the app-servers it ran) is gone: its open
  * approvals close. A failure here must not fail the registration (the credential may already be issued and
  * the enrollment token spent); the rows are then closed by the host's absence from the next sync and by
@@ -430,7 +445,7 @@ supervisorsAgentRouter.post("/supervisors/register", registerBodyLimit, async (c
 		await closeRestartedHostApprovals(registered.supervisor.id);
 		await degradeRestartedHostSessions(registered.supervisor.id);
 		await failRestartedHostClaudeTurns(registered.supervisor.id);
-		return c.json({ ...registered, serverFeatures: SERVER_FEATURES });
+		return c.json({ ...registered, serverFeatures: currentServerFeatures() });
 	} catch (err) {
 		if (err instanceof OwnerDisabledError) {
 			return c.json({ error: "Enrollment token is no longer valid" }, 409);
@@ -445,7 +460,7 @@ supervisorsAgentRouter.post("/supervisors/:id/heartbeat", requireSupervisorAuth(
 	await recordHeartbeatExcludeState(supervisorId, body);
 	const supervisor = await heartbeatSupervisor(supervisorId, parseOutboxState(body));
 	if (!supervisor) return c.json({ error: "Supervisor not found" }, 404);
-	return c.json({ supervisor, serverFeatures: SERVER_FEATURES });
+	return c.json({ supervisor, serverFeatures: currentServerFeatures() });
 });
 
 supervisorsAgentRouter.post(
@@ -721,6 +736,43 @@ supervisorsAgentRouter.post(
 	},
 );
 
+/** In memory, per replica, like the other limiters. Per host: a runaway fork is bounded per session as well. */
+const toolCallsReportLimiter = new FixedWindowCounter(60_000);
+const TOOL_CALLS_RETRY_AFTER_SECONDS = 5;
+const toolCallsBodyLimit = bodyLimit({
+	maxSize: FORK_TOOL_DETAIL_LIMITS.reportBodyBytes,
+	onError: (c) => c.json({ error: "payload_too_large" }, 413),
+});
+
+// A supervisor reports what a fork's tool calls ran (AGEN-123). Never queued by the supervisor. Refusals are
+// fixed codes; nothing the agent wrote is ever in an answer.
+supervisorsAgentRouter.post(
+	"/supervisors/:id/managed-sessions/:sessionId/tool-calls",
+	requireSupervisorAuth(),
+	toolCallsBodyLimit,
+	async (c) => {
+		const supervisorId = c.req.param("id") ?? "";
+		const sessionId = c.req.param("sessionId") ?? "";
+		if (
+			!toolCallsReportLimiter.tryConsume(supervisorId, FORK_TOOL_DETAIL_LIMITS.reportsPerMinute)
+		) {
+			c.header("Retry-After", String(TOOL_CALLS_RETRY_AFTER_SECONDS));
+			return c.json({ error: "rate_limited" }, 429);
+		}
+		const report = parseForkToolCallsReport(parseJsonObject(await c.req.text()));
+		if (!report) return c.json({ error: "invalid_body" }, 400);
+		try {
+			return c.json(await recordForkToolCalls(supervisorId, sessionId, report.calls), 201);
+		} catch (err) {
+			if (err instanceof SessionOwnershipError) return c.json({ error: "session_not_owned" }, 403);
+			if (err instanceof ForkToolDetailRefusal) {
+				return c.json({ error: err.code }, err.code === "detail_unavailable" ? 503 : 409);
+			}
+			throw err;
+		}
+	},
+);
+
 // The host's poll: what it holds, what happened to what it answered; back come the answers to issue.
 // Holds no control lock. Ownership is judged for every id from the authenticated host.
 supervisorsAgentRouter.post(
@@ -767,6 +819,7 @@ supervisorsAgentRouter.post(
 			accepted?: boolean;
 			provedCwd?: unknown;
 			permissionMode?: unknown;
+			applied?: unknown;
 		}>();
 		// A report names its status, and it must be a real one.
 		if (!["running", "succeeded", "failed"].includes(body.status)) {
@@ -781,6 +834,7 @@ supervisorsAgentRouter.post(
 			accepted: body.accepted === true,
 			provedCwd: body.provedCwd,
 			permissionMode: body.permissionMode,
+			applied: body.applied,
 		});
 		if (!action) return c.json({ error: "Control action not found" }, 404);
 		return c.json({ action });

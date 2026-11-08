@@ -209,6 +209,7 @@ const EXPECTED_OWNER_CHECKED_ROUTES = new Set([
 	// Session-changing routes the app composer uses, and the Ask cancel (the asker only).
 	"POST /sessions/:sessionId/prompt",
 	"POST /sessions/:sessionId/stop",
+	"POST /sessions/:sessionId/interrupt",
 	"POST /sessions/:sessionId/retry",
 	"POST /sessions/:sessionId/bind",
 	"POST /sessions/:sessionId/resume",
@@ -219,6 +220,8 @@ const EXPECTED_OWNER_CHECKED_ROUTES = new Set([
 	"POST /ai/ask/threads/:id/cancel",
 	// Codex approvals (AGEN-87): judged by the approval service; accept also needs a signed-in person.
 	"POST /sessions/:sessionId/approvals/:approvalId/decision",
+	"GET /sessions/:sessionId/tool-calls",
+	"GET /sessions/:sessionId/tool-calls/:toolUseId",
 	// Ask threads belong to whoever asked.
 	"GET /ai/ask/threads",
 	"GET /ai/ask/threads/:id",

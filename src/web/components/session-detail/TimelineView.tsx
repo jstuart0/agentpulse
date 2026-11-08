@@ -8,6 +8,7 @@ import {
 	normalizeComparableContent,
 } from "../../../shared/event-authority.js";
 import { SESSION_RESUMED_EVENT_TYPE } from "../../../shared/session-resume.js";
+import { INTERRUPTED_STATUS, TURN_STOPPED_BY_PERSON } from "../../../shared/stop-turn.js";
 import type { EventCategory, EventSource, SessionEvent } from "../../../shared/types.js";
 import { timeAttribute } from "../../lib/event-time.js";
 import { cn, formatTimeAgo } from "../../lib/utils.js";
@@ -275,10 +276,27 @@ export function isTurnSummaryRow(
 	return event.eventType === "HeadlessStatus" && isForkTurnSummary(event.content);
 }
 
+/** The end line of a turn a person stopped (Stop turn): `status: "interrupted"`, or its fixed words. */
+export function isStoppedTurnRow(
+	event: Pick<SessionEvent, "eventType"> & Partial<Pick<SessionEvent, "content" | "rawPayload">>,
+): boolean {
+	if (event.eventType !== FAILED_TURN_EVENT) return false;
+	return (
+		(event.rawPayload as Record<string, unknown> | null | undefined)?.status ===
+			INTERRUPTED_STATUS || event.content === TURN_STOPPED_BY_PERSON
+	);
+}
+
 export type RowTone = "default" | "amber" | "emerald";
 
 /** The colour of a plain event row. */
-export function eventRowTone(event: Pick<SessionEvent, "eventType" | "category">): RowTone {
+export function eventRowTone(
+	event: Pick<SessionEvent, "eventType" | "category"> &
+		Partial<Pick<SessionEvent, "content" | "rawPayload">>,
+): RowTone {
+	// A turn a person stopped on purpose is not an alarm (AGEN-119). The words survive a compact read, which
+	// keeps no `status`.
+	if (isStoppedTurnRow(event)) return "default";
 	if (event.eventType === "ManagedEventsLost" || event.eventType === FAILED_TURN_EVENT)
 		return "amber";
 	if (event.category === "status_update") return "emerald";

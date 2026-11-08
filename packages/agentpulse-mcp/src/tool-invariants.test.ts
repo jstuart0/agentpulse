@@ -100,6 +100,7 @@ const PHASE4_MUTATING_NAMES = [
 	"launch_agent",
 	"prompt_session",
 	"stop_session",
+	"stop_session_turn",
 	"retry_launch",
 	"update_session",
 	"create_template",
@@ -215,11 +216,11 @@ describe("drift guard: no root anyOf/oneOf/allOf on any tool's input schema (ass
 });
 
 describe("drift guard: tool count sanity (assertion 20, corrected counts — see file docstring)", () => {
-	test("manage-scoped server registers exactly 32 tools (11 observe + 6 Phase-3 manage-only reads + 13 Phase-4 additions + 2 approvals, post-AIMR-214-A)", async () => {
+	test("manage-scoped server registers exactly 33 tools (11 observe + 6 Phase-3 manage-only reads + 14 Phase-4 additions + 2 approvals, post-AIMR-214-A)", async () => {
 		const { mcpClient, registry } = await connectServer(["manage"]);
 		const { tools } = await mcpClient.listTools();
-		expect(tools.length).toBe(32);
-		expect(registry.length).toBe(32);
+		expect(tools.length).toBe(33);
+		expect(registry.length).toBe(33);
 		expect(new Set(tools.map((t) => t.name))).toEqual(new Set(MANAGE_TOTAL));
 	});
 
@@ -232,7 +233,7 @@ describe("drift guard: tool count sanity (assertion 20, corrected counts — see
 });
 
 describe("tools/list diff observe vs manage (assertion 21, corrected — see file docstring)", () => {
-	test("manage set is a strict superset of observe; the delta is exactly the 21 manage-only names (6 Phase-3 + 13 Phase-4 + 2 approvals, post-F23/AIMR-214-A)", async () => {
+	test("manage set is a strict superset of observe; the delta is exactly the 22 manage-only names (6 Phase-3 + 14 Phase-4 + 2 approvals, post-F23/AIMR-214-A)", async () => {
 		const { mcpClient: observeClient } = await connectServer(["observe"]);
 		const { mcpClient: manageClient } = await connectServer(["manage"]);
 		const observeNames = new Set((await observeClient.listTools()).tools.map((t) => t.name));
@@ -249,7 +250,7 @@ describe("tools/list diff observe vs manage (assertion 21, corrected — see fil
 			...PHASE4_MUTATING_NAMES,
 		]);
 		expect(new Set(delta)).toEqual(expectedDelta);
-		expect(delta.length).toBe(21);
+		expect(delta.length).toBe(22);
 		// No Phase-4 mutating tool leaked into observe scope — the specific
 		// regression this test guards against.
 		for (const mutating of PHASE4_MUTATING_NAMES) {

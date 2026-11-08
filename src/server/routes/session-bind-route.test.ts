@@ -418,6 +418,32 @@ describe("the body is strict", () => {
 	});
 
 	test.each([
+		["a non-object", "mcp"],
+		["null", null],
+		["an array", [true]],
+		["an unknown key", { sandbox: true }],
+		["a string value", { mcp: "yes" }],
+		["a number value", { subagents: 1 }],
+		["a nested object", { mcp: { servers: ["a"] } }],
+	])("forkOptions that is %s is a 400", async (_name, forkOptions) => {
+		const { host, id, headers } = await setup();
+		const res = await bind(id, headers, { ...confirmed(host), forkOptions });
+		expect(res.status).toBe(400);
+		expect(await errorOf(res)).toBe("invalid_body");
+		await noRows(id);
+	});
+
+	test("forkOptions is exactly the two booleans: asking for none passes, asking for an option on a Codex session is a 409 fork_options_not_supported", async () => {
+		const { host, id, headers } = await setup();
+		const asked = await bind(id, headers, { ...confirmed(host), forkOptions: { mcp: true } });
+		expect(asked.status).toBe(409);
+		expect(await errorOf(asked)).toBe("fork_options_not_supported");
+		await noRows(id);
+		const none = await bind(id, headers, { ...confirmed(host), forkOptions: { mcp: false } });
+		expect(none.status).toBe(202);
+	});
+
+	test.each([
 		["missing", undefined],
 		["false", false],
 		['the string "true"', "true"],

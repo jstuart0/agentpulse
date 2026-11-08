@@ -20,6 +20,10 @@ import { resolveSession } from "./ask-resolver.js";
 import type { SessionActionIntent } from "./launch-intent-detector.js";
 import { sendTelegramActionRequest } from "./telegram-helpers.js";
 
+/** A continued Claude session has two stops; Ask can only end the session, so it says so. */
+const FORK_STOP_NOTE =
+	"This ends the session; it does not just stop the current turn. To stop only the turn, use Stop turn on the session page.";
+
 export type { SessionActionIntent };
 // Slice B and Slice C handlers should import resolveSession from ask-resolver.ts directly.
 
@@ -156,15 +160,24 @@ export async function handleSessionAction(
 			};
 		}
 
+		const [row] = await getDb()
+			.select({ metadata: sessions.metadata })
+			.from(sessions)
+			.where(eq(sessions.sessionId, session.sessionId))
+			.limit(1);
+		const isFork = Boolean((row?.metadata as Record<string, unknown> | null)?.forkedFromSessionId);
+
 		return createSessionActionRequest({
 			kind: "session_stop",
 			session,
-			question: `Stop session **${name}**?`,
+			question: isFork ? `End session **${name}**? ${FORK_STOP_NOTE}` : `Stop session **${name}**?`,
 			contextLabel: "Stop session request",
 			origin,
 			threadId,
 			telegramChatId,
-			successReply: `Queued a stop for **${name}** — approve in inbox.`,
+			successReply: isFork
+				? `Queued ending **${name}** — approve in inbox. ${FORK_STOP_NOTE}`
+				: `Queued a stop for **${name}** — approve in inbox.`,
 		});
 	}
 

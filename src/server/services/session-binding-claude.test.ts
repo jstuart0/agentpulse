@@ -21,6 +21,7 @@ import {
 import { eq } from "drizzle-orm";
 import "../db/__test_db.js";
 import { CLAUDE_TURN_CONTROL, CODEX_FOLLOW_UP_PROMPTS } from "../../shared/constants.js";
+import * as sharedResume from "../../shared/session-resume.js";
 import { CLAUDE_TAKEOVER, RESUMES_SESSIONS } from "../../shared/session-resume.js";
 import type { Actor } from "../auth/actor.js";
 import { resetIdentityState } from "../test-utils/identity-reset.js";
@@ -1249,5 +1250,395 @@ describe("announcing a queued takeover (P5-I3)", () => {
 		}
 		expect(seen.filter((x) => x === id).length).toBe(1);
 		expect(await snapshot(id)).toBe(before);
+	});
+});
+
+// ── fork options (AGEN-119..123 Track 0): the bind body, the rule, the stored value, recovery ──────────────
+
+describe("fork options", () => {
+	const { FORK_OPTIONS_OFF } = sharedResume;
+	const APPLIED = {
+		mcpServers: [{ name: "probe", digest: "a".repeat(64) }],
+		subagents: true,
+		claudeVersion: "2.1.319",
+	};
+
+	function bindWith(
+		id: string,
+		host: string,
+		actor: Actor,
+		forkOptions?: { mcp?: boolean; subagents?: boolean },
+	) {
+		return bindObservedSession(
+			id,
+			{
+				targetSupervisorId: host,
+				sameMachineConfirmed: true,
+				...(forkOptions ? { forkOptions } : {}),
+			},
+			actor,
+			deps,
+		);
+	}
+
+	async function claimed(id: string, host: string, actor: Actor, forkOptions?: object) {
+		const result = await bindWith(id, host, actor, forkOptions);
+		const forkId = (result.action.metadata as Record<string, string>).forkSessionId as string;
+		sessionsUsed.push(forkId);
+		expect((await control.claimNextControlAction(host))?.id).toBe(result.action.id);
+		return { id, host, forkId, actionId: result.action.id, before: await snapshot(id) } as Started;
+	}
+
+	const storedOptions = async (forkId: string) =>
+		((await sessionRow(forkId)).metadata as Record<string, unknown>).forkOptions;
+
+	test("a bind without options carries none, and the settle stores FORK_OPTIONS_OFF when the host reports nothing", async () => {
+		const host = await seedHost();
+		const id = await seedObserved();
+		const s = await claimed(id, host, SOLO);
+		const [action] = await actionsOn(id);
+		expect(action?.metadata).not.toHaveProperty("forkOptions");
+		await report(s);
+		expect(await storedOptions(s.forkId)).toEqual(FORK_OPTIONS_OFF);
+	});
+
+	test("the options asked for reach the host in the action's metadata, and only those two keys", async () => {
+		const host = await seedHost();
+		const id = await seedObserved();
+		const result = await bindWith(id, host, SOLO, { mcp: true });
+		sessionsUsed.push((result.action.metadata as Record<string, string>).forkSessionId as string);
+		expect((result.action.metadata as Record<string, unknown>).forkOptions).toEqual({ mcp: true });
+	});
+
+	test("what the host reports it applied is stored, judged for shape; a malformed report stores none", async () => {
+		const host = await seedHost();
+		const a = await claimed(await seedObserved(), host, SOLO, { mcp: true, subagents: true });
+		await report(a, { applied: APPLIED });
+		expect(await storedOptions(a.forkId)).toEqual(APPLIED);
+
+		for (const bad of [
+			{ ...APPLIED, extra: 1 },
+			{ ...APPLIED, mcpServers: [{ name: "bad name!", digest: "a".repeat(64) }] },
+			{ ...APPLIED, mcpServers: [{ name: "probe", digest: "short" }] },
+			{ ...APPLIED, subagents: "yes" },
+			"nonsense",
+		]) {
+			const s = await claimed(await seedObserved(), host, SOLO, { mcp: true, subagents: true });
+			await report(s, { applied: bad });
+			expect(await storedOptions(s.forkId), JSON.stringify(bad)).toEqual(FORK_OPTIONS_OFF);
+		}
+	});
+
+	test("recovery carries the stored value in the resume action's metadata; a session from before the options reads as none", async () => {
+		const host = await seedHost();
+		const s = await claimed(await seedObserved(), host, SOLO, { mcp: true, subagents: true });
+		await report(s, { applied: APPLIED });
+		await managedState.degradeClaudeForksOfRestartedHost(host);
+		const result = await queueSessionResume(s.forkId, SOLO, deps);
+		expect((result.action.metadata as Record<string, unknown>).storedForkOptions).toEqual(APPLIED);
+
+		// The same fork as an older server left it: no forkOptions key on the session.
+		const old = await claimed(await seedObserved(), host, SOLO);
+		await report(old);
+		await getDb()
+			.update(sessions)
+			.set({ metadata: { forkedFromSessionId: old.id, forkPermissionBranch: "ask" } })
+			.where(eq(sessions.sessionId, old.forkId));
+		await managedState.degradeClaudeForksOfRestartedHost(host);
+		const again = await queueSessionResume(old.forkId, SOLO, deps);
+		expect((again.action.metadata as Record<string, unknown>).storedForkOptions).toEqual(
+			FORK_OPTIONS_OFF,
+		);
+	});
+
+	test("a supervisor report can't write the stored options onto a session", async () => {
+		const host = await seedHost();
+		const s = await claimed(await seedObserved(), host, SOLO);
+		await report(s);
+		await managedState.upsertManagedSessionState(host, {
+			sessionId: s.forkId,
+			agentType: "claude_code",
+			status: "active",
+			metadata: { forkOptions: APPLIED },
+		});
+		expect(await storedOptions(s.forkId)).toEqual(FORK_OPTIONS_OFF);
+	});
+
+	test("only the bind, the settle, the approval-report check (a read) and the supervisor-report filter name forkOptions in server code (no hook, rename or native-name path writes it)", () => {
+		const { readdirSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+		const { join, relative } = require("node:path") as typeof import("node:path");
+		const root = join(import.meta.dir, "..");
+		const found: string[] = [];
+		const walk = (dir: string) => {
+			for (const entry of readdirSync(dir, { withFileTypes: true })) {
+				const full = join(dir, entry.name);
+				if (entry.isDirectory()) walk(full);
+				else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+					if (readFileSync(full, "utf8").includes("forkOptions")) found.push(relative(root, full));
+				}
+			}
+		};
+		walk(root);
+		// codex-approvals.ts, authorization.ts and control-actions.ts only read it (which MCP servers a report may
+		// name, and whether the options need the consenting owner to drive the fork).
+		expect(found.sort()).toEqual([
+			"routes/sessions.ts",
+			"services/authorization.ts",
+			"services/claude-takeover-settle.ts",
+			"services/codex-approvals.ts",
+			"services/control-actions.ts",
+			"services/managed-session-state.ts",
+			"services/session-binding.ts",
+		]);
+	});
+
+	describe("who may use them (C-H4)", () => {
+		test("solo may, with or without options", async () => {
+			const host = await seedHost();
+			const id = await seedObserved();
+			await bindWith(id, host, SOLO, { mcp: true, subagents: true }).then((r) =>
+				sessionsUsed.push((r.action.metadata as Record<string, string>).forkSessionId as string),
+			);
+		});
+
+		test("in team mode an admin binding an unowned session to a member's host: fine without options, 403 with either", async () => {
+			const t = await team();
+			const host = await seedHost({ ownerUserId: t.alice.id });
+			const refusedMcp = await refusal(
+				bindWith(await seedObserved(), host, ADMIN(t.admin.id), { mcp: true }),
+			);
+			expect(refusedMcp).toEqual({ code: "fork_options_host_not_yours", status: 403 });
+			const refusedSub = await refusal(
+				bindWith(await seedObserved(), host, ADMIN(t.admin.id), { subagents: true }),
+			);
+			expect(refusedSub.code).toBe("fork_options_host_not_yours");
+			// Positive control: the same bind without options succeeds, and "asking for none" is none.
+			const ok = await bindWith(await seedObserved(), host, ADMIN(t.admin.id));
+			sessionsUsed.push((ok.action.metadata as Record<string, string>).forkSessionId as string);
+			const none = await bindWith(await seedObserved(), host, ADMIN(t.admin.id), {});
+			sessionsUsed.push((none.action.metadata as Record<string, string>).forkSessionId as string);
+			const falsy = await bindWith(await seedObserved(), host, ADMIN(t.admin.id), { mcp: false });
+			sessionsUsed.push((falsy.action.metadata as Record<string, string>).forkSessionId as string);
+		});
+
+		test("a member on their own host passes; on an ownerless host an admin is refused", async () => {
+			const t = await team();
+			const own = await seedHost({ ownerUserId: t.alice.id });
+			const id = await seedObserved({ ownerUserId: t.alice.id });
+			const ok = await bindWith(id, own, MEMBER(t.alice.id), { mcp: true, subagents: true });
+			sessionsUsed.push((ok.action.metadata as Record<string, string>).forkSessionId as string);
+
+			const ownerless = await seedHost();
+			const refused = await refusal(
+				bindWith(await seedObserved(), ownerless, ADMIN(t.admin.id), { subagents: true }),
+			);
+			expect(refused.code).toBe("fork_options_host_not_yours");
+			expect(authz.mayUseForkOptionsOnHost(ADMIN(t.admin.id), "team", null)).toBe(
+				"fork_options_host_not_yours",
+			);
+			expect(
+				authz.mayUseForkOptionsOnHost(MEMBER(t.alice.id), "team", { ownerUserId: t.alice.id }),
+			).toBeNull();
+			expect(
+				authz.mayUseForkOptionsOnHost(
+					{ userId: null, label: "anonymous", role: "admin", mode: "team" },
+					"team",
+					{ ownerUserId: null },
+				),
+			).toBe("fork_options_host_not_yours");
+		});
+
+		test("the settle judges it again: a host that changed hands before the host reported fails the takeover", async () => {
+			const t = await team();
+			const host = await seedHost({ ownerUserId: t.alice.id });
+			const id = await seedObserved({ ownerUserId: t.alice.id });
+			const s = await claimed(id, host, MEMBER(t.alice.id), { mcp: true });
+			await getDb()
+				.update(supervisors)
+				.set({ ownerUserId: t.bob.id })
+				.where(eq(supervisors.id, host));
+			await report(s, { applied: APPLIED });
+			await failedWith(s);
+		});
+
+		test("the settle's options rule stands on its own: an admin's host that lost its owner fails the takeover though an admin may use any host", async () => {
+			const t = await team();
+			const host = await seedHost({ ownerUserId: t.admin.id });
+			const s = await claimed(await seedObserved(), host, ADMIN(t.admin.id), { subagents: true });
+			await getDb().update(supervisors).set({ ownerUserId: null }).where(eq(supervisors.id, host));
+			await report(s, { applied: APPLIED });
+			await failedWith(s);
+			// Positive control: the same takeover without options settles on an ownerless host.
+			const host2 = await seedHost({ ownerUserId: t.admin.id });
+			const ok = await claimed(await seedObserved(), host2, ADMIN(t.admin.id));
+			await getDb().update(supervisors).set({ ownerUserId: null }).where(eq(supervisors.id, host2));
+			expect((await report(ok))?.status).toBe("succeeded");
+		});
+
+		test("options on a Codex session are refused fork_options_not_supported (409)", async () => {
+			const host = await seedHost({
+				capabilities: {
+					...CAPABILITIES,
+					agentTypes: ["claude_code", "codex_cli"],
+					launchModes: ["headless", "managed_codex"],
+					features: [
+						CLAUDE_TAKEOVER,
+						ENFORCES_LAUNCH_PRIVILEGES,
+						RESUMES_SESSIONS,
+						CODEX_FOLLOW_UP_PROMPTS,
+					],
+					executables: {
+						...CAPABILITIES.executables,
+						codex: {
+							available: true,
+							command: "codex",
+							resolvedPath: "/usr/bin/codex",
+							source: "auto",
+						},
+					},
+				},
+			});
+			const id = await seedObserved({ agentType: "codex_cli" });
+			expect(await refusal(bindWith(id, host, SOLO, { mcp: true }))).toEqual({
+				code: "fork_options_not_supported",
+				status: 409,
+			});
+			// Positive control: the same Codex session binds without options.
+			const ok = await bindWith(id, host, SOLO);
+			expect(ok.action.actionType).toBe("resume");
+		});
+	});
+
+	describe("the host's report is held to the request (codex-M1)", () => {
+		test("a bind that asked for nothing stores nothing the host says it applied", async () => {
+			const host = await seedHost();
+			const s = await claimed(await seedObserved(), host, SOLO);
+			await report(s, { applied: APPLIED });
+			expect(await storedOptions(s.forkId)).toEqual({
+				...FORK_OPTIONS_OFF,
+				claudeVersion: "2.1.319",
+			});
+			const meta = (await sessionRow(s.forkId)).metadata as Record<string, unknown>;
+			expect(meta.forkOptionsConsentUserId).toBeUndefined();
+		});
+
+		test("an option that was asked for stays; one that wasn't is forced off", async () => {
+			const host = await seedHost();
+			const s = await claimed(await seedObserved(), host, SOLO, { subagents: true });
+			await report(s, { applied: APPLIED });
+			expect(await storedOptions(s.forkId)).toEqual({ ...APPLIED, mcpServers: [] });
+			const m = await claimed(await seedObserved(), host, SOLO, { mcp: true });
+			await report(m, { applied: APPLIED });
+			expect(await storedOptions(m.forkId)).toEqual({ ...APPLIED, subagents: false });
+		});
+
+		test("the consenting host owner is recorded in team mode when options run, and not otherwise", async () => {
+			const t = await team();
+			const host = await seedHost({ ownerUserId: t.alice.id });
+			const s = await claimed(
+				await seedObserved({ ownerUserId: t.alice.id }),
+				host,
+				MEMBER(t.alice.id),
+				{
+					mcp: true,
+				},
+			);
+			await report(s, { applied: APPLIED });
+			const meta = (await sessionRow(s.forkId)).metadata as Record<string, unknown>;
+			expect(meta.forkOptionsConsentUserId).toBe(t.alice.id);
+			const none = await claimed(
+				await seedObserved({ ownerUserId: t.alice.id }),
+				host,
+				MEMBER(t.alice.id),
+			);
+			await report(none);
+			expect(
+				((await sessionRow(none.forkId)).metadata as Record<string, unknown>)
+					.forkOptionsConsentUserId,
+			).toBeUndefined();
+		});
+	});
+
+	describe("only the consenting host owner drives a fork's options (H1)", () => {
+		// A bind can't create the split by itself (host_owner_mismatch keeps a host's owner and the session's owner
+		// equal), so it arises when an admin later hands the fork to someone else. The consent stays with the owner
+		// who gave it.
+		async function handedOverFork() {
+			const t = await team();
+			const host = await seedHost({ ownerUserId: t.alice.id });
+			const s = await claimed(
+				await seedObserved({ ownerUserId: t.alice.id }),
+				host,
+				MEMBER(t.alice.id),
+				{
+					mcp: true,
+					subagents: true,
+				},
+			);
+			await report(s, { applied: APPLIED });
+			await getDb()
+				.update(sessions)
+				.set({ ownerUserId: t.bob.id })
+				.where(eq(sessions.sessionId, s.forkId));
+			return { t, host, s };
+		}
+
+		test("resume: the new owner and an admin are refused with the stable code; the consenting owner is not", async () => {
+			const { t, host, s } = await handedOverFork();
+			await managedState.degradeClaudeForksOfRestartedHost(host);
+			expect(await refusal(queueSessionResume(s.forkId, MEMBER(t.bob.id), deps))).toEqual({
+				code: "fork_options_host_not_yours",
+				status: 403,
+			});
+			expect((await refusal(queueSessionResume(s.forkId, ADMIN(t.admin.id), deps))).code).toBe(
+				"fork_options_host_not_yours",
+			);
+			expect((await actionsOn(s.forkId)).filter((a) => a.actionType === "resume").length).toBe(0);
+			// Positive control: handed back, the consenting owner queues it.
+			await getDb()
+				.update(sessions)
+				.set({ ownerUserId: t.alice.id })
+				.where(eq(sessions.sessionId, s.forkId));
+			const ok = await queueSessionResume(s.forkId, MEMBER(t.alice.id), deps);
+			expect(ok.action.actionType).toBe("resume");
+		});
+
+		test("resume: a member's fork with no options resumes for the member (control)", async () => {
+			const t = await team();
+			const host = await seedHost({ ownerUserId: t.alice.id });
+			const s = await claimed(
+				await seedObserved({ ownerUserId: t.alice.id }),
+				host,
+				MEMBER(t.alice.id),
+			);
+			await report(s);
+			await managedState.degradeClaudeForksOfRestartedHost(host);
+			const ok = await queueSessionResume(s.forkId, MEMBER(t.alice.id), deps);
+			expect(ok.action.actionType).toBe("resume");
+		});
+
+		test("prompt: the new owner and an identity-less actor are refused with the stable code; the consenting owner is not", async () => {
+			const { t, s } = await handedOverFork();
+			await expect(
+				control.queuePromptAction(s.forkId, "hello", MEMBER(t.bob.id)),
+			).rejects.toMatchObject({ code: "fork_options_host_not_yours" });
+			await expect(
+				control.queuePromptAction(s.forkId, "hello", {
+					userId: null,
+					label: "telegram",
+					mode: "team",
+				}),
+			).rejects.toMatchObject({ code: "fork_options_host_not_yours" });
+			const ok = await control.queuePromptAction(s.forkId, "hello", MEMBER(t.alice.id));
+			expect(ok.actionType).toBe("prompt");
+		});
+
+		test("solo is unaffected by recorded consent", async () => {
+			const host = await seedHost();
+			const s = await claimed(await seedObserved(), host, SOLO, { mcp: true });
+			await report(s, { applied: APPLIED });
+			const ok = await control.queuePromptAction(s.forkId, "hello", SOLO);
+			expect(ok.actionType).toBe("prompt");
+		});
 	});
 });

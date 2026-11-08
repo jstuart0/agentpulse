@@ -18,6 +18,7 @@ import {
 	parseOwnerParam,
 	resolveOwnerScope,
 } from "../../shared/owner-scope.js";
+import { parseForkOptionsRequest } from "../../shared/session-resume.js";
 import {
 	ACTIVE_OPERATIONAL_STATUSES,
 	type ActiveOperationalStatus,
@@ -58,15 +59,22 @@ import {
 import { BindRefusal } from "../services/bind-refusal.js";
 import {
 	ControlBusyError,
+	ForkOptionsHostNotYoursError,
 	HostGoneError,
 	HostOfflineError,
 	HostUpgradeRequiredError,
 	HumanRequiredError,
+	InterruptNotSupportedError,
+	LaunchMismatchError,
 	ManagedStateNotContinuableError,
+	NoTurnRunningError,
 	NothingToStopError,
 	PromptUnsafeError,
+	SessionNotFoundError,
+	SessionNotManagedError,
 	StopNotSupportedError,
 	listControlActionsForSession,
+	queueInterruptAction,
 	queuePromptAction,
 	queueStopAction,
 	redactControlAction,
@@ -84,6 +92,10 @@ import {
 	getSessionDetail,
 	getSessionName,
 } from "../services/session-detail.js";
+import {
+	sessionInterruptRetryAfterSeconds,
+	tryConsumeSessionInterrupt,
+} from "../services/session-interrupt-limit.js";
 import { changeSessionOwner } from "../services/session-owner-admin.js";
 import {
 	type SessionListField,
@@ -960,6 +972,50 @@ sessionsRouter.post("/sessions/:sessionId/stop", async (c: Context) => {
 });
 
 /**
+ * Stop turn (AGEN-119): ends what a continued Claude session is doing and keeps it open. It runs nothing, so a
+ * `manage` key may press it as it may Stop; owner or admin in team mode. A foreign Origin is refused, and so is
+ * (with authentication off) a Host that is neither loopback nor allowlisted. Six a minute per caller.
+ */
+sessionsRouter.post("/sessions/:sessionId/interrupt", async (c: Context) => {
+	const foreign = refuseBadOrigin(c);
+	if (foreign) return foreign;
+	const host = c.req.header("Host");
+	if (config.disableAuth && host !== undefined && !isTrustedHostWhenAuthOff(host)) {
+		return c.json({ error: "bad_origin" }, 403);
+	}
+	const sessionId = c.req.param("sessionId") ?? "";
+	const refusal = await refuseUnlessMayChange(c, sessionId);
+	if (refusal) return refusal;
+	const authUser = c.get("authUser") as AuthUser | undefined;
+	const subject = authUser?.userId ?? authUser?.keyId ?? "anonymous";
+	if (!tryConsumeSessionInterrupt(subject)) {
+		c.header("Retry-After", String(sessionInterruptRetryAfterSeconds(subject)));
+		return c.json({ error: "rate_limited" }, 429);
+	}
+	try {
+		const action = await queueInterruptAction(sessionId, actorFromAuthUser(authUser), {
+			keyId: authUser?.keyId ?? null,
+		});
+		return c.json({ action: redactControlAction(action, { includePrompt: false }) }, 202);
+	} catch (error) {
+		if (error instanceof SessionNotFoundError) return c.json({ error: "session_not_found" }, 404);
+		if (error instanceof SessionNotManagedError) {
+			return c.json({ error: "not_managed", message: error.message }, 409);
+		}
+		if (error instanceof LaunchMismatchError) {
+			return c.json({ error: "launch_mismatch", message: error.message }, 409);
+		}
+		if (error instanceof InterruptNotSupportedError || error instanceof NoTurnRunningError) {
+			return c.json({ error: error.code, message: error.message }, 409);
+		}
+		const hostRefusal = hostRefusalResponse(c, error);
+		if (hostRefusal) return hostRefusal;
+		console.error("[sessions] interrupt could not be queued:", error);
+		return c.json({ error: "Unable to queue interrupt" }, 400);
+	}
+});
+
+/**
  * A prompt types into a running agent, so the request has to be the dashboard's own or a script's: a
  * foreign Origin is refused, with authentication off the Host must be a loopback address or an allowlisted
  * name (a page reached by DNS rebinding has Origin equal to Host; a browser always sends a Host, so only a
@@ -1000,7 +1056,7 @@ sessionsRouter.post("/sessions/:sessionId/prompt", async (c: Context) => {
 		if (error instanceof PromptUnsafeError) {
 			return c.json({ error: error.code, reason: "slash_command", message: error.message }, 400);
 		}
-		if (error instanceof HumanRequiredError) {
+		if (error instanceof HumanRequiredError || error instanceof ForkOptionsHostNotYoursError) {
 			return c.json({ error: error.code, message: error.message }, 403);
 		}
 		if (error instanceof ControlBusyError) {
@@ -1014,7 +1070,7 @@ sessionsRouter.post("/sessions/:sessionId/prompt", async (c: Context) => {
 });
 
 const BIND_BODY_LIMIT_BYTES = 16 * 1024;
-const BIND_BODY_KEYS = new Set(["targetSupervisorId", "sameMachineConfirmed"]);
+const BIND_BODY_KEYS = new Set(["targetSupervisorId", "sameMachineConfirmed", "forkOptions"]);
 
 /**
  * Takes an observed Codex session over: the machine it ran on will resume it, so prompts, Stop and approvals
@@ -1046,8 +1102,15 @@ sessionsRouter.post(
 			if (typeof body !== "object" || body === null || Array.isArray(body)) {
 				return c.json({ error: "invalid_body" }, 400);
 			}
-			const { targetSupervisorId, sameMachineConfirmed, ...rest } = body as Record<string, unknown>;
+			const {
+				targetSupervisorId,
+				sameMachineConfirmed,
+				forkOptions: rawForkOptions,
+				...rest
+			} = body as Record<string, unknown>;
+			const forkOptions = parseForkOptionsRequest(rawForkOptions);
 			if (
+				forkOptions === null ||
 				Object.keys(rest).length > 0 ||
 				Object.keys(body).some((key) => !BIND_BODY_KEYS.has(key)) ||
 				typeof targetSupervisorId !== "string" ||
@@ -1058,7 +1121,7 @@ sessionsRouter.post(
 			}
 			const result = await bindObservedSession(
 				sessionId,
-				{ targetSupervisorId, sameMachineConfirmed },
+				{ targetSupervisorId, sameMachineConfirmed, forkOptions },
 				actor,
 			);
 			c.header("Cache-Control", "no-store");

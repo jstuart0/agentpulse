@@ -1,11 +1,13 @@
 import { Hono } from "hono";
 import pkg from "../../../package.json" with { type: "json" };
+import { parseForkOptionsRequest } from "../../shared/session-resume.js";
 import { SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE, SCOPE_RESPOND } from "../auth/api-key.js";
 import { getAuthUser, requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope, resolveEffectiveRole } from "../auth/route-scope-policy.js";
 import { config } from "../config.js";
 import { isAiActive, isAiBuildEnabled, isVectorSearchActive } from "../services/ai/feature.js";
 import { getDefaultProvider } from "../services/ai/providers-service.js";
+import { forkToolDetailAvailable } from "../services/fork-tool-detail.js";
 import { getMode } from "../services/instance-mode.js";
 import { type PushAvailability, pushAvailability } from "../services/push/push-runtime.js";
 
@@ -13,7 +15,16 @@ import { type PushAvailability, pushAvailability } from "../services/push/push-r
 export const CAPABILITIES_API_LEVEL = 1;
 
 /** What makes a feature true: a mounted HTTP route, or the WebSocket upgrade path. */
-export type CapabilityProof = { kind: "route"; method: string; path: string } | { kind: "ws" };
+export type CapabilityProof =
+	| { kind: "route"; method: string; path: string }
+	| { kind: "ws" }
+	/** The bind body accepts this fork-option key: the option exists, not merely that `/bind` is mounted. */
+	| { kind: "bindBodyKey"; key: string };
+
+/** Whether the bind body's validator accepts `{ [key]: true }` as its fork options; what a `bindBodyKey` proof is held to. */
+export function bindBodyKeyAccepted(key: string): boolean {
+	return parseForkOptionsRequest({ [key]: true }) !== null;
+}
 
 export interface CapabilityFeature {
 	/** Key under `features` in the response. */
@@ -136,6 +147,12 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		value: true,
 	},
 	{
+		// A person can stop what a continued Claude session is doing and keep it open (AGEN-119).
+		name: "claudeStopTurn",
+		proof: { kind: "route", method: "POST", path: "/sessions/:sessionId/interrupt" },
+		value: true,
+	},
+	{
 		// `stuck` and `risky` pushes from the health job; it runs only while AI is active, beside push.
 		name: "healthPush",
 		proof: { kind: "route", method: "GET", path: "/ai/inbox" },
@@ -157,6 +174,29 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		proof: { kind: "route", method: "POST", path: "/devices/:id/test" },
 		value: true,
 		isAvailable: (snapshot) => snapshot.push.available,
+	},
+	// AGEN-123
+	{
+		// A signed-in owner or admin can open what each tool call of a continued Claude session ran. Advertised
+		// only while the secrets key that encrypts the detail is set; the routes are mounted either way.
+		name: "forkToolDetail",
+		proof: { kind: "route", method: "GET", path: "/sessions/:sessionId/tool-calls" },
+		value: true,
+		isAvailable: () => forkToolDetailAvailable(),
+	},
+	{
+		// AGEN-121: the bind body accepts the `mcp` fork option, so a continued Claude session can start the servers in
+		// the person's fork MCP file. Whether a given host can is the host's `claude_fork_mcp` feature.
+		name: "claudeForkMcp",
+		proof: { kind: "bindBodyKey", key: "mcp" },
+		value: true,
+	},
+	{
+		// AGEN-120 (append-only registry): a person can ask for subagents on a continued Claude session. The proof is the bind body's key,
+		// not just the route: it says the option exists. Whether a host can apply it is its `claude_fork_subagents` feature.
+		name: "claudeForkSubagents",
+		proof: { kind: "bindBodyKey", key: "subagents" },
+		value: true,
 	},
 ];
 

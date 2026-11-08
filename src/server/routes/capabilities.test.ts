@@ -17,7 +17,9 @@ const { seedKey, seedLocalUser, setStoredMode, clearInstanceSettings } = await i
 const { createApiKey } = await import("../auth/api-key.js");
 const { SCOPE_GRANTS } = await import("../auth/route-scope-policy.js");
 const { WS_UPGRADE_PATHS } = await import("../ws/ws-auth.js");
-const { CAPABILITY_FEATURES, CAPABILITIES_API_LEVEL } = await import("./capabilities.js");
+const { CAPABILITY_FEATURES, CAPABILITIES_API_LEVEL, bindBodyKeyAccepted } = await import(
+	"./capabilities.js"
+);
 const pushRuntime = await import("../services/push/push-runtime.js");
 const { upsertSetting } = await import("../services/settings-service.js");
 const { invalidateAiFlagsCache } = await import("../services/ai/feature.js");
@@ -75,6 +77,19 @@ describe("the feature registry is backed by mounted routes", () => {
 				expect({ key, prefix, full }).toEqual({ key, prefix, full: true });
 			}
 		}
+	});
+
+	test("a bindBodyKey proof is held against the bind validator: the option key exists, not just the route", () => {
+		for (const feature of CAPABILITY_FEATURES) {
+			if (feature.proof.kind === "bindBodyKey") {
+				expect(bindBodyKeyAccepted(feature.proof.key), feature.name).toBe(true);
+			}
+		}
+		// The check itself: the two option keys are accepted, anything else is not (positive and negative control).
+		expect(bindBodyKeyAccepted("mcp")).toBe(true);
+		expect(bindBodyKeyAccepted("subagents")).toBe(true);
+		expect(bindBodyKeyAccepted("sandbox")).toBe(false);
+		expect(bindBodyKeyAccepted("__proto__")).toBe(false);
 	});
 
 	test("every ws-proved feature has a live upgrade path that answers as the socket guard, not as a missing page", async () => {
@@ -137,10 +152,29 @@ describe("GET /capabilities", () => {
 				codexApprovals: true,
 				claudeApprovals: true,
 				claudeTakeover: true,
+				claudeStopTurn: true,
+				forkToolDetail: true,
+				claudeForkMcp: true,
+				claudeForkSubagents: true,
 			});
 			expect(body.pushEvents).toEqual(["ask_reply"]);
 			expect(Object.keys(body.ai).sort()).toEqual(["active", "build", "provider", "vectorSearch"]);
 			expect("labs" in body).toBe(false);
+		}
+	});
+
+	test("forkToolDetail is advertised only while the secrets key that encrypts the detail is set", async () => {
+		const { config } = await import("../config.js");
+		const saved = config.secretsKey;
+		try {
+			config.secretsKey = "";
+			const off = (await (await get(respondKey)).json()) as Record<string, any>;
+			expect("forkToolDetail" in off.features).toBe(false);
+			config.secretsKey = "a-test-secrets-key-for-capabilities";
+			const on = (await (await get(respondKey)).json()) as Record<string, any>;
+			expect(on.features.forkToolDetail).toBe(true);
+		} finally {
+			config.secretsKey = saved;
 		}
 	});
 

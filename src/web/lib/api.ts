@@ -60,6 +60,8 @@ export type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem };
 export type AiProviderKind = ProviderKind;
 export type AiWatcherPolicy = WatcherPolicy;
 export type { AskMessageRole, DecisionKind, HitlReplyKind } from "../../shared/types.js";
+import type { ForkToolCallDto, ForkToolCallIndexList } from "../../shared/fork-tool-calls.js";
+import type { ForkOptionsRequest } from "../../shared/session-resume.js";
 import {
 	RELOAD_PROBE_TIMEOUT_MS,
 	decideFetchFailure,
@@ -566,6 +568,12 @@ export const api = {
 			method: "POST",
 		}),
 
+	/** Stop turn (AGEN-119): ends what a continued Claude session is doing and keeps the session open. */
+	interruptSession: (sessionId: string) =>
+		request<{ action: ControlAction }>(`/sessions/${sessionId}/interrupt`, {
+			method: "POST",
+		}),
+
 	sendSessionPrompt: (sessionId: string, prompt: string) =>
 		request<{ action: ControlAction }>(`/sessions/${sessionId}/prompt`, {
 			method: "POST",
@@ -576,7 +584,10 @@ export const api = {
 	 * Takes an observed Codex session over on the chosen machine. The body is exactly these two keys: the
 	 * server refuses any other, and the confirmation is the person's own statement, so it is always true here.
 	 */
-	bindSession: (sessionId: string, body: { targetSupervisorId: string }) =>
+	bindSession: (
+		sessionId: string,
+		body: { targetSupervisorId: string; forkOptions?: ForkOptionsRequest },
+	) =>
 		request<{ action: ControlAction; launchRequestId: string }>(
 			`/sessions/${encodeURIComponent(sessionId)}/bind`,
 			{
@@ -584,9 +595,16 @@ export const api = {
 				body: JSON.stringify({
 					targetSupervisorId: body.targetSupervisorId,
 					sameMachineConfirmed: true,
+					// Sent only when the person turned something on; the server refuses a body with other keys.
+					...(body.forkOptions && Object.keys(body.forkOptions).length > 0
+						? { forkOptions: body.forkOptions }
+						: {}),
 				}),
 			},
 		),
+
+	/** What this server can do (the features the dialog's fork options are gated on). Observe-readable. */
+	getCapabilities: () => request<{ features?: Record<string, boolean> }>("/capabilities"),
 
 	/** Resumes a managed Codex session whose process is gone. No body: the host and settings are the launch's own. */
 	resumeSession: (sessionId: string) =>
@@ -1696,4 +1714,30 @@ export interface AiProposal {
 	hitlExpiresAt: string | null;
 	createdAt: string;
 	updatedAt: string;
+}
+
+// ---- Tool detail of a continued session (AGEN-123) ----
+// Signed-in owner or admin only; there is no MCP tool for it. Kept apart from `api` so only the pieces that
+// read it import it.
+
+/** The session's stored calls, newest first, without their text (presence and outcome only); one `getForkToolCall` per call opened. */
+export function listForkToolCalls(sessionId: string): Promise<ForkToolCallIndexList> {
+	return request<ForkToolCallIndexList>(
+		`/sessions/${encodeURIComponent(sessionId)}/tool-calls?view=index`,
+		undefined,
+		{ background: true },
+	);
+}
+
+/** One stored call with its input and output. 404 when it was never stored or has aged out. */
+export async function getForkToolCall(
+	sessionId: string,
+	toolUseId: string,
+): Promise<ForkToolCallDto> {
+	const answer = await request<{ v: 1; call: ForkToolCallDto }>(
+		`/sessions/${encodeURIComponent(sessionId)}/tool-calls/${encodeURIComponent(toolUseId)}`,
+		undefined,
+		{ background: true },
+	);
+	return answer.call;
 }

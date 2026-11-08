@@ -251,7 +251,7 @@ async function probeActivity(
 					SELECT id, category, event_type, tool_name FROM events
 					WHERE session_id >= ${sessionId} AND session_id <= ${sessionId}
 					ORDER BY session_id DESC, id DESC LIMIT ${sql.raw(String(ACTIVITY_ACTION_WINDOW))}
-				) n WHERE ${effectiveCategory("n")} = 'prompt' OR ${classExpression("n")} = 'action')
+				) n WHERE ${effectiveCategory("n")} = 'prompt' OR ${classExpression("n", { forkCalls: false })} = 'action')
 		THEN 1 ELSE 0 END AS enough`;
 	const [row] = await runInOwnTurn(() =>
 		executeRows<{ enough: number | string; min_id: number | string | null }>(getDb(), query),

@@ -1191,6 +1191,10 @@ describe("coverage", () => {
 			file: "routes/action-request-approval.test.ts",
 			marker: "action-requests",
 		},
+		"POST /sessions/:sessionId/interrupt": {
+			file: "routes/sessions-interrupt.test.ts",
+			marker: "not_owner",
+		},
 		"POST /sessions/:sessionId/acknowledge": {
 			file: "routes/sessions-respond-ack.test.ts",
 			marker: "acknowledge",
@@ -1279,6 +1283,15 @@ describe("coverage", () => {
 		"POST /sessions/:sessionId/approvals/:approvalId/decision": {
 			file: "routes/codex-approvals.test.ts",
 			marker: "viewer.canAccept is what the POST would do",
+		},
+		// AGEN-123: tool detail is a signed-in owner's or admin's; its grid (owner, admin, member, unowned, every key scope) is in its own suite.
+		"GET /sessions/:sessionId/tool-calls": {
+			file: "routes/fork-tool-calls.test.ts",
+			marker: "every key scope is refused, an admin-owned and an ownerless manage key included",
+		},
+		"GET /sessions/:sessionId/tool-calls/:toolUseId": {
+			file: "routes/fork-tool-calls.test.ts",
+			marker: "every key scope is refused, an admin-owned and an ownerless manage key included",
 		},
 	};
 

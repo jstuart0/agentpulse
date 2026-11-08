@@ -5,15 +5,12 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { CLAUDE_FORK_MODES, type ClaudeForkMode } from "../../shared/session-resume.js";
+import { ClaudeArgvError, forkArgv, inPlaceArgv, probeArgv } from "./claude-argv.js";
 import {
 	CLAUDE_FORK_DISALLOWED_TOOLS,
 	CLAUDE_FORK_SETTINGS,
 	CLAUDE_FORK_TOOLS,
-	ClaudeArgvError,
-	forkArgv,
-	inPlaceArgv,
-	probeArgv,
-} from "./claude-argv.js";
+} from "./claude-fork-tools.js";
 
 const S = "11111111-1111-4111-8111-111111111111";
 const N = "22222222-2222-4222-8222-222222222222";
@@ -171,10 +168,10 @@ describe("drift guard: no other file builds the fork's argv", () => {
 	}
 	const SRC = join(import.meta.dir, "..", "..");
 
-	test("--settings with an ask rule and --fork-session are emitted only by claude-argv.ts", () => {
+	test("--settings with an ask rule and --fork-session are emitted only by claude-argv.ts and the tool policy", () => {
 		const offenders: string[] = [];
 		for (const file of sourceFiles(SRC)) {
-			if (file.endsWith("claude-argv.ts")) continue;
+			if (file.endsWith("claude-argv.ts") || file.endsWith("claude-fork-tools.ts")) continue;
 			const text = readFileSync(file, "utf8");
 			if (/"--fork-session"|"--permission-prompt-tool|"--restricted"/.test(text))
 				offenders.push(file);
@@ -186,6 +183,8 @@ describe("drift guard: no other file builds the fork's argv", () => {
 	test("the scan sees the builder it is guarding", () => {
 		const text = readFileSync(join(import.meta.dir, "claude-argv.ts"), "utf8");
 		expect(text).toContain('"--fork-session"');
-		expect(text).toContain('"--settings"');
+		expect(readFileSync(join(import.meta.dir, "claude-fork-tools.ts"), "utf8")).toContain(
+			'"--settings"',
+		);
 	});
 });

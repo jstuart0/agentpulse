@@ -24,13 +24,16 @@ import {
 	CLAUDE_PERSON_DECLINE_MESSAGE,
 	CLAUDE_PERSON_STOP_MESSAGE,
 	commandNamesAgentMemory,
+	commandNamesAgentpulseHome,
 	isAgentMemoryPath,
+	isAgentpulseHomePath,
 } from "../../shared/claude-approvals.js";
 import {
 	CLAUDE_DECLINE_EVIDENCE_WAIT_MS,
 	type CodexApprovalReportRequest,
 	type ParsedApprovalSyncResponse,
 } from "../../shared/codex-approvals.js";
+import type { AppliedForkOptions } from "../../shared/session-resume.js";
 import { SupervisorRequestError } from "../services/report-resilience.js";
 import {
 	AWAIT,
@@ -182,7 +185,13 @@ const settle = () => Bun.sleep(5);
 type Written = { id: string; body: any };
 
 /** A tracker with one fork attached, and a context per request that records what is written for it. */
-function armed(options: { features?: string[]; mode?: "ask" | "restricted" } = {}) {
+function armed(
+	options: {
+		features?: string[];
+		mode?: "ask" | "restricted";
+		applied?: AppliedForkOptions;
+	} = {},
+) {
 	const clock = clockPair();
 	const stub = stubGate();
 	const timers = fakeTimers();
@@ -202,7 +211,12 @@ function armed(options: { features?: string[]; mode?: "ask" | "restricted" } = {
 				warnings.push({ content, detail });
 			},
 		},
-		{ mode: options.mode ?? "ask", configDir: "/cfg", verdict: SUPPORTED },
+		{
+			mode: options.mode ?? "ask",
+			configDir: "/cfg",
+			verdict: SUPPORTED,
+			...(options.applied ? { applied: options.applied } : {}),
+		},
 	);
 	const written: Written[] = [];
 	const answered = new Set<string>();
@@ -641,6 +655,83 @@ describe("reading a request", () => {
 		expect(commandNamesAgentMemory(`ls ${cfg}/projects/p/memory-x`, cfg)).toBe(false);
 	});
 
+	// Review M4: the host's own ~/.agentpulse (exclude rules, MCP consent, credentials) is never changed from a fork.
+	describe("the host's own .agentpulse directory is decline-only", () => {
+		const HOME = "/home/user";
+		const home = (over: object = {}) => ({ ...ctx({ configDir: "/cfg" }), homeDir: HOME, ...over });
+
+		test("the matchers: the directory and below, dot-dot, APFS case; a sibling and a prefix-alike are not it", () => {
+			expect(isAgentpulseHomePath("/home/user/.agentpulse", HOME)).toBe(true);
+			expect(isAgentpulseHomePath("/home/user/.agentpulse/exclude", HOME)).toBe(true);
+			expect(isAgentpulseHomePath("/home/user/x/../.agentpulse/claude-fork-mcp.json", HOME)).toBe(
+				true,
+			);
+			expect(isAgentpulseHomePath("/home/user/.AgentPulse/exclude", HOME)).toBe(true);
+			expect(isAgentpulseHomePath("/home/user/.agentpulse-old/a", HOME)).toBe(false);
+			expect(isAgentpulseHomePath("/home/user/proj/.agentpulse/a", HOME)).toBe(false);
+			expect(isAgentpulseHomePath("/home/other/.agentpulse/a", HOME)).toBe(false);
+			expect(isAgentpulseHomePath("/home/user/.agentpulse/a", "")).toBe(false);
+			for (const named of [
+				"echo x > ~/.agentpulse/exclude",
+				"cp a $HOME/.agentpulse/claude-fork-mcp.json",
+				"cp a ${HOME}/.agentpulse/exclude",
+				`chmod 600 ${HOME}/.agentpulse/claude-fork-mcp.json`,
+				"rm ~/.agentpulse",
+			]) {
+				expect(commandNamesAgentpulseHome(named, HOME), named).toBe(true);
+			}
+			expect(commandNamesAgentpulseHome("ls ~/.agentpulse-old", HOME)).toBe(false);
+			expect(commandNamesAgentpulseHome("ls ./.agentpulse/x", HOME)).toBe(false);
+			expect(commandNamesAgentpulseHome("echo hi", HOME)).toBe(false);
+		});
+
+		test("Write, Edit and NotebookEdit into it carry agentpulse_files; a file elsewhere does not (control)", () => {
+			for (const [tool, input] of [
+				["Write", { file_path: `${HOME}/.agentpulse/exclude`, content: "x" }],
+				[
+					"Edit",
+					{
+						file_path: `${HOME}/.agentpulse/claude-fork-mcp.json`,
+						old_string: "a",
+						new_string: "b",
+					},
+				],
+				["NotebookEdit", { notebook_path: `${HOME}/.agentpulse/n.ipynb`, new_source: "x" }],
+			] as const) {
+				const parsed = parseClaudeRequest(body(tool, input), home({ fs: fsPort({}) }));
+				expect(parsed?.declineOnly, tool).toContain("agentpulse_files");
+			}
+			const elsewhere = parseClaudeRequest(
+				body("Write", { file_path: `${HOME}/notes/a.md`, content: "x" }),
+				home({ fs: fsPort({}) }),
+			);
+			expect(elsewhere?.declineOnly).not.toContain("agentpulse_files");
+		});
+
+		test("a Bash command naming it carries agentpulse_files; Read of it is not a change and stays", () => {
+			const parsed = parseClaudeRequest(
+				body("Bash", { command: "echo '{}' > ~/.agentpulse/claude-fork-mcp.json" }),
+				home(),
+			);
+			expect(parsed?.declineOnly).toEqual(["agentpulse_files"]);
+			expect(parseClaudeRequest(body("Bash", { command: "ls -la" }), home())?.declineOnly).toEqual(
+				[],
+			);
+		});
+
+		test("a link into it is caught on the real path", () => {
+			const link = {
+				...fsPort({}),
+				realpath: (p: string) => p.replace(/^\/work\/l(?=\/|$)/, `${HOME}/.agentpulse`),
+			};
+			const parsed = parseClaudeRequest(
+				body("Write", { file_path: "/work/l/exclude", content: "x" }),
+				home({ fs: link }),
+			);
+			expect(parsed?.declineOnly).toContain("agentpulse_files");
+		});
+	});
+
 	test("a Bash command naming the memory directory is agent_memory", () => {
 		const parsed = parseClaudeRequest(
 			body("Bash", { command: "echo hi > /cfg/projects/p/memory/a.md" }),
@@ -761,6 +852,51 @@ describe("reporting a request", () => {
 			tool: "WebFetch",
 			target: "https://example.com",
 			reason: "summarise",
+		});
+	});
+
+	describe("subagents (AGEN-120)", () => {
+		const SUBAGENTS: AppliedForkOptions = {
+			mcpServers: [],
+			subagents: true,
+			claudeVersion: "2.1.319",
+		};
+		const agentInput = {
+			description: "d",
+			prompt: "do the thing",
+			subagent_type: "general-purpose",
+		};
+
+		test("the Agent call is reported as a claude_tool with the helper in it", async () => {
+			const a = armed({ applied: SUBAGENTS });
+			a.request("ag1", "Agent", agentInput);
+			await settle();
+			expect(a.reports[0]?.body).toMatchObject({
+				requestKind: "claude_tool",
+				tool: "Agent",
+				target: "general-purpose",
+				reason: "d",
+				agent: { subagentType: "general-purpose", prompt: "do the thing", builtIn: true },
+				declineOnly: [],
+			});
+			expect(a.reports[0]?.body).not.toHaveProperty("fromSubagent");
+		});
+
+		test("a helper's own Bash request is reported with fromSubagent; the fork's own is not", async () => {
+			const a = armed({ applied: SUBAGENTS });
+			a.request("h1", "Bash", { command: "touch x" }, { agent_id: "helper-1" });
+			a.request("o1", "Bash", { command: "touch y" });
+			await settle();
+			expect(a.reports[0]?.body).toMatchObject({ requestKind: "command", fromSubagent: true });
+			expect(a.reports[1]?.body).not.toHaveProperty("fromSubagent");
+		});
+
+		test("without the option applied the Agent call is reported decline-only unknown_tool, with no helper in it", async () => {
+			const a = armed();
+			a.request("ag2", "Agent", agentInput);
+			await settle();
+			expect(a.reports[0]?.body.declineOnly).toContain("unknown_tool");
+			expect(a.reports[0]?.body).not.toHaveProperty("agent");
 		});
 	});
 
@@ -1578,5 +1714,77 @@ describe("through the stream runtime", () => {
 		const all = w.syncs.flatMap((s) => s.resolved.map((r) => r.outcome));
 		expect(all).toContain("runtime_gone");
 		expect(h.fake.badResponses()).toEqual([]);
+	});
+});
+
+// ======================================================================================================
+describe("the turn fence of Stop turn (AGEN-119)", () => {
+	test("fenceTurn declines what the turn holds, with the turn's own reason, and the session stays answerable for the next turn", async () => {
+		const a = armed();
+		await openBash(a, "r1");
+		a.port.fenceTurn();
+		expect(a.written.map((w) => `${w.id}:${w.body.behavior}`)).toEqual(["r1:deny"]);
+		expect(a.warnings.map((w) => w.detail.reason)).toEqual(["turn_interrupted"]);
+		// A request on the same, fenced turn is denied on arrival and never reported.
+		const reportsBefore = a.reports.length;
+		a.request("r2", "Bash", { command: "ls" });
+		await settle();
+		expect(a.written.map((w) => `${w.id}:${w.body.behavior}`)).toEqual(["r1:deny", "r2:deny"]);
+		expect(a.reports.length).toBe(reportsBefore);
+		// The turn ends: the fence goes with it, and the next turn's request is a card again.
+		a.port.turnEnded();
+		a.request("r3", "Bash", { command: "pwd" });
+		await settle();
+		expect(a.reports.length).toBe(reportsBefore + 1);
+		expect(a.written.map((w) => w.id)).toEqual(["r1", "r2"]);
+	});
+
+	test("liftTurnFence (the turn didn't stop in time): later requests are cards again", async () => {
+		const a = armed();
+		a.port.fenceTurn();
+		a.request("r1", "Bash", { command: "ls" });
+		await settle();
+		expect(a.written.map((w) => w.body.behavior)).toEqual(["deny"]);
+		a.port.liftTurnFence();
+		a.request("r2", "Bash", { command: "pwd" });
+		await settle();
+		expect(a.reports).toHaveLength(1);
+		expect(a.written).toHaveLength(1);
+	});
+
+	test("a request already answered keeps its own outcome: the turn fence only declines what is unanswered", async () => {
+		const a = armed();
+		await openBash(a);
+		a.script.sync = async () => ({ answers: [a.answerOf("ap-1", "accept")] });
+		await a.tracker.tick();
+		expect(a.written.map((w) => w.body.behavior)).toEqual(["allow"]);
+		a.port.fenceTurn();
+		expect(a.written.map((w) => w.body.behavior)).toEqual(["allow"]);
+	});
+
+	test("it is not the session fence: dispose is not called and a later Stop's fence still works", async () => {
+		const a = armed();
+		a.port.fenceTurn();
+		a.port.turnEnded();
+		await openBash(a, "r9");
+		a.port.fence();
+		expect(a.written.map((w) => `${w.id}:${w.body.behavior}`)).toEqual(["r9:deny"]);
+	});
+
+	test("the server's report refusal turn_interrupted declines that one request and leaves the session alone", async () => {
+		const a = armed();
+		a.script.report = async () => {
+			throw new SupervisorRequestError(409, "turn_interrupted", "turn_interrupted");
+		};
+		a.request("r1", "Bash", { command: "ls" });
+		await settle();
+		expect(a.written.map((w) => w.body.behavior)).toEqual(["deny"]);
+		expect(a.warnings.map((w) => w.detail.reason)).toEqual(["turn_interrupted"]);
+		// Not a rollback: the next request reports normally and the breaker is untouched.
+		a.script.report = async () => ({ approvalId: "ap-ok" });
+		a.request("r2", "Bash", { command: "pwd" });
+		await settle();
+		expect(a.reports.length).toBeGreaterThanOrEqual(1);
+		expect(a.written).toHaveLength(1);
 	});
 });

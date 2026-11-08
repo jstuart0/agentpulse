@@ -1,10 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { CONTROL_TIMEOUT_ERROR } from "../../../shared/managed-messages.js";
+import {
+	SESSION_ENDED_FIRST,
+	TURN_ALREADY_ENDED,
+	TURN_DIDNT_STOP,
+} from "../../../shared/stop-turn.js";
 import type { Session } from "../../../shared/types.js";
 import { ApiError } from "../../lib/api.js";
 import {
 	STOP_NOT_OWNER_REASON,
+	STOP_TURN_ANNOUNCE_DONE,
 	canStopSession,
+	canStopTurn,
+	runningForkTurn,
 	stopConfirmCopy,
 	stopControlLabel,
 	stopFailureText,
@@ -12,6 +20,12 @@ import {
 	stopRefusalMessage,
 	stopRequestFailure,
 	stopSucceeded,
+	stopTurnFailureText,
+	stopTurnInFlight,
+	stopTurnRefusalMessage,
+	stopTurnRequestFailure,
+	stopTurnSettledText,
+	stopTurnSucceeded,
 	stoppingText,
 } from "./stop-view.js";
 
@@ -272,5 +286,157 @@ describe("stopSucceeded", () => {
 			]),
 		).toBe(false);
 		expect(stopSucceeded([])).toBe(false);
+	});
+});
+
+// ── Stop turn (AGEN-119) ────────────────────────────────────────────────────
+
+const fork = (over: object = {}) =>
+	({
+		agentType: "claude_code",
+		forkedFromSessionId: "src-1",
+		managedSession: { managedState: "managed", hostName: "studio" },
+		...over,
+	}) as unknown as Session;
+const action = (
+	actionType: string,
+	status: string,
+	createdAt = "2026-11-08 10:00:00",
+	over: object = {},
+) => ({ actionType, status, error: null, metadata: null, createdAt, ...over }) as never;
+const ALLOWED = { mayChange: true, advertised: true };
+
+describe("Stop turn replaces Send only on a running fork turn", () => {
+	test("a continued session whose prompt the host is running offers it", () => {
+		expect(canStopTurn(fork(), [action("prompt", "running")], ALLOWED)).toBe(true);
+	});
+
+	test.each([
+		["a prompt still queued (the host has not taken it)", [action("prompt", "queued")]],
+		["a prompt that finished", [action("prompt", "succeeded")]],
+		["no actions at all", []],
+		[
+			"an older prompt still marked running behind a newer finished one",
+			[
+				action("prompt", "running", "2026-11-08 09:00:00"),
+				action("prompt", "succeeded", "2026-11-08 10:00:00"),
+			],
+		],
+		[
+			"a Stop of the whole session in flight (the box says 'Stopping')",
+			[
+				action("prompt", "running", "2026-11-08 10:00:00"),
+				action("stop", "queued", "2026-11-08 10:00:01"),
+			],
+		],
+	])("%s: no", (_name, actions) => {
+		expect(canStopTurn(fork(), actions, ALLOWED)).toBe(false);
+	});
+
+	test("a launched Claude that is not a continued session, and Codex, keep Send", () => {
+		const running = [action("prompt", "running")];
+		expect(canStopTurn(fork({ forkedFromSessionId: undefined }), running, ALLOWED)).toBe(false);
+		expect(canStopTurn(fork({ agentType: "codex_cli" }), running, ALLOWED)).toBe(false);
+	});
+
+	test("someone who may not change the session, or a server that doesn't advertise it, keeps Send", () => {
+		const running = [action("prompt", "running")];
+		expect(canStopTurn(fork(), running, { mayChange: false, advertised: true })).toBe(false);
+		expect(canStopTurn(fork(), running, { mayChange: true, advertised: false })).toBe(false);
+	});
+
+	test("runningForkTurn names the action", () => {
+		const running = action("prompt", "running", "2026-11-08 10:00:00", { id: "p1" });
+		expect((runningForkTurn(fork(), [running]) as unknown as { id: string }).id).toBe("p1");
+	});
+});
+
+describe("a Stop turn in flight", () => {
+	test("queued and running count, done and failed don't, and a Stop is not a Stop turn", () => {
+		expect(stopTurnInFlight([action("interrupt", "queued")])).toBe(true);
+		expect(stopTurnInFlight([action("interrupt", "running")])).toBe(true);
+		expect(stopTurnInFlight([action("interrupt", "succeeded")])).toBe(false);
+		expect(stopTurnInFlight([action("interrupt", "failed")])).toBe(false);
+		expect(stopTurnInFlight([action("stop", "running")])).toBe(false);
+	});
+});
+
+describe("every refusal code has its words (F47)", () => {
+	const err = (code: string, status = 409) => new ApiError(status, code, { error: code });
+	const s = fork();
+	test.each([
+		["no_turn_running", "Claude had already finished the turn."],
+		[
+			"interrupt_not_supported",
+			"This session can't stop a turn and stay open. Use End session instead.",
+		],
+		[
+			"host_upgrade_required",
+			"studio is running an older supervisor that can't stop a turn. Update it, or end the session.",
+		],
+		["not_owner", "Only the owner or an admin can stop this turn."],
+		["launch_mismatch", "This session can't be stopped from here."],
+		["not_managed", "This session can't be stopped from here."],
+		["rate_limited", "Too many stops in a minute. Try again shortly."],
+	])("%s", (code, words) => {
+		expect(stopTurnRefusalMessage(err(code), s)).toBe(words);
+	});
+
+	test("the host refusals read through the shared table, and anything else gets the fallback", () => {
+		expect(stopTurnRefusalMessage(err("host_offline"), s)).toContain("offline");
+		expect(stopTurnRequestFailure(new Error("boom"), s)).toBe(
+			"The turn didn't stop. Try again, or end the session.",
+		);
+	});
+});
+
+describe("how a Stop turn ended, from the actions", () => {
+	test("failed: the host's fixed words stand; a timeout names the host; an empty error has a fallback", () => {
+		expect(
+			stopTurnFailureText([
+				action("interrupt", "failed", "2026-11-08 10:00:00", { error: TURN_DIDNT_STOP }),
+			]),
+		).toBe(TURN_DIDNT_STOP);
+		expect(
+			stopTurnFailureText([
+				action("interrupt", "failed", "2026-11-08 10:00:00", { error: CONTROL_TIMEOUT_ERROR }),
+			]),
+		).toContain("didn't confirm");
+		expect(
+			stopTurnFailureText([action("interrupt", "failed", "2026-11-08 10:00:00", { error: null })]),
+		).toBe("The turn didn't stop. Try again, or end the session.");
+	});
+
+	test("a turn that had already ended, or a session ended first, is not shown as a failure", () => {
+		for (const error of [TURN_ALREADY_ENDED, SESSION_ENDED_FIRST]) {
+			expect(
+				stopTurnFailureText([action("interrupt", "failed", "2026-11-08 10:00:00", { error })]),
+			).toBeNull();
+		}
+	});
+
+	test("anything newer retires a failure; a Stop's failure is not a Stop turn's", () => {
+		expect(
+			stopTurnFailureText([
+				action("interrupt", "failed", "2026-11-08 10:00:00", { error: TURN_DIDNT_STOP }),
+				action("prompt", "queued", "2026-11-08 10:01:00"),
+			]),
+		).toBeNull();
+		expect(
+			stopTurnFailureText([action("stop", "failed", "2026-11-08 10:00:00", { error: "x" })]),
+		).toBeNull();
+	});
+
+	test("success: 'Turn stopped. You can send a prompt.', or, when the turn had finished itself, the plain fact", () => {
+		const done = [
+			action("interrupt", "succeeded", "2026-11-08 10:00:00", { metadata: { interrupted: true } }),
+		];
+		expect(stopTurnSucceeded(done)).toBe(true);
+		expect(stopTurnSettledText(done)).toBe(STOP_TURN_ANNOUNCE_DONE);
+		expect(STOP_TURN_ANNOUNCE_DONE).toBe("Turn stopped. You can send a prompt.");
+		const natural = [
+			action("interrupt", "succeeded", "2026-11-08 10:00:00", { metadata: { interrupted: false } }),
+		];
+		expect(stopTurnSettledText(natural)).toBe("Claude had already finished the turn.");
 	});
 });

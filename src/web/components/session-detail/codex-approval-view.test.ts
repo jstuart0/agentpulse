@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { forkMcpCardLine } from "../../../shared/claude-fork-mcp.js";
 import {
 	APPROVAL_ANSWER_REFUSALS,
 	APPROVAL_CLOSED_REASONS,
@@ -34,6 +35,7 @@ import {
 	availabilityHint,
 	cardStateOf,
 	changeSummary,
+	claudeToolKind,
 	commandStats,
 	commandTail,
 	confirmCopy,
@@ -64,6 +66,7 @@ import {
 	queuePosition,
 	readDismissed,
 	remainingLabel,
+	requestEyebrow,
 	requestHeading,
 	secondsLeft,
 	shouldRefetchOnSession,
@@ -231,9 +234,10 @@ describe("copy", () => {
 	});
 
 	test("'Nothing ran' appears only where no accept can have been delivered", () => {
-		const mayRun = CODEX_APPROVAL_OUTCOMES.filter(
-			(o) => !outcomeLine(o, "H", "T").includes("Nothing ran"),
-		);
+		// A stopped turn says "That request didn't run": its accept was never issued (one that was reads may_have_run).
+		const saysNothingRan = (line: string) =>
+			line.includes("Nothing ran") || line.includes("That request didn't run");
+		const mayRun = CODEX_APPROVAL_OUTCOMES.filter((o) => !saysNothingRan(outcomeLine(o, "H", "T")));
 		expect(mayRun.map(String).sort()).toEqual(
 			[
 				"approved_sent",
@@ -517,6 +521,20 @@ describe("mid-confirm events", () => {
 			"The turn ended before this was answered. Nothing ran.",
 		);
 		expect(midConfirmView("closed", null, "H", () => null).text).toBe(CLOSED_TEXT);
+	});
+
+	test("a turn a person stopped has its own words, different from a turn that ended on its own (AGEN-119)", () => {
+		const view = (over: Partial<CodexApprovalSummary>) =>
+			midConfirmView("closed", row(over), "H", (stored) => stored && "T");
+		const stopped = view({ outcome: "turn_stopped", decision: "decline" }).text;
+		const ended = view({ outcome: "turn_ended", decision: "decline" }).text;
+		expect(stopped).toBe("The turn was stopped before this was answered. That request didn't run.");
+		expect(stopped).not.toBe(ended);
+		expect(view({ outcome: "turn_stopped", decision: "accept" }).text).toBe(
+			"You approved this, but the turn was stopped before it was sent. That request didn't run.",
+		);
+		// `interrupted`'s neutral words are unchanged.
+		expect(ended).toBe("The turn ended before this was answered. Nothing ran.");
 	});
 
 	test("closed reasons the server can send all land on a known event", () => {
@@ -998,5 +1016,232 @@ describe("showsAvailabilityHint: no 'update the supervisor' while the slot owns 
 		expect(showsAvailabilityHint({ managedState: "managed" })).toBe(true);
 		expect(showsAvailabilityHint(null)).toBe(true);
 		expect(showsAvailabilityHint(undefined)).toBe(true);
+	});
+});
+
+describe("the card kinds of a Claude tool request (AGEN-119..123 Track 0)", () => {
+	const summary = (tool: string) =>
+		({
+			requestKind: "claude_tool",
+			preview: { tool, target: "somewhere", pathOutsideCwd: false, cwd: null, nonAscii: false },
+		}) as never;
+
+	test("claudeToolKind sorts a request into one kind, and a name it has never seen reads as it always did", () => {
+		expect(claudeToolKind({ tool: "Read" })).toBe("read");
+		expect(claudeToolKind({ tool: "WebFetch" })).toBe("webfetch");
+		expect(claudeToolKind({ tool: "mcp" })).toBe("mcp");
+		expect(claudeToolKind({ tool: "mcp__probe__echo" })).toBe("mcp");
+		expect(claudeToolKind({ tool: "Agent" })).toBe("agent");
+		expect(claudeToolKind({ tool: "Task" })).toBe("agent");
+		expect(claudeToolKind({ tool: "WebFetch", mcp: { server: "s" } })).toBe("mcp");
+		expect(claudeToolKind({ tool: "WebFetch", agent: { subagentType: "x" } })).toBe("agent");
+		expect(claudeToolKind({ tool: "Something" })).toBe("webfetch");
+	});
+
+	test("Read and WebFetch say what they always said", () => {
+		expect(requestHeading(summary("Read"), "claude")).toBe("Claude asks to read somewhere");
+		expect(requestHeading(summary("WebFetch"), "claude")).toBe("Claude asks to fetch somewhere");
+		expect(
+			confirmCopy({
+				requestKind: "claude_tool",
+				fileCount: 0,
+				host: "m",
+				declinesAt: null,
+				tool: "Read",
+			}).title,
+		).toBe("Let Claude read this file?");
+		expect(
+			confirmCopy({
+				requestKind: "claude_tool",
+				fileCount: 0,
+				host: "m",
+				declinesAt: null,
+				tool: "WebFetch",
+			}).title,
+		).toBe("Fetch this URL from m?");
+		expect(
+			arrivalAnnouncement({
+				requestKind: "claude_tool",
+				fileCount: 0,
+				declinesAt: null,
+				pendingCount: 1,
+				agent: "claude",
+				tool: "Read",
+			}),
+		).toBe("Claude asks to read a file.");
+		expect(
+			arrivalAnnouncement({
+				requestKind: "claude_tool",
+				fileCount: 0,
+				declinesAt: null,
+				pendingCount: 1,
+				agent: "claude",
+				tool: "WebFetch",
+			}),
+		).toBe("Claude asks to fetch a URL.");
+	});
+});
+
+describe("an MCP tool call's words (AGEN-121, F48)", () => {
+	const mcpSummary = (target?: string) =>
+		({
+			requestKind: "claude_tool",
+			preview: { tool: "mcp", target, cwd: null, pathOutsideCwd: false, nonAscii: false },
+		}) as Parameters<typeof requestHeading>[0];
+
+	test("the heading names the tool and the server from the list's server/tool target", () => {
+		expect(requestHeading(mcpSummary("probe/echo_note"), "claude")).toBe(
+			'Claude asks to use "echo_note" from probe',
+		);
+	});
+
+	test("a target that isn't server/tool falls back to the plain words", () => {
+		for (const target of [undefined, "", "probe", "/tool", "probe/"]) {
+			expect(requestHeading(mcpSummary(target), "claude")).toBe("Claude asks to use an MCP tool");
+		}
+	});
+
+	test("the confirm step is the MCP one, never the generic tool one, and never says fetch or URL", () => {
+		const copy = confirmCopy({
+			requestKind: "claude_tool",
+			fileCount: 0,
+			host: "m",
+			declinesAt: "12:00",
+			tool: "mcp",
+		});
+		expect(copy.title).toBe("Let Claude use this MCP tool?");
+		expect(copy.confirmLabel).toBe("Allow this call");
+		expect(copy.cancelLabel).toBe("Back");
+		expect(copy.closing[0]).toBe("Runs once. AgentPulse can't undo it.");
+		for (const text of [copy.title, copy.confirmLabel, ...copy.closing]) {
+			expect(text).not.toMatch(/fetch|url/i);
+		}
+	});
+
+	test("the arrival announcement is spoken without names", () => {
+		expect(
+			arrivalAnnouncement({
+				requestKind: "claude_tool",
+				fileCount: 0,
+				declinesAt: null,
+				pendingCount: 1,
+				agent: "claude",
+				tool: "mcp",
+			}),
+		).toBe("Claude asks to use an MCP tool.");
+	});
+
+	test("a card line is the plain-weight sentence that says the effect isn't known", () => {
+		expect(forkMcpCardLine("probe", "echo_note")).toBe(
+			'probe calls this tool "echo_note". AgentPulse can\'t tell what it does or what it will change. Approve only if you know this server and this tool.',
+		);
+	});
+});
+
+describe("the Agent call's words (AGEN-120)", () => {
+	const summary = (target: string | undefined, fromSubagent = false) =>
+		({
+			requestKind: "claude_tool",
+			preview: {
+				tool: "Agent",
+				...(target === undefined ? {} : { target }),
+				pathOutsideCwd: false,
+				cwd: null,
+				nonAscii: false,
+				...(fromSubagent ? { fromSubagent: true } : {}),
+			},
+		}) as never;
+
+	test("the heading names the helper type; without a type it still says a helper", () => {
+		expect(requestHeading(summary("general-purpose"), "claude")).toBe(
+			"Claude asks to start a helper (general-purpose)",
+		);
+		expect(requestHeading(summary(undefined), "claude")).toBe("Claude asks to start a helper");
+		expect(requestHeading(summary("  "), "claude")).toBe("Claude asks to start a helper");
+	});
+
+	test("the confirm step and the announcement say a helper, and never fetch or URL", () => {
+		const copy = confirmCopy({
+			requestKind: "claude_tool",
+			fileCount: 0,
+			host: "m",
+			declinesAt: "12:00",
+			tool: "Agent",
+		});
+		expect(copy.title).toBe("Let Claude start this helper?");
+		expect(copy.confirmLabel).toBe("Start the helper");
+		expect(copy.closing[0]).toBe(
+			"The helper's commands and file changes wait for you the same way. Runs once.",
+		);
+		const spoken = arrivalAnnouncement({
+			requestKind: "claude_tool",
+			fileCount: 0,
+			declinesAt: null,
+			pendingCount: 1,
+			agent: "claude",
+			tool: "Agent",
+		});
+		expect(spoken).toBe("Claude asks to start a helper.");
+		for (const text of [copy.title, copy.confirmLabel, ...copy.closing, spoken]) {
+			expect(text).not.toMatch(/fetch|url/i);
+		}
+	});
+
+	test("a subagent's request is announced in the tool's own verb and carries the eyebrow", () => {
+		const base = { fileCount: 0, declinesAt: null, pendingCount: 1, agent: "claude" as const };
+		expect(arrivalAnnouncement({ ...base, requestKind: "command", fromSubagent: true })).toBe(
+			"A subagent asks to run a command.",
+		);
+		expect(
+			arrivalAnnouncement({
+				...base,
+				requestKind: "file_change",
+				fileCount: 2,
+				fromSubagent: true,
+			}),
+		).toBe("A subagent asks to change files.");
+		expect(
+			arrivalAnnouncement({
+				...base,
+				requestKind: "claude_tool",
+				tool: "Agent",
+				fromSubagent: true,
+			}),
+		).toBe("A subagent asks to start another helper.");
+		// The fork's own request is unchanged (control).
+		expect(arrivalAnnouncement({ ...base, requestKind: "command" })).toBe(
+			"Claude asks to run a command.",
+		);
+		expect(requestEyebrow(summary("general-purpose", true))).toBe("Asked by a subagent");
+		expect(requestEyebrow(summary("general-purpose"))).toBeNull();
+		expect(
+			requestEyebrow(
+				{ requestKind: "command", preview: null } as never,
+				{ fromSubagent: true } as never,
+			),
+		).toBe("Asked by a subagent");
+	});
+
+	test("the two decline-only reasons say why, without blaming anyone", () => {
+		const custom = notApprovableReasonCopy("custom_agent", null, "claude");
+		const nested = notApprovableReasonCopy("nested_agent", null, "claude");
+		expect(custom).toContain("isn't one that ships with Claude Code");
+		expect(nested).toContain("one level");
+		expect(notApprovableText("custom_agent", "m", null, "claude")).toContain(
+			"You can only decline it here.",
+		);
+	});
+});
+
+describe("the card's own tool split (source)", () => {
+	test("no Read-or-else split is left in the card or the view: both switch over the kind to a never check", () => {
+		const { readFileSync } = require("node:fs") as typeof import("node:fs");
+		const { join } = require("node:path") as typeof import("node:path");
+		const card = readFileSync(join(import.meta.dir, "CodexApprovalCard.tsx"), "utf8");
+		const view = readFileSync(join(import.meta.dir, "codex-approval-view.ts"), "utf8");
+		expect(card).not.toMatch(/\.tool === "Read"/);
+		expect(view).not.toMatch(/\.tool === "Read"/);
+		expect(card).toContain("exhaustiveToolKind(kind)");
+		expect(view.match(/exhaustiveToolKind\(kind\)/g)?.length).toBeGreaterThanOrEqual(3);
 	});
 });

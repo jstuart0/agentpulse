@@ -64,6 +64,7 @@ import {
 	MAX_CWD_LENGTH,
 	evaluateExclusion,
 } from "../../shared/exclude-rules.js";
+import type { ForkToolCallsReportBody } from "../../shared/fork-tool-calls.js";
 import {
 	DELIVERY_ID_HEADER,
 	REPLAY_HEADER,
@@ -71,12 +72,14 @@ import {
 } from "../../shared/hook-headers.js";
 import { clampEventContent } from "../../shared/managed-report-limits.js";
 import { writePrivateFileAtomicNoFollow } from "../../shared/private-file.js";
+import type { AppliedForkOptions } from "../../shared/session-resume.js";
 import type {
 	ManagedSession,
 	ManagedSessionEventInput,
 	ManagedSessionStateInput,
 	Session,
 } from "../../shared/types.js";
+import type { ExcludeScope } from "../providers/fork-tool-record.js";
 import { type RulesWatch, createRulesWatch } from "./exclude-rules-watch.js";
 import {
 	readPrivateFileNoFollow,
@@ -143,6 +146,8 @@ export type ControlStatusBody = {
 	provedCwd?: string;
 	/** A Claude takeover's success: the permission mode the host picked from the login. The server judges the shape. */
 	permissionMode?: string;
+	/** A Claude takeover's success: what the host applied of the fork options. The server judges the shape. */
+	applied?: AppliedForkOptions;
 };
 
 /**
@@ -292,6 +297,16 @@ export interface ReportGate {
 		body: CodexApprovalReportRequest,
 	): Promise<ApprovalReportResult>;
 	/**
+	 * Reports what a fork's tool calls ran (AGEN-123), only for a session the rules don't cover. Live only: it
+	 * is never queued and never a replay, because detail for a turn that is long over is worth less than the
+	 * disk it would sit on, and a lost send only costs the "Details" control on one row. Throws what the
+	 * server's refusal or the network threw; a network failure also latches the gate offline.
+	 */
+	reportToolCalls(
+		sessionId: string,
+		body: ForkToolCallsReportBody,
+	): Promise<{ outcome: "sent" | "excluded" | "blocked" }>;
+	/**
 	 * The host's approvals poll. Entries about a session a rule covers (or whose rules can't be trusted) are
 	 * left out; with nothing left, nothing is sent. Never queued; a 10 s limit.
 	 */
@@ -317,6 +332,11 @@ export interface ReportGate {
 	queuedState(id: string): "none" | "pending" | "held";
 	/** Whether the local rules exclude this absolute path. Invalid rules exclude everything. */
 	excludesPath(path: string): boolean;
+	/**
+	 * What the rules are right now, for deciding what a fork call may send as detail (AGEN-123): none, invalid,
+	 * or the physically resolved path of each rule.
+	 */
+	excludeScope(): ExcludeScope;
 	reportLaunchStatus(launchId: string, body: LaunchStatusBody): Promise<void>;
 	/** The one fixed status for a launch this host will not start, sent whatever the reason and whatever the rules say. */
 	refuseLaunch(launchId: string): Promise<void>;
@@ -1354,6 +1374,13 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			return { outcome: "sent", response };
 		},
 
+		async reportToolCalls(sessionId, body) {
+			const verdict = decide(sessionId);
+			if (verdict !== "send") return { outcome: verdict === "excluded" ? "excluded" : "blocked" };
+			await sendApproval(`/managed-sessions/${sessionId}/tool-calls`, JSON.stringify(body));
+			return { outcome: "sent" };
+		},
+
 		async syncApprovals(entries) {
 			const sendable = (item: { sessionId: string }) => decide(item.sessionId) === "send";
 			const live = entries.live.filter(sendable).map(({ approvalId, revision }) => ({
@@ -1379,6 +1406,13 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			const state = currentRules();
 			if (state.state === "invalid") return true;
 			return state.state === "none" ? false : covered(expandHome(path), state);
+		},
+
+		excludeScope() {
+			const state = currentRules();
+			if (state.state === "invalid") return { state: "invalid" };
+			if (state.state === "none") return { state: "none" };
+			return { state: "ok", paths: state.rules.map((rule) => rule.resolved) };
 		},
 
 		async reportLaunchStatus(launchId, body) {

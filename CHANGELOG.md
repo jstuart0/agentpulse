@@ -9,6 +9,39 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Added
 
+- **Stop turn on a continued Claude session (AGEN-119).** While a continued session's turn runs, the prompt box shows **Stop turn**
+  in place of Send (on a phone the overflow menu has it too, above End session). It ends what Claude is doing and the session
+  stays open: the process, the conversation and the session keep going and the next prompt runs. Nothing is signalled (Claude's
+  own interrupt is used); a command it was running is ended by Claude, and anything it left in the background keeps running as
+  with any stop. The turn's open approval cards close as "stopped" and can't be answered. A Stop turn pressed before the prompt
+  reached Claude cancels the send and puts your text back in the box. `POST /sessions/:id/interrupt` is new (6 a minute per
+  caller; owner or admin in team mode; a signed-in person or a `manage` key, never `respond`), as is the MCP tool
+  `stop_session_turn`. A stopped turn is not an alarm: the session reads IDLE, the timeline line is not amber, and the watcher
+  sends no "didn't finish" note. Only continued sessions can be stopped this way (`interrupt_not_supported` otherwise).
+- **Continued Claude sessions: tool-call rows record how each call ended (AGEN-122).** A row now carries a structured outcome
+  (ran, failed, declined, refused, stopped) and, for a failed Bash command, the exit code Claude printed; nothing is inferred and
+  a success has no exit code. The Summary counts an observed tool call without storing its command, and the session classifier
+  counts only calls that actually failed. The server now rebuilds the payload of every continued-session timeline row from a
+  per-kind whitelist before it is stored.
+- **Owner-only tool detail on continued Claude sessions (AGEN-123).** The session's owner (and admins in team mode) can open what
+  each tool call ran: **Details** on a call's line and **Show what ran** under a turn's unasked line. Input and output are shown
+  with secret-looking text hidden and each cut to 16 KB, kept 7 days (sooner if event retention is shorter), encrypted at rest
+  with `AGENTPULSE_SECRETS_KEY` (without it the feature is off and rows show names and outcomes only). A signed-in person only:
+  every API key is refused `human_required` and there is no MCP tool. Nothing is kept for a call that touched a path an exclude
+  rule covers, or for a Bash command or MCP call while a rule covers a place under the session's directory. New routes
+  `GET /sessions/:id/tool-calls` and `/:toolUseId`; migration `0022` adds `fork_tool_calls`.
+- **MCP servers on continued Claude sessions (AGEN-121).** Off by default; **Include my fork MCP servers** in the continue
+  dialog starts the servers listed in `~/.agentpulse/claude-fork-mcp.json` on that machine (a `0600` file you own, at most 16
+  servers). Claude's own MCP configuration, plugins and connectors are never read. Every MCP tool call gets an approval card
+  showing the tool's name, the server and the whole input; accepting stays with a signed-in person, and the MCP package's
+  `list_pending_approvals` shows such a request as `tool: "mcp"`. Resuming after the file changed is refused
+  (`mcp_servers_changed`). Measured on Claude Code 2.1.319 only; account-synced connectors, Linux and Windows are not tested.
+- **Subagents on continued Claude sessions (AGEN-120).** Off by default; **Allow subagents** lets Claude start foreground helpers.
+  A helper's commands, file changes and fetches ask you like Claude's own, marked "Asked by a subagent"; starting a helper is
+  itself a card, approvable only for the built-in `general-purpose` type (a helper you defined and a helper that starts a helper
+  can only be declined). A helper that outlives its turn ends the session, which Resume recovers. An Agent call is recorded
+  under the tool name `Agent` in its row and detail. Measured on Claude Code 2.1.319 only.
+
 - **Take over a Codex session you started by hand, and resume one whose process ended (AGEN-115).** On a stopped, observed
   Codex session the page offers **Take over**: pick the machine it ran on, and that machine's supervisor resumes the same
   conversation under `untrusted` / `workspace-write`, so prompts, Stop and approvals work from the dashboard. A managed Codex
@@ -20,6 +53,32 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   With `DISABLE_AUTH=true` the same posture applies as for approvals: anyone who can reach the server can do it.
 
 ### Upgrade notes
+
+- **Fork follow-ups: server first, then supervisors.** A host that doesn't advertise `claude_turn_interrupt` (Stop turn),
+  `claude_fork_mcp` or `claude_fork_subagents` is refused (`409 host_upgrade_required`) or shown the option disabled with a
+  reason, and a queued interrupt that reaches an old host fails at claim. `GET /capabilities` advertises `claudeStopTurn`,
+  `claudeForkMcp`, `claudeForkSubagents` and (only with `AGENTPULSE_SECRETS_KEY` set) `forkToolDetail`. New wire values, all
+  additive: control action type `interrupt`; approval closed reason and outcome `turn_stopped`; approval refusal
+  `turn_interrupted`; `HeadlessPromptFailed` `status: "interrupted"` and `code: "interrupted_before_send"`; resume refusal
+  `mcp_servers_changed`; decline-only reasons `custom_agent` and `nested_agent`; call-row keys `toolOutcome` and `tool`; outcome
+  `stopped`. Migration `0022_fork_tool_calls` (both dialects) is a new table; see `deploy/k8s/README.md`. Set
+  `AGENTPULSE_SECRETS_KEY` to turn tool detail on. Follow-ups for the iOS companion app: AGEN-131 to AGEN-134.
+
+- **Fork follow-ups: review fixes (AGEN-119..123).** Team mode: MCP servers and subagents on a continued session belong to the
+  machine's owner who agreed to them, so only that person can prompt the session, resume it, or accept its MCP and helper
+  cards afterwards (`403 fork_options_host_not_yours`, also on the approval decision and on a HITL approve or Telegram
+  prompt that reaches it); solo is unchanged. A host's report of the options it applied is held to what the takeover asked
+  for. A Codex session asked for options answers `409 fork_options_not_supported`. A fork's timeline rows are whitelisted
+  because the session is a fork (not because the sender says so), and a call row's text must be the fixed words. Stored tool
+  detail: `view=index` now omits `input` and `output` (absent, not null; clients that read them from the index view get
+  `undefined`), the Host is checked when authentication is off (`403 bad_origin`), each read is audit-logged, texts are
+  bound to their session and call, an hourly cap per host is added, and Postgres serialises the per-session cap. The exclude
+  judge expands `~` and `$HOME` and withholds Bash, helper and MCP output that names a rule path. A fork can't write the
+  host's `~/.agentpulse` (decline-only `agentpulse_files`). Stop turn closes every open request of the session, whatever
+  turn id the host gave it. The supervisor checks the MCP copy directory's owner and removes leftover copies at start. New
+  wire values, all additive: refusal codes `fork_options_host_not_yours` (bind, resume, prompt, approval decision) and
+  `fork_options_not_supported`; decline-only reason `agentpulse_files`; audit line `fork_tool_detail_read`. Stated
+  residuals: a rule added after a call was kept does not remove it; a user agent file named `general-purpose`.
 
 - **Take over and resume: server first, then supervisors.** A host that doesn't advertise `resumes_sessions` is refused
   (`409 host_upgrade_required`) and a queued action that reaches one fails at claim. Sessions launched before the upgrade that
