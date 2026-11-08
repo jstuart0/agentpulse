@@ -517,6 +517,8 @@ function refusalForEnqueue(reason: string): Refusal {
 			return refusal(400, "prompt_unsafe", "slash_command");
 		case "human_required":
 			return refusal(403, "human_required");
+		case "fork_options_host_not_yours":
+			return refusal(403, "fork_options_host_not_yours");
 		default:
 			return refusal(409, "prompt_not_deliverable", "control_busy");
 	}

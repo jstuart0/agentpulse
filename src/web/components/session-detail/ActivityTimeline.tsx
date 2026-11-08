@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, forwardRef } from "react";
 import { TURN_UNASKED_PREFIX } from "../../../shared/claude-fork-copy.js";
-import type { ForkToolCallDto } from "../../../shared/fork-tool-calls.js";
+import type { ForkToolCallIndexEntry } from "../../../shared/fork-tool-calls.js";
 import type { Session, SessionEvent } from "../../../shared/types.js";
 import { useForkToolCalls } from "../../hooks/useForkToolCalls.js";
 import { useOwnershipUi } from "../../hooks/useOwnershipUi.js";
@@ -75,7 +75,7 @@ function useForkDetail(
 
 export interface ForkDetail {
 	context: DetailContext;
-	calls: ReadonlyMap<string, ForkToolCallDto>;
+	calls: ReadonlyMap<string, ForkToolCallIndexEntry>;
 	allEvents: readonly SessionEvent[];
 	working: boolean;
 }

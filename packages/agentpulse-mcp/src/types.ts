@@ -1231,3 +1231,6 @@ export interface ForkToolCallDto {
 	redacted: boolean;
 	createdAt: string;
 }
+
+/** The index view of a stored call: the same without `input` and `output` (the keys are absent). */
+export type ForkToolCallIndexEntry = Omit<ForkToolCallDto, "input" | "output">;

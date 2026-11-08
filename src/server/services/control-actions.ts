@@ -9,6 +9,7 @@ import {
 	CLAUDE_FORK_SLASH_MESSAGE,
 	CLAUDE_STOP_UPGRADE_MESSAGE,
 	CONTROL_TIMEOUT_ERROR,
+	FORK_OPTIONS_NOT_YOURS_PROMPT_MESSAGE,
 	FORK_PROMPT_NEEDS_PERSON_MESSAGE,
 	HOST_RESTARTED_TURN_ERROR,
 	HOST_UPGRADE_REQUIRED_MESSAGE,
@@ -20,7 +21,9 @@ import {
 	type ResumeKind,
 	SESSION_RESUMED_CONTENT,
 	SESSION_RESUMED_EVENT_TYPE,
+	forkOptionsAreOff,
 	forkSessionIdOf,
+	parseAppliedForkOptions,
 	resumeAgentOf,
 	resumeFailureMessage,
 } from "../../shared/session-resume.js";
@@ -71,10 +74,12 @@ import { requestWsRevalidation } from "../ws/revalidation.js";
 import { CONTINUABLE_MANAGED_STATES } from "./ai/continuability.js";
 import { markAuditExpiredUnclaimed } from "./ai/dispatch-audit-service.js";
 import { logAdminAction } from "./audit-log.js";
+import { mayDriveForkOptions } from "./authorization.js";
 import { BindRefusal } from "./bind-refusal.js";
 import { ForkSettleRollback, settleClaudeTakeover } from "./claude-takeover-settle.js";
 import { fenceApprovalsForStop, fenceApprovalsForTurn } from "./codex-approvals-fence.js";
 import { type ClosedApproval, runApprovalClosedEffects } from "./codex-approvals.js";
+import { getModeOn } from "./instance-mode.js";
 import { buildStoredCliArgs, validateAgainstSupervisor } from "./launch-compatibility.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { notifySessionCreated, notifySessionUpdated } from "./notifier.js";
@@ -1031,6 +1036,18 @@ export class HumanRequiredError extends Error {
 	}
 }
 
+/**
+ * A prompt to a fork that runs MCP servers or subagents, from someone who isn't the host owner who consented to
+ * them (team mode, AGEN-119..123 review H1). The options use that person's own configuration and credentials.
+ */
+export class ForkOptionsHostNotYoursError extends Error {
+	readonly code = "fork_options_host_not_yours";
+	constructor() {
+		super(FORK_OPTIONS_NOT_YOURS_PROMPT_MESSAGE);
+		this.name = "ForkOptionsHostNotYoursError";
+	}
+}
+
 /** A Stop on a session started in a terminal: nothing here can stop it, so nothing is queued (AGEN-110). */
 export class StopNotSupportedError extends Error {
 	readonly code = "stop_not_supported";
@@ -1082,7 +1099,8 @@ export type EnqueueRefusal =
 	| "host_upgrade_required"
 	| "managed_state"
 	| "prompt_unsafe"
-	| "human_required";
+	| "human_required"
+	| "fork_options_host_not_yours";
 
 function refusalToError(reason: EnqueueRefusal): Error {
 	switch (reason) {
@@ -1108,6 +1126,8 @@ function refusalToError(reason: EnqueueRefusal): Error {
 			return new PromptUnsafeError();
 		case "human_required":
 			return new HumanRequiredError();
+		case "fork_options_host_not_yours":
+			return new ForkOptionsHostNotYoursError();
 		case "nothing_to_stop":
 			return new NothingToStopError();
 		case "stop_not_supported":
@@ -1755,6 +1775,17 @@ export async function enqueuePromptInTx(
 		!isPersonActor(actor)
 	) {
 		return { ok: false, reason: "human_required" };
+	}
+	// A fork running MCP servers or subagents uses the host owner's own configuration: in team mode only that
+	// owner drives it (H1). Judged on every path that ends here: the route, MCP, a decision, Telegram, Ask.
+	if (
+		isClaudeTakeover &&
+		!forkOptionsAreOff(
+			parseAppliedForkOptions((session.metadata as { forkOptions?: unknown } | null)?.forkOptions),
+		) &&
+		mayDriveForkOptions(actor, actor.mode ?? (await getModeOn(tx)), session.metadata) !== null
+	) {
+		return { ok: false, reason: "fork_options_host_not_yours" };
 	}
 	const promptHostRefusal = await hostRefusal(tx, sessionId);
 	if (promptHostRefusal) return { ok: false, reason: promptHostRefusal };

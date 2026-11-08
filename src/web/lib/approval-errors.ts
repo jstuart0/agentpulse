@@ -56,6 +56,8 @@ const ERROR_COPY: Record<ApprovalErrorCode, (ctx: ErrorCtx) => string> = {
 		`${agentName(agent)} changed what it's asking after you opened it. Nothing was sent. Review the new version.`,
 	session_stopped: () => "This session was stopped, so nothing was sent.",
 	turn_interrupted: () => "The turn was stopped, so this was declined. Nothing ran.",
+	fork_options_host_not_yours: () =>
+		"This call uses MCP servers or subagents that the machine's owner agreed to, so only that person can approve it. You can decline it. Nothing was sent.",
 };
 
 export const UNCONFIRMED_COPY =

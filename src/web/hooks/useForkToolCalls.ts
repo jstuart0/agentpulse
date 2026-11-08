@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ForkToolCallDto } from "../../shared/fork-tool-calls.js";
+import type { ForkToolCallIndexEntry } from "../../shared/fork-tool-calls.js";
 import {
 	DETAIL_POLL_MS,
 	indexCalls,
@@ -11,7 +11,7 @@ const REFETCH_DEBOUNCE_MS = 700;
 
 export interface ForkToolCallsData {
 	/** What is stored, by tool-use id. Empty until the first answer. */
-	calls: ReadonlyMap<string, ForkToolCallDto>;
+	calls: ReadonlyMap<string, ForkToolCallIndexEntry>;
 	/** The server won't or can't show this viewer detail (not theirs, off, or not a fork there): no controls, no polling. */
 	unavailable: boolean;
 }

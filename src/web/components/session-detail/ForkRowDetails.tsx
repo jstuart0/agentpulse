@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import type { ForkToolCallDto } from "../../../shared/fork-tool-calls.js";
+import type { ForkToolCallIndexEntry } from "../../../shared/fork-tool-calls.js";
 import type { ToolDetailAccess } from "../../lib/session-action-access.js";
 import { ForkToolCallDetail } from "./ForkToolCallDetail.js";
 import {
@@ -26,7 +26,7 @@ export function CallDetails({
 	turnEndedAt,
 }: {
 	context: DetailContext;
-	record: ForkToolCallDto;
+	record: ForkToolCallIndexEntry;
 	turnEndedAt: number | null;
 }) {
 	const [open, setOpen] = useState(false);
@@ -66,7 +66,7 @@ export function TurnDetails({
 	turnEndedAt,
 }: {
 	context: DetailContext;
-	records: readonly ForkToolCallDto[];
+	records: readonly ForkToolCallIndexEntry[];
 	turnEndedAt: number | null;
 }) {
 	const [open, setOpen] = useState(false);

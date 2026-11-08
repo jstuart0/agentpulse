@@ -7,7 +7,7 @@
  * The control appears when a refetch finds the record. "Wasn't captured" is said only for a call whose turn
  * ended more than a minute ago.
  */
-import type { ForkToolCallDto } from "../../../shared/fork-tool-calls.js";
+import type { ForkToolCallIndexEntry } from "../../../shared/fork-tool-calls.js";
 import type { SessionEvent } from "../../../shared/types.js";
 import type { ToolDetailAccess } from "../../lib/session-action-access.js";
 
@@ -78,9 +78,9 @@ export function missingDetailState(
 
 /** The records by tool-use id; a record for the same call twice keeps the first. */
 export function indexCalls(
-	calls: readonly ForkToolCallDto[],
-): ReadonlyMap<string, ForkToolCallDto> {
-	const map = new Map<string, ForkToolCallDto>();
+	calls: readonly ForkToolCallIndexEntry[],
+): ReadonlyMap<string, ForkToolCallIndexEntry> {
+	const map = new Map<string, ForkToolCallIndexEntry>();
 	for (const call of calls) if (!map.has(call.toolUseId)) map.set(call.toolUseId, call);
 	return map;
 }

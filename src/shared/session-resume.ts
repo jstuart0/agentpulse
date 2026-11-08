@@ -93,6 +93,8 @@ export const RESUME_REFUSAL_CODES = [
 	"end_session_first",
 	// AGEN-119..123: a fork option (MCP servers, subagents) asked for on a machine the actor doesn't own.
 	"fork_options_host_not_yours",
+	// A fork option asked for on a session that isn't a Claude Code one (Codex takes none).
+	"fork_options_not_supported",
 ] as const;
 export type ResumeRefusalCode = (typeof RESUME_REFUSAL_CODES)[number];
 
@@ -205,6 +207,27 @@ export function parseAppliedForkOptions(value: unknown): AppliedForkOptions | nu
 		mcpServers.push({ name, digest });
 	}
 	return { mcpServers, subagents: v.subagents, claudeVersion: v.claudeVersion };
+}
+
+/**
+ * `sessions.metadata` key on a fork: the user id of the host owner who consented to its options at bind. Server-owned.
+ * In team mode only that person may drive a fork that runs those options (AGEN-119..123, review H1).
+ */
+export const FORK_OPTIONS_CONSENT_KEY = "forkOptionsConsentUserId";
+
+/**
+ * Clamp what a host says it applied to what the bind asked for. A host that reports an option nobody asked for
+ * gets it forced off, so a lying or buggy host can't create consent. `requested` is the bind's own request.
+ */
+export function clampAppliedToRequested(
+	applied: AppliedForkOptions,
+	requested: ForkOptionsRequest,
+): AppliedForkOptions {
+	return {
+		mcpServers: requested.mcp === true ? applied.mcpServers : [],
+		subagents: requested.subagents === true ? applied.subagents : false,
+		claudeVersion: applied.claudeVersion,
+	};
 }
 
 /** True when nothing but the version differs from `FORK_OPTIONS_OFF`. */

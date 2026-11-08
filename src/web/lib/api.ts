@@ -60,7 +60,7 @@ export type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem };
 export type AiProviderKind = ProviderKind;
 export type AiWatcherPolicy = WatcherPolicy;
 export type { AskMessageRole, DecisionKind, HitlReplyKind } from "../../shared/types.js";
-import type { ForkToolCallDto, ForkToolCallList } from "../../shared/fork-tool-calls.js";
+import type { ForkToolCallDto, ForkToolCallIndexList } from "../../shared/fork-tool-calls.js";
 import type { ForkOptionsRequest } from "../../shared/session-resume.js";
 import {
 	RELOAD_PROBE_TIMEOUT_MS,
@@ -1721,8 +1721,8 @@ export interface AiProposal {
 // read it import it.
 
 /** The session's stored calls, newest first, without their text (presence and outcome only); one `getForkToolCall` per call opened. */
-export function listForkToolCalls(sessionId: string): Promise<ForkToolCallList> {
-	return request<ForkToolCallList>(
+export function listForkToolCalls(sessionId: string): Promise<ForkToolCallIndexList> {
+	return request<ForkToolCallIndexList>(
 		`/sessions/${encodeURIComponent(sessionId)}/tool-calls?view=index`,
 		undefined,
 		{ background: true },

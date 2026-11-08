@@ -23,6 +23,11 @@
  * `mayBindToHost`), stricter than both.
  */
 import { and, eq, inArray, isNull } from "drizzle-orm";
+import {
+	FORK_OPTIONS_CONSENT_KEY,
+	forkOptionsAreOff,
+	parseAppliedForkOptions,
+} from "../../shared/session-resume.js";
 import type { Actor, InstanceModeName } from "../auth/actor.js";
 import { getDb } from "../db/client.js";
 import {
@@ -356,6 +361,27 @@ export function mayUseForkOptionsOnHost(
 ): "fork_options_host_not_yours" | null {
 	if (mode === "solo") return null;
 	if (actor.userId === null || host === null || host.ownerUserId !== actor.userId) {
+		return "fork_options_host_not_yours";
+	}
+	return null;
+}
+
+/**
+ * May this actor drive (prompt, resume, answer a tool card of) a fork that runs MCP servers or subagents?
+ * Those run the host owner's own configuration, and the owner consented to them at bind (review H1). Solo
+ * and a fork with no options: yes. Team: only the consenting host owner; a fork with options and no recorded
+ * consent (the field is server-owned) is refused to everyone. Null means yes.
+ */
+export function mayDriveForkOptions(
+	actor: Actor,
+	mode: InstanceModeName,
+	sessionMetadata: unknown,
+): "fork_options_host_not_yours" | null {
+	if (mode === "solo") return null;
+	const meta = (sessionMetadata ?? {}) as Record<string, unknown>;
+	if (forkOptionsAreOff(parseAppliedForkOptions(meta.forkOptions))) return null;
+	const consent = meta[FORK_OPTIONS_CONSENT_KEY];
+	if (typeof consent !== "string" || actor.userId === null || actor.userId !== consent) {
 		return "fork_options_host_not_yours";
 	}
 	return null;

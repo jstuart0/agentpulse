@@ -13,9 +13,12 @@ import { forkFirstRowContent } from "../../shared/claude-fork-copy.js";
 import {
 	CLAUDE_TAKEOVER_PRIVILEGES,
 	type ClaudeForkMode,
+	FORK_OPTIONS_CONSENT_KEY,
 	FORK_OPTIONS_OFF,
 	type ResumeFailureKind,
 	SESSION_RESUMED_EVENT_TYPE,
+	clampAppliedToRequested,
+	forkOptionsAreOff,
 	forkOptionsRequested,
 	isClaudeForkMode,
 	isResumableSessionId,
@@ -208,6 +211,12 @@ export async function settleClaudeTakeover(
 	if (hostVerdict !== null) return { ok: false, kind: "ownership_changed" };
 	// The options run the person's own configuration on the host: judged again, as the bind judged them.
 	const requestedOptions = parseForkOptionsRequest(meta.forkOptions) ?? {};
+	// What the host says it applied is held to what the bind asked for: an option nobody asked for is off, and
+	// a request that was never made creates no consent (review codex-M1).
+	const applied = clampAppliedToRequested(
+		parseAppliedForkOptions(report.applied) ?? FORK_OPTIONS_OFF,
+		requestedOptions,
+	);
 	if (
 		forkOptionsRequested(requestedOptions) &&
 		mayUseForkOptionsOnHost(actor, instanceMode, { ownerUserId: host.ownerUserId }) !== null
@@ -262,7 +271,11 @@ export async function settleClaudeTakeover(
 				forkedFromSessionId: sourceId,
 				forkPermissionBranch: mode,
 				// Server-owned: what the host says it applied, or none (a host older than the options).
-				forkOptions: parseAppliedForkOptions(report.applied) ?? FORK_OPTIONS_OFF,
+				forkOptions: applied,
+				// The host owner who consented to the options, recorded when any run (H1).
+				...(forkOptionsAreOff(applied) || host.ownerUserId === null
+					? {}
+					: { [FORK_OPTIONS_CONSENT_KEY]: host.ownerUserId }),
 			},
 		})
 		.onConflictDoNothing()

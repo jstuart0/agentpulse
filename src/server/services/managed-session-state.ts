@@ -42,7 +42,7 @@ import {
 	insertManagedEvents,
 	insertNormalizedEvents,
 } from "./event-processor.js";
-import { normalizeForkRowPayload } from "./fork-call-row.js";
+import { constrainForkRowContent, normalizeForkRowPayload } from "./fork-call-row.js";
 import { cleanMachineName } from "./machine-name.js";
 import { generateSessionName } from "./name-generator.js";
 import { ownerForNewSession } from "./session-attribution.js";
@@ -618,19 +618,36 @@ async function prepareManagedEvents(
 	// The whole batch is refused: one forged event poisons the rest.
 	if (events.some(isReservedEvent)) throw new ReservedEventTypeError();
 	const nowMs = Date.now();
-	return events.map((event) => ({
-		eventType: event.eventType,
-		category: event.category,
-		source: event.source ?? (event.category === "prompt" ? "managed_control" : "launch_system"),
-		content: event.content ?? null,
-		isNoise: event.isNoise ?? false,
-		providerEventType: event.providerEventType ?? null,
-		toolName: null,
-		toolInput: null,
-		toolResponse: null,
-		rawPayload: normalizeForkRowPayload(event.rawPayload ?? {}),
-		occurredAt: acceptedOccurredAt(supervisorId, event.occurredAt, nowMs),
-	}));
+	// A fork's rows are normalized because the session is a fork, never because the sender says so (review M1).
+	const isFork = await isForkSession(sessionId);
+	return events.map((event) => {
+		const rawPayload = normalizeForkRowPayload(event.rawPayload ?? {}, isFork);
+		return {
+			eventType: event.eventType,
+			category: event.category,
+			source: event.source ?? (event.category === "prompt" ? "managed_control" : "launch_system"),
+			content: isFork
+				? constrainForkRowContent(event, rawPayload, event.content ?? null)
+				: (event.content ?? null),
+			isNoise: event.isNoise ?? false,
+			providerEventType: event.providerEventType ?? null,
+			toolName: null,
+			toolInput: null,
+			toolResponse: null,
+			rawPayload,
+			occurredAt: acceptedOccurredAt(supervisorId, event.occurredAt, nowMs),
+		};
+	});
+}
+
+/** Whether the server itself marked this session as a continued one: `metadata.forkedFromSessionId` is server-owned. */
+async function isForkSession(sessionId: string): Promise<boolean> {
+	const [row] = await getDb()
+		.select({ source: jsonExtractText(sessions.metadata, "$.forkedFromSessionId") })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	return typeof row?.source === "string" && row.source !== "";
 }
 
 export async function appendManagedSessionEvents(

@@ -296,9 +296,80 @@ describe("what a refusal reveals, and what a read returns", () => {
 			calls: Array<{ input: unknown; output: unknown; tool: string }>;
 		};
 		expect(body.calls).toHaveLength(1);
-		expect(body.calls[0]?.input).toBeNull();
-		expect(body.calls[0]?.output).toBeNull();
+		// The keys are absent, not null: "not requested" is not "captured as null" (codex review).
+		expect(body.calls[0]).not.toHaveProperty("input");
+		expect(body.calls[0]).not.toHaveProperty("output");
+		expect(Object.keys(body.calls[0] ?? {}).sort()).toEqual(
+			[
+				"createdAt",
+				"fromSubagent",
+				"inputTruncated",
+				"outcome",
+				"outputTruncated",
+				"redacted",
+				"tool",
+				"toolUseId",
+			].sort(),
+		);
 		expect(body.calls[0]?.tool).toBe("Bash");
+	});
+
+	test("the full view still carries input and output (positive control for the index test)", async () => {
+		const ctx = await seedFork(null);
+		await store(ctx, call());
+		const person = await seedLocalUser("t123-full");
+		const body = (await (await list(ctx.sessionId, await cookieHeadersFor(person.id))).json()) as {
+			calls: Array<Record<string, unknown>>;
+		};
+		expect(body.calls[0]?.input).toBe('{"command":"echo hi"}');
+		expect(body.calls[0]?.output).toBe("hi");
+	});
+
+	test("a successful read writes one audit line with the actor, the session and a count, and no content", async () => {
+		const ctx = await seedFork(null);
+		await store(ctx, call({ output: "AUDIT-SECRET-9" }), call());
+		const person = await seedLocalUser("t123-audit");
+		const lines: string[] = [];
+		const original = console.log;
+		console.log = (...args: unknown[]) => {
+			lines.push(args.map(String).join(" "));
+		};
+		try {
+			await list(ctx.sessionId, await cookieHeadersFor(person.id));
+			// A refused read (no credential) writes none.
+			await list(ctx.sessionId, new Headers());
+		} finally {
+			console.log = original;
+		}
+		const audit = lines.filter((l) => l.includes("fork_tool_detail_read"));
+		expect(audit).toHaveLength(1);
+		const parsed = JSON.parse(audit[0] as string);
+		expect(parsed).toMatchObject({
+			kind: "fork_tool_detail_read",
+			by: person.id,
+			sessionId: ctx.sessionId,
+			count: 2,
+			view: "full",
+		});
+		expect(audit[0]).not.toContain("AUDIT-SECRET-9");
+	});
+
+	test("with auth off a rebound Host is refused on both reads; a loopback Host passes (M3)", async () => {
+		const ctx = await seedFork(null);
+		const c = call();
+		await store(ctx, c);
+		(config as Record<string, unknown>).disableAuth = true;
+		const rebound = new Headers({ Host: "rebound.attacker.example" });
+		for (const res of [
+			await list(ctx.sessionId, rebound),
+			await one(ctx.sessionId, c.toolUseId, rebound),
+		]) {
+			expect(res.status).toBe(403);
+			expect(await errorOf(res)).toBe("bad_origin");
+		}
+		const local = new Headers({ Host: "localhost:3000" });
+		expect((await list(ctx.sessionId, local)).status).toBe(200);
+		expect((await one(ctx.sessionId, c.toolUseId, local)).status).toBe(200);
 	});
 
 	test("beforeId pages within the path session; another session's id returns nothing of it", async () => {

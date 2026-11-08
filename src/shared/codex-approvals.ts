@@ -499,6 +499,8 @@ export const APPROVAL_ANSWER_REFUSALS = [
 	"presentation_changed",
 	// AGEN-119: the turn was stopped before this answer; it is declined and nothing ran.
 	"turn_interrupted",
+	// AGEN-119..123 review H1: team mode, an MCP or Agent card of a fork whose options another person agreed to.
+	"fork_options_host_not_yours",
 ] as const;
 export type ApprovalAnswerRefusal = (typeof APPROVAL_ANSWER_REFUSALS)[number];
 

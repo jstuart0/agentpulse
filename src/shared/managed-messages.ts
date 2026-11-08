@@ -140,6 +140,10 @@ export const CLAUDE_FORK_EXITED_SYNC_ERROR =
 export const FORK_PROMPT_NEEDS_PERSON_MESSAGE =
 	"This session runs under your own Claude settings, which can allow actions without asking, so only a signed-in person can send it a prompt.";
 
+/** A prompt to a fork running MCP servers or subagents, from someone who isn't the host owner who agreed to them. Fixed. */
+export const FORK_OPTIONS_NOT_YOURS_PROMPT_MESSAGE =
+	"This session runs MCP servers or subagents the machine's owner agreed to when it was continued, so only that person can send it a prompt or approve its tool calls. Nothing was sent.";
+
 /** The label above the text of a message something else sent a continued session: it is the last one found, which may not be the one that stopped it. */
 export const PEER_TURN_LABEL = "The last message found in the transcript:";
 

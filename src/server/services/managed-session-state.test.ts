@@ -219,6 +219,137 @@ describe("appendManagedSessionEvents: a fork's row payloads are whitelisted", ()
 		expect(JSON.stringify(rows)).not.toContain(token);
 	});
 
+	// Review M1: the whitelist follows the session, not the sender's marker, and a call row's text is the fixed words.
+	describe("a session the server marked as a fork is normalized whatever the sender says", () => {
+		const SECRET = "TOKEN-sk-live-4f2a";
+		const mkFork = async (id: string) => {
+			await mkSession(id, { forkedFromSessionId: "source-1" });
+			await seedOwnedLaunch(id, "sup-1");
+		};
+		const rowsOf = (id: string) =>
+			getDb().select().from(events).where(eq(events.sessionId, id)).orderBy(events.id);
+
+		test("an unmarked row keeps no payload key outside the whitelist, and no marker is invented", async () => {
+			await mkFork("fork-m1-a");
+			await appendManagedSessionEvents("sup-1", "fork-m1-a", [
+				{
+					eventType: "HeadlessStatus",
+					category: "progress_update",
+					content: "Bash: didn't succeed",
+					rawPayload: {
+						source: "claude_stream",
+						kind: "call",
+						tool: "Bash",
+						toolOutcome: "failed",
+						tool_use_id: "toolu_m1",
+						command: SECRET,
+						output: SECRET,
+					},
+				},
+			]);
+			const [row] = await rowsOf("fork-m1-a");
+			expect(JSON.stringify(row)).not.toContain(SECRET);
+			expect(row?.rawPayload).toEqual({
+				source: "claude_stream",
+				kind: "call",
+				tool: "Bash",
+				toolOutcome: "failed",
+				tool_use_id: "toolu_m1",
+			});
+		});
+
+		test("host text in a call row's content is replaced by the fixed words; the legitimate rows are kept as sent", async () => {
+			await mkFork("fork-m1-b");
+			const call = (content: string, id: string, extra: object = {}) => ({
+				eventType: "HeadlessStatus",
+				category: "progress_update" as const,
+				content,
+				rawPayload: {
+					source: "claude_stream",
+					kind: "call",
+					claudeStreamRuntime: true,
+					tool: "Bash",
+					toolOutcome: "approved",
+					tool_use_id: id,
+					...extra,
+				},
+			});
+			await appendManagedSessionEvents("sup-1", "fork-m1-b", [
+				call(`Bash: ${SECRET}`, "toolu_1"),
+				call("Read: ran, you approved it", "toolu_2", { tool: "Read" }),
+				call("Subagent Read: ran without asking", "toolu_3", { toolOutcome: "unasked" }),
+				call("Agent: ran, you approved it", "toolu_4", { tool: "Agent" }),
+				{
+					eventType: "HeadlessStatus",
+					category: "progress_update",
+					content: `Ran without asking you this turn: Read (4), Bash (2). ${SECRET}`,
+					rawPayload: { source: "claude_stream", kind: "turn_unasked", claudeStreamRuntime: true },
+				},
+				{
+					eventType: "HeadlessStatus",
+					category: "progress_update",
+					content:
+						"Ran without asking you this turn: Read (4), Bash (2). These were read-only, or your Claude settings allowed them.",
+					rawPayload: { source: "claude_stream", kind: "turn_unasked", claudeStreamRuntime: true },
+				},
+				{
+					eventType: "HeadlessStatus",
+					category: "progress_update",
+					content: "Claude tried this and was refused: Write (1).",
+					rawPayload: { source: "claude_stream", kind: "turn_refused", claudeStreamRuntime: true },
+				},
+				{
+					eventType: "HeadlessStatus",
+					category: "progress_update",
+					content: SECRET,
+					rawPayload: { source: "claude_stream", kind: "mystery", claudeStreamRuntime: true },
+				},
+				{
+					eventType: "HeadlessPromptSubmitted",
+					category: "prompt",
+					content: "please run the tests",
+					rawPayload: { source: "agentpulse_workspace", claudeStreamRuntime: true },
+				},
+				{
+					eventType: "HeadlessPromptFailed",
+					category: "system_event",
+					content: "The turn didn't finish.",
+					rawPayload: { status: "turn_error", claudeStreamRuntime: true },
+				},
+			]);
+			const rows = await rowsOf("fork-m1-b");
+			expect(JSON.stringify(rows)).not.toContain(SECRET);
+			expect(rows.map((r) => r.content)).toEqual([
+				"Bash: ran, you approved it",
+				"Read: ran, you approved it",
+				"Subagent Read: ran without asking",
+				"Agent: ran, you approved it",
+				"Ran without asking you this turn:",
+				"Ran without asking you this turn: Read (4), Bash (2). These were read-only, or your Claude settings allowed them.",
+				"Claude tried this and was refused: Write (1).",
+				null,
+				"please run the tests",
+				"The turn didn't finish.",
+			]);
+		});
+
+		test("a session that is not a fork keeps its content (positive control)", async () => {
+			await mkSession("plain-m1");
+			await seedOwnedLaunch("plain-m1", "sup-1");
+			await appendManagedSessionEvents("sup-1", "plain-m1", [
+				{
+					eventType: "HeadlessStatus",
+					category: "progress_update",
+					content: "anything the launch says",
+					rawPayload: { kind: "call", extra: "kept" },
+				},
+			]);
+			const [row] = await rowsOf("plain-m1");
+			expect(row?.content).toBe("anything the launch says");
+			expect(row?.rawPayload).toEqual({ kind: "call", extra: "kept" });
+		});
+	});
+
 	test("an Agent call row keeps its tool name; a non-reported name loses it", async () => {
 		await mkSession("fork-4");
 		await seedOwnedLaunch("fork-4", "sup-1");

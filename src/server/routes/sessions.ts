@@ -59,6 +59,7 @@ import {
 import { BindRefusal } from "../services/bind-refusal.js";
 import {
 	ControlBusyError,
+	ForkOptionsHostNotYoursError,
 	HostGoneError,
 	HostOfflineError,
 	HostUpgradeRequiredError,
@@ -1055,7 +1056,7 @@ sessionsRouter.post("/sessions/:sessionId/prompt", async (c: Context) => {
 		if (error instanceof PromptUnsafeError) {
 			return c.json({ error: error.code, reason: "slash_command", message: error.message }, 400);
 		}
-		if (error instanceof HumanRequiredError) {
+		if (error instanceof HumanRequiredError || error instanceof ForkOptionsHostNotYoursError) {
 			return c.json({ error: error.code, message: error.message }, 403);
 		}
 		if (error instanceof ControlBusyError) {

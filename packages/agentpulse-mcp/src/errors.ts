@@ -202,6 +202,13 @@ const ERROR_TABLE: ReadonlyArray<{
 			"AgentPulse refused: this needs a signed-in person, and an API key can't do it. For a continued session that runs under the person's own Claude settings, prompts come from a person at the dashboard.",
 	},
 	{
+		status: 403,
+		error: "fork_options_host_not_yours",
+		message: (body) =>
+			bodyMessage(body) ??
+			"This session runs MCP servers or subagents that the machine's owner agreed to, so only that person can prompt it. Nothing was sent.",
+	},
+	{
 		status: 409,
 		error: "end_session_first",
 		message:

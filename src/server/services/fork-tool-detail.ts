@@ -20,6 +20,8 @@ import {
 	FORK_TOOL_DETAIL_LIMITS,
 	FORK_TOOL_DETAIL_RETENTION_MS,
 	type ForkToolCallDto,
+	type ForkToolCallIndexEntry,
+	type ForkToolCallIndexList,
 	type ForkToolCallList,
 	type ForkToolCallReport,
 	type ForkToolCallsReportBody,
@@ -384,18 +386,24 @@ async function decryptOrNull(cipher: string | null): Promise<string | null> {
 
 type StoredRow = typeof forkToolCalls.$inferSelect;
 
-async function toDto(row: StoredRow, withText = true): Promise<ForkToolCallDto> {
+function toIndexEntry(row: StoredRow): ForkToolCallIndexEntry {
 	return {
 		toolUseId: row.toolUseId,
 		tool: row.tool,
 		outcome: row.outcome,
 		fromSubagent: Boolean(row.fromSubagent),
-		input: withText ? await decryptOrNull(row.inputCipher) : null,
 		inputTruncated: Boolean(row.inputTruncated),
-		output: withText ? await decryptOrNull(row.outputCipher) : null,
 		outputTruncated: Boolean(row.outputTruncated),
 		redacted: Boolean(row.redacted),
 		createdAt: row.createdAt,
+	};
+}
+
+async function toDto(row: StoredRow): Promise<ForkToolCallDto> {
+	return {
+		...toIndexEntry(row),
+		input: await decryptOrNull(row.inputCipher),
+		output: await decryptOrNull(row.outputCipher),
 	};
 }
 
@@ -404,17 +412,45 @@ export interface ListQuery {
 	beforeId?: string;
 	limit?: number;
 	turnActionId?: string;
-	/** Leave the input and output out (and decrypt nothing): for a page that only needs to know what exists. */
-	textless?: boolean;
 }
 
-/** A page of the session's stored calls, newest first. */
+interface StoredPage {
+	rows: StoredRow[];
+	nextBeforeId: string | null;
+}
+
+/** A page of the session's stored calls, newest first, with their text. */
 export async function listForkToolCalls(
 	sessionId: string,
 	caller: ToolDetailCaller,
 	query: ListQuery = {},
 	now: Date = new Date(),
 ): Promise<ForkToolCallList> {
+	const page = await readPage(sessionId, caller, query, now);
+	return {
+		v: 1,
+		calls: await Promise.all(page.rows.map(toDto)),
+		nextBeforeId: page.nextBeforeId,
+	};
+}
+
+/** The same page without the text: the `input` and `output` keys are absent and nothing is decrypted. */
+export async function listForkToolCallIndex(
+	sessionId: string,
+	caller: ToolDetailCaller,
+	query: ListQuery = {},
+	now: Date = new Date(),
+): Promise<ForkToolCallIndexList> {
+	const page = await readPage(sessionId, caller, query, now);
+	return { v: 1, calls: page.rows.map(toIndexEntry), nextBeforeId: page.nextBeforeId };
+}
+
+async function readPage(
+	sessionId: string,
+	caller: ToolDetailCaller,
+	query: ListQuery,
+	now: Date,
+): Promise<StoredPage> {
 	const limit = query.limit ?? FORK_TOOL_DETAIL_LIMITS.listMax;
 	if (!Number.isInteger(limit) || limit < 1 || limit > FORK_TOOL_DETAIL_LIMITS.listMax) {
 		throw new ForkToolDetailRefusal("invalid_query");
@@ -445,7 +481,7 @@ export async function listForkToolCalls(
 			)
 			.limit(1);
 		// An id of no row in this session pages nothing, so another session's ids can't be probed.
-		if (!anchor) return { v: 1, calls: [], nextBeforeId: null };
+		if (!anchor) return { rows: [], nextBeforeId: null };
 		const olderThanAnchor = or(
 			lt(forkToolCalls.createdAt, anchor.createdAt),
 			and(eq(forkToolCalls.createdAt, anchor.createdAt), lt(forkToolCalls.id, anchor.id)),
@@ -458,13 +494,8 @@ export async function listForkToolCalls(
 		.where(and(...conditions))
 		.orderBy(desc(forkToolCalls.createdAt), desc(forkToolCalls.id))
 		.limit(limit);
-	const calls = await Promise.all(rows.map((row) => toDto(row, query.textless !== true)));
 	const last = rows.at(-1);
-	return {
-		v: 1,
-		calls,
-		nextBeforeId: rows.length === limit && last ? last.toolUseId : null,
-	};
+	return { rows, nextBeforeId: rows.length === limit && last ? last.toolUseId : null };
 }
 
 /** One stored call, or `tool_call_not_found` when there is none (or it has aged out). */

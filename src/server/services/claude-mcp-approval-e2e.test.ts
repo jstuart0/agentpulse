@@ -375,6 +375,76 @@ describe("an MCP tool call on a continued session, end to end", () => {
 		});
 	});
 
+	describe("7. team mode: only the consenting host owner accepts an MCP card (review H1)", () => {
+		async function teamFork() {
+			const { setStoredMode, clearInstanceSettings } = await import(
+				"../test-utils/team-fixtures.js"
+			);
+			await setStoredMode("team");
+			const consenter = await seedLocalUser("t121-consenter", "admin");
+			const member = await seedLocalUser("t121-member");
+			const sessionId = await fork();
+			await getDb()
+				.update(sessions)
+				.set({
+					ownerUserId: member.id,
+					metadata: {
+						forkedFromSessionId: "src-1",
+						forkPermissionBranch: "ask",
+						forkOptions: APPLIED,
+						forkOptionsConsentUserId: consenter.id,
+					},
+				})
+				.where(eq(sessions.sessionId, sessionId));
+			const approvalId = await openCard(sessionId);
+			const asUser = async (id: string) => {
+				const headers = await cookieHeadersFor(id);
+				headers.set("Origin", ORIGIN);
+				headers.set("Content-Type", "application/json");
+				return headers;
+			};
+			const detail = (await (
+				await app.request(`${approvalsPath(sessionId)}/${approvalId}`, {
+					headers: await asUser(member.id),
+				})
+			).json()) as CodexApprovalDetail;
+			const decide = async (id: string, body: object) =>
+				app.request(`${approvalsPath(sessionId)}/${approvalId}/decision`, {
+					method: "POST",
+					headers: await asUser(id),
+					body: JSON.stringify(body),
+				});
+			return { consenter, member, detail, decide, clear: clearInstanceSettings };
+		}
+
+		test("the member who owns the fork can't accept the card; a decline is allowed; the consenter can accept", async () => {
+			const t = await teamFork();
+			try {
+				const hash = t.detail.approval.presentationHash;
+				const refused = await t.decide(t.member.id, { decision: "accept", presentationHash: hash });
+				expect(refused.status).toBe(403);
+				expect(((await refused.json()) as { error: string }).error).toBe(
+					"fork_options_host_not_yours",
+				);
+				// Nothing was recorded by the refused accept: the consenter's accept still finds it pending.
+				const ok = await t.decide(t.consenter.id, { decision: "accept", presentationHash: hash });
+				expect(ok.status).toBe(200);
+			} finally {
+				await t.clear();
+			}
+		});
+
+		test("a decline by the member still works (declining is always safe)", async () => {
+			const t = await teamFork();
+			try {
+				const declined = await t.decide(t.member.id, { decision: "decline" });
+				expect(declined.status).toBe(200);
+			} finally {
+				await t.clear();
+			}
+		});
+	});
+
 	test("the opened-event words name no server and no tool", async () => {
 		const { openedWords } = await import("./codex-approvals.js");
 		expect(

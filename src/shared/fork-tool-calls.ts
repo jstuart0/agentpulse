@@ -84,3 +84,13 @@ export interface ForkToolCallDto {
 	redacted: boolean;
 	createdAt: string;
 }
+
+/** One call in the index view: everything but the text. The `input` and `output` keys are absent, not null. */
+export type ForkToolCallIndexEntry = Omit<ForkToolCallDto, "input" | "output">;
+
+/** `GET /sessions/:id/tool-calls?view=index`: what exists, with no text and nothing decrypted. */
+export interface ForkToolCallIndexList {
+	v: 1;
+	calls: ForkToolCallIndexEntry[];
+	nextBeforeId: string | null;
+}

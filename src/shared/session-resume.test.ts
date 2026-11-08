@@ -72,6 +72,7 @@ test("the refusal-code union is exactly the plan's list, so a code without copy 
 			"cwd_unknown",
 			"end_session_first",
 			"fork_options_host_not_yours",
+			"fork_options_not_supported",
 			"host_cannot_run_claude",
 			"host_cannot_run_codex",
 			"host_gone",

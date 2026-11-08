@@ -6,6 +6,8 @@
  * never printed.
  */
 import {
+	FORK_CALL_ROW_WORDS,
+	FORK_UNASKED_TAIL,
 	type ForkCallOutcome,
 	TURN_REFUSED_PREFIX,
 	TURN_UNASKED_PREFIX,
@@ -123,25 +125,13 @@ export function callRowKind(call: ToolCallRecord): CallRowKind {
 	return call.requested && call.answer === "allow" ? "approved" : "unasked";
 }
 
-const ROW_WORDS: Record<ForkCallOutcome, string> = {
-	approved: "ran, you approved it",
-	unasked: "ran without asking",
-	failed: "didn't succeed",
-	declined: "you declined it",
-	refused: "refused",
-	elsewhere: "may have run",
-	local_decline: "AgentPulse declined it; you weren't asked",
-	no_result: "called, no result seen",
-	stopped: "stopped when you stopped the turn",
-};
-
 export function callRowText(
 	call: ToolCallRecord,
 	naming: ForkNaming = DEFAULT_NAMING,
 	ctx?: CallRowContext,
 ): string {
 	const prefix = call.agentId === null ? "" : naming.subagentPrefix;
-	return `${prefix}${naming.printableTool(call.name)}: ${ROW_WORDS[callRowOutcome(call, ctx)]}`;
+	return `${prefix}${naming.printableTool(call.name)}: ${FORK_CALL_ROW_WORDS[callRowOutcome(call, ctx)]}`;
 }
 
 /** `Read (4), Bash (2)`: names from the six only, most first, ties in the order of the six. */
@@ -157,11 +147,6 @@ function countedNames(names: readonly string[], naming: ForkNaming): string {
 		.join(", ");
 }
 
-const UNASKED_TAIL: Record<ClaudeForkMode, string> = {
-	ask: "These were read-only, or your Claude settings allowed them.",
-	restricted: "Claude treated these as read-only.",
-};
-
 /**
  * The line for what ran with no request this turn, or null when nothing did (or only a name outside the six
  * did: it is not listed, so there is nothing to say). An approved or declined call is never counted here.
@@ -173,7 +158,7 @@ export function unaskedTurnText(
 ): string | null {
 	const names = calls.filter((c) => callRowKind(c) === "unasked").map((c) => c.name);
 	const list = countedNames(names, naming);
-	return list ? `${TURN_UNASKED_PREFIX} ${list}. ${UNASKED_TAIL[mode]}` : null;
+	return list ? `${TURN_UNASKED_PREFIX} ${list}. ${FORK_UNASKED_TAIL[mode]}` : null;
 }
 
 /** The line for calls the harness refused on its own account (a config rule, not a person), or null. */

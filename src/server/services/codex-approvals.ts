@@ -92,6 +92,7 @@ import {
 	assertCanAnswerApproval,
 	canReadSession,
 	mayAnswerApproval,
+	mayDriveForkOptions,
 } from "./authorization.js";
 import { mcpReportServerApplied, parseClaudeToolReport } from "./claude-tool-report.js";
 import {
@@ -1007,6 +1008,37 @@ function refusalForRow(effective: EffectiveApproval): ApprovalRefusal | null {
 }
 
 /**
+ * An accept of an MCP tool or Agent card on a fork that runs the host owner's MCP servers or subagents: in team
+ * mode only that owner (review H1). Declines and every other card are not touched.
+ */
+async function refuseForkOptionCardUnlessConsenter(
+	tx: Tx,
+	caller: ApprovalCaller,
+	sessionId: string,
+	row: ApprovalRow,
+): Promise<void> {
+	if (row.requestKind !== "claude_tool" || row.presentation === null) return;
+	let isOptionCard = false;
+	try {
+		const parsed = JSON.parse(row.presentation) as { mcp?: unknown; agent?: unknown };
+		isOptionCard = parsed.mcp !== undefined || parsed.agent !== undefined;
+	} catch {
+		return;
+	}
+	if (!isOptionCard) return;
+	const [session] = await tx
+		.select({ metadata: sessions.metadata, storedMode: storedModeColumn })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	if (!session) return;
+	const mode = caller.actor.mode ?? modeFromStoredColumn(session.storedMode);
+	if (mayDriveForkOptions(caller.actor, mode, session.metadata) !== null) {
+		throw new ApprovalRefusal("fork_options_host_not_yours");
+	}
+}
+
+/**
  * A person answers a pending approval. Order, with every step a fixed code:
  * decision in the fixed set; the owner rule BEFORE the row is read (so a
  * refusal says nothing about the row); an accept needs a signed-in person; the
@@ -1054,6 +1086,7 @@ export async function answerApproval(
 		}
 		hash = input.presentationHash;
 		if (!row.approvable) throw new ApprovalRefusal("not_approvable");
+		await refuseForkOptionCardUnlessConsenter(db, caller, sessionId, row);
 	}
 	if (decision === "cancel" && !row.canCancel) throw new ApprovalRefusal("invalid_decision");
 

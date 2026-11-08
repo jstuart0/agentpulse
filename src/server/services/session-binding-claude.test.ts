@@ -1312,7 +1312,7 @@ describe("fork options", () => {
 
 	test("what the host reports it applied is stored, judged for shape; a malformed report stores none", async () => {
 		const host = await seedHost();
-		const a = await claimed(await seedObserved(), host, SOLO);
+		const a = await claimed(await seedObserved(), host, SOLO, { mcp: true, subagents: true });
 		await report(a, { applied: APPLIED });
 		expect(await storedOptions(a.forkId)).toEqual(APPLIED);
 
@@ -1323,7 +1323,7 @@ describe("fork options", () => {
 			{ ...APPLIED, subagents: "yes" },
 			"nonsense",
 		]) {
-			const s = await claimed(await seedObserved(), host, SOLO);
+			const s = await claimed(await seedObserved(), host, SOLO, { mcp: true, subagents: true });
 			await report(s, { applied: bad });
 			expect(await storedOptions(s.forkId), JSON.stringify(bad)).toEqual(FORK_OPTIONS_OFF);
 		}
@@ -1331,7 +1331,7 @@ describe("fork options", () => {
 
 	test("recovery carries the stored value in the resume action's metadata; a session from before the options reads as none", async () => {
 		const host = await seedHost();
-		const s = await claimed(await seedObserved(), host, SOLO);
+		const s = await claimed(await seedObserved(), host, SOLO, { mcp: true, subagents: true });
 		await report(s, { applied: APPLIED });
 		await managedState.degradeClaudeForksOfRestartedHost(host);
 		const result = await queueSessionResume(s.forkId, SOLO, deps);
@@ -1379,11 +1379,14 @@ describe("fork options", () => {
 			}
 		};
 		walk(root);
-		// codex-approvals.ts only reads it, to know which MCP servers a report may name (AGEN-121).
+		// codex-approvals.ts, authorization.ts and control-actions.ts only read it (which MCP servers a report may
+		// name, and whether the options need the consenting owner to drive the fork).
 		expect(found.sort()).toEqual([
 			"routes/sessions.ts",
+			"services/authorization.ts",
 			"services/claude-takeover-settle.ts",
 			"services/codex-approvals.ts",
+			"services/control-actions.ts",
 			"services/managed-session-state.ts",
 			"services/session-binding.ts",
 		]);
@@ -1472,7 +1475,7 @@ describe("fork options", () => {
 			expect((await report(ok))?.status).toBe("succeeded");
 		});
 
-		test("options on a Codex session are an invalid body", async () => {
+		test("options on a Codex session are refused fork_options_not_supported (409)", async () => {
 			const host = await seedHost({
 				capabilities: {
 					...CAPABILITIES,
@@ -1497,9 +1500,145 @@ describe("fork options", () => {
 			});
 			const id = await seedObserved({ agentType: "codex_cli" });
 			expect(await refusal(bindWith(id, host, SOLO, { mcp: true }))).toEqual({
-				code: "invalid_body",
-				status: 400,
+				code: "fork_options_not_supported",
+				status: 409,
 			});
+			// Positive control: the same Codex session binds without options.
+			const ok = await bindWith(id, host, SOLO);
+			sessionsUsed.push((ok.action.metadata as Record<string, string>).forkSessionId as string);
+		});
+	});
+
+	describe("the host's report is held to the request (codex-M1)", () => {
+		test("a bind that asked for nothing stores nothing the host says it applied", async () => {
+			const host = await seedHost();
+			const s = await claimed(await seedObserved(), host, SOLO);
+			await report(s, { applied: APPLIED });
+			expect(await storedOptions(s.forkId)).toEqual({
+				...FORK_OPTIONS_OFF,
+				claudeVersion: "2.1.319",
+			});
+			const meta = (await sessionRow(s.forkId)).metadata as Record<string, unknown>;
+			expect(meta.forkOptionsConsentUserId).toBeUndefined();
+		});
+
+		test("an option that was asked for stays; one that wasn't is forced off", async () => {
+			const host = await seedHost();
+			const s = await claimed(await seedObserved(), host, SOLO, { subagents: true });
+			await report(s, { applied: APPLIED });
+			expect(await storedOptions(s.forkId)).toEqual({ ...APPLIED, mcpServers: [] });
+			const m = await claimed(await seedObserved(), host, SOLO, { mcp: true });
+			await report(m, { applied: APPLIED });
+			expect(await storedOptions(m.forkId)).toEqual({ ...APPLIED, subagents: false });
+		});
+
+		test("the consenting host owner is recorded in team mode when options run, and not otherwise", async () => {
+			const t = await team();
+			const host = await seedHost({ ownerUserId: t.alice.id });
+			const s = await claimed(
+				await seedObserved({ ownerUserId: t.alice.id }),
+				host,
+				MEMBER(t.alice.id),
+				{
+					mcp: true,
+				},
+			);
+			await report(s, { applied: APPLIED });
+			const meta = (await sessionRow(s.forkId)).metadata as Record<string, unknown>;
+			expect(meta.forkOptionsConsentUserId).toBe(t.alice.id);
+			const none = await claimed(
+				await seedObserved({ ownerUserId: t.alice.id }),
+				host,
+				MEMBER(t.alice.id),
+			);
+			await report(none);
+			expect(
+				((await sessionRow(none.forkId)).metadata as Record<string, unknown>)
+					.forkOptionsConsentUserId,
+			).toBeUndefined();
+		});
+	});
+
+	describe("only the consenting host owner drives a fork's options (H1)", () => {
+		// A bind can't create the split by itself (host_owner_mismatch keeps a host's owner and the session's owner
+		// equal), so it arises when an admin later hands the fork to someone else. The consent stays with the owner
+		// who gave it.
+		async function handedOverFork() {
+			const t = await team();
+			const host = await seedHost({ ownerUserId: t.alice.id });
+			const s = await claimed(
+				await seedObserved({ ownerUserId: t.alice.id }),
+				host,
+				MEMBER(t.alice.id),
+				{
+					mcp: true,
+					subagents: true,
+				},
+			);
+			await report(s, { applied: APPLIED });
+			await getDb()
+				.update(sessions)
+				.set({ ownerUserId: t.bob.id })
+				.where(eq(sessions.sessionId, s.forkId));
+			return { t, host, s };
+		}
+
+		test("resume: the new owner and an admin are refused with the stable code; the consenting owner is not", async () => {
+			const { t, host, s } = await handedOverFork();
+			await managedState.degradeClaudeForksOfRestartedHost(host);
+			expect(await refusal(queueSessionResume(s.forkId, MEMBER(t.bob.id), deps))).toEqual({
+				code: "fork_options_host_not_yours",
+				status: 403,
+			});
+			expect((await refusal(queueSessionResume(s.forkId, ADMIN(t.admin.id), deps))).code).toBe(
+				"fork_options_host_not_yours",
+			);
+			expect((await actionsOn(s.forkId)).filter((a) => a.actionType === "resume").length).toBe(0);
+			// Positive control: handed back, the consenting owner queues it.
+			await getDb()
+				.update(sessions)
+				.set({ ownerUserId: t.alice.id })
+				.where(eq(sessions.sessionId, s.forkId));
+			const ok = await queueSessionResume(s.forkId, MEMBER(t.alice.id), deps);
+			expect(ok.action.actionType).toBe("resume");
+		});
+
+		test("resume: a member's fork with no options resumes for the member (control)", async () => {
+			const t = await team();
+			const host = await seedHost({ ownerUserId: t.alice.id });
+			const s = await claimed(
+				await seedObserved({ ownerUserId: t.alice.id }),
+				host,
+				MEMBER(t.alice.id),
+			);
+			await report(s);
+			await managedState.degradeClaudeForksOfRestartedHost(host);
+			const ok = await queueSessionResume(s.forkId, MEMBER(t.alice.id), deps);
+			expect(ok.action.actionType).toBe("resume");
+		});
+
+		test("prompt: the new owner and an identity-less actor are refused with the stable code; the consenting owner is not", async () => {
+			const { t, s } = await handedOverFork();
+			await expect(
+				control.queuePromptAction(s.forkId, "hello", MEMBER(t.bob.id)),
+			).rejects.toMatchObject({ code: "fork_options_host_not_yours" });
+			await expect(
+				control.queuePromptAction(s.forkId, "hello", {
+					userId: null,
+					label: "telegram",
+					mode: "team",
+				}),
+			).rejects.toMatchObject({ code: "fork_options_host_not_yours" });
+			const ok = await control.queuePromptAction(s.forkId, "hello", MEMBER(t.alice.id));
+			expect(ok.actionType).toBe("prompt");
+		});
+
+		test("solo is unaffected by recorded consent", async () => {
+			const host = await seedHost();
+			const s = await claimed(await seedObserved(), host, SOLO, { mcp: true });
+			await report(s, { applied: APPLIED });
+			const ok = await control.queuePromptAction(s.forkId, "hello", SOLO);
+			expect(ok.actionType).toBe("prompt");
 		});
 	});
 });

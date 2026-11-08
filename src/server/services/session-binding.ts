@@ -42,7 +42,12 @@ import { apiKeys, controlActions, managedSessions, sessions } from "../db/schema
 import { jsonExtractText } from "../db/sql-helpers.js";
 import { requestWsRevalidation } from "../ws/revalidation.js";
 import { logAdminAction } from "./audit-log.js";
-import { mayBindToHost, mayUseForkOptionsOnHost, refuseBindSession } from "./authorization.js";
+import {
+	mayBindToHost,
+	mayDriveForkOptions,
+	mayUseForkOptionsOnHost,
+	refuseBindSession,
+} from "./authorization.js";
 import { BindRefusal } from "./bind-refusal.js";
 import {
 	isClaudeTakeoverLaunch,
@@ -51,7 +56,7 @@ import {
 	resolveManagedLaunch,
 	takeControlLock,
 } from "./control-actions.js";
-import { getMode } from "./instance-mode.js";
+import { getMode, getModeOn } from "./instance-mode.js";
 import {
 	ENFORCES_LAUNCH_PRIVILEGES,
 	buildLaunchSpec,
@@ -414,7 +419,7 @@ export async function bindObservedSession(
 	const wantsOptions = forkOptionsRequested(forkOptions);
 	if (wantsOptions) {
 		// Options are a Claude Code fork's; and they run the person's own configuration, so on the machine's owner only.
-		if (session.agentType !== "claude_code") throw new BindRefusal("invalid_body");
+		if (session.agentType !== "claude_code") throw new BindRefusal("fork_options_not_supported");
 		const optionsVerdict = mayUseForkOptionsOnHost(actor, mode, {
 			ownerUserId: host.ownerUserId ?? null,
 		});
@@ -658,6 +663,14 @@ async function queueClaudeRecovery(
 	},
 ) {
 	const { sessionId, fresh, launch, managed, actor, now } = input;
+	// Resuming restarts the fork's MCP servers and subagents with the host owner's configuration: only the owner
+	// who consented to them may do that (review H1).
+	const optionsVerdict = mayDriveForkOptions(
+		actor,
+		actor.mode ?? (await getModeOn(tx)),
+		fresh.metadata,
+	);
+	if (optionsVerdict !== null) throw new BindRefusal(optionsVerdict);
 	const hostId = await resolveSessionOwner(tx, sessionId);
 	if (hostId === null) throw new BindRefusal("host_gone");
 	const hostNow = await readHostState(tx, hostId, now());

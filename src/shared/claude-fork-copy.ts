@@ -119,6 +119,25 @@ export const FORK_CALL_OUTCOMES = [
 ] as const;
 export type ForkCallOutcome = (typeof FORK_CALL_OUTCOMES)[number];
 
+/** What a call row says after the tool name, one sentence per outcome. The server holds a fork's rows to these words. */
+export const FORK_CALL_ROW_WORDS: Readonly<Record<ForkCallOutcome, string>> = {
+	approved: "ran, you approved it",
+	unasked: "ran without asking",
+	failed: "didn't succeed",
+	declined: "you declined it",
+	refused: "refused",
+	elsewhere: "may have run",
+	local_decline: "AgentPulse declined it; you weren't asked",
+	no_result: "called, no result seen",
+	stopped: "stopped when you stopped the turn",
+};
+
+/** The fixed tail of the per-turn "ran without asking" row, by mode. */
+export const FORK_UNASKED_TAIL: Readonly<Record<ForkMode, string>> = {
+	ask: "These were read-only, or your Claude settings allowed them.",
+	restricted: "Claude treated these as read-only.",
+};
+
 /** The tools a fork has when no option adds one. An `mcp__<server>__<tool>` name is reported as `mcp`, never by name. */
 export const FORK_TOOL_NAMES = [
 	"Bash",
