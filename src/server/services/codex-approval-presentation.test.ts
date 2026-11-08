@@ -644,7 +644,7 @@ describe("reserved presentation slots (AGEN-119..123 Track 0)", () => {
 	});
 
 	const slots: Array<[string, Record<string, unknown>, string]> = [
-		["mcp", { mcp: { server: "probe", tool: "echo", rawToolName: "mcp__probe__echo" } }, "probe"],
+		// The mcp slot has its own tests below: an MCP report is a different presentation, not a slot on a fetch.
 		[
 			"agent",
 			{ agent: { subagentType: "general-purpose", prompt: "look", builtIn: true } },
@@ -681,5 +681,103 @@ describe("reserved presentation slots (AGEN-119..123 Track 0)", () => {
 		expect(built.approvable).toBe(false);
 		expect(built.notApprovableReason).toBe("redacted");
 		expect(built.presentationJson).not.toContain(SECRET);
+	});
+});
+
+describe("an MCP tool call (AGEN-121)", () => {
+	const mcpReport = (extra: Record<string, unknown> = {}) =>
+		({
+			...commandReport(),
+			requestKind: "claude_tool",
+			tool: "mcp__probe__echo_note",
+			target: '{\n  "text": "hello"\n}',
+			mcp: { server: "probe", tool: "echo_note", rawToolName: "mcp__probe__echo_note" },
+			...extra,
+		}) as Parameters<typeof buildPresentation>[0];
+	const ctx = { mcpServers: ["probe"] };
+
+	test("the presentation says only `mcp` as its tool, holds the input and the slot, and is approvable", () => {
+		const built = buildPresentation(mcpReport(), "claude", ctx);
+		expect(built.presentation).toMatchObject({
+			requestKind: "claude_tool",
+			tool: "mcp",
+			target: '{\n  "text": "hello"\n}',
+			mcp: { server: "probe", tool: "echo_note", rawToolName: "mcp__probe__echo_note" },
+		});
+		expect(built.approvable).toBe(true);
+	});
+
+	test("the mcp slot is part of the hash: dropping it changes it, and the slot's names change it", () => {
+		const built = buildPresentation(mcpReport(), "claude", ctx);
+		const { mcp: _slot, ...dropped } = JSON.parse(built.presentationJson);
+		expect(hashPresentation(dropped)).not.toBe(built.hash);
+		const other = buildPresentation(
+			mcpReport({
+				tool: "mcp__probe__other",
+				mcp: { server: "probe", tool: "other", rawToolName: "mcp__probe__other" },
+			}),
+			"claude",
+			ctx,
+		);
+		expect(other.hash).not.toBe(built.hash);
+	});
+
+	test("the server splits the wire name again: a host value that differs makes the request decline-only, and the card shows the server's split", () => {
+		const built = buildPresentation(
+			mcpReport({
+				mcp: { server: "prob", tool: "e_echo_note", rawToolName: "mcp__probe__echo_note" },
+			}),
+			"claude",
+			ctx,
+		);
+		expect(built.approvable).toBe(false);
+		expect(built.notApprovableReason).toBe("unknown_param");
+		expect(built.presentation).toMatchObject({ mcp: { server: "probe", tool: "echo_note" } });
+	});
+
+	test("a server that was not applied is decline-only here too", () => {
+		const built = buildPresentation(mcpReport(), "claude", { mcpServers: ["other"] });
+		expect(built.approvable).toBe(false);
+		expect(built.notApprovableReason).toBe("unknown_param");
+	});
+
+	test("a secret in the input makes it unapprovable and is not stored", () => {
+		const built = buildPresentation(mcpReport({ target: `{"token":"${SECRET}"}` }), "claude", ctx);
+		expect(built.approvable).toBe(false);
+		expect(built.notApprovableReason).toBe("redacted");
+		expect(built.presentationJson).not.toContain(SECRET);
+	});
+
+	test("an input past 16 KiB is cut and not approvable", () => {
+		const built = buildPresentation(
+			mcpReport({
+				target: `{"a":"${"x".repeat(17_000)}"}`,
+				truncated: true,
+				declineOnly: ["too_long"],
+			}),
+			"claude",
+			ctx,
+		);
+		expect(built.approvable).toBe(false);
+		expect(built.notApprovableReason).toBe("too_long");
+	});
+
+	test("the list preview names the call as server/tool and carries no input", () => {
+		const built = buildPresentation(mcpReport(), "claude", ctx);
+		const preview = buildPreview(built.presentation);
+		expect(preview.tool).toBe("mcp");
+		expect(preview.target).toBe("probe/echo_note");
+		expect(JSON.stringify(preview)).not.toContain("hello");
+	});
+
+	test("a Latin and Cyrillic mix in a name is lookalike text", () => {
+		const built = buildPresentation(
+			mcpReport({
+				mcp: { server: "probe", tool: "echo_nоte", rawToolName: "mcp__probe__echo_nоte" },
+			}),
+			"claude",
+			ctx,
+		);
+		expect(built.approvable).toBe(false);
 	});
 });

@@ -123,7 +123,7 @@ export interface ForkPolicyPart {
 	initToolsProblem?(
 		init: Record<string, unknown>,
 		base: "tools" | "mcp_servers" | null,
-	): "tools" | "mcp_servers" | null;
+	): "tools" | "mcp_servers" | null | undefined;
 	classifyLine?(message: Record<string, unknown>, base: LineClass): LineClass;
 	requestAllowed?(params: Record<string, unknown>, base: "allow" | "decline"): "allow" | "decline";
 	naming?: Partial<ForkNaming>;
@@ -202,10 +202,11 @@ export function forkToolPolicy(applied: AppliedForkOptions = FORK_OPTIONS_OFF): 
 			) {
 				base = "mcp_servers";
 			}
-			return parts.reduce<"tools" | "mcp_servers" | null>(
-				(acc, part) => part.initToolsProblem?.(init, acc) ?? acc,
-				base,
-			);
+			// A half that has an opinion returns it, `null` ("this init is fine") included; one without returns undefined.
+			return parts.reduce<"tools" | "mcp_servers" | null>((acc, part) => {
+				const verdict = part.initToolsProblem?.(init, acc);
+				return verdict === undefined ? acc : verdict;
+			}, base);
 		},
 		classifyLine(message) {
 			const own = message.agent_id === undefined && (message.parent_tool_use_id ?? null) === null;

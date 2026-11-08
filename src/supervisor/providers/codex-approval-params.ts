@@ -45,8 +45,10 @@ export interface ParsedApproval {
 /** What a Claude `can_use_tool` request carries beyond the Codex-shaped fields. */
 export interface ClaudeParsedExtras {
 	tool: string;
-	/** A `claude_tool` request's URL or path. */
+	/** A `claude_tool` request's URL or path; for an MCP tool call (AGEN-121), the input as JSON text. */
 	target: string | null;
+	/** An MCP tool call (AGEN-121): the server, the tool and the wire name, split against the applied servers. */
+	mcp?: { server: string; tool: string; rawToolName: string };
 	/** A Bash request's `blocked_path`, as given. */
 	blockedPath: string | null;
 	/** The edits a Write, Edit or NotebookEdit makes, built from the input (never from the model's description). */

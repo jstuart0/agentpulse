@@ -45,6 +45,7 @@ import {
 import type { ControlAction } from "../../shared/types.js";
 import { listClaudeAgentEntries } from "../providers/claude-agents.js";
 import { forkArgv, inPlaceArgv } from "../providers/claude-argv.js";
+import { ForkOptionsRefusal } from "../providers/claude-fork-mcp.js";
 import { type PreparedForkOptions, prepareForkOptions } from "../providers/claude-fork-tools.js";
 import { type LoginProbe, createLoginProbe, pickForkMode } from "../providers/claude-login-mode.js";
 import {
@@ -235,6 +236,7 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 		cwd: string,
 		mode: ClaudeForkMode,
 		verdict: Verdict,
+		applied: AppliedForkOptions,
 	): ClaudeApprovalPort {
 		const launch: ApprovalLaunch & { cwd: string } = {
 			sessionId,
@@ -254,7 +256,7 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 				}
 			},
 		};
-		return deps.tracker.attachClaude(launch, { mode, configDir, verdict });
+		return deps.tracker.attachClaude(launch, { mode, configDir, verdict, applied });
 	}
 
 	/** Spawns and verifies the child; every refusal inside leaves no process behind (`startClaudeStream`). */
@@ -271,7 +273,13 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 		prepared: PreparedForkOptions;
 		reservedSlot?: () => void;
 	}): Promise<ClaudeStreamRuntime> {
-		const approvals = approvalFor(input.sessionId, input.spawnDir, input.mode, input.verdict);
+		const approvals = approvalFor(
+			input.sessionId,
+			input.spawnDir,
+			input.mode,
+			input.verdict,
+			input.prepared.applied,
+		);
 		const observer = forkTurnObserver(input.sessionId, {
 			send: (sessionId, body) => gate.reportToolCalls(sessionId, body),
 			serverHas: deps.serverHas,
@@ -491,10 +499,16 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 			throw new Refusal("rejected", "the gate can't take another launch");
 		}
 		const askedOptions = parseForkOptionsRequest(meta.forkOptions) ?? {};
-		const prepared = await prepareForkOptions(askedOptions, {
-			claudeVersion: binary.version,
-			log,
-		});
+		let prepared: PreparedForkOptions;
+		try {
+			prepared = await prepareForkOptions(askedOptions, {
+				claudeVersion: binary.version,
+				log,
+			});
+		} catch (error) {
+			gate.forgetLaunch(carrierId, forkId);
+			throw error;
+		}
 		let runtime: ClaudeStreamRuntime;
 		try {
 			runtime = await spawnFork({
@@ -651,6 +665,12 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 			stored,
 			log,
 		});
+		// A fork started with MCP servers is never resumed without them (a Claude Code version nobody measured
+		// applies none): the person continues the original again.
+		if ((stored?.mcpServers.length ?? 0) > 0 && prepared.applied.mcpServers.length === 0) {
+			await prepared.cleanup();
+			throw new Refusal("mcp_servers_changed", "the fork's MCP servers can't be started here");
+		}
 		let args: string[] = [];
 		let source: string | undefined;
 		let sourceFile: string | null = null;
@@ -822,6 +842,12 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 				if (resumeKind === "recovery") await recover(action, sessionId);
 				else await takeover(action, sessionId);
 			} catch (error) {
+				// A recovery whose fork MCP file changed (AGEN-121): the same refusal as any other, in its own words.
+				if (error instanceof ForkOptionsRefusal) {
+					const mode =
+						resumeKind === "recovery" ? deps.forkRecord.lookup(sessionId)?.mode : undefined;
+					return refuseWith(action, resumeKind, error.kind, "the fork MCP servers changed", mode);
+				}
 				if (error instanceof Refusal) {
 					const mode =
 						resumeKind === "recovery" ? deps.forkRecord.lookup(sessionId)?.mode : undefined;

@@ -37,6 +37,8 @@ on:
       - "src/server/services/ai/action-requests-service.ts"
       - "src/server/services/ask/ask-session-action-handler.ts"
       - "src/server/services/claude-approvals*"
+      - "src/server/services/claude-tool-report*"
+      - "src/server/services/claude-mcp-approval*"
       - "src/shared/codex-approvals.ts"
       - "src/shared/claude-approvals.ts"
       - "src/server/routes/health.ts"
@@ -150,6 +152,7 @@ jobs:
             src/server/services/control-actions-claude-interrupt.test.ts \
             src/server/services/codex-approvals-turn-fence.test.ts \
             src/server/routes/sessions-interrupt.test.ts 2>&1 | tee claude-turn.log
+            src/server/services/claude-mcp-approval-e2e.test.ts 2>&1 | tee claude-turn.log
           if grep -Eq '^ *[1-9][0-9]* skip' claude-turn.log; then
             echo "A Claude turn guard test was skipped on Postgres." >&2
             exit 1

@@ -22,6 +22,11 @@ import {
 	isAgentMemoryPath,
 } from "../../shared/claude-approvals.js";
 import {
+	FORK_MCP_INPUT_MAX_CHARS,
+	forkMcpInputText,
+	splitForkMcpToolName,
+} from "../../shared/claude-fork-mcp.js";
+import {
 	CODEX_APPROVAL_LIMITS,
 	type CodexApprovalChange,
 	type CodexApprovalReportRequest,
@@ -169,12 +174,14 @@ export function parseClaudeRequest(
 	}
 
 	const kind = claudeToolKind(toolName, ctx.applied);
+	const isMcp = kind === "mcp";
 	const known = kind !== null && (CLAUDE_APPROVAL_TOOLS as readonly string[]).includes(kind);
 	const treatments = known
 		? CLAUDE_TOOL_INPUT_TREATMENTS[toolName as ClaudeApprovalTool]
 		: undefined;
-	if (!known || !treatments) reasons.add("unknown_tool");
-	for (const [key, value] of Object.entries(input)) {
+	if (!isMcp && (!known || !treatments)) reasons.add("unknown_tool");
+	// An MCP tool's input is the server's own schema: any object is shown whole, and nothing in it is interpreted.
+	for (const [key, value] of Object.entries(isMcp ? {} : input)) {
 		if (value === null || value === undefined) continue;
 		const treatment = treatments && Object.hasOwn(treatments, key) ? treatments[key] : undefined;
 		if (treatment === undefined) reasons.add("unknown_param");
@@ -221,6 +228,43 @@ export function parseClaudeRequest(
 				: /\/projects\/[^/]+\/memory(\/|$)/i.test(real) || /\/\.claude(\/|$)/i.test(real);
 		if (named) reasons.add("agent_memory");
 	};
+
+	if (isMcp) {
+		// The split is made against the applied servers' names, which hold no underscore, so it is unique.
+		const split = splitForkMcpToolName(
+			toolName,
+			(ctx.applied?.mcpServers ?? []).map((s) => s.name),
+		);
+		if (split === null) {
+			reasons.add("unknown_param");
+		}
+		// Claude names the server it is calling; a name that disagrees with the split, or a server that isn't
+		// one of ours (a plugin, an account connector), is never approvable (xander M3).
+		const named = isRecord(params.mcp_server) ? params.mcp_server : null;
+		if (
+			!split ||
+			named === null ||
+			named.name !== split.server ||
+			named.source !== "dynamic" ||
+			Object.keys(named).some((k) => k !== "name" && k !== "source")
+		) {
+			reasons.add("unknown_param");
+		}
+		const inputText = forkMcpInputText(input);
+		if (inputText.length > FORK_MCP_INPUT_MAX_CHARS) reasons.add("too_long");
+		return {
+			kind: "claude_tool",
+			...base,
+			command: null,
+			cwd: ctx.cwd,
+			reason: null,
+			declineOnly: [...reasons],
+			claude: {
+				...extras(toolName, inputText, [], []),
+				...(split ? { mcp: split } : {}),
+			},
+		};
+	}
 
 	switch (toolName) {
 		case "Bash": {
@@ -392,12 +436,16 @@ export function buildClaudeReportBody(input: ClaudeReportInputs): CodexApprovalR
 		return {
 			...base,
 			tool: claude?.tool ?? null,
-			target: claude?.target ? note(cut(claude.target, limits.pathChars)) : null,
+			// An MCP call's target is its input as JSON, which has the command's bound, not a path's.
+			target: claude?.target
+				? note(cut(claude.target, claude.mcp ? limits.command : limits.pathChars))
+				: null,
 			cwd,
 			reason,
 			grantRoot: null,
 			truncated,
 			declineOnly,
+			...(claude?.mcp ? { mcp: claude.mcp } : {}),
 		};
 	}
 	const changes: CodexApprovalChange[] = [];

@@ -1364,7 +1364,7 @@ describe("fork options", () => {
 		expect(await storedOptions(s.forkId)).toEqual(FORK_OPTIONS_OFF);
 	});
 
-	test("only the bind, the settle and the supervisor-report filter name forkOptions in server code (no hook, rename or native-name path writes it)", () => {
+	test("only the bind, the settle, the approval-report check (a read) and the supervisor-report filter name forkOptions in server code (no hook, rename or native-name path writes it)", () => {
 		const { readdirSync, readFileSync } = require("node:fs") as typeof import("node:fs");
 		const { join, relative } = require("node:path") as typeof import("node:path");
 		const root = join(import.meta.dir, "..");
@@ -1379,9 +1379,11 @@ describe("fork options", () => {
 			}
 		};
 		walk(root);
+		// codex-approvals.ts only reads it, to know which MCP servers a report may name (AGEN-121).
 		expect(found.sort()).toEqual([
 			"routes/sessions.ts",
 			"services/claude-takeover-settle.ts",
+			"services/codex-approvals.ts",
 			"services/managed-session-state.ts",
 			"services/session-binding.ts",
 		]);

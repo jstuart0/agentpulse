@@ -13,6 +13,11 @@
  * says "working", "waiting", "idle" or "error" as a state: the operational
  * badge is the one place a state is said.
  */
+import {
+	FORK_MCP_ARRIVAL,
+	FORK_MCP_CONFIRM,
+	forkMcpHeading,
+} from "../../../shared/claude-fork-mcp.js";
 import type {
 	ApprovalDecision,
 	ClaudePeerTurnNotice,
@@ -408,6 +413,16 @@ export function exhaustiveToolKind(value: never): never {
 	throw new Error(`unhandled tool kind: ${String(value)}`);
 }
 
+/** The server and tool a list preview's `target` names for an MCP call (`server/tool`), or null when it is not that. */
+export function mcpNamesFromTarget(
+	target: string | null | undefined,
+): { server: string; tool: string } | null {
+	if (!target) return null;
+	const at = target.indexOf("/");
+	if (at <= 0 || at === target.length - 1) return null;
+	return { server: target.slice(0, at), tool: target.slice(at + 1) };
+}
+
 /** "Claude asks to use a tool": the words for the kinds whose own copy has not been written. */
 const USE_A_TOOL = "asks to use a tool";
 
@@ -426,7 +441,11 @@ export function requestHeading(
 				const verb = kind === "read" ? "read" : "fetch";
 				return target ? `${name} asks to ${verb} ${target}` : `${name} asks to ${verb} something`;
 			}
-			case "mcp":
+			case "mcp": {
+				// The list names the call `server/tool` (the server's own split); neither part holds a slash.
+				const named = mcpNamesFromTarget(target);
+				return named ? forkMcpHeading(named.tool, named.server) : `${name} asks to use an MCP tool`;
+			}
 			case "agent":
 				return `${name} ${USE_A_TOOL}`;
 			default:
@@ -804,6 +823,12 @@ export function confirmCopy(input: {
 					closing: ["A URL can carry data out. Runs once.", ...closing.slice(1)],
 				};
 			case "mcp":
+				return {
+					title: FORK_MCP_CONFIRM.title,
+					confirmLabel: FORK_MCP_CONFIRM.confirmLabel,
+					cancelLabel: FORK_MCP_CONFIRM.cancelLabel,
+					closing: [FORK_MCP_CONFIRM.lead, ...closing.slice(1)],
+				};
 			case "agent":
 				return {
 					title: "Let Claude use this tool?",
@@ -954,6 +979,7 @@ function toolAnnouncement(kind: ClaudeToolKind): string {
 		case "webfetch":
 			return "asks to fetch a URL";
 		case "mcp":
+			return FORK_MCP_ARRIVAL;
 		case "agent":
 			return USE_A_TOOL;
 		default:

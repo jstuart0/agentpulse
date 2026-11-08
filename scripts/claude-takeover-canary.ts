@@ -44,7 +44,11 @@ import {
 } from "./claude-canary-runner.js";
 import { T119_SCENARIOS, T119_SCENARIO_IDS } from "./claude-canary-scenarios/t119.js";
 import { T120_SCENARIOS, T120_SCENARIO_IDS } from "./claude-canary-scenarios/t120.js";
-import { T121_SCENARIOS, T121_SCENARIO_IDS } from "./claude-canary-scenarios/t121.js";
+import {
+	T121_SCENARIOS,
+	T121_SCENARIO_IDS,
+	mcpMutatedArgs,
+} from "./claude-canary-scenarios/t121.js";
 import { T122_EVENT_MUTATIONS } from "./claude-canary-scenarios/t122-mutations.js";
 import { T122_SCENARIOS, T122_SCENARIO_IDS } from "./claude-canary-scenarios/t122.js";
 import { T123_SCENARIOS, T123_SCENARIO_IDS } from "./claude-canary-scenarios/t123.js";
@@ -591,6 +595,11 @@ export async function startHost(
 	}
 	if (mutation === "drop-agents-check") {
 		takeoverExtras.listAgents = async () => ({ ok: true, entries: [] });
+	}
+	// AGEN-121: the MCP mutations that rewrite the fork's argv (`t121.ts` holds what each one does).
+	if (mutation === "mcp-allow-rule" || mutation === "mcp-no-strict") {
+		takeoverExtras.start = (options: Any) =>
+			stream.startClaudeStream({ ...options, args: mcpMutatedArgs(mutation, options.args) });
 	}
 	if (mutation === "drop-prompt-check") {
 		takeoverExtras.startExtra = {

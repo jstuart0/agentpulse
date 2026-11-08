@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { forkMcpCardLine } from "../../../shared/claude-fork-mcp.js";
 import {
 	APPROVAL_ANSWER_REFUSALS,
 	APPROVAL_CLOSED_REASONS,
@@ -1079,7 +1080,7 @@ describe("the card kinds of a Claude tool request (AGEN-119..123 Track 0)", () =
 		).toBe("Claude asks to fetch a URL.");
 	});
 
-	for (const tool of ["mcp", "Agent"]) {
+	for (const tool of ["Agent"]) {
 		test(`${tool}: all four renderers say Claude asks to use a tool, and never fetch or URL`, () => {
 			const outputs = [
 				requestHeading(summary(tool), "claude"),
@@ -1108,6 +1109,62 @@ describe("the card kinds of a Claude tool request (AGEN-119..123 Track 0)", () =
 			}
 		});
 	}
+});
+
+describe("an MCP tool call's words (AGEN-121, F48)", () => {
+	const mcpSummary = (target?: string) =>
+		({
+			requestKind: "claude_tool",
+			preview: { tool: "mcp", target, cwd: null, pathOutsideCwd: false, nonAscii: false },
+		}) as Parameters<typeof requestHeading>[0];
+
+	test("the heading names the tool and the server from the list's server/tool target", () => {
+		expect(requestHeading(mcpSummary("probe/echo_note"), "claude")).toBe(
+			'Claude asks to use "echo_note" from probe',
+		);
+	});
+
+	test("a target that isn't server/tool falls back to the plain words", () => {
+		for (const target of [undefined, "", "probe", "/tool", "probe/"]) {
+			expect(requestHeading(mcpSummary(target), "claude")).toBe("Claude asks to use an MCP tool");
+		}
+	});
+
+	test("the confirm step is the MCP one, never the generic tool one, and never says fetch or URL", () => {
+		const copy = confirmCopy({
+			requestKind: "claude_tool",
+			fileCount: 0,
+			host: "m",
+			declinesAt: "12:00",
+			tool: "mcp",
+		});
+		expect(copy.title).toBe("Let Claude use this MCP tool?");
+		expect(copy.confirmLabel).toBe("Allow this call");
+		expect(copy.cancelLabel).toBe("Back");
+		expect(copy.closing[0]).toBe("Runs once. AgentPulse can't undo it.");
+		for (const text of [copy.title, copy.confirmLabel, ...copy.closing]) {
+			expect(text).not.toMatch(/fetch|url/i);
+		}
+	});
+
+	test("the arrival announcement is spoken without names", () => {
+		expect(
+			arrivalAnnouncement({
+				requestKind: "claude_tool",
+				fileCount: 0,
+				declinesAt: null,
+				pendingCount: 1,
+				agent: "claude",
+				tool: "mcp",
+			}),
+		).toBe("Claude asks to use an MCP tool.");
+	});
+
+	test("a card line is the plain-weight sentence that says the effect isn't known", () => {
+		expect(forkMcpCardLine("probe", "echo_note")).toBe(
+			'probe calls this tool "echo_note". AgentPulse can\'t tell what it does or what it will change. Approve only if you know this server and this tool.',
+		);
+	});
 });
 
 describe("the card's own tool split (source)", () => {

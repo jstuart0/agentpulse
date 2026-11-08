@@ -5,7 +5,16 @@
  * to keep working. Pure functions, so each sentence is tested without rendering.
  */
 import { forkModeLine, forkSentenceName } from "../../../shared/claude-fork-copy.js";
-import type { AppliedForkOptions, ForkOptionsRequest } from "../../../shared/session-resume.js";
+import {
+	FORK_MCP_OFF_REASONS,
+	forkMcpAppliedLine,
+	forkMcpOffLine,
+} from "../../../shared/claude-fork-mcp.js";
+import {
+	type AppliedForkOptions,
+	FORK_OPTION_MEASURED_VERSIONS,
+	type ForkOptionsRequest,
+} from "../../../shared/session-resume.js";
 import {
 	type ForkInfo,
 	type ForkSource,
@@ -35,15 +44,27 @@ export type ForkLink =
 
 /**
  * The line that says which fork options a session was started with, and which it asked for but didn't get
- * (a version AgentPulse hasn't measured them on, a changed file). Null until AGEN-121 and AGEN-120 write the
- * words, so a session shows exactly what it showed before.
+ * (a version AgentPulse hasn't measured them on, no usable file, a supervisor that can't). Null when the session
+ * has no option to report, so a session without options shows exactly what it showed before. `requested` is
+ * known only where the person just chose (the dialog); a stored session has what the host applied.
  */
 export function forkOptionsLine(
-	_requested: ForkOptionsRequest | null | undefined,
-	_applied: AppliedForkOptions | null | undefined,
+	requested: ForkOptionsRequest | null | undefined,
+	applied: AppliedForkOptions | null | undefined,
 	_machine: string | null | undefined,
 ): string | null {
-	return null;
+	const names = (applied?.mcpServers ?? []).map((s) => s.name);
+	if (names.length > 0) return forkMcpAppliedLine(names);
+	if (requested?.mcp !== true) return null;
+	// Nothing applied: the host's reported version says which of the fixed reasons it is.
+	const version = applied?.claudeVersion ?? "";
+	const reason =
+		version === ""
+			? FORK_MCP_OFF_REASONS.old_supervisor
+			: !FORK_OPTION_MEASURED_VERSIONS.includes(version)
+				? FORK_MCP_OFF_REASONS.unmeasured_version
+				: FORK_MCP_OFF_REASONS.no_file;
+	return forkMcpOffLine(reason);
 }
 
 export interface ForkStatusView {
@@ -52,6 +73,8 @@ export interface ForkStatusView {
 	line: string;
 	/** Which settings apply; null when the row doesn't say which mode it runs under. */
 	modeLine: string | null;
+	/** Which fork options the session runs with; null when it has none. */
+	optionsLine: string | null;
 	/** Shown once the session has been ended. */
 	endedLine: string | null;
 	link: ForkLink;
@@ -82,6 +105,7 @@ export function forkStatusView(input: ForkStatusInput): ForkStatusView {
 					unavailable,
 				)
 			: null,
+		optionsLine: forkOptionsLine(null, input.fork.options ?? null, input.machine),
 		endedLine:
 			input.managedState === "stopped"
 				? `You ended this session. ${

@@ -16,6 +16,13 @@ import {
 	forkSentenceName,
 	restrictedLoginPhrase,
 } from "../../../shared/claude-fork-copy.js";
+import {
+	CLAUDE_FORK_MCP,
+	FORK_MCP_CONTROL_LABEL,
+	FORK_MCP_FRAGMENT,
+	forkMcpControlHelp,
+	forkMcpHostCannot,
+} from "../../../shared/claude-fork-mcp.js";
 import { type ForkOptionsRequest, isResumableSessionId } from "../../../shared/session-resume.js";
 import type { SupervisorRecord } from "../../../shared/types.js";
 
@@ -85,15 +92,61 @@ export function claudeHostReason(
 
 // ── The dialog ──────────────────────────────────────────────────────────────
 
-/** One checkbox in the dialog's options fieldset. AGEN-121 and AGEN-120 each add theirs here; none exists yet. */
+/** One checkbox in the dialog's options fieldset. AGEN-121 and AGEN-120 each add theirs here. */
 export interface ForkOptionControl {
 	key: keyof ForkOptionsRequest;
 	label: string;
+	/** The description under the label, naming the machine once one is chosen. */
+	help(machine: string | null): string;
+	/** Said instead of the description when the chosen machine's supervisor lacks `hostFeature`. */
+	hostCannot(host: string): string;
+	/** The `/capabilities` feature that says this server accepts the option; the control is shown only when it is on. */
+	capability: string;
+	/** The supervisor feature the chosen machine must advertise; without it the control is disabled with a reason. */
+	hostFeature: string;
+}
+
+/** The options a person can turn on. */
+export const FORK_OPTION_CONTROLS: readonly ForkOptionControl[] = [
+	{
+		key: "mcp",
+		label: FORK_MCP_CONTROL_LABEL,
+		help: forkMcpControlHelp,
+		hostCannot: forkMcpHostCannot,
+		capability: "claudeForkMcp",
+		hostFeature: CLAUDE_FORK_MCP,
+	},
+];
+export interface ForkOptionControlState {
+	shown: boolean;
+	/** The checkbox can't be used on the chosen machine; its checked state is kept. */
+	disabled: boolean;
+	/** What is said under the label. */
 	help: string;
 }
 
-/** The options a person can turn on. Empty until a ticket ships one: the fieldset is not drawn then. */
-export const FORK_OPTION_CONTROLS: readonly ForkOptionControl[] = [];
+/**
+ * Whether a control is drawn and usable. It is drawn only when the server advertises it (an older server never
+ * shows an option it would refuse). A chosen machine whose supervisor lacks the feature disables it and says why
+ * in place of the description; with no machine chosen it is usable and the description says "the chosen machine".
+ */
+export function forkOptionControlState(
+	control: ForkOptionControl,
+	serverFeatures: ReadonlySet<string> | null,
+	machine: string | null,
+	hostFeatures: readonly string[] | null,
+): ForkOptionControlState {
+	const shown = serverFeatures?.has(control.capability) === true;
+	const named = machine?.trim() ? machine.trim() : null;
+	const hostCannot =
+		named !== null && hostFeatures !== null && !hostFeatures.includes(control.hostFeature);
+	return {
+		shown,
+		disabled: hostCannot,
+		help: hostCannot ? control.hostCannot(named) : control.help(named),
+	};
+}
+
 export const FORK_OPTIONS_LEGEND = "Options for this session (off by default)";
 export const FORK_OPTIONS_CLOSING =
 	"These stay as chosen for this session. To change them, continue again.";
@@ -201,6 +254,7 @@ export function claudeDialogLines(input: ClaudeDialogInput): ClaudeDialogLines {
 			"your Claude settings still apply, so commands they allow, and anything a hook there answers, run without waiting for you.",
 			`With ${askLoginPhrase()}:`,
 		),
+		...(input.requested?.mcp === true ? [para(FORK_MCP_FRAGMENT, "Fork MCP servers:")] : []),
 		para(notInSessionLine(input.requested), "Not in this session:"),
 		para(
 			"Your terminal's conversation isn't changed. Don't open the new session in a terminal. Afterwards, `claude --continue` here can open the new session instead, so use the command this page gives you to get back.",

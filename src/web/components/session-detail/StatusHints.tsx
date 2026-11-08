@@ -234,6 +234,9 @@ export function ManagedForkStatus({ session }: { session: Session }) {
 								<HostSentence text={view.modeLine} />
 							</p>
 						) : null}
+						{view.optionsLine ? (
+							<p className="pb-1 leading-relaxed [overflow-wrap:anywhere]">{view.optionsLine}</p>
+						) : null}
 						<p className="[overflow-wrap:anywhere]">{link}</p>
 					</details>
 					<button
@@ -255,6 +258,11 @@ export function ManagedForkStatus({ session }: { session: Session }) {
 					{view.modeLine ? (
 						<p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
 							<HostSentence text={view.modeLine} />
+						</p>
+					) : null}
+					{view.optionsLine ? (
+						<p className="mt-1 text-[11px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
+							{view.optionsLine}
 						</p>
 					) : null}
 					<p className="mt-1 text-[11px] text-muted-foreground [overflow-wrap:anywhere]">{link}</p>

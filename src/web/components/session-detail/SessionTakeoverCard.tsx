@@ -4,6 +4,7 @@ import type { ForkOptionsRequest } from "../../../shared/session-resume.js";
 import type { Session, SupervisorRecord } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../../hooks/useOwnershipUi.js";
+import { useServerFeatures } from "../../hooks/useServerFeatures.js";
 import { api } from "../../lib/api.js";
 import { ownerLabel } from "../../lib/owner-label.js";
 import { sessionBindAccess } from "../../lib/session-bind-access.js";
@@ -26,6 +27,7 @@ import {
 	claudeCopyCommandLabel,
 	claudeDialogLines,
 	claudeResumeCommand,
+	forkOptionControlState,
 } from "./claude-takeover-copy.js";
 import { type TakeoverAttempt, bindRefusalMessage } from "./session-takeover-view.js";
 import {
@@ -212,17 +214,31 @@ export function ForkOptionsFieldset({
 	controls,
 	value,
 	onChange,
+	serverFeatures,
+	machine,
+	hostFeatures,
 }: {
 	controls: readonly ForkOptionControl[];
 	value: ForkOptionsRequest;
 	onChange: (next: ForkOptionsRequest) => void;
+	/** What the server advertises; a control whose capability isn't in it is not drawn. Null: not known yet. */
+	serverFeatures: ReadonlySet<string> | null;
+	/** The chosen machine's name; null until one is chosen. */
+	machine: string | null;
+	/** The chosen machine's advertised features; null until one is chosen. */
+	hostFeatures: readonly string[] | null;
 }) {
 	const baseId = useId();
-	if (controls.length === 0) return null;
+	const states = controls.map((control) => ({
+		control,
+		state: forkOptionControlState(control, serverFeatures, machine, hostFeatures),
+	}));
+	const shown = states.filter(({ state }) => state.shown);
+	if (shown.length === 0) return null;
 	return (
 		<fieldset className="space-y-2">
 			<legend className="text-sm font-medium text-foreground">{FORK_OPTIONS_LEGEND}</legend>
-			{controls.map((control) => {
+			{shown.map(({ control, state }) => {
 				const id = `${baseId}-${control.key}`;
 				return (
 					<div key={control.key} className="flex items-start gap-2">
@@ -230,6 +246,7 @@ export function ForkOptionsFieldset({
 							id={id}
 							type="checkbox"
 							checked={value[control.key] === true}
+							disabled={state.disabled}
 							onChange={(e) => onChange({ ...value, [control.key]: e.target.checked })}
 							aria-describedby={`${id}-help`}
 							className="mt-1 h-5 w-5 shrink-0"
@@ -239,7 +256,7 @@ export function ForkOptionsFieldset({
 								{control.label}
 							</label>
 							<p id={`${id}-help`} className={`text-xs text-muted-foreground ${WRAP}`}>
-								{control.help}
+								{state.help}
 							</p>
 						</div>
 					</div>
@@ -406,6 +423,7 @@ export function SessionTakeoverCard({
 	const [open, setOpen] = useState(false);
 	const [hostId, setHostId] = useState("");
 	const [forkOptions, setForkOptions] = useState<ForkOptionsRequest>({});
+	const serverFeatures = useServerFeatures();
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [submittedTo, setSubmittedTo] = useState<string | null>(null);
@@ -567,6 +585,9 @@ export function SessionTakeoverCard({
 									controls={FORK_OPTION_CONTROLS}
 									value={forkOptions}
 									onChange={setForkOptions}
+									serverFeatures={serverFeatures}
+									machine={chosen?.name ?? null}
+									hostFeatures={chosenRecord ? (chosenRecord.capabilities?.features ?? []) : null}
 								/>
 							) : null}
 						</>

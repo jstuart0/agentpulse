@@ -71,6 +71,7 @@ import {
 	type TrackerOutcome,
 	approvalWaitId,
 } from "../../shared/codex-approvals.js";
+import { parseAppliedForkOptions } from "../../shared/session-resume.js";
 import type { Actor, InstanceModeName } from "../auth/actor.js";
 import { getDb } from "../db/client.js";
 import {
@@ -91,7 +92,7 @@ import {
 	canReadSession,
 	mayAnswerApproval,
 } from "./authorization.js";
-import { parseClaudeToolReport } from "./claude-tool-report.js";
+import { mcpReportServerApplied, parseClaudeToolReport } from "./claude-tool-report.js";
 import {
 	type BuiltPresentation,
 	type PresentationAgent,
@@ -425,6 +426,8 @@ export function openedWords(
 	const who = opened.agent === "claude" ? "Claude" : "Codex";
 	if (opened.requestKind === "command") return `${who} asks to run a command`;
 	if (opened.requestKind === "claude_tool") {
+		// An MCP tool is worded without its names: they are the server's, and the timeline is shared.
+		if (opened.tool === "mcp") return `${who} asks to use an MCP tool`;
 		return opened.tool === "Read" ? `${who} asks to read a file` : `${who} asks to fetch a URL`;
 	}
 	return `${who} asks to change ${opened.fileCount} ${opened.fileCount === 1 ? "file" : "files"}`;
@@ -742,7 +745,11 @@ export async function recordApprovalRequest(
 	try {
 		result = await withTransaction(async (tx): Promise<RecordedApproval> => {
 			const [session] = await tx
-				.select({ sessionId: sessions.sessionId, launchAgentType: launchRequests.agentType })
+				.select({
+					sessionId: sessions.sessionId,
+					launchAgentType: launchRequests.agentType,
+					metadata: sessions.metadata,
+				})
 				.from(sessions)
 				.leftJoin(launchRequests, eq(launchRequests.launchCorrelationId, sessions.sessionId))
 				.where(eq(sessions.sessionId, sessionId))
@@ -757,7 +764,14 @@ export async function recordApprovalRequest(
 			if (report.requestKind === "claude_tool" && agent !== "claude") {
 				throw new ApprovalRefusal("invalid_body");
 			}
-			built = buildPresentation(report, agent);
+			// The servers the fork was started with are the only ones an MCP tool call may name (AGEN-121).
+			const applied = parseAppliedForkOptions(
+				(session.metadata as { forkOptions?: unknown } | null)?.forkOptions,
+			);
+			if (!mcpReportServerApplied(report, applied)) throw new ApprovalRefusal("invalid_body");
+			built = buildPresentation(report, agent, {
+				mcpServers: applied?.mcpServers.map((s) => s.name),
+			});
 			if (await sessionHasActiveStop(tx, sessionId)) throw new ApprovalRefusal("session_stopping");
 			// A request on a turn a person has already stopped: the host declines that one request.
 			if (await turnHasActiveInterrupt(tx, sessionId, report.turnId)) {

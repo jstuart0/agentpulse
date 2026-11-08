@@ -48,7 +48,7 @@ export function registerApprovalTools(ctx: ToolContext, flags: ScopeFlags): void
 		{
 			name: "list_pending_approvals",
 			description:
-				"List the approvals a managed session (Codex, or a Claude Code session continued in AgentPulse) is waiting on: commands, file changes and, for Claude, web fetches and reads outside its directory (open ones only: pending, or answered and waiting for the host). Each carries a short preview (the command's start and last lines, the file paths, or the URL or path), the presentationHash, whether it is approvable, how long it has left, and the host's state. Previews are cut to 4 KiB; the full text is in the dashboard. This tool can read and decline but never accept: accepting is for a signed-in person in the dashboard, who sees the whole command first.",
+				"List the approvals a managed session (Codex, or a Claude Code session continued in AgentPulse) is waiting on: commands, file changes and, for Claude, web fetches, reads outside its directory and calls to MCP tools (open ones only: pending, or answered and waiting for the host). Each carries a short preview (the command's start and last lines, the file paths, the URL or path, or for an MCP tool, tool 'mcp' with target as server/tool: the input and what the tool does are for the person in the dashboard, and AgentPulse can't tell what an MCP tool does), the presentationHash, whether it is approvable, how long it has left, and the host's state. Previews are cut to 4 KiB; the full text is in the dashboard. This tool can read and decline but never accept: accepting is for a signed-in person in the dashboard, who sees the whole command first.",
 			inputSchema: { session_id: z.string() },
 		},
 		async (args, client) => {

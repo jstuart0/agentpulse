@@ -2,6 +2,7 @@ import { constants, accessSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { arch, homedir, hostname, platform } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
+import { CLAUDE_FORK_MCP } from "../shared/claude-fork-mcp.js";
 import { CLAUDE_STOP, CLAUDE_TURN_CONTROL, CODEX_FOLLOW_UP_PROMPTS } from "../shared/constants.js";
 import {
 	tightenPrivateFilePermissionsSync,
@@ -265,6 +266,8 @@ export async function withExecutableCapabilities(
 				...(interactiveTerminalControl.available ? ["interactive_terminal_control"] : []),
 				...(codex.resolvedPath ? ["managed_codex", CODEX_FOLLOW_UP_PROMPTS, RESUMES_SESSIONS] : []),
 				...(claude.resolvedPath && currentOs() === "macos" ? [CLAUDE_TAKEOVER] : []),
+				// AGEN-121: starts the servers in the person's fork MCP file in a continued session.
+				...(claude.resolvedPath && currentOs() === "macos" ? [CLAUDE_FORK_MCP] : []),
 			],
 			interactiveTerminalControl,
 			executables: {

@@ -38,7 +38,7 @@ import {
 	TRACKER_OUTCOME_TABLE,
 	type TrackerOutcome,
 } from "../../shared/codex-approvals.js";
-import type { ClaudeForkMode } from "../../shared/session-resume.js";
+import type { AppliedForkOptions, ClaudeForkMode } from "../../shared/session-resume.js";
 import type { ReportGate } from "../services/report-gate.js";
 import { SupervisorRequestError, classifyReportFailure } from "../services/report-resilience.js";
 import { buildClaudeReportBody, parseClaudeRequest } from "./claude-approval-params.js";
@@ -307,7 +307,7 @@ type State = {
 	/** Null for a takeover fork: its requests and answers go through the runtime's port. */
 	client: ApprovalClient | null;
 	/** A takeover fork's mode and where Claude keeps its projects. */
-	claude: { mode: ClaudeForkMode; configDir: string | null } | null;
+	claude: { mode: ClaudeForkMode; configDir: string | null; applied?: AppliedForkOptions } | null;
 	launch: ApprovalLaunch;
 	verdict: Verdict | null;
 	fenced: boolean;
@@ -329,7 +329,13 @@ export type CodexApprovalTracker = {
 	 */
 	attachClaude(
 		launch: ApprovalLaunch & { cwd: string },
-		options: { mode: ClaudeForkMode; configDir: string | null; verdict: Verdict },
+		options: {
+			mode: ClaudeForkMode;
+			configDir: string | null;
+			verdict: Verdict;
+			/** What the fork's options came to (AGEN-121): decides which tool names the parser knows. */
+			applied?: AppliedForkOptions;
+		},
 	): ClaudeApprovalPort & { readonly handle: ApprovalHandle };
 	setVerdict(handle: ApprovalHandle, verdict: Verdict): void;
 	/**
@@ -993,6 +999,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 						cwd: state.launch.cwd ?? "",
 						configDir: state.claude.configDir,
 						inputStable: held.ctx.inputStable,
+						...(state.claude.applied ? { applied: state.claude.applied } : {}),
 					})
 				: parseApprovalParams(held.method, held.params);
 		if (!parsed) {
@@ -1468,7 +1475,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 				handle,
 				dialect: "claude",
 				client: null,
-				claude: { mode: options.mode, configDir: options.configDir },
+				claude: { mode: options.mode, configDir: options.configDir, applied: options.applied },
 				launch,
 				verdict: options.verdict,
 				fenced: false,

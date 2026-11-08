@@ -159,6 +159,16 @@ function serializePresentation(
 			cwd: p.cwd,
 			reason: p.reason,
 			grantRoot: p.grantRoot,
+			// An MCP tool call (AGEN-121): the slot is part of what the hash covers, so it travels with it.
+			...(p.mcp !== undefined
+				? {
+						mcp: {
+							server: p.mcp.server,
+							tool: p.mcp.tool,
+							rawToolName: p.mcp.rawToolName,
+						},
+					}
+				: {}),
 		};
 	}
 	return {

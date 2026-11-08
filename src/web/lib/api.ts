@@ -603,6 +603,9 @@ export const api = {
 			},
 		),
 
+	/** What this server can do (the features the dialog's fork options are gated on). Observe-readable. */
+	getCapabilities: () => request<{ features?: Record<string, boolean> }>("/capabilities"),
+
 	/** Resumes a managed Codex session whose process is gone. No body: the host and settings are the launch's own. */
 	resumeSession: (sessionId: string) =>
 		request<{ action: ControlAction; launchRequestId: string }>(

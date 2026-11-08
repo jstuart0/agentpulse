@@ -9,6 +9,7 @@ import {
 } from "./config.js";
 import { createControlActionHandler } from "./control-actions.js";
 import { createLaunchDispatcher } from "./launch-dispatch.js";
+import { configureForkMcp } from "./providers/claude-fork-mcp.js";
 import { headlessRuntimeCount } from "./providers/claude-headless.js";
 import { claudeStreamRuntimeCount } from "./providers/claude-stream.js";
 import {
@@ -216,6 +217,8 @@ async function main() {
 	// Sessions this host is resuming (D16): the observer reads their lines and posts nothing, so a resumed
 	// turn can't also arrive as a second UserPromptSubmit and Stop beside the managed one.
 	const resumingSessions = new Set<string>();
+	// Where the person's fork MCP file is looked for (AGEN-121); an unconfigured host applies no MCP server.
+	configureForkMcp({ agentpulseDir: join(home, ".agentpulse") });
 	const forkRecord = createClaudeForkRecord({
 		path: join(home, ".agentpulse", "claude-forks.json"),
 	});

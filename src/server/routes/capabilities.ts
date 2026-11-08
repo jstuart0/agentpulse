@@ -184,6 +184,13 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		value: true,
 		isAvailable: () => forkToolDetailAvailable(),
 	},
+	{
+		// AGEN-121: the bind body accepts the `mcp` fork option, so a continued Claude session can start the servers in
+		// the person's fork MCP file. Whether a given host can is the host's `claude_fork_mcp` feature.
+		name: "claudeForkMcp",
+		proof: { kind: "bindBodyKey", key: "mcp" },
+		value: true,
+	},
 ];
 
 /** What the availability checks may look at; read once per request. */
