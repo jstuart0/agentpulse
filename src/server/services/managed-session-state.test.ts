@@ -195,4 +195,53 @@ describe("appendManagedSessionEvents: a fork's row payloads are whitelisted", ()
 		});
 		expect(other).toEqual({ anything: "stays" });
 	});
+
+	// The canary's `detail-in-row` mutation (AGEN-123) puts a `leaked` key on a turn_unasked row. The whitelist
+	// strips it, so that variant survives by design; the canary now leaks through `content`, which the whitelist keeps.
+	test("a leaked key on a turn_unasked row never reaches storage, through the real append path", async () => {
+		await mkSession("fork-3");
+		await seedOwnedLaunch("fork-3", "sup-1");
+		const token = "FT-LEAK-7f3a9c";
+		await appendManagedSessionEvents("sup-1", "fork-3", [
+			{
+				eventType: "HeadlessStatus",
+				category: "progress_update",
+				content: "Read (1): ran without asking",
+				rawPayload: {
+					source: "claude_stream",
+					kind: "turn_unasked",
+					claudeStreamRuntime: true,
+					leaked: token,
+				},
+			},
+		]);
+		const rows = await getDb().select().from(events).where(eq(events.sessionId, "fork-3"));
+		expect(JSON.stringify(rows)).not.toContain(token);
+	});
+
+	test("an Agent call row keeps its tool name; a non-reported name loses it", async () => {
+		await mkSession("fork-4");
+		await seedOwnedLaunch("fork-4", "sup-1");
+		const call = (tool: string, id: string) => ({
+			eventType: "HeadlessStatus",
+			category: "progress_update" as const,
+			content: `${tool}: ran, you approved it`,
+			rawPayload: {
+				source: "claude_stream",
+				kind: "call",
+				claudeStreamRuntime: true,
+				tool,
+				toolOutcome: "approved",
+				is_error: false,
+				tool_use_id: id,
+			},
+		});
+		await appendManagedSessionEvents("sup-1", "fork-4", [
+			call("Agent", "toolu_agent1"),
+			call("Task", "toolu_task1"),
+		]);
+		const [agent, task] = await storedPayloads("fork-4");
+		expect(agent?.tool).toBe("Agent");
+		expect(task).not.toHaveProperty("tool");
+	});
 });

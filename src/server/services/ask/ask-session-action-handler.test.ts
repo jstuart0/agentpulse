@@ -151,3 +151,35 @@ describe("handleSessionAction while a takeover is open", () => {
 		},
 	);
 });
+
+describe("handleSessionAction stop on a continued Claude session", () => {
+	const managedRow = (sessionId: string) => ({
+		sessionId,
+		launchRequestId: "lr-stop",
+		supervisorId: "sup-1",
+		managedState: "managed",
+		providerSyncState: "synced",
+	});
+	const stop = () =>
+		handleSessionAction(
+			{ action: "stop", sessionHint: null, noteText: null, newName: null },
+			baseArgs,
+		);
+
+	test("says it ends the session and points to Stop turn on the session page", async () => {
+		await insertSession("ask-stop-fork", { metadata: { forkedFromSessionId: "src-1" } });
+		await getDb().insert(managedSessions).values(managedRow("ask-stop-fork")).execute();
+		const result = await stop();
+		expect(result.replyText).toContain("ends the session");
+		expect(result.replyText).toContain("Stop turn");
+		expect(result.replyText).toContain("session page");
+	});
+
+	test("a session that is not a fork keeps the plain stop reply", async () => {
+		await insertSession("ask-stop-plain");
+		await getDb().insert(managedSessions).values(managedRow("ask-stop-plain")).execute();
+		const result = await stop();
+		expect(result.replyText).toContain("Queued a stop");
+		expect(result.replyText).not.toContain("Stop turn");
+	});
+});

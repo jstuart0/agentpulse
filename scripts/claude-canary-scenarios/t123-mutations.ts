@@ -15,7 +15,7 @@ export const T123_MUTATIONS: Record<string, Mutation> = {
 	"detail-in-row": {
 		scenario: "tool-detail",
 		layers: [
-			"detail-in-row: the host puts the file's contents (the Read's output) in the payload of the turn's 'ran without asking' row. Until AGEN-122's per-kind payload whitelist is in the server this must be caught by the leak scan; with the whitelist the server strips the key and this mutation then survives, which is the whitelist working (the plan's second variant disables it)",
+			"detail-in-row: the host puts the file's contents (the Read's output) in the text of the turn's 'ran without asking' row. It goes in content because AGEN-122's server whitelist strips any extra rawPayload key (a `leaked` key there survives by design, held by managed-session-state.test.ts); content is a field the whitelist keeps, so only the owner-only detail rule and the leak scan stand in the way",
 		],
 		expectation: "the file's contents are in no stored row",
 	},

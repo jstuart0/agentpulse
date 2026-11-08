@@ -382,8 +382,9 @@ describe("the observer sends call detail (AGEN-123)", () => {
 		expect(crashed.bodies[0]?.calls[0]?.outcome).toBe("no_result");
 	});
 
-	test("a tool name outside the six reports as nothing; an MCP tool reports as mcp, never by name", () => {
-		expect(toolCallReport(resultedCall({ name: "Agent" }), null)).toBeNull();
+	test("a tool name outside the six, Agent and mcp reports as nothing; an Agent call reports by name; an MCP tool reports as mcp, never by name", () => {
+		expect(toolCallReport(resultedCall({ name: "Task" }), null)).toBeNull();
+		expect(toolCallReport(resultedCall({ name: "Agent" }), null)?.tool).toBe("Agent");
 		expect(toolCallReport(resultedCall({ name: "mcp__secret-server__dump" }), null)?.tool).toBe(
 			"mcp",
 		);

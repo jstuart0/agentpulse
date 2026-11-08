@@ -153,8 +153,19 @@ describe("the verdict for Bash and MCP", () => {
 	test("WebFetch has no path; any other tool name is withheld", async () => {
 		const judge = judgeWith(rulesOver(secret));
 		expect(await judge("WebFetch", { url: "https://example.com", prompt: "p" })).toBe("send");
-		expect(await judge("Agent", { prompt: "x" })).toBe("withhold");
+		expect(await judge("Task", { prompt: "x" })).toBe("withhold");
 		expect(await judge("", {})).toBe("withhold");
+	});
+
+	test("an Agent call is judged like Bash: its prompt against the rules, and a rule beneath the directory withholds", async () => {
+		const input = { subagent_type: "general-purpose", description: "d", prompt: "look around" };
+		expect(await judgeWith({ state: "none" })("Agent", input)).toBe("send");
+		expect(await judgeWith(rulesOver(secret))("Agent", input)).toBe("send");
+		expect(
+			await judgeWith(rulesOver(secret))("Agent", { ...input, prompt: `read ${secret}/k.txt` }),
+		).toBe("withhold");
+		expect(await judgeWith(rulesOver(join(work, "vault")))("Agent", input)).toBe("withhold");
+		expect(await judgeWith({ state: "invalid" })("Agent", input)).toBe("withhold");
 	});
 
 	test("a Bash input that is not an object, or whose command is not text, is withheld", async () => {

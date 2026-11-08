@@ -137,6 +137,13 @@ describe("the controls", () => {
 		expect(html).toContain('aria-label="Show what MCP tool ran"');
 	});
 
+	test("an Agent call is named 'Agent'", () => {
+		const html = renderToStaticMarkup(
+			<CallDetails context={context} record={call({ tool: "Agent" })} turnEndedAt={null} />,
+		);
+		expect(html).toContain('aria-label="Show what Agent ran"');
+	});
+
 	test("'Show what ran' appears for a turn with unasked calls and not for one with none", () => {
 		const some = renderToStaticMarkup(
 			<TurnDetails context={context} records={[call()]} turnEndedAt={null} />,

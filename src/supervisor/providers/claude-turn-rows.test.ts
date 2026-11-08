@@ -8,6 +8,7 @@ import { FORK_CALL_OUTCOMES } from "../../shared/claude-fork-copy.js";
 import { turnsOf } from "../test-utils/claude-fixture-replay.js";
 import { type Harness, createHarness, until } from "../test-utils/claude-stream-harness.js";
 import { CLAUDE_FIXTURE_DIR_2_1_319, readClaudeFixture } from "./__fixtures__/claude-frames.js";
+import { forkToolPolicy } from "./claude-fork-tools.js";
 import { _resetClaudeStreamForTest, disposeAllClaudeStreamRuntimes } from "./claude-stream.js";
 import {
 	type CallRowContext,
@@ -269,5 +270,29 @@ describe("tool naming", () => {
 			toolOutcome: "unasked",
 			is_error: false,
 		});
+	});
+});
+
+describe("an Agent call's row (subagents applied)", () => {
+	const agent = newToolCallRecord({
+		toolUseId: "toolu_agent",
+		name: "Agent",
+		resulted: true,
+		isError: false,
+		requested: true,
+		answer: "allow",
+		detailResult: "the helper's long answer",
+	});
+	const policy = forkToolPolicy({ mcpServers: [], subagents: true, claudeVersion: "2.1.319" });
+
+	test("the payload names the tool, and the text names it too, never the prompt or the answer", () => {
+		const payload = callRowPayload(agent, RUNNING);
+		expect(payload).toMatchObject({ tool: "Agent", toolOutcome: "approved", is_error: false });
+		expect(JSON.stringify(payload)).not.toContain("helper");
+		expect(callRowText(agent, policy.naming, RUNNING)).toBe("Agent: ran, you approved it");
+	});
+
+	test("without the option the row is neutral: the text says 'A tool'", () => {
+		expect(callRowText(agent, undefined, RUNNING)).toBe("A tool: ran, you approved it");
 	});
 });

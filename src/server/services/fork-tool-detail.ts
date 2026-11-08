@@ -14,7 +14,7 @@
  */
 import type { SQL } from "drizzle-orm";
 import { and, asc, count, desc, eq, gte, inArray, lt, or } from "drizzle-orm";
-import { FORK_CALL_OUTCOMES, FORK_TOOL_NAMES } from "../../shared/claude-fork-copy.js";
+import { FORK_CALL_OUTCOMES, FORK_REPORTED_TOOLS } from "../../shared/claude-fork-copy.js";
 import {
 	FORK_TOOL_DETAIL_CAP_BYTES,
 	FORK_TOOL_DETAIL_LIMITS,
@@ -43,7 +43,7 @@ export const EVENTS_RETENTION_SETTING_KEY = "eventsRetentionDays";
 const HOUR_MS = 60 * 60 * 1000;
 const TOOL_USE_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
 const ACTION_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
-const REPORTED_TOOLS: readonly string[] = [...FORK_TOOL_NAMES, "mcp"];
+const REPORTED_TOOLS: readonly string[] = FORK_REPORTED_TOOLS;
 const OUTCOMES: readonly string[] = FORK_CALL_OUTCOMES;
 
 /** Whether the server can keep detail at all: the key it is encrypted with must be set. */

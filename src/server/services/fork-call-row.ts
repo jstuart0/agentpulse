@@ -8,7 +8,7 @@
  */
 import {
 	FORK_CALL_OUTCOMES,
-	FORK_TOOL_NAMES,
+	FORK_REPORTED_TOOLS,
 	type ForkCallOutcome,
 } from "../../shared/claude-fork-copy.js";
 
@@ -33,8 +33,7 @@ function callRow(raw: Record<string, unknown>): Record<string, unknown> {
 	const toolUseId = raw.tool_use_id;
 	return {
 		tool:
-			typeof tool === "string" &&
-			(tool === "mcp" || (FORK_TOOL_NAMES as readonly string[]).includes(tool))
+			typeof tool === "string" && (FORK_REPORTED_TOOLS as readonly string[]).includes(tool)
 				? tool
 				: undefined,
 		toolOutcome:

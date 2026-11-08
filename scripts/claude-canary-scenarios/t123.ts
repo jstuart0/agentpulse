@@ -9,7 +9,7 @@
  * per request, and the team fixtures seed a second member), but the scenario keeps the single person: the
  * matrix carries team mode, and a mode switch mid-scenario would only re-test what the matrix holds.
  */
-import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Any, ScenarioFn } from "./helpers.js";
 import {
@@ -50,6 +50,8 @@ export const T123_SCENARIOS: Record<(typeof T123_SCENARIO_IDS)[number], Scenario
 			const vault = join(s.cwd, "vault");
 			mkdirSync(vault, { recursive: true });
 			writeFileSync(join(vault, "secret.txt"), `${vaultToken}\n`);
+			// A mutation re-runs this scenario in the same directory; start the link afresh.
+			rmSync(join(s.cwd, "link"), { force: true });
 			symlinkSync(vault, join(s.cwd, "link"));
 
 			const taken = await takeOver(run, host, s.id as string);

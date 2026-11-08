@@ -12,7 +12,7 @@
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { MCP_TOOL_PREFIX } from "../../shared/claude-fork-copy.js";
+import { FORK_AGENT_TOOL, MCP_TOOL_PREFIX } from "../../shared/claude-fork-copy.js";
 
 export type DetailVerdict = "send" | "withhold";
 
@@ -182,7 +182,7 @@ const PATH_TOOLS: Record<string, "file_path" | "notebook_path"> = {
 
 /**
  * Builds the judge for one fork. Never throws: any failure is `withhold`. Path tools are judged on the
- * resolved file, Bash and MCP on the intact text against the rule paths, WebFetch carries no path, anything
+ * resolved file, Bash, Agent and MCP on the intact text against the rule paths, WebFetch carries no path, anything
  * else is withheld.
  */
 export function createDetailJudge(deps: DetailJudgeDeps): DetailJudge {
@@ -200,7 +200,7 @@ export function createDetailJudge(deps: DetailJudgeDeps): DetailJudge {
 				const resolved = await resolveThroughExisting(absolute, real);
 				return deps.excludesPath(absolute) || deps.excludesPath(resolved) ? "withhold" : "send";
 			}
-			if (name === "Bash" || name.startsWith(MCP_TOOL_PREFIX)) {
+			if (name === "Bash" || name === FORK_AGENT_TOOL || name.startsWith(MCP_TOOL_PREFIX)) {
 				if (scope.state === "none") return "send";
 				const dir = await resolveThroughExisting(deps.cwd, real);
 				const text = name === "Bash" ? input.command : JSON.stringify(input);

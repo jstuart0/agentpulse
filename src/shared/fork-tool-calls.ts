@@ -41,7 +41,7 @@ export interface ForkToolCallReport {
 	toolUseId: string;
 	/** The control action of the turn the call belongs to, or null when the host doesn't know it. */
 	turnActionId: string | null;
-	/** One of the fork's tools, or `mcp` for any MCP tool. */
+	/** One of the fork's six tools, `Agent` when subagents are applied, or `mcp` for any MCP tool. */
 	tool: string;
 	/** A `FORK_CALL_OUTCOMES` value. */
 	outcome: string;

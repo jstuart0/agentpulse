@@ -681,7 +681,9 @@ export async function startHost(
 		});
 	}
 	// ignore-exclude (AGEN-123): the gate tells the fork's detail judge there are no rules.
-	// detail-in-row (AGEN-123): the host puts the Read's output into the turn's 'ran without asking' row.
+	// detail-in-row (AGEN-123): the host puts the Read's output into the text of the turn's 'ran without asking'
+	// row. It goes in `content`, which the server's per-kind payload whitelist (AGEN-122) keeps; a key added to
+	// the payload is stripped by that whitelist, so the mutation would survive by design.
 	// add-input: a wrapper on the report path puts the tool inputs Claude asked about into a stored row.
 	const takeoverGate =
 		mutation === "ignore-exclude"
@@ -700,10 +702,7 @@ export async function startHost(
 									event.rawPayload?.kind === "turn_unasked"
 										? {
 												...event,
-												rawPayload: {
-													...event.rawPayload,
-													leaked: (current as Any)?.leakToken ?? "",
-												},
+												content: `${event.content ?? ""} ${(current as Any)?.leakToken ?? ""}`,
 											}
 										: event,
 								),

@@ -257,7 +257,8 @@ describe("storing a host's report", () => {
 			null,
 			{ v: 2, calls: [call()] },
 			{ v: 1, calls: [] },
-			{ v: 1, calls: [{ ...call(), tool: "Agent" }] },
+			{ v: 1, calls: [{ ...call(), tool: "Task" }] },
+			{ v: 1, calls: [{ ...call(), tool: "mcp__s__t" }] },
 			{ v: 1, calls: [{ ...call(), outcome: "weird" }] },
 			{ v: 1, calls: [{ ...call(), toolUseId: "has space" }] },
 			{
@@ -272,9 +273,11 @@ describe("storing a host's report", () => {
 		]) {
 			expect(detail.parseForkToolCallsReport(bad)).toBeNull();
 		}
-		expect(
-			detail.parseForkToolCallsReport({ v: 1, calls: [{ ...call(), tool: "mcp" }] }),
-		).not.toBeNull();
+		for (const tool of ["mcp", "Agent"]) {
+			expect(
+				detail.parseForkToolCallsReport({ v: 1, calls: [{ ...call(), tool }] }),
+			).not.toBeNull();
+		}
 	});
 });
 

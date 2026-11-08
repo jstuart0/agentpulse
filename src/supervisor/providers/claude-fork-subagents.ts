@@ -1,4 +1,5 @@
 import { CLAUDE_APPROVAL_TOOLS, type ClaudeInputTreatment } from "../../shared/claude-approvals.js";
+import { FORK_AGENT_TOOL } from "../../shared/claude-fork-copy.js";
 /**
  * The subagent half of a fork's tool policy (AGEN-120).
  *
@@ -28,7 +29,7 @@ import {
 } from "./claude-fork-tools.js";
 
 /** The Agent call's name on the request and in `--tools`; 2.1.319 reports it as `Task` in `init.tools`. */
-export const AGENT_TOOL = "Agent";
+export const AGENT_TOOL = FORK_AGENT_TOOL;
 const AGENT_TOOL_INIT_ALIAS = "Task";
 
 /** What the Agent call's input may hold. Anything else (a background run, a model, an isolation) is `unknown_param`. */

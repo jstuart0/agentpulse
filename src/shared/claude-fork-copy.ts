@@ -133,8 +133,21 @@ export type ForkToolName = (typeof FORK_TOOL_NAMES)[number];
 /** The prefix Claude gives a tool a user MCP server provides. */
 export const MCP_TOOL_PREFIX = "mcp__";
 
-/** What a row or a stored call may say about the tool: a name from the six, `mcp` for any MCP tool, else null. */
-export function reportedForkTool(name: string): ForkToolName | "mcp" | null {
+/** The helper-starting tool, present only when the person applied subagents to the takeover. */
+export const FORK_AGENT_TOOL = "Agent";
+
+/**
+ * Every name a row or a stored call may carry for its tool: the six, the Agent call, and `mcp` for any MCP
+ * tool. Kept apart from `FORK_TOOL_NAMES`, which stays the six a fork has when no option adds one.
+ */
+export const FORK_REPORTED_TOOLS = [...FORK_TOOL_NAMES, FORK_AGENT_TOOL, "mcp"] as const;
+export type ForkReportedTool = (typeof FORK_REPORTED_TOOLS)[number];
+
+/** What a row or a stored call may say about the tool: a name from the six or `Agent`, `mcp` for any MCP tool, else null. */
+export function reportedForkTool(name: string): ForkReportedTool | null {
 	if (name.startsWith(MCP_TOOL_PREFIX)) return "mcp";
-	return (FORK_TOOL_NAMES as readonly string[]).includes(name) ? (name as ForkToolName) : null;
+	if (name === "mcp") return null;
+	return (FORK_REPORTED_TOOLS as readonly string[]).includes(name)
+		? (name as ForkReportedTool)
+		: null;
 }

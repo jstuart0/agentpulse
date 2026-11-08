@@ -1,6 +1,6 @@
 /** AGEN-122 (F14, F51): the per-kind whitelist for a fork row's payload. Pure; no database. */
 import { describe, expect, test } from "bun:test";
-import { FORK_CALL_OUTCOMES, FORK_TOOL_NAMES } from "../../shared/claude-fork-copy.js";
+import { FORK_CALL_OUTCOMES, FORK_REPORTED_TOOLS } from "../../shared/claude-fork-copy.js";
 import { isForkRowEvent, normalizeForkRowPayload } from "./fork-call-row.js";
 
 const MARKED = { source: "claude_stream", claudeStreamRuntime: true } as const;
@@ -34,16 +34,16 @@ describe("normalizeForkRowPayload", () => {
 		expect(normalizeForkRowPayload({ ...call, ...EXTRAS })).toEqual(call);
 	});
 
-	test("every outcome and every tool name survives; mcp does; others do not", () => {
+	test("every outcome and every reported tool name (the six, Agent, mcp) survives; others do not", () => {
 		for (const toolOutcome of FORK_CALL_OUTCOMES) {
 			expect(normalizeForkRowPayload({ ...MARKED, kind: "call", toolOutcome }).toolOutcome).toBe(
 				toolOutcome,
 			);
 		}
-		for (const tool of [...FORK_TOOL_NAMES, "mcp"]) {
+		for (const tool of FORK_REPORTED_TOOLS) {
 			expect(normalizeForkRowPayload({ ...MARKED, kind: "call", tool }).tool).toBe(tool);
 		}
-		for (const tool of ["mcp__server__tool", "Agent", "", 3, null]) {
+		for (const tool of ["mcp__server__tool", "Task", "agent", "", 3, null]) {
 			expect(normalizeForkRowPayload({ ...MARKED, kind: "call", tool })).not.toHaveProperty("tool");
 		}
 		expect(
