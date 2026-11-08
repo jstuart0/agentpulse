@@ -111,6 +111,8 @@ function serializePreview(preview: CodexApprovalPreview | null): CodexApprovalPr
 		nonAscii: preview.nonAscii,
 		...(preview.tool !== undefined ? { tool: preview.tool } : {}),
 		...(preview.target !== undefined ? { target: preview.target } : {}),
+		// A subagent made the request (AGEN-120); absent for the fork's own, so those responses are unchanged.
+		...(preview.fromSubagent === true ? { fromSubagent: true } : {}),
 	};
 }
 
@@ -148,6 +150,7 @@ function serializePresentation(
 			grantRoot: p.grantRoot,
 			// A Claude Bash request only; a Codex row never has the key, so its response is unchanged.
 			...(p.blockedPath !== undefined ? { blockedPath: p.blockedPath } : {}),
+			...(p.fromSubagent === true ? { fromSubagent: true } : {}),
 		};
 	}
 	if (p.requestKind === "claude_tool") {
@@ -169,6 +172,18 @@ function serializePresentation(
 						},
 					}
 				: {}),
+			// Slots of the Agent call and of a subagent's request (AGEN-120). The hash covers them, so the person
+			// must be shown them: an allowlist that dropped one would approve text nobody read.
+			...(p.agent
+				? {
+						agent: {
+							subagentType: p.agent.subagentType,
+							prompt: p.agent.prompt,
+							builtIn: p.agent.builtIn,
+						},
+					}
+				: {}),
+			...(p.fromSubagent === true ? { fromSubagent: true } : {}),
 		};
 	}
 	return {
@@ -183,6 +198,7 @@ function serializePresentation(
 		cwd: p.cwd,
 		reason: p.reason,
 		grantRoot: p.grantRoot,
+		...(p.fromSubagent === true ? { fromSubagent: true } : {}),
 	};
 }
 

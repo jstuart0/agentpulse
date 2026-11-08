@@ -144,6 +144,10 @@ export const NOT_APPROVABLE_REASONS = [
 	// A path that isn't a full path (relative, or starting with ~): which file it means depends on a directory
 	// the host can't be sure Claude is in.
 	"path_not_absolute",
+	// AGEN-120: the Agent call of a fork with subagents on. A helper type that doesn't ship with Claude Code runs
+	// frontmatter hooks of its own with no card, and a helper that starts a helper is one level too deep.
+	"custom_agent",
+	"nested_agent",
 ] as const;
 export type NotApprovableReason = (typeof NOT_APPROVABLE_REASONS)[number];
 
@@ -247,6 +251,8 @@ export interface CodexApprovalPreview {
 	/** `claude_tool` only: the tool and its target, the target cut to fit. */
 	tool?: string;
 	target?: string;
+	/** The request came from a subagent of the turn (AGEN-120). Absent otherwise. */
+	fromSubagent?: boolean;
 }
 
 export interface CodexApprovalSummary {

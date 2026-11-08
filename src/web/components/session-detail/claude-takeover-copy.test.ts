@@ -1596,8 +1596,8 @@ describe("copy structure for the fork options (AGEN-119..123 Track 0)", () => {
 			(p) => p.label === "Tool details:",
 		);
 		expect(team?.text).toBe(toolDetailLine("team", "you") as string);
-		// The MCP option (AGEN-121) is the only control.
-		expect(FORK_OPTION_CONTROLS.map((c) => c.key)).toEqual(["mcp"]);
+		// The MCP option (AGEN-121) and the subagents option (AGEN-120) are the controls.
+		expect(FORK_OPTION_CONTROLS.map((c) => c.key)).toEqual(["mcp", "subagents"]);
 		expect(FORK_OPTIONS_LEGEND).toBe("Options for this session (off by default)");
 		expect(FORK_OPTIONS_CLOSING).toBe(
 			"These stay as chosen for this session. To change them, continue again.",

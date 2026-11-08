@@ -4,7 +4,10 @@
  * `redactions-2.1.319.json`. Only the runs listed in RUNS are converted; `proc` and `exit` records are dropped
  * (the manifest keeps whether `--restricted` was in the argv).
  *
- *   bun scripts/fixtures/convert-claude-2.1.319.ts <captures dir> src/supervisor/providers/__fixtures__/claude-2.1.319
+ *   bun scripts/fixtures/convert-claude-2.1.319.ts <captures dir> src/supervisor/providers/__fixtures__/claude-2.1.319 [<tm2 captures dir>]
+ *
+ * The optional third argument is the directory of the second measurement (`measure-captures/tm2`, AGEN-120/121):
+ * the runs in TM2_RUNS are read from it and appended to the same fixture directory and manifest.
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,6 +29,17 @@ const RUNS = [
 	"m1-usercfg-nostrict-helper",
 ];
 
+/** The second measurement's runs the subagent track replays: the Agent call's card (G5), nesting (G6), agent frontmatter (G7). */
+const TM2_RUNS = [
+	"g5-norule-allow-key",
+	"g5-rule-allow-key",
+	"g5-rule-allow-helper",
+	"g5-rule-deny-key",
+	"g6-rule-allowall-key",
+	"g6-rule-denynested-key",
+	"g7-with-helper",
+];
+
 type Rule = { pattern: string; flags?: string; replacement: string };
 const rules: Rule[] = JSON.parse(
 	readFileSync(join(import.meta.dir, "redactions-2.1.319.json"), "utf8"),
@@ -39,13 +53,17 @@ export function redact(text: string): string {
 }
 
 function main(): void {
-	const [from, to] = process.argv.slice(2);
+	const [from, to, tm2] = process.argv.slice(2);
 	if (!from || !to)
 		throw new Error("usage: convert-claude-2.1.319.ts <captures dir> <fixture dir>");
 	mkdirSync(to, { recursive: true });
 	const manifest: Record<string, { restricted: boolean; source: string }> = {};
-	for (const run of RUNS) {
-		const records = readFileSync(join(from, `${run}.jsonl`), "utf8")
+	const jobs = [
+		...RUNS.map((run) => ({ run, dir: from })),
+		...(tm2 ? TM2_RUNS.map((run) => ({ run, dir: tm2 })) : []),
+	];
+	for (const { run, dir } of jobs) {
+		const records = readFileSync(join(dir, `${run}.jsonl`), "utf8")
 			.split("\n")
 			.filter(Boolean)
 			.map((line) => JSON.parse(line) as { d: string; m: unknown });

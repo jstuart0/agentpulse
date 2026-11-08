@@ -39,6 +39,7 @@ on:
       - "src/server/services/claude-approvals*"
       - "src/server/services/claude-tool-report*"
       - "src/server/services/claude-mcp-approval*"
+      - "src/server/services/claude-agent-approval*"
       - "src/shared/codex-approvals.ts"
       - "src/shared/claude-approvals.ts"
       - "src/server/routes/health.ts"
@@ -145,6 +146,7 @@ jobs:
             src/server/routes/supervisor-claude-turn-monitor.test.ts \
             src/server/services/claude-fork-server.test.ts \
             src/server/services/claude-approvals.test.ts \
+            src/server/services/claude-agent-approval-e2e.test.ts \
             src/server/services/session-binding-claude.test.ts \
             src/server/services/fork-live-paths.test.ts \
             src/server/routes/claude-fork-routes.test.ts \

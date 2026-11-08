@@ -40,29 +40,6 @@ describe("every report that passes today still passes", () => {
 	});
 });
 
-describe("a report carrying a reserved field is refused", () => {
-	const reserved: Array<[string, unknown]> = [
-		["agent", { subagentType: "general-purpose", prompt: "p", builtIn: true }],
-		["fromSubagent", true],
-	];
-	for (const [field, value] of reserved) {
-		test(`${field}, on a Claude tool report and on a command and a file change`, () => {
-			expect(parseApprovalReport(toolReport("WebFetch", { [field]: value }))).toBeNull();
-			expect(parseApprovalReport({ ...commandReport(), [field]: value })).toBeNull();
-			expect(parseApprovalReport({ ...fileChangeReport(), [field]: value })).toBeNull();
-			// Positive control: the same bodies without the field parse.
-			expect(parseApprovalReport(toolReport("WebFetch"))).not.toBeNull();
-		});
-	}
-
-	test("the parser itself: no slots for a good report, null for a reserved or a wrong-tool one", () => {
-		expect(parseClaudeToolReport({ requestKind: "claude_tool", tool: "Read" })).toEqual({});
-		expect(parseClaudeToolReport({ requestKind: "command" })).toEqual({});
-		expect(parseClaudeToolReport({ requestKind: "command", fromSubagent: false })).toBeNull();
-		expect(parseClaudeToolReport({ requestKind: "claude_tool", tool: "Bash" })).toBeNull();
-	});
-});
-
 describe("an MCP tool call's report (AGEN-121)", () => {
 	const RAW = "mcp__probe__echo_note";
 	const mcpReport = (extra: Record<string, unknown> = {}) => ({
@@ -171,11 +148,13 @@ describe("an MCP tool call's report (AGEN-121)", () => {
 		).not.toBeNull();
 	});
 
-	test("agent and fromSubagent stay refused beside it", () => {
-		expect(parseApprovalReport(mcpReport({ fromSubagent: true }))).toBeNull();
+	test("an agent slot beside it is refused; a subagent's mark is accepted (AGEN-120)", () => {
 		expect(
 			parseApprovalReport(mcpReport({ agent: { subagentType: "x", prompt: "p", builtIn: true } })),
 		).toBeNull();
+		expect(parseApprovalReport(mcpReport({ fromSubagent: true }))).toMatchObject({
+			fromSubagent: true,
+		});
 	});
 
 	describe("the server must be one this session was started with", () => {
@@ -202,5 +181,108 @@ describe("an MCP tool call's report (AGEN-121)", () => {
 			expect(mcpReportServerApplied(slots, applied("prob"))).toBe(false);
 			expect(mcpReportServerApplied(slots, applied("probe2"))).toBe(false);
 		});
+	});
+});
+
+// ── AGEN-120: the Agent call and a subagent's requests ──────────────────────
+
+const agentSlot = (over: Record<string, unknown> = {}) => ({
+	subagentType: "general-purpose",
+	prompt: "Reply with only the word HELLO. Use no tools.",
+	builtIn: true,
+	...over,
+});
+const agentReport = (extra: Record<string, unknown> = {}) =>
+	toolReport("Agent", { target: "general-purpose", agent: agentSlot(), ...extra });
+
+describe("fromSubagent", () => {
+	test("is accepted as the literal true on a command, a file change and a tool report", () => {
+		for (const [label, body] of [
+			["command", { ...commandReport(), fromSubagent: true }],
+			["file change", { ...fileChangeReport(), fromSubagent: true }],
+			["WebFetch", toolReport("WebFetch", { fromSubagent: true })],
+		] as const) {
+			expect(parseApprovalReport(body), label)?.toMatchObject({ fromSubagent: true });
+		}
+	});
+
+	test("anything but true is refused: false, a string, a number, null", () => {
+		for (const value of [false, "true", 1, null]) {
+			expect(
+				parseApprovalReport({ ...commandReport(), fromSubagent: value }),
+				String(value),
+			).toBeNull();
+		}
+		expect(parseClaudeToolReport({ requestKind: "command", fromSubagent: false })).toBeNull();
+	});
+});
+
+describe("the Agent call", () => {
+	test("a report with the slot parses and carries exactly the three members", () => {
+		const parsed = parseApprovalReport(agentReport());
+		expect(parsed?.agent).toEqual(agentSlot());
+		expect(parsed?.tool).toBe("Agent");
+	});
+
+	test("the Agent tool without the slot, and the slot on any other tool, are refused", () => {
+		expect(parseApprovalReport(toolReport("Agent", { target: "general-purpose" }))).toBeNull();
+		expect(parseApprovalReport(toolReport("WebFetch", { agent: agentSlot() }))).toBeNull();
+		expect(parseApprovalReport({ ...commandReport(), agent: agentSlot() })).toBeNull();
+		expect(parseApprovalReport({ ...fileChangeReport(), agent: agentSlot() })).toBeNull();
+	});
+
+	test("the slot is checked: type pattern and length, prompt a string within 16 KiB, builtIn a boolean, no extra key", () => {
+		const bad: Array<[string, Record<string, unknown>]> = [
+			["empty type", agentSlot({ subagentType: "" })],
+			["65-character type", agentSlot({ subagentType: "a".repeat(65) })],
+			["a dotted type", agentSlot({ subagentType: "my.agent" })],
+			["a plugin-style type", agentSlot({ subagentType: "plugin:agent" })],
+			["a number prompt", agentSlot({ prompt: 5 })],
+			["a prompt past 16 KiB", agentSlot({ prompt: "x".repeat(16 * 1024 + 1) })],
+			["builtIn as a string", agentSlot({ builtIn: "yes" })],
+			["an extra key", { ...agentSlot(), model: "haiku" }],
+		];
+		for (const [label, slot] of bad) {
+			expect(
+				parseApprovalReport(agentReport({ agent: slot, target: slot.subagentType })),
+				label,
+			).toBeNull();
+		}
+		// Boundary controls: 64 characters and exactly 16 KiB both parse.
+		const longType = "a".repeat(64);
+		expect(
+			parseApprovalReport(
+				agentReport({ agent: agentSlot({ subagentType: longType }), target: longType }),
+			),
+		).not.toBeNull();
+		expect(
+			parseApprovalReport(agentReport({ agent: agentSlot({ prompt: "x".repeat(16 * 1024) }) })),
+		).not.toBeNull();
+	});
+
+	test("the target must be the type the slot names (one source for what the person is asked about)", () => {
+		expect(parseApprovalReport(agentReport({ target: "Explore" }))).toBeNull();
+		expect(parseApprovalReport(agentReport({ target: undefined }))).toBeNull();
+	});
+
+	test("a nested call (fromSubagent with the slot) parses: the presentation makes it decline-only", () => {
+		expect(parseApprovalReport(agentReport({ fromSubagent: true }))).toMatchObject({
+			fromSubagent: true,
+			agent: agentSlot(),
+		});
+	});
+
+	test("the parser itself: slots for a good report, null for a wrong-tool one", () => {
+		expect(parseClaudeToolReport({ requestKind: "claude_tool", tool: "Read" })).toEqual({});
+		expect(parseClaudeToolReport({ requestKind: "command" })).toEqual({});
+		expect(parseClaudeToolReport({ requestKind: "claude_tool", tool: "Bash" })).toBeNull();
+		expect(
+			parseClaudeToolReport({
+				requestKind: "claude_tool",
+				tool: "Agent",
+				target: "general-purpose",
+				agent: agentSlot(),
+			}),
+		).toEqual({ agent: agentSlot() });
 	});
 });

@@ -155,6 +155,7 @@ describe("GET /capabilities", () => {
 				claudeStopTurn: true,
 				forkToolDetail: true,
 				claudeForkMcp: true,
+				claudeForkSubagents: true,
 			});
 			expect(body.pushEvents).toEqual(["ask_reply"]);
 			expect(Object.keys(body.ai).sort()).toEqual(["active", "build", "provider", "vectorSearch"]);

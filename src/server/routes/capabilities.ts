@@ -191,6 +191,13 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		proof: { kind: "bindBodyKey", key: "mcp" },
 		value: true,
 	},
+	{
+		// AGEN-120 (append-only registry): a person can ask for subagents on a continued Claude session. The proof is the bind body's key,
+		// not just the route: it says the option exists. Whether a host can apply it is its `claude_fork_subagents` feature.
+		name: "claudeForkSubagents",
+		proof: { kind: "bindBodyKey", key: "subagents" },
+		value: true,
+	},
 ];
 
 /** What the availability checks may look at; read once per request. */

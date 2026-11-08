@@ -33,6 +33,8 @@ export const EXPECTED_SUITES: readonly string[] = [
 	"src/server/db/fork-tool-calls-migration.test.ts",
 	// AGEN-121: an MCP tool call's report, card and answer end to end.
 	"src/server/services/claude-mcp-approval-e2e.test.ts",
+	// AGEN-120
+	"src/server/services/claude-agent-approval-e2e.test.ts",
 ];
 
 /** Every path-like token of every `run:` block (folded `>-`, literal `|` or one line). */

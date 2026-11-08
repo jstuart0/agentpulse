@@ -49,6 +49,14 @@ const NAMED = [
 	"m1-allowrule-key",
 	"m1-usercfg-strict-helper",
 	"m1-usercfg-nostrict-helper",
+	// AGEN-120: the second measurement's Agent-call runs (G5, G6, G7).
+	"g5-norule-allow-key",
+	"g5-rule-allow-key",
+	"g5-rule-allow-helper",
+	"g5-rule-deny-key",
+	"g6-rule-allowall-key",
+	"g6-rule-denynested-key",
+	"g7-with-helper",
 ];
 
 describe("claude 2.1.319 fixtures: scrub and shape", () => {

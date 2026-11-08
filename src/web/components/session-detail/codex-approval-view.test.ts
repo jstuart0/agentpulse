@@ -66,6 +66,7 @@ import {
 	queuePosition,
 	readDismissed,
 	remainingLabel,
+	requestEyebrow,
 	requestHeading,
 	secondsLeft,
 	shouldRefetchOnSession,
@@ -1079,36 +1080,6 @@ describe("the card kinds of a Claude tool request (AGEN-119..123 Track 0)", () =
 			}),
 		).toBe("Claude asks to fetch a URL.");
 	});
-
-	for (const tool of ["Agent"]) {
-		test(`${tool}: all four renderers say Claude asks to use a tool, and never fetch or URL`, () => {
-			const outputs = [
-				requestHeading(summary(tool), "claude"),
-				...Object.values(
-					confirmCopy({
-						requestKind: "claude_tool",
-						fileCount: 0,
-						host: "m",
-						declinesAt: "12:00",
-						tool,
-					}),
-				).flat(),
-				arrivalAnnouncement({
-					requestKind: "claude_tool",
-					fileCount: 0,
-					declinesAt: null,
-					pendingCount: 1,
-					agent: "claude",
-					tool,
-				}),
-			];
-			expect(outputs.length).toBeGreaterThanOrEqual(5);
-			expect(requestHeading(summary(tool), "claude")).toBe("Claude asks to use a tool");
-			for (const text of outputs) {
-				expect(String(text), String(text)).not.toMatch(/fetch|url/i);
-			}
-		});
-	}
 });
 
 describe("an MCP tool call's words (AGEN-121, F48)", () => {
@@ -1163,6 +1134,101 @@ describe("an MCP tool call's words (AGEN-121, F48)", () => {
 	test("a card line is the plain-weight sentence that says the effect isn't known", () => {
 		expect(forkMcpCardLine("probe", "echo_note")).toBe(
 			'probe calls this tool "echo_note". AgentPulse can\'t tell what it does or what it will change. Approve only if you know this server and this tool.',
+		);
+	});
+});
+
+describe("the Agent call's words (AGEN-120)", () => {
+	const summary = (target: string | undefined, fromSubagent = false) =>
+		({
+			requestKind: "claude_tool",
+			preview: {
+				tool: "Agent",
+				...(target === undefined ? {} : { target }),
+				pathOutsideCwd: false,
+				cwd: null,
+				nonAscii: false,
+				...(fromSubagent ? { fromSubagent: true } : {}),
+			},
+		}) as never;
+
+	test("the heading names the helper type; without a type it still says a helper", () => {
+		expect(requestHeading(summary("general-purpose"), "claude")).toBe(
+			"Claude asks to start a helper (general-purpose)",
+		);
+		expect(requestHeading(summary(undefined), "claude")).toBe("Claude asks to start a helper");
+		expect(requestHeading(summary("  "), "claude")).toBe("Claude asks to start a helper");
+	});
+
+	test("the confirm step and the announcement say a helper, and never fetch or URL", () => {
+		const copy = confirmCopy({
+			requestKind: "claude_tool",
+			fileCount: 0,
+			host: "m",
+			declinesAt: "12:00",
+			tool: "Agent",
+		});
+		expect(copy.title).toBe("Let Claude start this helper?");
+		expect(copy.confirmLabel).toBe("Start the helper");
+		expect(copy.closing[0]).toBe(
+			"The helper's commands and file changes wait for you the same way. Runs once.",
+		);
+		const spoken = arrivalAnnouncement({
+			requestKind: "claude_tool",
+			fileCount: 0,
+			declinesAt: null,
+			pendingCount: 1,
+			agent: "claude",
+			tool: "Agent",
+		});
+		expect(spoken).toBe("Claude asks to start a helper.");
+		for (const text of [copy.title, copy.confirmLabel, ...copy.closing, spoken]) {
+			expect(text).not.toMatch(/fetch|url/i);
+		}
+	});
+
+	test("a subagent's request is announced in the tool's own verb and carries the eyebrow", () => {
+		const base = { fileCount: 0, declinesAt: null, pendingCount: 1, agent: "claude" as const };
+		expect(arrivalAnnouncement({ ...base, requestKind: "command", fromSubagent: true })).toBe(
+			"A subagent asks to run a command.",
+		);
+		expect(
+			arrivalAnnouncement({
+				...base,
+				requestKind: "file_change",
+				fileCount: 2,
+				fromSubagent: true,
+			}),
+		).toBe("A subagent asks to change files.");
+		expect(
+			arrivalAnnouncement({
+				...base,
+				requestKind: "claude_tool",
+				tool: "Agent",
+				fromSubagent: true,
+			}),
+		).toBe("A subagent asks to start another helper.");
+		// The fork's own request is unchanged (control).
+		expect(arrivalAnnouncement({ ...base, requestKind: "command" })).toBe(
+			"Claude asks to run a command.",
+		);
+		expect(requestEyebrow(summary("general-purpose", true))).toBe("Asked by a subagent");
+		expect(requestEyebrow(summary("general-purpose"))).toBeNull();
+		expect(
+			requestEyebrow(
+				{ requestKind: "command", preview: null } as never,
+				{ fromSubagent: true } as never,
+			),
+		).toBe("Asked by a subagent");
+	});
+
+	test("the two decline-only reasons say why, without blaming anyone", () => {
+		const custom = notApprovableReasonCopy("custom_agent", null, "claude");
+		const nested = notApprovableReasonCopy("nested_agent", null, "claude");
+		expect(custom).toContain("isn't one that ships with Claude Code");
+		expect(nested).toContain("one level");
+		expect(notApprovableText("custom_agent", "m", null, "claude")).toContain(
+			"You can only decline it here.",
 		);
 	});
 });

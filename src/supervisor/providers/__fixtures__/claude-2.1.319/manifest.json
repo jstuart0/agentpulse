@@ -54,5 +54,33 @@
 	"m1-usercfg-nostrict-helper.jsonl": {
 		"restricted": false,
 		"source": "claude 2.1.319 measurement m1-usercfg-nostrict-helper"
+	},
+	"g5-norule-allow-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement g5-norule-allow-key"
+	},
+	"g5-rule-allow-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement g5-rule-allow-key"
+	},
+	"g5-rule-allow-helper.jsonl": {
+		"restricted": false,
+		"source": "claude 2.1.319 measurement g5-rule-allow-helper"
+	},
+	"g5-rule-deny-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement g5-rule-deny-key"
+	},
+	"g6-rule-allowall-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement g6-rule-allowall-key"
+	},
+	"g6-rule-denynested-key.jsonl": {
+		"restricted": true,
+		"source": "claude 2.1.319 measurement g6-rule-denynested-key"
+	},
+	"g7-with-helper.jsonl": {
+		"restricted": false,
+		"source": "claude 2.1.319 measurement g7-with-helper"
 	}
 }

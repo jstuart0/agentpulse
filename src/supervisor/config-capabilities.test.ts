@@ -4,9 +4,10 @@
  * managed Codex thread"; the server withholds Codex prompts from a host that lacks it.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CLAUDE_FORK_SUBAGENTS } from "../shared/claude-fork-subagents.js";
 import { CLAUDE_STOP, CLAUDE_TURN_CONTROL, CODEX_FOLLOW_UP_PROMPTS } from "../shared/constants.js";
 import { RESUMES_SESSIONS } from "../shared/session-resume.js";
 import { buildDefaultConfig, withExecutableCapabilities } from "./config.js";
@@ -139,5 +140,40 @@ describe("claude_turn_control (AGEN-117)", () => {
 			"utf8",
 		) as string;
 		expect(text.match(/\bCLAUDE_TURN_CONTROL\b/g)?.length).toBeGreaterThanOrEqual(3);
+	});
+});
+
+describe("claude_fork_subagents (AGEN-120)", () => {
+	const claudeAt = (version: string) => {
+		const path = join(scratch, `claude-${version}`);
+		writeFileSync(path, `#!/bin/sh\necho "${version} (Claude Code)"\n`);
+		chmodSync(path, 0o755);
+		return path;
+	};
+	const featuresFor = async (claudeCommand: string) =>
+		(await withExecutableCapabilities({ ...buildDefaultConfig(), claudeCommand })).capabilities
+			.features;
+
+	test("is the literal the server and the dialog read", () => {
+		expect(CLAUDE_FORK_SUBAGENTS).toBe("claude_fork_subagents");
+	});
+
+	test("is not in the default list: it says what this host's Claude Code was measured with", () => {
+		expect(buildDefaultConfig().capabilities.features).not.toContain(CLAUDE_FORK_SUBAGENTS);
+	});
+
+	test("is advertised for a measured Claude Code on macOS and for no other version or when claude is missing", async () => {
+		const measured = await featuresFor(claudeAt("2.1.319"));
+		const newer = await featuresFor(claudeAt("2.1.320"));
+		const missing = await featuresFor(join(scratch, "no-such-claude"));
+		if (process.platform === "darwin") {
+			expect(measured).toContain(CLAUDE_FORK_SUBAGENTS);
+			expect(measured).toContain("claude_takeover");
+		} else {
+			expect(measured).not.toContain(CLAUDE_FORK_SUBAGENTS);
+		}
+		// Positive control above: the feature exists for the measured one; the others lack it.
+		expect(newer).not.toContain(CLAUDE_FORK_SUBAGENTS);
+		expect(missing).not.toContain(CLAUDE_FORK_SUBAGENTS);
 	});
 });

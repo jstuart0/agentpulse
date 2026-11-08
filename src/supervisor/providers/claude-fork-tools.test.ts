@@ -207,10 +207,7 @@ describe("the tool table and the line classifier", () => {
 
 describe("prepareForkOptions", () => {
 	test("applies nothing in Track 0: the default policy, the version recorded, a no-op idempotent cleanup", async () => {
-		const prepared = await prepareForkOptions(
-			{ mcp: true, subagents: true },
-			{ claudeVersion: "2.1.319" },
-		);
+		const prepared = await prepareForkOptions({ mcp: true }, { claudeVersion: "2.1.319" });
 		expect(prepared.applied).toEqual({ ...FORK_OPTIONS_OFF, claudeVersion: "2.1.319" });
 		expect(prepared.policy.probeArgs).toEqual(forkToolPolicy().probeArgs);
 		await prepared.cleanup();

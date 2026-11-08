@@ -10,6 +10,7 @@ import {
 	forkMcpAppliedLine,
 	forkMcpOffLine,
 } from "../../../shared/claude-fork-mcp.js";
+import { subagentsStatusLine } from "../../../shared/claude-fork-subagents.js";
 import {
 	type AppliedForkOptions,
 	FORK_OPTION_MEASURED_VERSIONS,
@@ -53,6 +54,15 @@ export function forkOptionsLine(
 	applied: AppliedForkOptions | null | undefined,
 	_machine: string | null | undefined,
 ): string | null {
+	const lines = [mcpOptionLine(requested, applied), subagentsOptionLine(requested, applied)];
+	const present = lines.filter((line): line is string => line !== null);
+	return present.length > 0 ? present.join(" ") : null;
+}
+
+function mcpOptionLine(
+	requested: ForkOptionsRequest | null | undefined,
+	applied: AppliedForkOptions | null | undefined,
+): string | null {
 	const names = (applied?.mcpServers ?? []).map((s) => s.name);
 	if (names.length > 0) return forkMcpAppliedLine(names);
 	if (requested?.mcp !== true) return null;
@@ -65,6 +75,22 @@ export function forkOptionsLine(
 				? FORK_MCP_OFF_REASONS.unmeasured_version
 				: FORK_MCP_OFF_REASONS.no_file;
 	return forkMcpOffLine(reason);
+}
+
+/** AGEN-120: on when applied; off with a reason when it was asked for (known only in the dialog) and not applied. */
+function subagentsOptionLine(
+	requested: ForkOptionsRequest | null | undefined,
+	applied: AppliedForkOptions | null | undefined,
+): string | null {
+	if (applied?.subagents === true) return subagentsStatusLine(true);
+	if (requested?.subagents !== true) return null;
+	const version = applied?.claudeVersion ?? "";
+	const reason = FORK_OPTION_MEASURED_VERSIONS.includes(version)
+		? "The machine didn't apply it."
+		: version === ""
+			? "The machine didn't say which options it applied."
+			: `AgentPulse hasn't checked subagents with Claude Code ${version}.`;
+	return subagentsStatusLine(false, reason);
 }
 
 export interface ForkStatusView {

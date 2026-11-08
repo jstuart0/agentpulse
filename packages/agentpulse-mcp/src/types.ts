@@ -1041,7 +1041,9 @@ export type CodexApprovalNotApprovableReason =
 	| "symlink_target"
 	| "input_not_stable"
 	| "agent_memory"
-	| "path_not_absolute";
+	| "path_not_absolute"
+	| "custom_agent"
+	| "nested_agent";
 
 export interface CodexApprovalHost {
 	state: "live" | "offline" | "gone";
@@ -1069,6 +1071,7 @@ export interface CodexApprovalPreview {
 	nonAscii: boolean;
 	tool?: string;
 	target?: string;
+	fromSubagent?: boolean;
 }
 
 export interface CodexApprovalSummary {

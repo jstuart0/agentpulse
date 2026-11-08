@@ -1,3 +1,18 @@
+import {
+	and,
+	asc,
+	desc,
+	eq,
+	gt,
+	gte,
+	inArray,
+	isNull,
+	lt,
+	ne,
+	notExists,
+	or,
+	sql,
+} from "drizzle-orm";
 /**
  * Answering managed Codex approvals from AgentPulse (AGEN-87): the one service
  * that owns the `codex_approvals` and `codex_approval_audit` tables.
@@ -17,21 +32,7 @@
  * Nothing the agent wrote reaches a log line or an event: events carry fixed
  * words, logs carry ids and enum values.
  */
-import {
-	and,
-	asc,
-	desc,
-	eq,
-	gt,
-	gte,
-	inArray,
-	isNull,
-	lt,
-	ne,
-	notExists,
-	or,
-	sql,
-} from "drizzle-orm";
+import { AGENT_OPENED_WORDS } from "../../shared/claude-fork-subagents.js";
 import {
 	APPROVAL_DECISIONS,
 	APPROVAL_REQUEST_KINDS,
@@ -336,8 +337,10 @@ export interface OpenedApproval {
 	fileCount: number;
 	/** Whose request: the session's agent, from its row. */
 	agent: PresentationAgent;
-	/** A `claude_tool` request's tool (`WebFetch` or `Read`). */
+	/** A `claude_tool` request's tool (`WebFetch`, `Read` or `Agent`). */
 	tool: string | null;
+	/** A subagent of the turn asked (AGEN-120). */
+	fromSubagent?: boolean;
 }
 
 // ── side effects, after commit ──────────────────────────────────────────────
@@ -421,13 +424,15 @@ function logEffectFailure(kind: string, sessionId: string): void {
 
 /** The timeline line for a request opening: fixed words and counts, never anything the agent wrote. */
 export function openedWords(
-	opened: Pick<OpenedApproval, "requestKind" | "fileCount" | "agent" | "tool">,
+	opened: Pick<OpenedApproval, "requestKind" | "fileCount" | "agent" | "tool" | "fromSubagent">,
 ): string {
-	const who = opened.agent === "claude" ? "Claude" : "Codex";
+	const who =
+		opened.fromSubagent === true ? "A subagent" : opened.agent === "claude" ? "Claude" : "Codex";
 	if (opened.requestKind === "command") return `${who} asks to run a command`;
 	if (opened.requestKind === "claude_tool") {
 		// An MCP tool is worded without its names: they are the server's, and the timeline is shared.
 		if (opened.tool === "mcp") return `${who} asks to use an MCP tool`;
+		if (opened.tool === "Agent") return `${who} ${AGENT_OPENED_WORDS}`;
 		return opened.tool === "Read" ? `${who} asks to read a file` : `${who} asks to fetch a URL`;
 	}
 	return `${who} asks to change ${opened.fileCount} ${opened.fileCount === 1 ? "file" : "files"}`;
@@ -764,6 +769,10 @@ export async function recordApprovalRequest(
 			if (report.requestKind === "claude_tool" && agent !== "claude") {
 				throw new ApprovalRefusal("invalid_body");
 			}
+			// So is a subagent's mark or a helper card: only a Claude fork has subagents.
+			if ((report.fromSubagent !== undefined || report.agent !== undefined) && agent !== "claude") {
+				throw new ApprovalRefusal("invalid_body");
+			}
 			// The servers the fork was started with are the only ones an MCP tool call may name (AGEN-121).
 			const applied = parseAppliedForkOptions(
 				(session.metadata as { forkOptions?: unknown } | null)?.forkOptions,
@@ -868,6 +877,7 @@ export async function recordApprovalRequest(
 					built.presentation.requestKind === "file_change" ? built.presentation.changes.length : 0,
 				agent,
 				tool: built.presentation.requestKind === "claude_tool" ? built.presentation.tool : null,
+				...(built.presentation.fromSubagent === true ? { fromSubagent: true } : {}),
 			};
 			return { created: true, response: reportResponse(row, nowMs) };
 		});

@@ -10,6 +10,7 @@ import { FORK_MCP_INPUT_MAX_CHARS, splitForkMcpToolName } from "../../shared/cla
  * supervisor removes Approve. `presentationHash` is an ETag for the stored
  * presentation, not proof that a person read it or that it matches execution.
  */
+import { AGENT_PROMPT_MAX_CHARS, isBuiltInAgentType } from "../../shared/claude-fork-subagents.js";
 import {
 	CODEX_APPROVAL_LIMITS,
 	type CodexApprovalClaudeToolPresentation,
@@ -49,6 +50,8 @@ export function hashPresentation(presentation: CodexApprovalPresentation): strin
 /** Precedence when more than one reason applies: what the supervisor already knows first, then what the server finds. */
 const REASON_PRECEDENCE: readonly NotApprovableReason[] = [
 	"unknown_tool",
+	"nested_agent",
+	"custom_agent",
 	"requires_interaction",
 	"agent_memory",
 	"path_not_absolute",
@@ -348,13 +351,27 @@ export function buildPresentation(
 			};
 		}
 		if (report.agent) {
+			const subagentType = cleanField(report.agent.subagentType, 64, findings) ?? "";
+			// The prompt is what the helper is told: shown whole and checked like a command, so nothing hides in it.
+			const prompt =
+				cleanField(report.agent.prompt, AGENT_PROMPT_MAX_CHARS, findings, {
+					truncated,
+					split: "whitespace",
+					approvableMax: CODEX_APPROVAL_LIMITS.approvableCommandChars,
+				}) ?? "";
+			if (isBlank(prompt)) reasons.add("no_command");
+			// The server decides what ships with Claude Code; the host's word is not taken for it.
+			if (report.agent.builtIn !== true || !isBuiltInAgentType(subagentType)) {
+				reasons.add("custom_agent");
+			}
+			// A helper's own Agent call is a nested spawn, whatever the host called it.
+			if (report.fromSubagent === true) reasons.add("nested_agent");
 			presentation = {
 				...presentation,
 				agent: {
-					subagentType: cleanField(report.agent.subagentType, 64, findings) ?? "",
-					prompt:
-						cleanField(report.agent.prompt, CODEX_APPROVAL_LIMITS.reasonChars, findings) ?? "",
-					builtIn: report.agent.builtIn === true,
+					subagentType,
+					prompt,
+					builtIn: report.agent.builtIn === true && isBuiltInAgentType(subagentType),
 				},
 			};
 		}
@@ -467,6 +484,12 @@ export function touchesAgentConfig(presentation: CodexApprovalPresentation): boo
 
 /** The list-sized view of a presentation: bounded to 4 KiB, no full diff. */
 export function buildPreview(presentation: CodexApprovalPresentation): CodexApprovalPreview {
+	const preview = buildPreviewBody(presentation);
+	// A subagent's request says so in the list too, where the card's heading and the announcement are built.
+	return presentation.fromSubagent === true ? { ...preview, fromSubagent: true } : preview;
+}
+
+function buildPreviewBody(presentation: CodexApprovalPresentation): CodexApprovalPreview {
 	if (presentation.requestKind === "claude_tool" && presentation.mcp) {
 		// The list names the call as `server/tool` (the server's own split; neither part holds a slash), never
 		// the input, which is only in the detail a person opens before answering.

@@ -13,6 +13,10 @@
 			"pattern": "/private/tmp/claude-\\d+/[^\"\\\\ ]*?/runs/([a-z0-9-]+)/",
 			"replacement": "/scratch/measure/$1/"
 		},
+		{
+			"pattern": "/private/tmp/claude-\\d+/[^\"\\\\ ]*?/runs/([a-z0-9-]+)",
+			"replacement": "/scratch/measure/$1"
+		},
 		{ "pattern": "/(?:private/)?(?:Users|home)/[A-Za-z0-9._-]+", "replacement": "/home/user" },
 		{ "pattern": "-Users-[A-Za-z0-9]+-", "replacement": "-home-user-" },
 		{ "pattern": "claude-\\d{3,}", "replacement": "claude-uid" },

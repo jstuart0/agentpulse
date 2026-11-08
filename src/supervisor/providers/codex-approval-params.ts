@@ -57,6 +57,10 @@ export interface ClaudeParsedExtras {
 	input: Record<string, unknown>;
 	/** Every path the exclude rules must judge: the directory, the named path and where it really points. */
 	excludePaths: string[];
+	/** The request came from a subagent of the turn (`agent_id` on the request). Absent otherwise. */
+	fromSubagent?: boolean;
+	/** The Agent call (AGEN-120): the helper it would start. `builtIn` is the host's judgement; the server recomputes it. */
+	agent?: { subagentType: string; prompt: string; builtIn: boolean };
 }
 
 /** One changed file as Codex's `fileChange` item states it. */

@@ -31,6 +31,7 @@ import {
 	type CodexApprovalReportRequest,
 	type ParsedApprovalSyncResponse,
 } from "../../shared/codex-approvals.js";
+import type { AppliedForkOptions } from "../../shared/session-resume.js";
 import { SupervisorRequestError } from "../services/report-resilience.js";
 import {
 	AWAIT,
@@ -182,7 +183,13 @@ const settle = () => Bun.sleep(5);
 type Written = { id: string; body: any };
 
 /** A tracker with one fork attached, and a context per request that records what is written for it. */
-function armed(options: { features?: string[]; mode?: "ask" | "restricted" } = {}) {
+function armed(
+	options: {
+		features?: string[];
+		mode?: "ask" | "restricted";
+		applied?: AppliedForkOptions;
+	} = {},
+) {
 	const clock = clockPair();
 	const stub = stubGate();
 	const timers = fakeTimers();
@@ -202,7 +209,12 @@ function armed(options: { features?: string[]; mode?: "ask" | "restricted" } = {
 				warnings.push({ content, detail });
 			},
 		},
-		{ mode: options.mode ?? "ask", configDir: "/cfg", verdict: SUPPORTED },
+		{
+			mode: options.mode ?? "ask",
+			configDir: "/cfg",
+			verdict: SUPPORTED,
+			...(options.applied ? { applied: options.applied } : {}),
+		},
 	);
 	const written: Written[] = [];
 	const answered = new Set<string>();
@@ -761,6 +773,51 @@ describe("reporting a request", () => {
 			tool: "WebFetch",
 			target: "https://example.com",
 			reason: "summarise",
+		});
+	});
+
+	describe("subagents (AGEN-120)", () => {
+		const SUBAGENTS: AppliedForkOptions = {
+			mcpServers: [],
+			subagents: true,
+			claudeVersion: "2.1.319",
+		};
+		const agentInput = {
+			description: "d",
+			prompt: "do the thing",
+			subagent_type: "general-purpose",
+		};
+
+		test("the Agent call is reported as a claude_tool with the helper in it", async () => {
+			const a = armed({ applied: SUBAGENTS });
+			a.request("ag1", "Agent", agentInput);
+			await settle();
+			expect(a.reports[0]?.body).toMatchObject({
+				requestKind: "claude_tool",
+				tool: "Agent",
+				target: "general-purpose",
+				reason: "d",
+				agent: { subagentType: "general-purpose", prompt: "do the thing", builtIn: true },
+				declineOnly: [],
+			});
+			expect(a.reports[0]?.body).not.toHaveProperty("fromSubagent");
+		});
+
+		test("a helper's own Bash request is reported with fromSubagent; the fork's own is not", async () => {
+			const a = armed({ applied: SUBAGENTS });
+			a.request("h1", "Bash", { command: "touch x" }, { agent_id: "helper-1" });
+			a.request("o1", "Bash", { command: "touch y" });
+			await settle();
+			expect(a.reports[0]?.body).toMatchObject({ requestKind: "command", fromSubagent: true });
+			expect(a.reports[1]?.body).not.toHaveProperty("fromSubagent");
+		});
+
+		test("without the option applied the Agent call is reported decline-only unknown_tool, with no helper in it", async () => {
+			const a = armed();
+			a.request("ag2", "Agent", agentInput);
+			await settle();
+			expect(a.reports[0]?.body.declineOnly).toContain("unknown_tool");
+			expect(a.reports[0]?.body).not.toHaveProperty("agent");
 		});
 	});
 

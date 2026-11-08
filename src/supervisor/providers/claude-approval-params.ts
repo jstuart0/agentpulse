@@ -26,6 +26,7 @@ import {
 	forkMcpInputText,
 	splitForkMcpToolName,
 } from "../../shared/claude-fork-mcp.js";
+import { AGENT_PROMPT_MAX_CHARS } from "../../shared/claude-fork-subagents.js";
 import {
 	CODEX_APPROVAL_LIMITS,
 	type CodexApprovalChange,
@@ -33,6 +34,7 @@ import {
 	type NotApprovableReason,
 } from "../../shared/codex-approvals.js";
 import type { AppliedForkOptions } from "../../shared/session-resume.js";
+import { AGENT_INPUT_TREATMENTS, parseAgentInput } from "./claude-fork-subagents.js";
 import { claudeToolKind } from "./claude-fork-tools.js";
 import type { BufferedChange, ParsedApproval } from "./codex-approval-params.js";
 
@@ -175,11 +177,17 @@ export function parseClaudeRequest(
 
 	const kind = claudeToolKind(toolName, ctx.applied);
 	const isMcp = kind === "mcp";
-	const known = kind !== null && (CLAUDE_APPROVAL_TOOLS as readonly string[]).includes(kind);
-	const treatments = known
-		? CLAUDE_TOOL_INPUT_TREATMENTS[toolName as ClaudeApprovalTool]
-		: undefined;
+	const isAgent = kind === "agent";
+	const known =
+		isAgent || (kind !== null && (CLAUDE_APPROVAL_TOOLS as readonly string[]).includes(kind));
+	const treatments = isAgent
+		? AGENT_INPUT_TREATMENTS
+		: known
+			? CLAUDE_TOOL_INPUT_TREATMENTS[toolName as ClaudeApprovalTool]
+			: undefined;
 	if (!isMcp && (!known || !treatments)) reasons.add("unknown_tool");
+	// `agent_id` is the id of the helper that is asking. Absent on the fork's own requests.
+	const fromSubagent = typeof params.agent_id === "string" && params.agent_id !== "";
 	// An MCP tool's input is the server's own schema: any object is shown whole, and nothing in it is interpreted.
 	for (const [key, value] of Object.entries(isMcp ? {} : input)) {
 		if (value === null || value === undefined) continue;
@@ -208,6 +216,7 @@ export function parseClaudeRequest(
 		changes,
 		input,
 		excludePaths: [ctx.cwd, ...(blockedPath ? [blockedPath] : []), ...excludePaths],
+		...(fromSubagent ? { fromSubagent: true } : {}),
 	});
 
 	/** Where a file path in the input really points; a link to somewhere else is decline-only. */
@@ -265,8 +274,44 @@ export function parseClaudeRequest(
 			},
 		};
 	}
+	const unknownTool = (): ParsedApproval => ({
+		// A tool outside the six: reported decline-only so a person sees that it was asked for and why it can't be approved.
+		kind: "command",
+		...base,
+		command: null,
+		cwd: ctx.cwd,
+		reason: null,
+		declineOnly: [...reasons],
+		claude: extras("unknown", null, [], []),
+	});
 
 	switch (toolName) {
+		case "Agent": {
+			if (!isAgent) return unknownTool();
+			const agent = parseAgentInput(input);
+			if (agent === null) return null;
+			// A helper that starts a helper is one level too deep; a type that doesn't ship with Claude Code runs
+			// frontmatter hooks of its own with no card. Either way the call can only be declined.
+			if (fromSubagent) reasons.add("nested_agent");
+			if (!agent.builtIn) reasons.add("custom_agent");
+			if (agent.prompt.length > AGENT_PROMPT_MAX_CHARS) reasons.add("too_long");
+			return {
+				kind: "claude_tool",
+				...base,
+				command: null,
+				cwd: ctx.cwd,
+				reason: agent.description,
+				declineOnly: [...reasons],
+				claude: {
+					...extras("Agent", agent.subagentType, [], []),
+					agent: {
+						subagentType: agent.subagentType,
+						prompt: agent.prompt,
+						builtIn: agent.builtIn,
+					},
+				},
+			};
+		}
 		case "Bash": {
 			const command = text(input.command);
 			if (command !== null && commandNamesAgentMemory(command, ctx.configDir ?? "")) {
@@ -370,16 +415,7 @@ export function parseClaudeRequest(
 			};
 		}
 		default:
-			// A tool outside the six: reported decline-only so a person sees that it was asked for and why it can't be approved.
-			return {
-				kind: "command",
-				...base,
-				command: null,
-				cwd: ctx.cwd,
-				reason: null,
-				declineOnly: [...reasons],
-				claude: extras("unknown", null, [], []),
-			};
+			return unknownTool();
 	}
 }
 
@@ -417,6 +453,7 @@ export function buildClaudeReportBody(input: ClaudeReportInputs): CodexApprovalR
 		revision: input.revision,
 	};
 	const reason = parsed.reason === null ? null : note(cut(parsed.reason, limits.reasonChars));
+	const subagent = claude?.fromSubagent === true ? { fromSubagent: true as const } : {};
 	const cwd = parsed.cwd === null ? null : note(cut(parsed.cwd, limits.pathChars));
 	const declineOnly = [...parsed.declineOnly];
 
@@ -430,9 +467,18 @@ export function buildClaudeReportBody(input: ClaudeReportInputs): CodexApprovalR
 			blockedPath: claude?.blockedPath ? note(cut(claude.blockedPath, limits.pathChars)) : null,
 			truncated,
 			declineOnly,
+			...subagent,
 		};
 	}
 	if (parsed.kind === "claude_tool") {
+		// Cut before `truncated` is read below: a prompt past the card's bound says so.
+		const agent = claude?.agent
+			? {
+					subagentType: claude.agent.subagentType,
+					prompt: note(cut(claude.agent.prompt, AGENT_PROMPT_MAX_CHARS)),
+					builtIn: claude.agent.builtIn,
+				}
+			: null;
 		return {
 			...base,
 			tool: claude?.tool ?? null,
@@ -446,6 +492,8 @@ export function buildClaudeReportBody(input: ClaudeReportInputs): CodexApprovalR
 			truncated,
 			declineOnly,
 			...(claude?.mcp ? { mcp: claude.mcp } : {}),
+			...subagent,
+			...(agent ? { agent } : {}),
 		};
 	}
 	const changes: CodexApprovalChange[] = [];
@@ -460,5 +508,5 @@ export function buildClaudeReportBody(input: ClaudeReportInputs): CodexApprovalR
 			diff: note(diff),
 		});
 	}
-	return { ...base, cwd, reason, grantRoot: null, changes, truncated, declineOnly };
+	return { ...base, cwd, reason, grantRoot: null, changes, truncated, declineOnly, ...subagent };
 }

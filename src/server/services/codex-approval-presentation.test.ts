@@ -201,6 +201,8 @@ describe("one test per reason", () => {
 		input_not_stable: () => commandReport({ declineOnly: ["input_not_stable"] }),
 		agent_memory: () => commandReport({ declineOnly: ["agent_memory"] }),
 		path_not_absolute: () => commandReport({ declineOnly: ["path_not_absolute"] }),
+		custom_agent: () => commandReport({ declineOnly: ["custom_agent"] }),
+		nested_agent: () => commandReport({ declineOnly: ["nested_agent"] }),
 	};
 
 	for (const reason of NOT_APPROVABLE_REASONS) {

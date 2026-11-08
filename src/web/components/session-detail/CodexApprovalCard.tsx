@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from "react";
 import { forkMcpCardLine, forkMcpHeading } from "../../../shared/claude-fork-mcp.js";
+import { SUBAGENT_EYEBROW } from "../../../shared/claude-fork-subagents.js";
 import type {
 	ApprovalDecision,
 	CodexApprovalDetail,
@@ -72,6 +73,7 @@ import {
 	outsideFirst,
 	peerTurnLines,
 	queuePosition,
+	requestEyebrow,
 	requestHeading,
 	revisionChangedLine,
 	secondsLeft,
@@ -96,6 +98,12 @@ interface Props {
 	announce: (text: string) => void;
 }
 
+/** The helper's prompt can be long and scrolls: reachable by keyboard and named, like a cut command. */
+const HELPER_PROMPT_REGION = {
+	tabIndex: 0,
+	role: "region",
+	"aria-label": "What the helper would be told",
+} as const;
 const PRE_CLASS =
 	"overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/50 p-2 font-mono text-xs text-foreground";
 // Touch targets shrink only for a fine pointer: a tablet at desktop width is still touched.
@@ -259,6 +267,7 @@ export function CodexApprovalCard({ session, announce }: Props) {
 					pendingCount: rows.pending.length,
 					agent,
 					...(first.preview?.tool ? { tool: first.preview.tool } : {}),
+					...(first.preview?.fromSubagent ? { fromSubagent: true } : {}),
 				}),
 			);
 		}
@@ -750,6 +759,11 @@ function PendingCard(props: PendingProps) {
 
 	return (
 		<div className="space-y-2">
+			{requestEyebrow(approval, presentation) ? (
+				<p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+					{requestEyebrow(approval, presentation)}
+				</p>
+			) : null}
 			<div className="flex items-baseline justify-between gap-2">
 				<h2
 					id={props.headingId}
@@ -1012,7 +1026,17 @@ function RequestBody({
 			case "agent":
 				return (
 					<div className="space-y-1">
-						<p className="break-words text-sm text-foreground">Claude asks to use a tool</p>
+						<p className="break-words text-sm text-foreground">
+							Claude asks to start a helper of type{" "}
+							<span className="font-mono">{presentation.agent?.subagentType ?? ""}</span>. This is
+							what it would be told:
+						</p>
+						<pre className={`${PRE_CLASS} max-h-64`} {...HELPER_PROMPT_REGION}>
+							{markBlankRuns(presentation.agent?.prompt ?? "")}
+						</pre>
+						<p className="text-xs text-muted-foreground">
+							The helper's commands and file changes wait for you the same way.
+						</p>
 					</div>
 				);
 			default:
@@ -1311,6 +1335,7 @@ function DialogFor({
 			) : null}
 			{tail ? (
 				<div className="space-y-2" id={bodyId}>
+					{presentation.fromSubagent ? <p className="font-semibold">{SUBAGENT_EYEBROW}.</p> : null}
 					<p>
 						{commandStats(
 							presentation.requestKind === "command" ? (presentation.command ?? "") : "",
@@ -1330,7 +1355,13 @@ function DialogFor({
 				</div>
 			) : presentation.requestKind === "claude_tool" ? (
 				<div className="space-y-2" id={bodyId}>
+					{presentation.fromSubagent ? <p className="font-semibold">{SUBAGENT_EYEBROW}.</p> : null}
 					<p className="break-words font-mono">{presentation.target ?? ""}</p>
+					{presentation.agent ? (
+						<pre className={`${PRE_CLASS} max-h-48`} {...HELPER_PROMPT_REGION}>
+							{markBlankRuns(presentation.agent.prompt)}
+						</pre>
+					) : null}
 					{presentation.cwd ? <p className="break-words">In {presentation.cwd}</p> : null}
 				</div>
 			) : (

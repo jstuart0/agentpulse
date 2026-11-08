@@ -4,14 +4,14 @@
  * (AGEN-121 MCP tools, then AGEN-120 the Agent call) add their branches to this file alone and never edit the
  * shared parser.
  *
- * The reserved optional report fields `mcp`, `agent` and `fromSubagent` are read here. Until a track accepts
- * them a report that carries one is refused as malformed: nothing a host sends today has them.
+ * The optional report fields `mcp`, `agent` and `fromSubagent` are read here; any other shape is malformed.
  */
 import {
 	FORK_MCP_INPUT_MAX_CHARS,
 	isPlainObject,
 	splitForkMcpToolName,
 } from "../../shared/claude-fork-mcp.js";
+import { AGENT_PROMPT_MAX_CHARS, AGENT_TYPE_PATTERN } from "../../shared/claude-fork-subagents.js";
 import type { CodexApprovalAgentSlot, CodexApprovalMcpSlot } from "../../shared/codex-approvals.js";
 import type { AppliedForkOptions } from "../../shared/session-resume.js";
 
@@ -22,8 +22,20 @@ export interface ClaudeToolReportSlots {
 	fromSubagent?: boolean;
 }
 
-/** Still refused until AGEN-120 accepts them. */
-const RESERVED_FIELDS = ["agent", "fromSubagent"] as const;
+const AGENT_KEYS = ["subagentType", "prompt", "builtIn"] as const;
+const AGENT_TOOL = "Agent";
+
+/** The `agent` field (AGEN-120), exactly its three members, or null when it is not that. */
+function parseAgentSlot(value: unknown): CodexApprovalAgentSlot | null {
+	if (!isPlainObject(value)) return null;
+	const keys = Object.keys(value);
+	if (keys.length !== AGENT_KEYS.length || !AGENT_KEYS.every((k) => keys.includes(k))) return null;
+	const { subagentType, prompt, builtIn } = value;
+	if (typeof subagentType !== "string" || !AGENT_TYPE_PATTERN.test(subagentType)) return null;
+	if (typeof prompt !== "string" || prompt.length > AGENT_PROMPT_MAX_CHARS) return null;
+	if (typeof builtIn !== "boolean") return null;
+	return { subagentType, prompt, builtIn };
+}
 
 /**
  * An MCP tool call's report (AGEN-121): the wire name must be a well-formed `mcp__<server>__<tool>` within
@@ -62,15 +74,34 @@ function parseMcpReport(body: Record<string, unknown>): CodexApprovalMcpSlot | n
 
 /** The slots of a report, or null when the report is not acceptable for a Claude tool request. */
 export function parseClaudeToolReport(body: Record<string, unknown>): ClaudeToolReportSlots | null {
-	if (RESERVED_FIELDS.some((field) => body[field] !== undefined)) return null;
-	if (body.mcp !== undefined) {
-		const mcp = parseMcpReport(body);
-		return mcp === null ? null : { mcp };
+	const slots: ClaudeToolReportSlots = {};
+	// A subagent's request (AGEN-120): the literal true, or absent.
+	if (body.fromSubagent !== undefined) {
+		if (body.fromSubagent !== true) return null;
+		slots.fromSubagent = true;
 	}
-	if (body.requestKind === "claude_tool" && body.tool !== "WebFetch" && body.tool !== "Read") {
+	if (body.mcp !== undefined) {
+		if (body.agent !== undefined) return null;
+		const mcp = parseMcpReport(body);
+		return mcp === null ? null : { ...slots, mcp };
+	}
+	const isClaudeTool = body.requestKind === "claude_tool";
+	const isAgentCall = isClaudeTool && body.tool === AGENT_TOOL;
+	if (body.agent !== undefined) {
+		// The slot belongs to the Agent call alone.
+		if (!isAgentCall) return null;
+		const agent = parseAgentSlot(body.agent);
+		if (agent === null) return null;
+		// The card's target is the type it names: one source of truth for what the person is asked about.
+		if (body.target !== agent.subagentType) return null;
+		slots.agent = agent;
+	} else if (isAgentCall) {
 		return null;
 	}
-	return {};
+	if (isClaudeTool && !isAgentCall && body.tool !== "WebFetch" && body.tool !== "Read") {
+		return null;
+	}
+	return slots;
 }
 
 /**

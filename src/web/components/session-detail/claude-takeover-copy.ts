@@ -23,6 +23,13 @@ import {
 	forkMcpControlHelp,
 	forkMcpHostCannot,
 } from "../../../shared/claude-fork-mcp.js";
+import {
+	CLAUDE_FORK_SUBAGENTS,
+	SUBAGENTS_FRAGMENT,
+	SUBAGENTS_OPTION_HELP,
+	SUBAGENTS_OPTION_LABEL,
+	subagentsUnavailableReason,
+} from "../../../shared/claude-fork-subagents.js";
 import { type ForkOptionsRequest, isResumableSessionId } from "../../../shared/session-resume.js";
 import type { SupervisorRecord } from "../../../shared/types.js";
 
@@ -92,7 +99,7 @@ export function claudeHostReason(
 
 // ── The dialog ──────────────────────────────────────────────────────────────
 
-/** One checkbox in the dialog's options fieldset. AGEN-121 and AGEN-120 each add theirs here. */
+/** One checkbox in the dialog's options fieldset. AGEN-121 and AGEN-120 each added theirs. */
 export interface ForkOptionControl {
 	key: keyof ForkOptionsRequest;
 	label: string;
@@ -115,6 +122,14 @@ export const FORK_OPTION_CONTROLS: readonly ForkOptionControl[] = [
 		hostCannot: forkMcpHostCannot,
 		capability: "claudeForkMcp",
 		hostFeature: CLAUDE_FORK_MCP,
+	},
+	{
+		key: "subagents",
+		label: SUBAGENTS_OPTION_LABEL,
+		help: () => SUBAGENTS_OPTION_HELP,
+		hostCannot: subagentsUnavailableReason,
+		capability: "claudeForkSubagents",
+		hostFeature: CLAUDE_FORK_SUBAGENTS,
 	},
 ];
 export interface ForkOptionControlState {
@@ -154,7 +169,7 @@ export const FORK_OPTIONS_CLOSING =
 // What the new session leaves out, in named fragments so a requested option takes its own away.
 const NOT_IN_PROJECT_FILES = "your project's CLAUDE.md, hooks and MCP servers";
 const NOT_IN_OWN_MCP = "your own MCP servers";
-const NOT_IN_SUBAGENTS = "subagents";
+const NOT_IN_SUBAGENTS = SUBAGENTS_FRAGMENT;
 const NOT_IN_REST = ["slash commands", "saving memories"];
 
 /** "a, b and c": the same joining the sentence always used. */

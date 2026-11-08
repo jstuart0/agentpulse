@@ -18,6 +18,13 @@ import {
 	FORK_MCP_CONFIRM,
 	forkMcpHeading,
 } from "../../../shared/claude-fork-mcp.js";
+import {
+	CUSTOM_AGENT_COPY,
+	NESTED_AGENT_COPY,
+	SUBAGENT_EYEBROW,
+	agentRequestHeading,
+	subagentArrival,
+} from "../../../shared/claude-fork-subagents.js";
 import type {
 	ApprovalDecision,
 	ClaudePeerTurnNotice,
@@ -213,6 +220,8 @@ const NOT_APPROVABLE_COPY: Record<
 	agent_memory: () => "Claude can't save memories in this session.",
 	path_not_absolute: () =>
 		"This path isn't a full path, so AgentPulse can't tell which file it means.",
+	custom_agent: () => CUSTOM_AGENT_COPY,
+	nested_agent: () => NESTED_AGENT_COPY,
 };
 
 const GRANT_ROOT_FALLBACK = "a directory";
@@ -447,7 +456,7 @@ export function requestHeading(
 				return named ? forkMcpHeading(named.tool, named.server) : `${name} asks to use an MCP tool`;
 			}
 			case "agent":
-				return `${name} ${USE_A_TOOL}`;
+				return agentRequestHeading(name, target ?? null);
 			default:
 				return exhaustiveToolKind(kind);
 		}
@@ -456,6 +465,16 @@ export function requestHeading(
 	return n > 0
 		? `${name} asks to change ${plural(n, "file", "files")}`
 		: `${name} asks to change files`;
+}
+
+/** The small line above the heading of a request a subagent made (AGEN-120); null for the fork's own. */
+export function requestEyebrow(
+	approval: Pick<CodexApprovalSummary, "preview">,
+	presentation?: Pick<CodexApprovalPresentation, "fromSubagent"> | null,
+): string | null {
+	return approval.preview?.fromSubagent === true || presentation?.fromSubagent === true
+		? SUBAGENT_EYEBROW
+		: null;
 }
 
 /** `{host} · …/{dir}`: one truncated line for a phone. The full path is in the dialog. */
@@ -831,10 +850,13 @@ export function confirmCopy(input: {
 				};
 			case "agent":
 				return {
-					title: "Let Claude use this tool?",
-					confirmLabel: "Allow this call",
+					title: "Let Claude start this helper?",
+					confirmLabel: "Start the helper",
 					cancelLabel: "Back",
-					closing: ["Runs once. AgentPulse can't undo it.", ...closing.slice(1)],
+					closing: [
+						"The helper's commands and file changes wait for you the same way. Runs once.",
+						...closing.slice(1),
+					],
 				};
 			default:
 				return exhaustiveToolKind(kind);
@@ -981,7 +1003,7 @@ function toolAnnouncement(kind: ClaudeToolKind): string {
 		case "mcp":
 			return FORK_MCP_ARRIVAL;
 		case "agent":
-			return USE_A_TOOL;
+			return "asks to start a helper";
 		default:
 			return exhaustiveToolKind(kind);
 	}
@@ -996,11 +1018,18 @@ export function arrivalAnnouncement(input: {
 	/** A `claude_tool` request's tool: spoken without its target, which can be a long URL or path. */
 	tool?: string;
 	toolKind?: ClaudeToolKind;
+	/** A subagent made the request (AGEN-120): said first, in the tool's own verb. */
+	fromSubagent?: boolean;
 }): string {
 	if (input.pendingCount > 1) return `${input.pendingCount} requests need an answer.`;
 	const name = agentName(input.agent ?? "codex");
-	const asks =
-		input.requestKind === "command"
+	const toolKind =
+		input.requestKind === "claude_tool"
+			? (input.toolKind ?? claudeToolKind({ tool: input.tool }))
+			: null;
+	const asks = input.fromSubagent
+		? subagentArrival(toolKind === "agent" ? "agent" : input.requestKind)
+		: input.requestKind === "command"
 			? `${name} asks to run a command.`
 			: input.requestKind === "claude_tool"
 				? `${name} ${toolAnnouncement(input.toolKind ?? claudeToolKind({ tool: input.tool }))}.`
