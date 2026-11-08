@@ -49,21 +49,21 @@ describe("CodexApprovalCard (AGEN-87)", () => {
 		expect(row?.maxGzip).toBeGreaterThan(0);
 	});
 
-	test("the entry chunk grew at most 200 B over its AGEN-87 base (the two take-over api methods and one error sentence, AGEN-115); the session page's limit is the one AGEN-117 P6 re-based (30,300: the fork's status block, prompt box states, End, the host failure sentences and the Claude refusal sentences measured 30,173 on a base of 27,742, see the budget file)", () => {
+	test("the entry chunk grew at most 200 B over its AGEN-87 base (the two take-over api methods and one error sentence, AGEN-115); the session page's limit is the one AGEN-119..123 re-based (35,100: Stop turn, the tool-call detail panel, per-call result words and the MCP and subagent cards measured 34,782 on a base of 30,173, see the budget file)", () => {
 		const index = BUDGETS.find((b) => b.chunk === "index");
 		const page = BUDGETS.find((b) => b.chunk === "SessionDetailPage");
 		expect(index?.measured as number).toBeLessThanOrEqual(base.index + 200);
 		expect(index?.maxGzip as number).toBeLessThanOrEqual(118_600);
-		expect(page?.maxGzip as number).toBeLessThanOrEqual(30_300);
+		expect(page?.maxGzip as number).toBeLessThanOrEqual(35_100);
 	});
 
-	test("the take-over card is a lazy chunk with a row of its own (AGEN-115); its limit rose to 6,700 and then 6,950 for AGEN-117 P6's dialog, machine-list copy and the review's fixes", () => {
+	test("the take-over card is a lazy chunk with a row of its own (AGEN-115); its limit rose to 6,700 and then 6,950 for AGEN-117 P6's dialog, machine-list copy and the review's fixes, and 8,200 for AGEN-120/121's opt-in options and consent copy", () => {
 		const takeover = BUDGETS.find((b) => b.chunk === "SessionTakeoverCard");
-		expect(takeover?.maxGzip).toBe(6_950);
+		expect(takeover?.maxGzip).toBe(8_200);
 	});
 
-	test("the card's own limit rose three times: to 12,000 for the AGEN-87 phase 6 review, to 13,600 for AGEN-117 P4 (the Claude request kinds, copy, peer notice and focus rule), and to 13,700 for AGEN-117 P6 (the focus plan and the notice, split out to be tested without a DOM), and no further", () => {
-		expect(row?.maxGzip).toBe(13_700);
+	test("the card's own limit rose four times: to 12,000 for the AGEN-87 phase 6 review, to 13,600 for AGEN-117 P4 (the Claude request kinds, copy, peer notice and focus rule), and to 13,700 for AGEN-117 P6 (the focus plan and the notice, split out to be tested without a DOM), and to 15,300 for AGEN-120/121 (the mcp and agent request kinds), and no further", () => {
+		expect(row?.maxGzip).toBe(15_300);
 		expect(row?.measured as number).toBeLessThanOrEqual(13_616);
 	});
 });

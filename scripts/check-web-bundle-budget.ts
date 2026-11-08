@@ -36,6 +36,11 @@
  * descriptions, the version row's version and range) measured SessionDetailPage 30,173 (+267 on 29,906) and
  * SessionTakeoverCard 6,870 (+207 on 6,663); CodexApprovalCard was unchanged at 13,616. Limits moved again to
  * 30,300 and 6,950 (+300 and +250).
+ * AGEN-119..123 (fork follow-ups: Stop turn and its outcomes, the owner-only tool-call detail panel and Details
+ * control, per-call result words, MCP and subagent options in the Continue dialog and their cards) measured
+ * SessionDetailPage 34,782 (+4,609 on 30,173), CodexApprovalCard 15,022 (+1,406: the mcp and agent request kinds)
+ * and SessionTakeoverCard 7,904 (+1,034: the dialog's two opt-in options and their consent copy); DashboardPage
+ * 26,444 and index 118,531 stay under their limits unmoved. Limits moved to 35,100, 15,300 and 8,200.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -59,10 +64,10 @@ export interface Finding {
 }
 
 export const BUDGETS: Budget[] = [
-	{ chunk: "SessionDetailPage", maxGzip: 30_300, measured: 30_173 },
+	{ chunk: "SessionDetailPage", maxGzip: 35_100, measured: 34_782 },
 	{ chunk: "SessionSummaryTab", maxGzip: 12_500, measured: 11_582 },
-	{ chunk: "CodexApprovalCard", maxGzip: 13_700, measured: 13_616 },
-	{ chunk: "SessionTakeoverCard", maxGzip: 6_950, measured: 6_870 },
+	{ chunk: "CodexApprovalCard", maxGzip: 15_300, measured: 15_022 },
+	{ chunk: "SessionTakeoverCard", maxGzip: 8_200, measured: 7_904 },
 	{ chunk: "DashboardPage", maxGzip: 27_200, measured: 26_341 },
 	{ chunk: "index", maxGzip: 118_600, measured: 118_384 },
 ];
