@@ -224,7 +224,7 @@ describe("appendManagedSessionEvents: a fork's row payloads are whitelisted", ()
 		const SECRET = "TOKEN-sk-live-4f2a";
 		const mkFork = async (id: string) => {
 			await mkSession(id, { forkedFromSessionId: "source-1" });
-			await seedOwnedLaunch(id, "sup-1");
+			await seedOwnedLaunch(id, "sup-1", { takeover: true });
 		};
 		const rowsOf = (id: string) =>
 			getDb().select().from(events).where(eq(events.sessionId, id)).orderBy(events.id);

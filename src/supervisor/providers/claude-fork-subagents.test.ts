@@ -40,6 +40,7 @@ import {
 } from "./claude-fork-tools.js";
 import { _resetClaudeStreamForTest, disposeAllClaudeStreamRuntimes } from "./claude-stream.js";
 import { allowResponse, denyResponse } from "./claude-wire.js";
+import type { ToolCallRecord } from "./fork-tool-record.js";
 
 const ON: AppliedForkOptions = { mcpServers: [], subagents: true, claudeVersion: "2.1.319" };
 const onPolicy = () => forkToolPolicy(ON);
@@ -222,6 +223,55 @@ describe("the first-prompt tool check", () => {
 				mcp_servers: [{ name: "extra", status: "connected" }],
 			}),
 		).toBe("mcp_servers");
+	});
+});
+
+describe("subagents together with MCP: the init's server list is a set (codex review)", () => {
+	const DIGEST = "a".repeat(64);
+	const both = forkToolPolicy({
+		mcpServers: [
+			{ name: "a", digest: DIGEST },
+			{ name: "b", digest: DIGEST },
+		],
+		subagents: true,
+		claudeVersion: "2.1.319",
+	});
+	const init = () => {
+		const recorded = readFileSync(join(DIR, "s5-general-key.jsonl"), "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((l) => JSON.parse(l) as { dir: string; frame: Record<string, unknown> })
+			.find((e) => e.dir === "out" && e.frame.subtype === "init")?.frame as Record<string, unknown>;
+		return {
+			...recorded,
+			tools: [...(recorded.tools as string[]), "mcp__a__t1", "mcp__b__t1"],
+		};
+	};
+
+	test("exactly the applied names, in either order, pass (positive control)", () => {
+		expect(
+			both.initToolsProblem({ ...init(), mcp_servers: [{ name: "a" }, { name: "b" }] }),
+		).toBeNull();
+		expect(
+			both.initToolsProblem({ ...init(), mcp_servers: [{ name: "b" }, { name: "a" }] }),
+		).toBeNull();
+	});
+
+	test("a duplicate name with the right count fails, as does a missing, extra or malformed entry", () => {
+		for (const mcp_servers of [
+			[{ name: "a" }, { name: "a" }],
+			[{ name: "b" }, { name: "b" }],
+			[{ name: "a" }],
+			[{ name: "a" }, { name: "b" }, { name: "c" }],
+			[{ name: "a" }, { name: 5 }],
+			[{ name: "a" }, "b"],
+			"a,b",
+		]) {
+			expect(
+				both.initToolsProblem({ ...init(), mcp_servers: mcp_servers as unknown }),
+				JSON.stringify(mcp_servers),
+			).toBe("mcp_servers");
+		}
 	});
 });
 
@@ -573,6 +623,51 @@ describe("the stream with subagents applied", () => {
 		expect(rows.some((r) => r.startsWith("A subagent's Bash: "))).toBe(true);
 		expect(rows.some((r) => r.startsWith("Agent: "))).toBe(true);
 		h.assertCleanWire();
+	});
+
+	// Review M2: a helper can read what the Agent prompt never named, and the Agent result carries it back.
+	describe("the Agent call's output on the detail report", () => {
+		async function runWith(judge: (name: string) => "send" | "withhold") {
+			const seen: ToolCallRecord[] = [];
+			const h = harness({
+				init: INIT_TOOLS,
+				defaultTurn: [
+					INIT,
+					assistantToolUse("tuA", "Agent", agentInput),
+					subToolUse("tuB", "Bash", { command: "ls" }),
+					subResult("tuB"),
+					toolResult("tuA"),
+					resultOk,
+				],
+			});
+			const rt = await h.start({
+				policy: onPolicy(),
+				approvals: recordingPort(),
+				onCallResulted: (call) => void seen.push(call),
+				onTurnFinished: (turn) => void seen.push(...turn.calls),
+				detailJudge: async (name) => judge(name),
+			});
+			rt.beginSettle();
+			rt.settled();
+			expect(await (await rt.sendPrompt("go", "a1")).done).toEqual({ ok: true });
+			await Bun.sleep(50);
+			return seen;
+		}
+
+		test("is withheld when a call its helper made was not judged send", async () => {
+			const seen = await runWith((name) => (name === "Agent" ? "send" : "withhold"));
+			const agent = seen.find((c) => c.name === "Agent");
+			expect(seen.some((c) => c.name === "Bash" && c.agentId !== null)).toBe(true);
+			expect(agent?.detailResult).not.toBeNull();
+			expect(agent?.detailOutputWithheld).toBe(true);
+		});
+
+		test("is kept when every helper call was judged send (positive control)", async () => {
+			const seen = await runWith(() => "send");
+			const agent = seen.find((c) => c.name === "Agent");
+			expect(agent?.detailResult).not.toBeNull();
+			expect(agent?.detailOutputWithheld).toBe(false);
+		});
 	});
 
 	test("a helper's request for a tool outside the set is declined locally and never reaches the port", async () => {

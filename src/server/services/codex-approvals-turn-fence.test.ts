@@ -115,8 +115,8 @@ async function interrupt(ctx: Ctx) {
 const setInterrupt = (status: string) =>
 	getDb().update(controlActions).set({ status }).where(eq(controlActions.actionType, "interrupt"));
 
-describe("what the fence closes: the target turn only", () => {
-	test("pending and answered-undelivered rows of the turn close turn_stopped; an older turn's row and the next turn's stay as they were", async () => {
+describe("what the fence closes: every open row of the session (review M5)", () => {
+	test("pending and answered-undelivered rows close turn_stopped, whatever turn id the host gave them", async () => {
 		const ctx = await setup();
 		const pending = await pendingRow(ctx, ctx.promptId);
 		const answered = await acceptedRow(ctx, ctx.promptId, { issue: false });
@@ -130,8 +130,9 @@ describe("what the fence closes: the target turn only", () => {
 			decision: "accept",
 			firstDeliveredAt: null,
 		});
-		expect((await rowOf(older)).status).toBe("pending");
-		expect((await rowOf(next)).status).toBe("pending");
+		// The turn id is the host's word: a request naming another turn does not escape a person's Stop.
+		expect(await rowOf(older)).toMatchObject({ status: "closed", closedReason: "turn_stopped" });
+		expect(await rowOf(next)).toMatchObject({ status: "closed", closedReason: "turn_stopped" });
 		expect(deriveApprovalOutcome(await rowOf(answered), ctx.clock.now()).outcome).toBe(
 			"turn_stopped",
 		);
@@ -244,6 +245,39 @@ describe("an accept racing the enqueue, in both orders", () => {
 	});
 });
 
+describe("a request that names another turn id than the one stopped (review M5)", () => {
+	test("the sync's issue still refuses it while the interrupt is open, and the answer is refused turn_interrupted", async () => {
+		const ctx = await setup();
+		const undelivered = await acceptedRow(ctx, "lying-turn-id", { issue: false });
+		const pending = await pendingRow(ctx, "another-lying-id");
+		const hash = (await rowOf(pending)).presentationHash;
+		await getDb()
+			.insert(controlActions)
+			.values({
+				id: crypto.randomUUID(),
+				sessionId: ctx.sessionId,
+				actionType: "interrupt",
+				status: "running",
+				metadata: { runtime: "claude_stream", targetPromptActionId: ctx.promptId },
+			});
+		await expect(
+			answerApproval(
+				ctx.sessionId,
+				pending,
+				{ decision: "accept", presentationHash: hash },
+				harness.SOLO_PERSON,
+				ctx.deps,
+			),
+		).rejects.toMatchObject({ code: "turn_interrupted" });
+		const response = await sync(ctx, [undelivered]);
+		expect(response.answers.filter((a) => a.decision === "accept")).toEqual([]);
+		expect(await rowOf(undelivered)).toMatchObject({
+			status: "closed",
+			closedReason: "turn_stopped",
+		});
+	});
+});
+
 describe("a request reported on a fenced turn", () => {
 	test("is refused turn_interrupted (the host declines that one request) and nothing is stored", async () => {
 		const ctx = await setup();
@@ -259,9 +293,19 @@ describe("a request reported on a fenced turn", () => {
 		expect(await harness.approvalRows(ctx.sessionId)).toHaveLength(0);
 	});
 
-	test("a request of the NEXT turn is not refused: the session is alive", async () => {
+	test("a request naming ANOTHER turn id is refused while the interrupt is open (the host's turn id is not trusted)", async () => {
 		const ctx = await setup();
 		await interrupt(ctx);
+		await expect(pendingRow(ctx, "some-other-turn")).rejects.toMatchObject({
+			code: "turn_interrupted",
+		});
+		expect(await harness.approvalRows(ctx.sessionId)).toHaveLength(0);
+	});
+
+	test("a request of the NEXT turn is not refused once the interrupt has succeeded: the session is alive", async () => {
+		const ctx = await setup();
+		await interrupt(ctx);
+		await setInterrupt("succeeded");
 		const id = await pendingRow(ctx, "next-turn");
 		expect((await rowOf(id)).status).toBe("pending");
 	});

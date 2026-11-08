@@ -218,6 +218,8 @@ const NOT_APPROVABLE_COPY: Record<
 	input_not_stable: () =>
 		"AgentPulse can't be sure it would send this back exactly as it arrived, so it can't show what approving would mean.",
 	agent_memory: () => "Claude can't save memories in this session.",
+	agentpulse_files: ({ host }) =>
+		`This changes AgentPulse's own files on ${host} (its exclude rules, MCP servers and settings). A continued session can't do that.`,
 	path_not_absolute: () =>
 		"This path isn't a full path, so AgentPulse can't tell which file it means.",
 	custom_agent: () => CUSTOM_AGENT_COPY,

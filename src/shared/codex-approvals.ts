@@ -148,6 +148,8 @@ export const NOT_APPROVABLE_REASONS = [
 	// frontmatter hooks of its own with no card, and a helper that starts a helper is one level too deep.
 	"custom_agent",
 	"nested_agent",
+	// AGEN-119..123 review M4: a path under the host's own ~/.agentpulse (exclude rules, MCP consent, credentials).
+	"agentpulse_files",
 ] as const;
 export type NotApprovableReason = (typeof NOT_APPROVABLE_REASONS)[number];
 

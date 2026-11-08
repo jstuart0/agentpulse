@@ -24,7 +24,9 @@ import {
 	CLAUDE_PERSON_DECLINE_MESSAGE,
 	CLAUDE_PERSON_STOP_MESSAGE,
 	commandNamesAgentMemory,
+	commandNamesAgentpulseHome,
 	isAgentMemoryPath,
+	isAgentpulseHomePath,
 } from "../../shared/claude-approvals.js";
 import {
 	CLAUDE_DECLINE_EVIDENCE_WAIT_MS,
@@ -651,6 +653,83 @@ describe("reading a request", () => {
 		expect(commandNamesAgentMemory("echo x > ~/.claude/projects/p/memory/a.md", cfg)).toBe(true);
 		expect(commandNamesAgentMemory("echo x > memory/a.md", cfg)).toBe(false);
 		expect(commandNamesAgentMemory(`ls ${cfg}/projects/p/memory-x`, cfg)).toBe(false);
+	});
+
+	// Review M4: the host's own ~/.agentpulse (exclude rules, MCP consent, credentials) is never changed from a fork.
+	describe("the host's own .agentpulse directory is decline-only", () => {
+		const HOME = "/home/user";
+		const home = (over: object = {}) => ({ ...ctx({ configDir: "/cfg" }), homeDir: HOME, ...over });
+
+		test("the matchers: the directory and below, dot-dot, APFS case; a sibling and a prefix-alike are not it", () => {
+			expect(isAgentpulseHomePath("/home/user/.agentpulse", HOME)).toBe(true);
+			expect(isAgentpulseHomePath("/home/user/.agentpulse/exclude", HOME)).toBe(true);
+			expect(isAgentpulseHomePath("/home/user/x/../.agentpulse/claude-fork-mcp.json", HOME)).toBe(
+				true,
+			);
+			expect(isAgentpulseHomePath("/home/user/.AgentPulse/exclude", HOME)).toBe(true);
+			expect(isAgentpulseHomePath("/home/user/.agentpulse-old/a", HOME)).toBe(false);
+			expect(isAgentpulseHomePath("/home/user/proj/.agentpulse/a", HOME)).toBe(false);
+			expect(isAgentpulseHomePath("/home/other/.agentpulse/a", HOME)).toBe(false);
+			expect(isAgentpulseHomePath("/home/user/.agentpulse/a", "")).toBe(false);
+			for (const named of [
+				"echo x > ~/.agentpulse/exclude",
+				"cp a $HOME/.agentpulse/claude-fork-mcp.json",
+				"cp a ${HOME}/.agentpulse/exclude",
+				`chmod 600 ${HOME}/.agentpulse/claude-fork-mcp.json`,
+				"rm ~/.agentpulse",
+			]) {
+				expect(commandNamesAgentpulseHome(named, HOME), named).toBe(true);
+			}
+			expect(commandNamesAgentpulseHome("ls ~/.agentpulse-old", HOME)).toBe(false);
+			expect(commandNamesAgentpulseHome("ls ./.agentpulse/x", HOME)).toBe(false);
+			expect(commandNamesAgentpulseHome("echo hi", HOME)).toBe(false);
+		});
+
+		test("Write, Edit and NotebookEdit into it carry agentpulse_files; a file elsewhere does not (control)", () => {
+			for (const [tool, input] of [
+				["Write", { file_path: `${HOME}/.agentpulse/exclude`, content: "x" }],
+				[
+					"Edit",
+					{
+						file_path: `${HOME}/.agentpulse/claude-fork-mcp.json`,
+						old_string: "a",
+						new_string: "b",
+					},
+				],
+				["NotebookEdit", { notebook_path: `${HOME}/.agentpulse/n.ipynb`, new_source: "x" }],
+			] as const) {
+				const parsed = parseClaudeRequest(body(tool, input), home({ fs: fsPort({}) }));
+				expect(parsed?.declineOnly, tool).toContain("agentpulse_files");
+			}
+			const elsewhere = parseClaudeRequest(
+				body("Write", { file_path: `${HOME}/notes/a.md`, content: "x" }),
+				home({ fs: fsPort({}) }),
+			);
+			expect(elsewhere?.declineOnly).not.toContain("agentpulse_files");
+		});
+
+		test("a Bash command naming it carries agentpulse_files; Read of it is not a change and stays", () => {
+			const parsed = parseClaudeRequest(
+				body("Bash", { command: "echo '{}' > ~/.agentpulse/claude-fork-mcp.json" }),
+				home(),
+			);
+			expect(parsed?.declineOnly).toEqual(["agentpulse_files"]);
+			expect(parseClaudeRequest(body("Bash", { command: "ls -la" }), home())?.declineOnly).toEqual(
+				[],
+			);
+		});
+
+		test("a link into it is caught on the real path", () => {
+			const link = {
+				...fsPort({}),
+				realpath: (p: string) => p.replace(/^\/work\/l(?=\/|$)/, `${HOME}/.agentpulse`),
+			};
+			const parsed = parseClaudeRequest(
+				body("Write", { file_path: "/work/l/exclude", content: "x" }),
+				home({ fs: link }),
+			);
+			expect(parsed?.declineOnly).toContain("agentpulse_files");
+		});
 	});
 
 	test("a Bash command naming the memory directory is agent_memory", () => {

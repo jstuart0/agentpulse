@@ -4,14 +4,16 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	DETAIL_RESULT_CAP_BYTES,
 	type ExcludeScope,
 	createDetailJudge,
+	createOutputGuard,
 	cutDetailResult,
 	detailPathsOf,
+	expandHomePath,
 	newToolCallRecord,
 } from "./fork-tool-record.js";
 
@@ -183,5 +185,80 @@ describe("the verdict for Bash and MCP", () => {
 			},
 		});
 		expect(await judge("Bash", { command: "ls" })).toBe("withhold");
+	});
+});
+
+// Review M2.
+describe("a path tool's home spellings are expanded before they are resolved", () => {
+	const home = homedir();
+	const marker = `.agentpulse-m2-excluded-${process.pid}`;
+	const excluded = join(home, marker);
+
+	test("expandHomePath: ~, ~/x, $HOME/x and ${HOME}/x; ~user is unresolvable; others unchanged", () => {
+		expect(expandHomePath("~", "/h")).toBe("/h");
+		expect(expandHomePath("~/a/b", "/h")).toBe("/h/a/b");
+		expect(expandHomePath("$HOME/a", "/h")).toBe("/h/a");
+		expect(expandHomePath("${HOME}/a", "/h")).toBe("/h/a");
+		expect(expandHomePath("~other/a", "/h")).toBeNull();
+		expect(expandHomePath("/abs/a", "/h")).toBe("/abs/a");
+		expect(expandHomePath("rel/a", "/h")).toBe("rel/a");
+		expect(expandHomePath("$HOMEWORK/a", "/h")).toBe("$HOMEWORK/a");
+	});
+
+	test("a Read of ~/excluded, $HOME/excluded and ${HOME}/excluded is withheld; ~/other is sent (control)", async () => {
+		const judge = judgeWith(rulesOver(excluded));
+		for (const file_path of [
+			`~/${marker}/k.txt`,
+			`$HOME/${marker}/k.txt`,
+			`$\u007bHOME}/${marker}/k.txt`,
+		]) {
+			expect(await judge("Read", { file_path }), file_path).toBe("withhold");
+		}
+		expect(await judge("Read", { file_path: "~/not-excluded/k.txt" })).toBe("send");
+		expect(await judge("Write", { file_path: `~/${marker}/new.txt`, content: "x" })).toBe(
+			"withhold",
+		);
+		expect(await judge("Read", { file_path: "~someone/k.txt" })).toBe("withhold");
+	});
+});
+
+describe("the output guard", () => {
+	const call = (name: string, detailResult: string | null) =>
+		newToolCallRecord({ toolUseId: "t1", name, detailResult });
+
+	test("a Bash, Agent or MCP result naming a rule path is withheld, in the absolute, relative and ~ forms", () => {
+		const home = homedir();
+		const rule = join(home, "vault");
+		const guard = createOutputGuard({
+			cwd: join(home, "proj"),
+			excludeScope: () => rulesOver(rule),
+		});
+		for (const name of ["Bash", "Agent", "mcp__probe__echo"]) {
+			expect(guard(call(name, `found ${rule}/key.pem`)), `${name} absolute`).toBe(true);
+			expect(guard(call(name, "found ~/vault/key.pem")), `${name} tilde`).toBe(true);
+			expect(guard(call(name, "found $HOME/vault/key.pem")), `${name} $HOME`).toBe(true);
+			expect(guard(call(name, "found ../vault/key.pem")), `${name} relative`).toBe(true);
+		}
+	});
+
+	test("an output that names none, no output, no rules and a path tool are all kept (controls)", () => {
+		const guard = createOutputGuard({ cwd: work, excludeScope: () => rulesOver(secret) });
+		expect(guard(call("Bash", "all good"))).toBe(false);
+		expect(guard(call("Bash", null))).toBe(false);
+		expect(guard(call("Read", `contents mention ${secret}`))).toBe(false);
+		const none = createOutputGuard({ cwd: work, excludeScope: () => ({ state: "none" }) });
+		expect(none(call("Bash", `mentions ${secret}`))).toBe(false);
+	});
+
+	test("invalid rules withhold any Bash result, and a throwing scope withholds", () => {
+		const invalid = createOutputGuard({ cwd: work, excludeScope: () => ({ state: "invalid" }) });
+		expect(invalid(call("Bash", "anything"))).toBe(true);
+		const broken = createOutputGuard({
+			cwd: work,
+			excludeScope: () => {
+				throw new Error("boom");
+			},
+		});
+		expect(broken(call("Bash", "anything"))).toBe(true);
 	});
 });

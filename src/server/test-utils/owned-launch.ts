@@ -41,7 +41,7 @@ import { launchRequests, supervisors } from "../db/schema/index.js";
 export async function seedOwnedLaunch(
 	sessionId: string,
 	supervisorId: string,
-	opts?: { status?: string; host?: "live" | "none"; agentType?: string },
+	opts?: { status?: string; host?: "live" | "none"; agentType?: string; takeover?: boolean },
 ): Promise<{ launchId: string }> {
 	const status = opts?.status ?? "completed";
 	if (opts?.host !== "none") await seedLiveHostIfAbsent(supervisorId);
@@ -57,6 +57,8 @@ export async function seedOwnedLaunch(
 			requestedSupervisorId: supervisorId,
 			claimedBySupervisorId: supervisorId,
 			status,
+			// A continued Claude session's carrier, as the takeover's settle writes it.
+			...(opts?.takeover ? { metadata: { boundObservedSession: true } } : {}),
 		})
 		.onConflictDoUpdate({
 			target: launchRequests.launchCorrelationId,
@@ -64,6 +66,7 @@ export async function seedOwnedLaunch(
 				requestedSupervisorId: supervisorId,
 				claimedBySupervisorId: supervisorId,
 				status,
+				...(opts?.takeover ? { metadata: { boundObservedSession: true } } : {}),
 			},
 		})
 		.returning();

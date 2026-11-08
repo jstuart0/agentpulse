@@ -53,6 +53,8 @@ export type ToolCallRecord = {
 	parentToolUseId: string | null;
 	/** Decided from the intact input when the call was recorded; `withhold` until that finishes. */
 	detailVerdict: DetailVerdict;
+	/** The result is kept off the report: it names a rule path, or a helper's call was not judged `send` (review M2). */
+	detailOutputWithheld: boolean;
 };
 
 /** The host transport cap on a result held for detail. */
@@ -81,6 +83,7 @@ export function newToolCallRecord(
 		agentId: null,
 		parentToolUseId: null,
 		detailVerdict: "withhold",
+		detailOutputWithheld: false,
 		...base,
 	};
 }
@@ -173,6 +176,58 @@ function namingsOfRule(rulePath: string, dir: string): string[] {
 	return forms;
 }
 
+/**
+ * The path a tool input names, with a leading `~`, `$HOME` or `${HOME}` expanded the way a shell would, before
+ * it is resolved against the working directory (`~/x` is not `<cwd>/~/x`). `~user` can't be resolved here, so
+ * it is `null` and the call is withheld.
+ */
+export function expandHomePath(raw: string, home: string = homedir()): string | null {
+	if (raw === "~" || raw.startsWith("~/")) return home === "" ? null : join(home, raw.slice(1));
+	if (raw.startsWith("~")) return null;
+	const match = /^\$(?:\{HOME\}|HOME)(?=\/|$)/.exec(raw);
+	if (match) return home === "" ? null : join(home, raw.slice(match[0].length));
+	return raw;
+}
+
+/** Whether a result's text names any rule path, in the forms a command can write it (absolute, relative, `~`, `$HOME`). */
+export function outputNamesRulePath(text: string, scope: ExcludeScope, dir: string): boolean {
+	if (scope.state === "none") return false;
+	if (scope.state === "invalid") return true;
+	return scope.paths.some((rulePath) =>
+		namingsOfRule(rulePath, dir).some((form) => text.includes(form)),
+	);
+}
+
+export interface OutputGuardDeps {
+	cwd: string;
+	excludeScope(): ExcludeScope;
+}
+
+/**
+ * Whether a call's result must stay off the report: a Bash, Agent or MCP result that names a rule path (the
+ * command was judged on its text, and what it printed was not), under rules that are invalid, or any result
+ * under a working directory the rules cover. Never throws; a failure is `true`.
+ */
+export function createOutputGuard(deps: OutputGuardDeps): (call: ToolCallRecord) => boolean {
+	return (call) => {
+		try {
+			if (call.detailResult === null) return false;
+			if (
+				!(
+					call.name === "Bash" ||
+					call.name === FORK_AGENT_TOOL ||
+					call.name.startsWith(MCP_TOOL_PREFIX)
+				)
+			) {
+				return false;
+			}
+			return outputNamesRulePath(call.detailResult, deps.excludeScope(), deps.cwd);
+		} catch {
+			return true;
+		}
+	};
+}
+
 const PATH_TOOLS: Record<string, "file_path" | "notebook_path"> = {
 	Read: "file_path",
 	Write: "file_path",
@@ -196,9 +251,17 @@ export function createDetailJudge(deps: DetailJudgeDeps): DetailJudge {
 			if (pathField !== undefined) {
 				const raw = input[pathField];
 				if (typeof raw !== "string" || raw === "") return "withhold";
-				const absolute = isAbsolute(raw) ? raw : resolve(deps.cwd, raw);
+				const expanded = expandHomePath(raw);
+				if (expanded === null) return "withhold";
+				const absolute = isAbsolute(expanded) ? expanded : resolve(deps.cwd, expanded);
 				const resolved = await resolveThroughExisting(absolute, real);
-				return deps.excludesPath(absolute) || deps.excludesPath(resolved) ? "withhold" : "send";
+				// The literal spelling (`<cwd>/~/x` when Claude doesn't expand `~`) is judged too.
+				const literal = isAbsolute(raw) ? raw : resolve(deps.cwd, raw);
+				return deps.excludesPath(absolute) ||
+					deps.excludesPath(resolved) ||
+					deps.excludesPath(literal)
+					? "withhold"
+					: "send";
 			}
 			if (name === "Bash" || name === FORK_AGENT_TOOL || name.startsWith(MCP_TOOL_PREFIX)) {
 				if (scope.state === "none") return "send";

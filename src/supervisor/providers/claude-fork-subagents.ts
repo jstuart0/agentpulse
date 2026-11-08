@@ -81,10 +81,18 @@ function subagentPart(applied: AppliedForkOptions): ForkPolicyPart {
 			// The base check stopped at the tools; the servers it did not get to are judged here.
 			const wanted = new Set(applied.mcpServers.map((s) => s.name));
 			const servers = init.mcp_servers;
+			if (!Array.isArray(servers)) return "mcp_servers";
+			const reported: string[] = [];
+			for (const s of servers) {
+				if (!isRecord(s) || typeof s.name !== "string") return "mcp_servers";
+				reported.push(s.name);
+			}
+			// Unique names and the same set: `[a, a]` for `{a, b}` has the right length and is still wrong.
+			const reportedSet = new Set(reported);
 			const serversOk =
-				Array.isArray(servers) &&
-				servers.length === wanted.size &&
-				servers.every((s) => isRecord(s) && typeof s.name === "string" && wanted.has(s.name));
+				reportedSet.size === reported.length &&
+				reportedSet.size === wanted.size &&
+				reported.every((name) => wanted.has(name));
 			return serversOk ? null : "mcp_servers";
 		},
 		classifyLine(message, base: LineClass): LineClass {

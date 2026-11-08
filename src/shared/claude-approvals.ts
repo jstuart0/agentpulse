@@ -136,3 +136,45 @@ export function commandNamesAgentMemory(command: string, configDir: string): boo
 		(configDir !== "" && text.includes(configDir.toLowerCase()))
 	);
 }
+
+const normalizeLower = (value: string): string => {
+	const parts: string[] = [];
+	for (const segment of value.split("/")) {
+		if (segment === "" || segment === ".") continue;
+		if (segment === "..") parts.pop();
+		else parts.push(segment);
+	}
+	return `/${parts.join("/")}`.toLowerCase();
+};
+
+/**
+ * True when a real path is the host's own `~/.agentpulse` directory or anything below it: its exclude rules, the
+ * MCP consent file, the fork record, the supervisor's configuration and credentials. A fork never changes these
+ * (AGEN-119..123 review M4): a rewritten consent file would start a stranger's command at the next takeover.
+ * `..` is resolved first and the match is case-insensitive, because APFS is.
+ */
+export function isAgentpulseHomePath(realPath: string, homeDir: string): boolean {
+	if (homeDir === "") return false;
+	const base = `${normalizeLower(homeDir)}/.agentpulse`.replace(/^\/\//, "/");
+	const path = normalizeLower(realPath);
+	return path === base || path.startsWith(`${base}/`);
+}
+
+/**
+ * True when a Bash command's text names that directory as `~/.agentpulse`, `$HOME/.agentpulse`,
+ * `${HOME}/.agentpulse` or the home path spelled out. The text isn't parsed (a variable of another name, a
+ * `cd` and a glob get past this, stated).
+ */
+export function commandNamesAgentpulseHome(command: string, homeDir: string): boolean {
+	const text = command.toLowerCase();
+	const prefixes = ["~", "$home", "${home}"];
+	if (homeDir !== "") prefixes.push(homeDir.toLowerCase().replace(/\/+$/, ""));
+	return prefixes.some((prefix) => {
+		const at = `${prefix}/.agentpulse`;
+		for (let from = text.indexOf(at); from !== -1; from = text.indexOf(at, from + 1)) {
+			const next = text[from + at.length];
+			if (next === undefined || !/[\w.-]/.test(next)) return true;
+		}
+		return false;
+	});
+}

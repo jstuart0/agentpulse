@@ -12,6 +12,7 @@
  * No text from a request is put into a log line or a warning.
  */
 import { lstatSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import {
 	CLAUDE_APPROVAL_TOOLS,
@@ -19,7 +20,9 @@ import {
 	CLAUDE_TOOL_INPUT_TREATMENTS,
 	type ClaudeApprovalTool,
 	commandNamesAgentMemory,
+	commandNamesAgentpulseHome,
 	isAgentMemoryPath,
+	isAgentpulseHomePath,
 } from "../../shared/claude-approvals.js";
 import {
 	FORK_MCP_INPUT_MAX_CHARS,
@@ -81,6 +84,8 @@ export type ClaudeParseContext = {
 	inputStable: boolean;
 	/** What the fork was started with; decides which tool names are known. Absent: no options. */
 	applied?: AppliedForkOptions;
+	/** The account's home directory, whose `.agentpulse` a fork never writes. Default: the process's home. */
+	homeDir?: string;
 	fs?: ClaudeFsPort;
 };
 
@@ -237,6 +242,16 @@ export function parseClaudeRequest(
 				: /\/projects\/[^/]+\/memory(\/|$)/i.test(real) || /\/\.claude(\/|$)/i.test(real);
 		if (named) reasons.add("agent_memory");
 	};
+	const home = ctx.homeDir ?? homedir();
+	const guardAgentpulse = (real: string, abs: string) => {
+		const homes = new Set([home, resolveThroughLinksChecked(home, port).real]);
+		for (const h of homes) {
+			if (isAgentpulseHomePath(real, h) || isAgentpulseHomePath(abs, h)) {
+				reasons.add("agentpulse_files");
+				return;
+			}
+		}
+	};
 
 	if (isMcp) {
 		// The split is made against the applied servers' names, which hold no underscore, so it is unique.
@@ -317,6 +332,9 @@ export function parseClaudeRequest(
 			if (command !== null && commandNamesAgentMemory(command, ctx.configDir ?? "")) {
 				reasons.add("agent_memory");
 			}
+			if (command !== null && commandNamesAgentpulseHome(command, home)) {
+				reasons.add("agentpulse_files");
+			}
 			return {
 				kind: "command",
 				...base,
@@ -333,6 +351,7 @@ export function parseClaudeRequest(
 			if (path === null || path === "" || content === null) return null;
 			const { abs, real, paths } = judgePath(path);
 			guardMemory(real);
+			guardAgentpulse(real, abs);
 			const existence = port.exists(abs);
 			const kind = existence === "yes" ? "write" : existence === "no" ? "add" : "write_unchecked";
 			return {
@@ -352,6 +371,7 @@ export function parseClaudeRequest(
 			if (path === null || path === "" || oldText === null || newText === null) return null;
 			const { abs, real, paths } = judgePath(path);
 			guardMemory(real);
+			guardAgentpulse(real, abs);
 			const diff = editDiff(oldText, newText, input.replace_all === true);
 			return {
 				kind: "file_change",
@@ -371,6 +391,7 @@ export function parseClaudeRequest(
 			if (path === null || path === "" || source === null) return null;
 			const { abs, real, paths } = judgePath(path);
 			guardMemory(real);
+			guardAgentpulse(real, abs);
 			const diff = notebookDiff(text(input.cell_id), text(input.cell_type), editMode, source);
 			return {
 				kind: "file_change",

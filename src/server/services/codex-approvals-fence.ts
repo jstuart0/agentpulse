@@ -99,15 +99,17 @@ export async function fenceApprovalsForStop(
 }
 
 /**
- * The turn fence of Stop turn (AGEN-119, F5/F36): the same three steps as the Stop's, but only for the rows of
- * one turn (`turn_id` is the Claude prompt's action id) and closing `turn_stopped`, because the session stays
- * alive. Rows of an older turn and of the next one are untouched. An accept issued before this committed keeps
- * its own later outcome ("may have run"); the issue and answer paths then refuse the turn (`interruptActiveFor`).
+ * The turn fence of Stop turn (AGEN-119, F5/F36): the same three steps as the Stop's, closing `turn_stopped`,
+ * because the session stays alive. It covers every open row of the session, whatever `turn_id` the host gave
+ * it: only one turn runs at a time, and the turn id is the host's word, so a request naming another turn must
+ * not escape a person's Stop (review M5). `turnId` is the interrupted turn, for the caller's records. An accept
+ * issued before this committed keeps its own later outcome ("may have run"); the issue and answer paths then
+ * refuse (`interruptActiveFor`).
  */
 export async function fenceApprovalsForTurn(
 	tx: Tx,
 	sessionId: string,
-	turnId: string,
+	_turnId: string,
 	nowMs: number,
 ): Promise<StopFenceResult> {
 	const open = await tx
@@ -116,7 +118,6 @@ export async function fenceApprovalsForTurn(
 		.where(
 			and(
 				eq(codexApprovals.sessionId, sessionId),
-				eq(codexApprovals.turnId, turnId),
 				inArray(codexApprovals.status, ["pending", "answered"]),
 			),
 		);

@@ -66,7 +66,7 @@ import {
 } from "../providers/claude-stream.js";
 import type { ApprovalLaunch, CodexApprovalTracker } from "../providers/codex-approvals.js";
 import type { Verdict } from "../providers/codex-protocol.js";
-import { createDetailJudge } from "../providers/fork-tool-record.js";
+import { createDetailJudge, createOutputGuard } from "../providers/fork-tool-record.js";
 import { forkTurnObserver } from "../providers/fork-turn-observer.js";
 import { parseVersion } from "../providers/version-range.js";
 import type { ClaudeForkRecord } from "./claude-fork-record.js";
@@ -309,6 +309,10 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 				detailJudge: createDetailJudge({
 					cwd: input.spawnDir,
 					excludesPath: (path) => gate.excludesPath(path),
+					excludeScope: () => gate.excludeScope(),
+				}),
+				detailOutputGuard: createOutputGuard({
+					cwd: input.spawnDir,
 					excludeScope: () => gate.excludeScope(),
 				}),
 				agentsCwd: deps.probeCwd,

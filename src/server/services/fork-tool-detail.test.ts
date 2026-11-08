@@ -196,6 +196,44 @@ describe("storing a host's report", () => {
 		expect(read.redacted).toBe(false);
 	});
 
+	// Review L4: the ciphertext is bound to its session, call and field, so a row moved elsewhere opens to nothing.
+	test("a row moved to another session or call, or its input and output swapped, reads as no text", async () => {
+		const a = await seedFork();
+		const b = await seedFork({ host: a.supervisorId });
+		const ca = call({ input: "A-input", output: "A-output" });
+		const cb = call({ input: "B-input", output: "B-output" });
+		await detail.recordForkToolCalls(a.supervisorId, a.sessionId, [ca]);
+		await detail.recordForkToolCalls(b.supervisorId, b.sessionId, [cb]);
+		// Control: both read back before anything is moved.
+		expect((await detail.getForkToolCall(a.sessionId, ca.toolUseId, SOLO)).input).toBe("A-input");
+		const [rowA] = await rawRows(a.sessionId);
+		const [rowB] = await rawRows(b.sessionId);
+		// B's ciphertexts into A's row.
+		await getDb()
+			.update(forkToolCalls)
+			.set({ inputCipher: rowB?.inputCipher, outputCipher: rowB?.outputCipher })
+			.where(eq(forkToolCalls.id, rowA?.id as string));
+		let read = await detail.getForkToolCall(a.sessionId, ca.toolUseId, SOLO);
+		expect({ input: read.input, output: read.output }).toEqual({ input: null, output: null });
+		// A's own input and output swapped inside the row.
+		await getDb()
+			.update(forkToolCalls)
+			.set({ inputCipher: rowA?.outputCipher, outputCipher: rowA?.inputCipher })
+			.where(eq(forkToolCalls.id, rowA?.id as string));
+		read = await detail.getForkToolCall(a.sessionId, ca.toolUseId, SOLO);
+		expect({ input: read.input, output: read.output }).toEqual({ input: null, output: null });
+		// Restored, it reads again (the nulls were the binding, not damage).
+		await getDb()
+			.update(forkToolCalls)
+			.set({ inputCipher: rowA?.inputCipher, outputCipher: rowA?.outputCipher })
+			.where(eq(forkToolCalls.id, rowA?.id as string));
+		read = await detail.getForkToolCall(a.sessionId, ca.toolUseId, SOLO);
+		expect({ input: read.input, output: read.output }).toEqual({
+			input: "A-input",
+			output: "A-output",
+		});
+	});
+
 	test("a call's DTO says what was cut and hidden", async () => {
 		const { sessionId, supervisorId } = await seedFork();
 		const c = call({
@@ -316,6 +354,43 @@ describe("volume caps", () => {
 		expect(left.some((r) => r.toolUseId === "seed_1")).toBe(true);
 	});
 
+	// Codex review: on Postgres (READ COMMITTED) two concurrent reports from 1,999 rows each count 2,000 in their
+	// own view and neither prunes. The per-session lock makes insert, count and prune one step at a time.
+	test("concurrent reports never leave a session over the cap", async () => {
+		const { sessionId, supervisorId } = await seedFork();
+		const cap = FORK_TOOL_DETAIL_LIMITS.rowsPerSession;
+		const stamp = new Date().toISOString();
+		const rows = Array.from({ length: cap - 1 }, (_, i) => ({
+			id: `seed-${String(i).padStart(5, "0")}`,
+			sessionId,
+			turnActionId: null,
+			toolUseId: `seed_${i}`,
+			tool: "Bash",
+			outcome: "unasked",
+			fromSubagent: false,
+			inputCipher: null,
+			inputTruncated: false,
+			outputCipher: null,
+			outputTruncated: false,
+			redacted: false,
+			createdAt: stamp,
+		}));
+		for (let i = 0; i < rows.length; i += 200) {
+			await getDb()
+				.insert(forkToolCalls)
+				.values(rows.slice(i, i + 200));
+		}
+		const reports = 8;
+		await Promise.all(
+			Array.from({ length: reports }, (_, i) =>
+				detail.recordForkToolCalls(supervisorId, sessionId, [
+					call({ toolUseId: `racing_${i}`, input: null, output: null }),
+				]),
+			),
+		);
+		expect(await rawRows(sessionId)).toHaveLength(cap);
+	}, 60_000);
+
 	test("1,200 calls an hour per session; two sessions on one host each keep their own count", async () => {
 		const a = await seedFork();
 		const b = await seedFork({ host: a.supervisorId });
@@ -336,6 +411,71 @@ describe("volume caps", () => {
 		const other = await detail.recordForkToolCalls(b.supervisorId, b.sessionId, [call()]);
 		expect(other).toEqual({ stored: 1, dropped: 0 });
 	}, 120_000);
+});
+
+describe("the budget is spent before any CPU is (review L3)", () => {
+	test("a call over the session's hourly limit is dropped without being redacted", async () => {
+		const ctx = await seedFork();
+		const limit = FORK_TOOL_DETAIL_LIMITS.callsPerHourPerSession;
+		for (let i = 0; i < limit; i += 100) {
+			await detail.recordForkToolCalls(
+				ctx.supervisorId,
+				ctx.sessionId,
+				Array.from({ length: Math.min(100, limit - i) }, () => call({ input: null, output: null })),
+			);
+		}
+		let reads = 0;
+		const counting = {
+			name: "count",
+			get pattern() {
+				reads++;
+				return /never-matches-zzz/g;
+			},
+			replacement: "x",
+		};
+		const out = await detail.recordForkToolCalls(
+			ctx.supervisorId,
+			ctx.sessionId,
+			[call(), call(), call()],
+			{ rules: [counting] },
+		);
+		expect(out).toEqual({ stored: 0, dropped: 3 });
+		expect(reads).toBe(0);
+		// Positive control: another session of the host does redact its call (the counter does count).
+		const other = await seedFork({ host: ctx.supervisorId });
+		await detail.recordForkToolCalls(other.supervisorId, other.sessionId, [call()], {
+			rules: [counting],
+		});
+		expect(reads).toBeGreaterThan(0);
+	}, 120_000);
+
+	test("a host is capped across its sessions, and the session's unit goes back when the host is over", async () => {
+		const host = await seedFork();
+		const hostLimit = FORK_TOOL_DETAIL_LIMITS.callsPerHourPerHost;
+		const perSession = FORK_TOOL_DETAIL_LIMITS.callsPerHourPerSession;
+		const sessionsNeeded = Math.ceil(hostLimit / perSession);
+		const ctxs = [host];
+		for (let i = 1; i < sessionsNeeded + 1; i++)
+			ctxs.push(await seedFork({ host: host.supervisorId }));
+		let stored = 0;
+		let dropped = 0;
+		let sent = 0;
+		for (const ctx of ctxs) {
+			// Calls with no text: this measures the counters, not redaction.
+			for (let i = 0; i < perSession && sent < hostLimit + 10; i += 100) {
+				const n = Math.min(100, perSession - i, hostLimit + 10 - sent);
+				const out = await detail.recordForkToolCalls(
+					ctx.supervisorId,
+					ctx.sessionId,
+					Array.from({ length: n }, () => call({ input: null, output: null })),
+				);
+				stored += out.stored;
+				dropped += out.dropped;
+				sent += n;
+			}
+		}
+		expect({ stored, dropped }).toEqual({ stored: hostLimit, dropped: 10 });
+	}, 300_000);
 });
 
 describe("retention", () => {

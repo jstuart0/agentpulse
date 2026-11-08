@@ -105,3 +105,30 @@ describe("encryptSecretAsync", () => {
 		await expect(encryptSecretAsync("needs a key")).rejects.toThrow("AGENTPULSE_SECRETS_KEY");
 	});
 });
+
+describe("the optional AAD (review L4)", () => {
+	let originalKey: string;
+	beforeEach(() => {
+		originalKey = config.secretsKey;
+		config.secretsKey = "a".repeat(32);
+	});
+	afterEach(() => {
+		config.secretsKey = originalKey;
+	});
+
+	test("a record sealed with a context opens only with it", async () => {
+		const stored = await encryptSecretAsync("bound", "ctx-1");
+		expect(await decryptSecretAsync(stored, "ctx-1")).toBe("bound");
+		await expect(decryptSecretAsync(stored, "ctx-2")).rejects.toThrow();
+		await expect(decryptSecretAsync(stored)).rejects.toThrow();
+	});
+
+	test("the stored layout is unchanged: a record sealed with none opens with none, and one with a context is the same length", async () => {
+		const plain = await encryptSecretAsync("same-length");
+		const bound = await encryptSecretAsync("same-length", "ctx");
+		expect(Buffer.from(plain, "base64").length).toBe(Buffer.from(bound, "base64").length);
+		expect(await decryptSecretAsync(plain)).toBe("same-length");
+		// The sync reader (no context) still reads what the async writer wrote with none.
+		expect(decryptSecret(plain)).toBe("same-length");
+	});
+});

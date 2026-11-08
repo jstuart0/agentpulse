@@ -32,6 +32,8 @@ export const FORK_TOOL_DETAIL_LIMITS = {
 	rowsPerSession: 2000,
 	/** Calls stored an hour per session (in memory, per replica). */
 	callsPerHourPerSession: 1200,
+	/** Calls stored an hour per host across all its sessions (in memory, per replica): a host credential can't burn server CPU at will. */
+	callsPerHourPerHost: 6000,
 	/** The list route's page size. */
 	listMax: 100,
 } as const;

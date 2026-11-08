@@ -54,6 +54,7 @@ const REASON_PRECEDENCE: readonly NotApprovableReason[] = [
 	"custom_agent",
 	"requires_interaction",
 	"agent_memory",
+	"agentpulse_files",
 	"path_not_absolute",
 	"symlink_target",
 	"input_not_stable",

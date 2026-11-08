@@ -95,8 +95,10 @@ export function toolCallReport(
 		fromSubagent: call.agentId !== null,
 		input: input.text,
 		inputTruncated: input.truncated,
-		output: call.detailResult,
-		outputTruncated: call.detailResultBytes > DETAIL_RESULT_CAP_BYTES,
+		output: call.detailOutputWithheld ? null : call.detailResult,
+		outputTruncated: call.detailOutputWithheld
+			? false
+			: call.detailResultBytes > DETAIL_RESULT_CAP_BYTES,
 	};
 }
 

@@ -50,6 +50,7 @@ import { mapSessionDto } from "./session-dto.js";
 import {
 	SessionOwnershipError,
 	assertSupervisorCanWriteSession,
+	assertSupervisorCanWriteSessionInfo,
 	ownerLaunchJoin,
 	sessionOwnedBy,
 } from "./session-ownership.js";
@@ -614,12 +615,13 @@ async function prepareManagedEvents(
 	sessionId: string,
 	events: ManagedSessionEventInput[],
 ): Promise<NormalizedEvent[]> {
-	await assertSupervisorCanWriteSession(supervisorId, sessionId);
+	// A fork's rows are normalized because the session is a fork (its carrier launch is the takeover's, written
+	// with the session's `forkedFromSessionId`), never because the sender says so (review M1). The ownership read
+	// already joins the launch, so this costs no statement.
+	const { isFork } = await assertSupervisorCanWriteSessionInfo(supervisorId, sessionId);
 	// The whole batch is refused: one forged event poisons the rest.
 	if (events.some(isReservedEvent)) throw new ReservedEventTypeError();
 	const nowMs = Date.now();
-	// A fork's rows are normalized because the session is a fork, never because the sender says so (review M1).
-	const isFork = await isForkSession(sessionId);
 	return events.map((event) => {
 		const rawPayload = normalizeForkRowPayload(event.rawPayload ?? {}, isFork);
 		return {
@@ -638,16 +640,6 @@ async function prepareManagedEvents(
 			occurredAt: acceptedOccurredAt(supervisorId, event.occurredAt, nowMs),
 		};
 	});
-}
-
-/** Whether the server itself marked this session as a continued one: `metadata.forkedFromSessionId` is server-owned. */
-async function isForkSession(sessionId: string): Promise<boolean> {
-	const [row] = await getDb()
-		.select({ source: jsonExtractText(sessions.metadata, "$.forkedFromSessionId") })
-		.from(sessions)
-		.where(eq(sessions.sessionId, sessionId))
-		.limit(1);
-	return typeof row?.source === "string" && row.source !== "";
 }
 
 export async function appendManagedSessionEvents(

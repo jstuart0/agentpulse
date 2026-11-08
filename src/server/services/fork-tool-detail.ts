@@ -13,7 +13,7 @@
  * AGENTPULSE_SECRETS_KEY, so a database copy or a backup alone yields no tool text (F40).
  */
 import type { SQL } from "drizzle-orm";
-import { and, asc, count, desc, eq, gte, inArray, lt, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
 import { FORK_CALL_OUTCOMES, FORK_REPORTED_TOOLS } from "../../shared/claude-fork-copy.js";
 import {
 	FORK_TOOL_DETAIL_CAP_BYTES,
@@ -206,8 +206,12 @@ async function cutoffIso(now: Date): Promise<string> {
 
 // ---- writing ----
 
+/** The first key of the two-key advisory lock taken per session (a separate keyspace from the one-key locks). */
+const FORK_TOOL_DETAIL_LOCK_NAMESPACE = 0x46544443; // "FTDC"
+
 /** In memory, per replica, like the other limiters. */
 const hourlyCalls = new FixedWindowCounter(HOUR_MS);
+const hourlyCallsPerHost = new FixedWindowCounter(HOUR_MS);
 
 let idCounter = 0;
 /** Sorts by time, then by arrival within the same millisecond; the tail keeps ids unguessable. */
@@ -246,6 +250,11 @@ function prepareCall(call: ForkToolCallReport, rules: RedactionRule[]): Prepared
 	}
 }
 
+/** What a stored text is bound to: the session, the call and which text, so a row moved elsewhere opens to nothing. */
+function detailAad(sessionId: string, toolUseId: string, field: "input" | "output"): string {
+	return `fork_tool_calls\u0000${sessionId}\u0000${toolUseId}\u0000${field}`;
+}
+
 async function storeCall(
 	sessionId: string,
 	prepared: PreparedCall,
@@ -261,14 +270,28 @@ async function storeCall(
 		tool: call.tool,
 		outcome: call.outcome,
 		fromSubagent: call.fromSubagent,
-		inputCipher: input === null ? null : await encryptSecretAsync(input.text),
+		inputCipher:
+			input === null
+				? null
+				: await encryptSecretAsync(input.text, detailAad(sessionId, call.toolUseId, "input")),
 		inputTruncated: input?.truncated ?? false,
-		outputCipher: output === null ? null : await encryptSecretAsync(output.text),
+		outputCipher:
+			output === null
+				? null
+				: await encryptSecretAsync(output.text, detailAad(sessionId, call.toolUseId, "output")),
 		outputTruncated: output?.truncated ?? false,
 		redacted: (input?.redacted ?? false) || (output?.redacted ?? false),
 		createdAt: nowIso,
 	};
 	return withTransaction(async (tx) => {
+		// On Postgres two reports for one session run in READ COMMITTED: each could insert from 1,999 rows, count
+		// 2,000 in its own view and prune nothing. One lock per session, held to commit, makes insert, count and
+		// prune one step at a time (codex review). SQLite has a single writer.
+		if (config.dialect === "postgres") {
+			await tx.execute(
+				sql`SELECT pg_advisory_xact_lock(${FORK_TOOL_DETAIL_LOCK_NAMESPACE}, hashtext(${sessionId}))`,
+			);
+		}
 		const inserted: Array<{ id: string }> = await tx
 			.insert(forkToolCalls)
 			.values(row)
@@ -324,12 +347,24 @@ export async function recordForkToolCalls(
 	let stored = 0;
 	let dropped = 0;
 	for (const call of calls) {
-		const prepared = prepareCall(call, rules);
-		if (!prepared) {
+		// The budget is spent before any redaction or encryption, so a host over its limit costs no CPU (review L3):
+		// the session's first, then the host's across all its sessions (the session's unit is given back if the
+		// host is over, so one flooding session doesn't starve the host's others).
+		const reserved = hourlyCalls.tryReserve(
+			sessionId,
+			FORK_TOOL_DETAIL_LIMITS.callsPerHourPerSession,
+		);
+		if (reserved === null) {
 			dropped++;
 			continue;
 		}
-		if (!hourlyCalls.tryConsume(sessionId, FORK_TOOL_DETAIL_LIMITS.callsPerHourPerSession)) {
+		if (!hourlyCallsPerHost.tryConsume(supervisorId, FORK_TOOL_DETAIL_LIMITS.callsPerHourPerHost)) {
+			hourlyCalls.refund(sessionId, reserved);
+			dropped++;
+			continue;
+		}
+		const prepared = prepareCall(call, rules);
+		if (!prepared) {
 			dropped++;
 			continue;
 		}
@@ -344,6 +379,7 @@ export async function recordForkToolCalls(
 /** Test seam: forgets the hourly counts. */
 export function __resetForkToolDetailLimiterForTests(): void {
 	(hourlyCalls as unknown as { windows: Map<string, unknown> }).windows.clear();
+	(hourlyCallsPerHost as unknown as { windows: Map<string, unknown> }).windows.clear();
 }
 
 // ---- reading ----
@@ -374,10 +410,10 @@ async function authorizeRead(sessionId: string, caller: ToolDetailCaller): Promi
 	if (!forkToolDetailAvailable()) throw new ForkToolDetailRefusal("detail_unavailable");
 }
 
-async function decryptOrNull(cipher: string | null): Promise<string | null> {
+async function decryptOrNull(cipher: string | null, aad: string): Promise<string | null> {
 	if (cipher === null) return null;
 	try {
-		return await decryptSecretAsync(cipher);
+		return await decryptSecretAsync(cipher, aad);
 	} catch {
 		// A key that no longer opens the text (rotated): the row reads as having no text.
 		return null;
@@ -402,8 +438,11 @@ function toIndexEntry(row: StoredRow): ForkToolCallIndexEntry {
 async function toDto(row: StoredRow): Promise<ForkToolCallDto> {
 	return {
 		...toIndexEntry(row),
-		input: await decryptOrNull(row.inputCipher),
-		output: await decryptOrNull(row.outputCipher),
+		input: await decryptOrNull(row.inputCipher, detailAad(row.sessionId, row.toolUseId, "input")),
+		output: await decryptOrNull(
+			row.outputCipher,
+			detailAad(row.sessionId, row.toolUseId, "output"),
+		),
 	};
 }
 

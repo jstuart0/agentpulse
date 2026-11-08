@@ -9,7 +9,7 @@ import {
 } from "./config.js";
 import { createControlActionHandler } from "./control-actions.js";
 import { createLaunchDispatcher } from "./launch-dispatch.js";
-import { configureForkMcp } from "./providers/claude-fork-mcp.js";
+import { configureForkMcp, sweepLeftoverMcpCopies } from "./providers/claude-fork-mcp.js";
 import { headlessRuntimeCount } from "./providers/claude-headless.js";
 import { claudeStreamRuntimeCount } from "./providers/claude-stream.js";
 import {
@@ -219,6 +219,8 @@ async function main() {
 	const resumingSessions = new Set<string>();
 	// Where the person's fork MCP file is looked for (AGEN-121); an unconfigured host applies no MCP server.
 	configureForkMcp({ agentpulseDir: join(home, ".agentpulse") });
+	// Private MCP copies an earlier process left behind hold credentials: no fork exists yet, so none is in use.
+	sweepLeftoverMcpCopies();
 	const forkRecord = createClaudeForkRecord({
 		path: join(home, ".agentpulse", "claude-forks.json"),
 	});

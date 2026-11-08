@@ -1505,7 +1505,7 @@ describe("fork options", () => {
 			});
 			// Positive control: the same Codex session binds without options.
 			const ok = await bindWith(id, host, SOLO);
-			sessionsUsed.push((ok.action.metadata as Record<string, string>).forkSessionId as string);
+			expect(ok.action.actionType).toBe("resume");
 		});
 	});
 

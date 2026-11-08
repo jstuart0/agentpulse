@@ -274,10 +274,11 @@ function stopActiveFor(tx: Tx) {
 }
 
 /**
- * A Stop turn (AGEN-119) names this approval's turn: an `interrupt` action queued, running or done whose
- * `targetPromptActionId` is the approval's `turn_id`. A failed one (the turn didn't stop, the host dropped it)
- * lifts the fence, matching the host, which lifts its own. It takes no lock, so unlike a Stop it is found
- * through its target, not through the session's lock holder.
+ * A Stop turn (AGEN-119) covers this approval: an `interrupt` action of the session that is queued or running
+ * (whatever turn the approval names: the turn id is the host's word, and only one turn runs at a time, review
+ * M5), or one done (`succeeded`) whose `targetPromptActionId` is the approval's `turn_id`. A failed one (the
+ * turn didn't stop, the host dropped it) lifts the fence, matching the host, which lifts its own. It takes no
+ * lock, so unlike a Stop it is found by the session, not through the session's lock holder.
  */
 function interruptActiveFor(tx: Tx) {
 	return tx
@@ -287,10 +288,15 @@ function interruptActiveFor(tx: Tx) {
 			and(
 				eq(controlActions.sessionId, codexApprovals.sessionId),
 				eq(controlActions.actionType, "interrupt"),
-				inArray(controlActions.status, ["queued", "running", "succeeded"]),
-				eq(
-					jsonExtractText(controlActions.metadata, "$.targetPromptActionId"),
-					codexApprovals.turnId,
+				or(
+					inArray(controlActions.status, ["queued", "running"]),
+					and(
+						eq(controlActions.status, "succeeded"),
+						eq(
+							jsonExtractText(controlActions.metadata, "$.targetPromptActionId"),
+							codexApprovals.turnId,
+						),
+					),
 				),
 			),
 		);
@@ -304,8 +310,13 @@ async function turnHasActiveInterrupt(tx: Tx, sessionId: string, turnId: string)
 			and(
 				eq(controlActions.sessionId, sessionId),
 				eq(controlActions.actionType, "interrupt"),
-				inArray(controlActions.status, ["queued", "running", "succeeded"]),
-				eq(jsonExtractText(controlActions.metadata, "$.targetPromptActionId"), turnId),
+				or(
+					inArray(controlActions.status, ["queued", "running"]),
+					and(
+						eq(controlActions.status, "succeeded"),
+						eq(jsonExtractText(controlActions.metadata, "$.targetPromptActionId"), turnId),
+					),
+				),
 			),
 		)
 		.limit(1);

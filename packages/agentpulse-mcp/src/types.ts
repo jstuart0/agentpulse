@@ -1042,6 +1042,7 @@ export type CodexApprovalNotApprovableReason =
 	| "input_not_stable"
 	| "agent_memory"
 	| "path_not_absolute"
+	| "agentpulse_files"
 	| "custom_agent"
 	| "nested_agent";
 

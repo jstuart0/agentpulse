@@ -433,11 +433,11 @@ describe("the body is strict", () => {
 		await noRows(id);
 	});
 
-	test("forkOptions is exactly the two booleans: asking for none passes, asking for an option on a Codex session is a 400", async () => {
+	test("forkOptions is exactly the two booleans: asking for none passes, asking for an option on a Codex session is a 409 fork_options_not_supported", async () => {
 		const { host, id, headers } = await setup();
 		const asked = await bind(id, headers, { ...confirmed(host), forkOptions: { mcp: true } });
-		expect(asked.status).toBe(400);
-		expect(await errorOf(asked)).toBe("invalid_body");
+		expect(asked.status).toBe(409);
+		expect(await errorOf(asked)).toBe("fork_options_not_supported");
 		await noRows(id);
 		const none = await bind(id, headers, { ...confirmed(host), forkOptions: { mcp: false } });
 		expect(none.status).toBe(202);

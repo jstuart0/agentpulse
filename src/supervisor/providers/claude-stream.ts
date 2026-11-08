@@ -1,3 +1,6 @@
+import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync } from "node:fs";
+import { stat } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 /**
  * One long-lived stream-json `claude` per takeover fork (AGEN-117 T1, T3, T5, T8, T10, T16, T18).
  *
@@ -23,9 +26,7 @@
  * Reports go through the callbacks the control-action handler gives (the report gate); nothing in a fork's
  * timeline comes from a hook.
  */
-import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync } from "node:fs";
-import { stat } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { FORK_AGENT_TOOL } from "../../shared/claude-fork-copy.js";
 import { forkChildEnv } from "../../shared/launch-env-policy.js";
 import {
 	CLAUDE_API_ERROR_MESSAGE,
@@ -371,6 +372,8 @@ export type ClaudeStreamOptions = {
 	onCallResulted?: (call: ToolCallRecord) => void;
 	/** Decides each call's `detailVerdict` from its intact input. Absent: `withhold`. */
 	detailJudge?: DetailJudge;
+	/** True when a resulted call's output must stay off the detail report (it names a rule path). Absent: nothing is withheld. */
+	detailOutputGuard?: (call: ToolCallRecord) => boolean;
 	/** Undoes what preparing the fork's options wrote. Called once, when the fork ends for good. */
 	cleanup?: () => void | Promise<void>;
 	maxRuntimes?: number;
@@ -952,12 +955,32 @@ export class ClaudeStreamRuntime {
 
 	private async observeCall(turn: Turn, call: ToolCallRecord): Promise<void> {
 		await turn.verdicts.get(call.toolUseId);
+		await this.guardOutput(turn, call);
 		try {
 			this.options.onCallResulted?.(call);
 		} catch (error) {
 			this.log(
 				`[claude-stream] the call observer threw (session=${this.sessionId}): ${forHostLog(error)}`,
 			);
+		}
+	}
+
+	/**
+	 * Keeps a call's output off the detail report when it names a rule path, and an Agent call's output unless
+	 * every call its helpers made in the turn was judged `send`: a helper can read what the prompt never named
+	 * (review M2). Only the output is held back; the call and its input are still reported.
+	 */
+	private async guardOutput(turn: Turn, call: ToolCallRecord): Promise<void> {
+		try {
+			if (this.options.detailOutputGuard?.(call)) call.detailOutputWithheld = true;
+			if (call.name !== FORK_AGENT_TOOL || call.detailResult === null) return;
+			const helperCalls = [...turn.calls.values()].filter(
+				(c) => c.agentId !== null || c.parentToolUseId !== null,
+			);
+			await Promise.all(helperCalls.map((c) => turn.verdicts.get(c.toolUseId)));
+			if (helperCalls.some((c) => c.detailVerdict !== "send")) call.detailOutputWithheld = true;
+		} catch {
+			call.detailOutputWithheld = true;
 		}
 	}
 

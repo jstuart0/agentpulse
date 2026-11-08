@@ -203,6 +203,7 @@ describe("one test per reason", () => {
 		path_not_absolute: () => commandReport({ declineOnly: ["path_not_absolute"] }),
 		custom_agent: () => commandReport({ declineOnly: ["custom_agent"] }),
 		nested_agent: () => commandReport({ declineOnly: ["nested_agent"] }),
+		agentpulse_files: () => commandReport({ declineOnly: ["agentpulse_files"] }),
 	};
 
 	for (const reason of NOT_APPROVABLE_REASONS) {

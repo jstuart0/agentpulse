@@ -15,8 +15,13 @@
 import { randomUUID } from "node:crypto";
 import {
 	chmodSync,
+	closeSync,
+	fchmodSync,
+	constants as fsConstants,
+	fstatSync,
 	lstatSync,
 	mkdirSync,
+	openSync,
 	readdirSync,
 	renameSync,
 	rmSync,
@@ -151,14 +156,64 @@ function sweepStaleCopies(dir: string, now: number): void {
 	}
 }
 
-function privateDirectory(root: string): string {
+/** The uid the copy directory must belong to: the configured one, else the supervisor's own. Null: not checked (Windows). */
+function expectedUid(): number | null {
+	if (configured?.uid !== undefined) return configured.uid;
+	return process.getuid?.() ?? null;
+}
+
+/**
+ * The private copy directory, made if missing. It is opened by descriptor without following a link, and the
+ * mode is set on that descriptor, so nothing can be swapped between the check and the chmod; a directory that
+ * isn't a plain directory of this account is refused (review L5), because the copies hold MCP credentials.
+ */
+export function privateCopyDirectory(root: string, uid: number | null = expectedUid()): string {
 	const dir = join(root, FORK_MCP_COPY_DIR);
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
-	const stat = lstatSync(dir);
-	if (!stat.isDirectory() || stat.isSymbolicLink())
-		throw new Error("the copy directory isn't plain");
-	chmodSync(dir, 0o700);
+	const fd = openSync(dir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+	try {
+		const stat = fstatSync(fd);
+		if (!stat.isDirectory()) throw new Error("the copy directory isn't plain");
+		if (uid !== null && stat.uid !== uid)
+			throw new Error("the copy directory isn't this account's");
+		fchmodSync(fd, 0o700);
+	} finally {
+		closeSync(fd);
+	}
 	return dir;
+}
+
+/**
+ * Removes every private copy left in the directory by an earlier process (a crash leaves 0600 files holding MCP
+ * `env` and `headers` until a sweep reaches them). Run once at supervisor start, before any fork exists, so
+ * nothing in it is held by this process; this account runs one supervisor at a time. A directory that isn't a
+ * plain directory of this account is left alone. Returns how many files went.
+ */
+export function sweepLeftoverMcpCopies(): number {
+	if (!configured) return 0;
+	const dir = join(configured.agentpulseDir, FORK_MCP_COPY_DIR);
+	let removed = 0;
+	try {
+		const stat = lstatSync(dir);
+		const uid = expectedUid();
+		if (!stat.isDirectory() || stat.isSymbolicLink()) return 0;
+		if (uid !== null && stat.uid !== uid) return 0;
+		for (const name of readdirSync(dir)) {
+			const path = join(dir, name);
+			if (liveCopies.has(path)) continue;
+			try {
+				if (lstatSync(path).isFile()) {
+					rmSync(path, { force: true });
+					removed++;
+				}
+			} catch {
+				// A copy that can't be examined is left for the next sweep.
+			}
+		}
+	} catch {
+		// No directory yet: nothing was ever written.
+	}
+	return removed;
 }
 
 /** Writes the copy atomically (a temp file, then a rename), mode 0600, from the validated servers. */
@@ -212,7 +267,7 @@ export async function prepareMcp(
 		return null;
 	}
 
-	const dir = privateDirectory(configured.agentpulseDir);
+	const dir = privateCopyDirectory(configured.agentpulseDir);
 	sweepStaleCopies(dir, Date.now());
 	const path = writePrivateCopy(dir, file.servers);
 	liveCopies.add(path);

@@ -14,6 +14,7 @@ import {
 	readdirSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -23,7 +24,13 @@ import { type Harness, createHarness } from "../test-utils/claude-stream-harness
 import { CLAUDE_FIXTURE_DIR_2_1_319, outLines } from "./__fixtures__/claude-frames.js";
 import { forkArgv, probeArgv } from "./claude-argv.js";
 import { parseForkMcpText } from "./claude-fork-mcp-file.js";
-import { ForkOptionsRefusal, configureForkMcp, mcpToolKind } from "./claude-fork-mcp.js";
+import {
+	ForkOptionsRefusal,
+	configureForkMcp,
+	mcpToolKind,
+	privateCopyDirectory,
+	sweepLeftoverMcpCopies,
+} from "./claude-fork-mcp.js";
 import {
 	claudeToolKind,
 	forkToolPolicy,
@@ -197,6 +204,66 @@ describe("taking over with MCP", () => {
 		expect(existsSync(live.policy.mcpConfigPath as string)).toBe(true);
 		await live.cleanup();
 		await next.cleanup();
+	});
+});
+
+// Review L5.
+describe("the private copy directory", () => {
+	const uid = process.getuid?.() ?? 0;
+
+	test("is made 0700 and an existing wider one is tightened", () => {
+		const dir = join(dotDir, "claude-fork-mcp");
+		mkdirSync(dir, { mode: 0o755 });
+		chmodSync(dir, 0o755);
+		expect(privateCopyDirectory(dotDir, uid)).toBe(dir);
+		expect(statSync(dir).mode & 0o777).toBe(0o700);
+	});
+
+	test("one that isn't this account's is refused (control: the right uid passes)", () => {
+		expect(() => privateCopyDirectory(dotDir, uid + 1)).toThrow(/isn't this account's/);
+		expect(() => privateCopyDirectory(dotDir, uid)).not.toThrow();
+	});
+
+	test("a link in its place is refused and its target is not changed", () => {
+		const elsewhere = join(home, "elsewhere");
+		mkdirSync(elsewhere, { mode: 0o755 });
+		chmodSync(elsewhere, 0o755);
+		symlinkSync(elsewhere, join(dotDir, "claude-fork-mcp"));
+		expect(() => privateCopyDirectory(dotDir, uid)).toThrow();
+		expect(statSync(elsewhere).mode & 0o777).toBe(0o755);
+	});
+});
+
+describe("copies left by a process that crashed", () => {
+	const dir = () => join(dotDir, "claude-fork-mcp");
+
+	test("every one is removed at supervisor start, however recent, and only files", () => {
+		mkdirSync(dir(), { recursive: true, mode: 0o700 });
+		writeFileSync(join(dir(), "a.json"), "{}", { mode: 0o600 });
+		writeFileSync(join(dir(), "b.json.tmp"), "{}", { mode: 0o600 });
+		mkdirSync(join(dir(), "subdir"));
+		expect(sweepLeftoverMcpCopies()).toBe(2);
+		expect(readdirSync(dir()).sort()).toEqual(["subdir"]);
+	});
+
+	test("a host that was never configured, a missing directory and a linked directory sweep nothing", () => {
+		expect(sweepLeftoverMcpCopies()).toBe(0);
+		const elsewhere = join(home, "elsewhere");
+		mkdirSync(elsewhere);
+		writeFileSync(join(elsewhere, "keep.json"), "{}");
+		symlinkSync(elsewhere, dir());
+		expect(sweepLeftoverMcpCopies()).toBe(0);
+		expect(existsSync(join(elsewhere, "keep.json"))).toBe(true);
+		configureForkMcp(null);
+		expect(sweepLeftoverMcpCopies()).toBe(0);
+	});
+
+	test("the supervisor calls it once, right after it learns where the file is", () => {
+		const source = readFileSync(join(import.meta.dir, "..", "index.ts"), "utf8");
+		const configure = source.indexOf("configureForkMcp({");
+		const sweep = source.indexOf("sweepLeftoverMcpCopies();");
+		expect(configure).toBeGreaterThan(-1);
+		expect(sweep).toBeGreaterThan(configure);
 	});
 });
 

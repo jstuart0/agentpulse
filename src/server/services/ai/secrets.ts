@@ -123,8 +123,12 @@ function deriveKeyAsync(salt: Buffer): Promise<Buffer> {
 	});
 }
 
-/** Same contract as `decryptSecret`, without blocking the event loop. */
-export async function decryptSecretAsync(ciphertextBase64: string): Promise<string> {
+/**
+ * Same contract as `decryptSecret`, without blocking the event loop. `aad`, when the record was sealed with
+ * one, is the context it was bound to (the stored bytes are the same either way, so a record sealed without
+ * one opens with none): a record moved to another context fails the auth tag.
+ */
+export async function decryptSecretAsync(ciphertextBase64: string, aad?: string): Promise<string> {
 	const buf = Buffer.from(ciphertextBase64, "base64");
 	if (buf.length < SALT_LENGTH + IV_LENGTH + AUTH_TAG_LENGTH + 1) {
 		throw new Error("Ciphertext too short to be valid");
@@ -135,6 +139,7 @@ export async function decryptSecretAsync(ciphertextBase64: string): Promise<stri
 	const ciphertext = buf.subarray(SALT_LENGTH + IV_LENGTH + AUTH_TAG_LENGTH);
 	const key = await deriveKeyAsync(salt);
 	const decipher = createDecipheriv("aes-256-gcm", key, iv);
+	if (aad !== undefined) decipher.setAAD(Buffer.from(aad, "utf8"));
 	decipher.setAuthTag(authTag);
 	return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
 }
@@ -143,13 +148,15 @@ export async function decryptSecretAsync(ciphertextBase64: string): Promise<stri
  * Same contract and same stored format as `encryptSecret`, without blocking the event loop: for
  * request paths (a phone registering its send token) where tens of milliseconds of scrypt on the
  * main thread would stall everything else. The fresh random salt means the derivation is
- * cached for this record's own later reads, not shared.
+ * cached for this record's own later reads, not shared. `aad` binds the record to a context (not stored; the
+ * same value must be given to `decryptSecretAsync`): the layout above is unchanged.
  */
-export async function encryptSecretAsync(plaintext: string): Promise<string> {
+export async function encryptSecretAsync(plaintext: string, aad?: string): Promise<string> {
 	const salt = randomBytes(SALT_LENGTH);
 	const iv = randomBytes(IV_LENGTH);
 	const key = await deriveKeyAsync(salt);
 	const cipher = createCipheriv("aes-256-gcm", key, iv);
+	if (aad !== undefined) cipher.setAAD(Buffer.from(aad, "utf8"));
 	const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
 	return Buffer.concat([salt, iv, cipher.getAuthTag(), encrypted]).toString("base64");
 }
