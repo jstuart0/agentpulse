@@ -52,6 +52,7 @@ import {
 import { T122_EVENT_MUTATIONS } from "./claude-canary-scenarios/t122-mutations.js";
 import { T122_SCENARIOS, T122_SCENARIO_IDS } from "./claude-canary-scenarios/t122.js";
 import { T123_SCENARIOS, T123_SCENARIO_IDS } from "./claude-canary-scenarios/t123.js";
+import { TD_SCENARIOS, TD_SCENARIO_IDS } from "./claude-canary-scenarios/td.js";
 import { acquireCanaryLock } from "./lib/claude-canary-lock.js";
 import { redactKey } from "./lib/claude-canary-safety.js";
 import { ClaudeStream, runClaude, scrubOwnSockets } from "./lib/claude-canary-spawn.js";
@@ -102,6 +103,7 @@ export const CLAUDE_SCENARIO_IDS = [
 	...T121_SCENARIO_IDS,
 	...T122_SCENARIO_IDS,
 	...T123_SCENARIO_IDS,
+	...TD_SCENARIO_IDS,
 ] as const;
 export type ClaudeScenarioId = (typeof CLAUDE_SCENARIO_IDS)[number];
 
@@ -2725,6 +2727,7 @@ const SCENARIOS: Record<ClaudeScenarioId, ScenarioFn> = {
 	...T121_SCENARIOS,
 	...T122_SCENARIOS,
 	...T123_SCENARIOS,
+	...TD_SCENARIOS,
 };
 
 // ── Shared scenario bodies and small helpers ───────────────────────────────
