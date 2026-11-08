@@ -61,6 +61,30 @@ export function runListTokens(workflow: string): string[] {
 	return tokens;
 }
 
+/**
+ * Suite lines of a literal (`run: |`) block that are not part of a `bun test` command: the previous line
+ * must end in a backslash. A line after one ending in a pipe or redirect runs as its own shell command
+ * (exit 127 in CI) and its suite never runs. Folded (`>-`) blocks are one command and are not checked.
+ */
+export function orphanSuiteLines(workflow: string): string[] {
+	const lines = workflow.split("\n");
+	const orphans: string[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		const header = /^(\s*)(?:- )?run:\s*\|[-+]?\s*$/.exec(lines[i] as string);
+		if (!header) continue;
+		const indent = (header[1] as string).length;
+		for (let j = i + 1; j < lines.length; j++) {
+			const line = lines[j] as string;
+			if (line.trim() !== "" && line.length - line.trimStart().length <= indent) break;
+			if (!/^(src|scripts|packages)\/\S+\.test\.ts\b/.test(line.trim())) continue;
+			if (!(lines[j - 1] as string).trimEnd().endsWith("\\")) {
+				orphans.push(`${j + 1}: ${line.trim()}`);
+			}
+		}
+	}
+	return orphans;
+}
+
 /** The expected suites the lists do not cover, and the ones that are not files in the tree. */
 export function missingSuites(
 	workflow: string,
@@ -83,8 +107,12 @@ if (import.meta.main) {
 	for (const suite of notInWorkflow) {
 		console.error(`[postgres-suites] ${suite} is not in ${WORKFLOW}'s run lists`);
 	}
+	const orphans = orphanSuiteLines(workflow);
+	for (const line of orphans) {
+		console.error(`[postgres-suites] line ${line} is not a continuation of a bun test command`);
+	}
 	for (const suite of notOnDisk) console.error(`[postgres-suites] ${suite} does not exist`);
-	if (notInWorkflow.length > 0 || notOnDisk.length > 0) process.exit(1);
+	if (notInWorkflow.length > 0 || notOnDisk.length > 0 || orphans.length > 0) process.exit(1);
 	console.log(
 		`[postgres-suites] ${EXPECTED_SUITES.length} expected suites, all in the workflow's run lists`,
 	);

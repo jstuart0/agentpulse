@@ -376,3 +376,25 @@ describe("appendManagedSessionEvents: a fork's row payloads are whitelisted", ()
 		expect(task).not.toHaveProperty("tool");
 	});
 });
+
+describe("upsertManagedSessionState: forkOptionsConsentUserId is server-owned", () => {
+	test("a state report can neither set nor overwrite it", async () => {
+		await mkSession("fork-consent-set");
+		await seedOwnedLaunch("fork-consent-set", "sup-1");
+		await upsertManagedSessionState("sup-1", {
+			sessionId: "fork-consent-set",
+			metadata: { forkOptionsConsentUserId: "attacker", providerRunId: "r" },
+		});
+		const set = await readSession("fork-consent-set");
+		expect(set?.metadata).toEqual({ providerRunId: "r" });
+
+		await mkSession("fork-consent-kept", { forkOptionsConsentUserId: "alice" });
+		await seedOwnedLaunch("fork-consent-kept", "sup-1");
+		await upsertManagedSessionState("sup-1", {
+			sessionId: "fork-consent-kept",
+			metadata: { forkOptionsConsentUserId: "attacker", providerRunId: "r" },
+		});
+		const kept = await readSession("fork-consent-kept");
+		expect(kept?.metadata).toEqual({ forkOptionsConsentUserId: "alice", providerRunId: "r" });
+	});
+});

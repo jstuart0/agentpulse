@@ -153,7 +153,7 @@ jobs:
             src/server/services/ai/continue-decision-fork.test.ts \
             src/server/services/control-actions-claude-interrupt.test.ts \
             src/server/services/codex-approvals-turn-fence.test.ts \
-            src/server/routes/sessions-interrupt.test.ts 2>&1 | tee claude-turn.log
+            src/server/routes/sessions-interrupt.test.ts \
             src/server/services/claude-mcp-approval-e2e.test.ts 2>&1 | tee claude-turn.log
           if grep -Eq '^ *[1-9][0-9]* skip' claude-turn.log; then
             echo "A Claude turn guard test was skipped on Postgres." >&2

@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { EXPECTED_SUITES, missingSuites, runListTokens } from "./check-postgres-workflow-suites.js";
+import {
+	EXPECTED_SUITES,
+	missingSuites,
+	orphanSuiteLines,
+	runListTokens,
+} from "./check-postgres-workflow-suites.js";
 
 const workflow = readFileSync(
 	join(import.meta.dir, "..", ".github/workflows/codex-approvals-postgres.yml"),
@@ -52,5 +57,28 @@ describe("the Postgres workflow's run lists", () => {
 			missingSuites(workflow, ["src/server/routes/claude-fork-routes.test.ts"], () => false)
 				.notOnDisk,
 		).toEqual(["src/server/routes/claude-fork-routes.test.ts"]);
+	});
+});
+
+describe("orphan suite lines", () => {
+	test("the workflow has none", () => {
+		expect(orphanSuiteLines(workflow)).toEqual([]);
+	});
+
+	test("the old text (a pipe-to-tee line before a suite line) is caught; a continuation is not", () => {
+		const old = [
+			"        run: |",
+			"          bun test \\",
+			"            src/a.test.ts 2>&1 | tee x.log",
+			"            src/b.test.ts 2>&1 | tee x.log",
+		].join("\n");
+		expect(orphanSuiteLines(old)).toEqual(["4: src/b.test.ts 2>&1 | tee x.log"]);
+		const fixed = [
+			"        run: |",
+			"          bun test \\",
+			"            src/a.test.ts \\",
+			"            src/b.test.ts 2>&1 | tee x.log",
+		].join("\n");
+		expect(orphanSuiteLines(fixed)).toEqual([]);
 	});
 });

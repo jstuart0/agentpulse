@@ -1221,7 +1221,9 @@ supervisor sends detail, so an upgraded server with older supervisors behaves as
   reports how many a pass removed. A row older than the cutoff is never served, even before the pass reaches
   it. Deleting a session deletes its detail.
 - **Volume.** At most 2,000 calls are kept per session (the oldest go first) and at most 1,200 calls an hour are
-  stored per session (counted in memory, per replica). A host may report 300 times a minute.
+  stored per session and at most 6,000 an hour per host across all its sessions (both counted in memory, per
+  replica). A host may report 300 times a minute. Each detail read writes one `fork_tool_detail_read` audit line
+  (who read which call), so a busy reader shows up in the logs.
 - **Who can read it.** Only a signed-in person who owns the session or is an admin (an unowned session: admins).
   No API key of any scope can, an admin-owned or manage key included, and there is no MCP tool for it.
   `DISABLE_AUTH=true` counts every caller as a person, as for every other human-only route.

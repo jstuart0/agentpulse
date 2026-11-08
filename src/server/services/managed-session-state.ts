@@ -154,6 +154,8 @@ const SERVER_OWNED_METADATA_KEYS = [
 	"peerTurn",
 	// What a fork was started with (AGEN-119..123): written by the takeover's settle from the host's report.
 	"forkOptions",
+	// The host owner who consented to those options (H1): written by the settle's insert, never by a report.
+	"forkOptionsConsentUserId",
 ] as const;
 
 // Test seam (AGEN-115): runs after a report's open-action check and before its writes, so a test can land a
