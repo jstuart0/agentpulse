@@ -34,6 +34,7 @@ const STATUS: Record<BindRefusalCode, number> = {
 	takeover_in_progress: 409,
 	retry_not_available: 409,
 	not_resumable: 409,
+	fork_options_host_not_yours: 403,
 };
 
 /**

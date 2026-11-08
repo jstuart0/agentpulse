@@ -71,12 +71,14 @@ import {
 } from "../../shared/hook-headers.js";
 import { clampEventContent } from "../../shared/managed-report-limits.js";
 import { writePrivateFileAtomicNoFollow } from "../../shared/private-file.js";
+import type { AppliedForkOptions } from "../../shared/session-resume.js";
 import type {
 	ManagedSession,
 	ManagedSessionEventInput,
 	ManagedSessionStateInput,
 	Session,
 } from "../../shared/types.js";
+import type { ExcludeScope } from "../providers/fork-tool-record.js";
 import { type RulesWatch, createRulesWatch } from "./exclude-rules-watch.js";
 import {
 	readPrivateFileNoFollow,
@@ -143,6 +145,8 @@ export type ControlStatusBody = {
 	provedCwd?: string;
 	/** A Claude takeover's success: the permission mode the host picked from the login. The server judges the shape. */
 	permissionMode?: string;
+	/** A Claude takeover's success: what the host applied of the fork options. The server judges the shape. */
+	applied?: AppliedForkOptions;
 };
 
 /**
@@ -317,6 +321,11 @@ export interface ReportGate {
 	queuedState(id: string): "none" | "pending" | "held";
 	/** Whether the local rules exclude this absolute path. Invalid rules exclude everything. */
 	excludesPath(path: string): boolean;
+	/**
+	 * What the rules are right now, for deciding what a fork call may send as detail (AGEN-123): none, invalid,
+	 * or the physically resolved path of each rule.
+	 */
+	excludeScope(): ExcludeScope;
 	reportLaunchStatus(launchId: string, body: LaunchStatusBody): Promise<void>;
 	/** The one fixed status for a launch this host will not start, sent whatever the reason and whatever the rules say. */
 	refuseLaunch(launchId: string): Promise<void>;
@@ -1379,6 +1388,13 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			const state = currentRules();
 			if (state.state === "invalid") return true;
 			return state.state === "none" ? false : covered(expandHome(path), state);
+		},
+
+		excludeScope() {
+			const state = currentRules();
+			if (state.state === "invalid") return { state: "invalid" };
+			if (state.state === "none") return { state: "none" };
+			return { state: "ok", paths: state.rules.map((rule) => rule.resolved) };
 		},
 
 		async reportLaunchStatus(launchId, body) {

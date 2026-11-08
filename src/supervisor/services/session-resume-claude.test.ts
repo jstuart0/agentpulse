@@ -342,6 +342,31 @@ describe("a takeover", () => {
 		expect(w.gate.verdict(N, work)).toBe("send");
 	});
 
+	test("the success report says what was applied of the fork options: none in Track 0, even when some were asked for", async () => {
+		writeTranscript(S, work);
+		const w = build();
+		await w.takeover.run(action({ forkOptions: { mcp: true, subagents: true } }), S);
+		const [report] = statusPosts(w);
+		expect(report.body.applied).toEqual({
+			mcpServers: [],
+			subagents: false,
+			claudeVersion: "2.1.318",
+		});
+		// The fork got exactly the argv it always got: the six tools, strict MCP config, no --mcp-config.
+		const argv = forkStarts()[0].argv;
+		expect(argv).toContain("--strict-mcp-config");
+		expect(argv).not.toContain("--mcp-config");
+		expect(argv[argv.indexOf("--tools") + 1]).toBe("Bash,Read,Write,Edit,NotebookEdit,WebFetch");
+	});
+
+	test("a malformed forkOptions in the action is none, and a refusal leaves nothing to clean up", async () => {
+		writeTranscript(S, work);
+		const w = build();
+		await w.takeover.run(action({ forkOptions: { mcp: "yes", other: 1 } }), S);
+		expect(statusPosts(w)[0].body.applied).toMatchObject({ subagents: false });
+		expect(forkStarts().length).toBe(1);
+	});
+
 	test("an apiKeyHelper login is mode ask, picked by the second probe", async () => {
 		writeTranscript(S, work);
 		fake.configure({ account: HELPER_ACCOUNT, accountRestricted: NO_LOGIN_ACCOUNT });

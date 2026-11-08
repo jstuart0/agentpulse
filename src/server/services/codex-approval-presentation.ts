@@ -295,6 +295,33 @@ export function buildPresentation(
 		presentation = { v: 1, requestKind: "file_change", changes, cwd, reason, grantRoot };
 	}
 
+	// Slots reserved for the MCP and subagent tracks: part of the presentation, and so of its hash, only when
+	// the report has them. A report without them builds the presentation it always built.
+	if (report.fromSubagent === true) presentation = { ...presentation, fromSubagent: true };
+	if (presentation.requestKind === "claude_tool") {
+		if (report.mcp) {
+			presentation = {
+				...presentation,
+				mcp: {
+					server: cleanField(report.mcp.server, 128, findings) ?? "",
+					tool: cleanField(report.mcp.tool, 256, findings) ?? "",
+					rawToolName: cleanField(report.mcp.rawToolName, 512, findings) ?? "",
+				},
+			};
+		}
+		if (report.agent) {
+			presentation = {
+				...presentation,
+				agent: {
+					subagentType: cleanField(report.agent.subagentType, 64, findings) ?? "",
+					prompt:
+						cleanField(report.agent.prompt, CODEX_APPROVAL_LIMITS.reasonChars, findings) ?? "",
+					builtIn: report.agent.builtIn === true,
+				},
+			};
+		}
+	}
+
 	if (findings.tooLong) reasons.add("too_long");
 	if (findings.redacted) reasons.add("redacted");
 	else if (findings.invisible) reasons.add("invisible_chars");

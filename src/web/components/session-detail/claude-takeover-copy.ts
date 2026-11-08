@@ -16,7 +16,7 @@ import {
 	forkSentenceName,
 	restrictedLoginPhrase,
 } from "../../../shared/claude-fork-copy.js";
-import { isResumableSessionId } from "../../../shared/session-resume.js";
+import { type ForkOptionsRequest, isResumableSessionId } from "../../../shared/session-resume.js";
 import type { SupervisorRecord } from "../../../shared/types.js";
 
 export const CLAUDE_CARD_ELIGIBLE =
@@ -85,7 +85,54 @@ export function claudeHostReason(
 
 // ── The dialog ──────────────────────────────────────────────────────────────
 
+/** One checkbox in the dialog's options fieldset. AGEN-121 and AGEN-120 each add theirs here; none exists yet. */
+export interface ForkOptionControl {
+	key: keyof ForkOptionsRequest;
+	label: string;
+	help: string;
+}
+
+/** The options a person can turn on. Empty until a ticket ships one: the fieldset is not drawn then. */
+export const FORK_OPTION_CONTROLS: readonly ForkOptionControl[] = [];
+export const FORK_OPTIONS_LEGEND = "Options for this session (off by default)";
+export const FORK_OPTIONS_CLOSING =
+	"These stay as chosen for this session. To change them, continue again.";
+
+// What the new session leaves out, in named fragments so a requested option takes its own away.
+const NOT_IN_PROJECT_FILES = "your project's CLAUDE.md, hooks and MCP servers";
+const NOT_IN_OWN_MCP = "your own MCP servers";
+const NOT_IN_SUBAGENTS = "subagents";
+const NOT_IN_REST = ["slash commands", "saving memories"];
+const NOT_IN_TOOLS_TAIL = "Tools show in the timeline by name and outcome, with no details.";
+
+/** "a, b and c": the same joining the sentence always used. */
+function listOf(items: readonly string[]): string {
+	if (items.length <= 1) return items.join("");
+	return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
+/** The "Not in this session" sentence: only absences, so an option the person turned on is not listed. */
+export function notInSessionLine(requested: ForkOptionsRequest = {}): string {
+	const items = [
+		NOT_IN_PROJECT_FILES,
+		...(requested.mcp === true ? [] : [NOT_IN_OWN_MCP]),
+		...(requested.subagents === true ? [] : [NOT_IN_SUBAGENTS]),
+		...NOT_IN_REST,
+	];
+	return `${listOf(items)}. ${NOT_IN_TOOLS_TAIL}`;
+}
+
+/**
+ * The paragraph about who can open what each tool call ran (AGEN-123 writes the words). Null until then, so
+ * the dialog shows no such paragraph.
+ */
+export function toolDetailLine(_mode: "solo" | "team", _ownerLine: string | null): string | null {
+	return null;
+}
+
 export interface ClaudeDialogInput {
+	/** The options the person has chosen in the dialog; none by default. */
+	requested?: ForkOptionsRequest;
 	sessionName: string;
 	/** The chosen machine's name; null until one is chosen. */
 	machine: string | null;
@@ -145,10 +192,7 @@ export function claudeDialogLines(input: ClaudeDialogInput): ClaudeDialogLines {
 			"your Claude settings still apply, so commands they allow, and anything a hook there answers, run without waiting for you.",
 			`With ${askLoginPhrase()}:`,
 		),
-		para(
-			"your project's CLAUDE.md, hooks and MCP servers, your own MCP servers, subagents, slash commands and saving memories. Tools show in the timeline by name and outcome, with no details.",
-			"Not in this session:",
-		),
+		para(notInSessionLine(input.requested), "Not in this session:"),
 		para(
 			"Your terminal's conversation isn't changed. Don't open the new session in a terminal. Afterwards, `claude --continue` here can open the new session instead, so use the command this page gives you to get back.",
 		),
@@ -156,6 +200,8 @@ export function claudeDialogLines(input: ClaudeDialogInput): ClaudeDialogLines {
 			"API keys you've issued can send prompts to it too, unless it runs under your own Claude settings: then only a signed-in person can.",
 		),
 	];
+	const detail = toolDetailLine(input.ownerName === null ? "solo" : "team", input.ownerName);
+	if (detail !== null) paragraphs.push(para(detail, "Tool details:"));
 	if (input.endedFork) {
 		paragraphs.push(
 			para(

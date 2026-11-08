@@ -18,6 +18,7 @@ import {
 	parseOwnerParam,
 	resolveOwnerScope,
 } from "../../shared/owner-scope.js";
+import { parseForkOptionsRequest } from "../../shared/session-resume.js";
 import {
 	ACTIVE_OPERATIONAL_STATUSES,
 	type ActiveOperationalStatus,
@@ -1014,7 +1015,7 @@ sessionsRouter.post("/sessions/:sessionId/prompt", async (c: Context) => {
 });
 
 const BIND_BODY_LIMIT_BYTES = 16 * 1024;
-const BIND_BODY_KEYS = new Set(["targetSupervisorId", "sameMachineConfirmed"]);
+const BIND_BODY_KEYS = new Set(["targetSupervisorId", "sameMachineConfirmed", "forkOptions"]);
 
 /**
  * Takes an observed Codex session over: the machine it ran on will resume it, so prompts, Stop and approvals
@@ -1046,8 +1047,15 @@ sessionsRouter.post(
 			if (typeof body !== "object" || body === null || Array.isArray(body)) {
 				return c.json({ error: "invalid_body" }, 400);
 			}
-			const { targetSupervisorId, sameMachineConfirmed, ...rest } = body as Record<string, unknown>;
+			const {
+				targetSupervisorId,
+				sameMachineConfirmed,
+				forkOptions: rawForkOptions,
+				...rest
+			} = body as Record<string, unknown>;
+			const forkOptions = parseForkOptionsRequest(rawForkOptions);
 			if (
+				forkOptions === null ||
 				Object.keys(rest).length > 0 ||
 				Object.keys(body).some((key) => !BIND_BODY_KEYS.has(key)) ||
 				typeof targetSupervisorId !== "string" ||
@@ -1058,7 +1066,7 @@ sessionsRouter.post(
 			}
 			const result = await bindObservedSession(
 				sessionId,
-				{ targetSupervisorId, sameMachineConfirmed },
+				{ targetSupervisorId, sameMachineConfirmed, forkOptions },
 				actor,
 			);
 			c.header("Cache-Control", "no-store");

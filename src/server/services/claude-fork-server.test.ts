@@ -386,12 +386,13 @@ describe("hook posts for a fork are dropped", () => {
 				forkedFromSessionId: "x",
 				forkPermissionBranch: "ask",
 				peerTurn: { text: "boo" },
+				forkOptions: { mcpServers: [], subagents: true, claudeVersion: "x" },
 				harmless: 1,
 			},
 		});
 		const metadata = (await sessionRow("launched-m"))?.metadata as Record<string, unknown>;
 		expect(metadata.harmless).toBe(1);
-		for (const key of ["forkedFromSessionId", "forkPermissionBranch", "peerTurn"])
+		for (const key of ["forkedFromSessionId", "forkPermissionBranch", "peerTurn", "forkOptions"])
 			expect(metadata, key).not.toHaveProperty(key);
 		// ...and on a real fork the marker stays exactly as the server wrote it
 		await seed("fork-m", "fork");

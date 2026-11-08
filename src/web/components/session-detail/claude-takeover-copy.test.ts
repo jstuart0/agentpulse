@@ -49,12 +49,17 @@ import {
 	CLAUDE_NO_HOST_SOLO,
 	CLAUDE_NO_HOST_TEAM,
 	CLAUDE_QUIET_WAIT,
+	FORK_OPTIONS_CLOSING,
+	FORK_OPTIONS_LEGEND,
+	FORK_OPTION_CONTROLS,
 	claudeConfirmLabel,
 	claudeContinuedAs,
 	claudeDialogLines,
 	claudeProgress,
 	claudeResumeCommand,
 	claudeStaleWorking,
+	notInSessionLine,
+	toolDetailLine,
 } from "./claude-takeover-copy.js";
 import {
 	FORK_CLAUDE_MD_NOT_LOADED,
@@ -1541,5 +1546,47 @@ describe("the words, scanned across the whole Claude side", () => {
 			endedFork: null,
 		});
 		expect(dialog.paragraphs.map((p) => p.text).join(" ")).not.toMatch(/take[ns]? over/i);
+	});
+});
+
+describe("copy structure for the fork options (AGEN-119..123 Track 0)", () => {
+	const base = {
+		sessionName: "n",
+		machine: "studio",
+		cwd: "/w",
+		ownerName: null,
+		endedFork: null,
+	};
+
+	test("with no option the 'Not in this session' sentence is word for word what it was", () => {
+		expect(notInSessionLine()).toBe(
+			"your project's CLAUDE.md, hooks and MCP servers, your own MCP servers, subagents, slash commands and saving memories. Tools show in the timeline by name and outcome, with no details.",
+		);
+		expect(notInSessionLine({})).toBe(notInSessionLine());
+		expect(notInSessionLine({ mcp: false, subagents: false })).toBe(notInSessionLine());
+		const out = claudeDialogLines(base).paragraphs.find((p) => p.label === "Not in this session:");
+		expect(out?.text).toBe(notInSessionLine());
+	});
+
+	test("an option that is turned on is no longer listed as missing", () => {
+		expect(notInSessionLine({ mcp: true })).not.toContain("your own MCP servers");
+		expect(notInSessionLine({ mcp: true })).toContain("subagents");
+		expect(notInSessionLine({ subagents: true })).not.toContain("subagents");
+		expect(notInSessionLine({ mcp: true, subagents: true })).toBe(
+			"your project's CLAUDE.md, hooks and MCP servers, slash commands and saving memories. Tools show in the timeline by name and outcome, with no details.",
+		);
+		// The project's own MCP servers stay out whatever is chosen.
+		expect(notInSessionLine({ mcp: true, subagents: true })).toContain("hooks and MCP servers");
+	});
+
+	test("the tool-detail paragraph has no words until AGEN-123 and then is its own paragraph; no option controls yet", () => {
+		expect(toolDetailLine("solo", null)).toBeNull();
+		expect(toolDetailLine("team", "Ana")).toBeNull();
+		expect(claudeDialogLines(base).paragraphs.some((p) => p.label === "Tool details:")).toBe(false);
+		expect(FORK_OPTION_CONTROLS).toEqual([]);
+		expect(FORK_OPTIONS_LEGEND).toBe("Options for this session (off by default)");
+		expect(FORK_OPTIONS_CLOSING).toBe(
+			"These stay as chosen for this session. To change them, continue again.",
+		);
 	});
 });

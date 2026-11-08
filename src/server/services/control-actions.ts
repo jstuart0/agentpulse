@@ -300,7 +300,7 @@ interface ResumeActionRef {
 interface ResumeSettleDeps {
 	afterWrites?: (tx: unknown) => Promise<void>;
 	/** What the host proved and picked, for a Claude takeover's settle (AGEN-117 T5). Judged, never trusted. */
-	fork?: { provedCwd: unknown; permissionMode: unknown };
+	fork?: { provedCwd: unknown; permissionMode: unknown; applied?: unknown };
 	/** Test seam: runs inside the fork settle's locked transaction, after the action is flipped, before it is judged. */
 	afterFlip?: (tx: unknown) => Promise<void>;
 }
@@ -2113,6 +2113,8 @@ export async function updateControlAction(
 		/** A Claude takeover's success report: the directory the host proved and the mode it picked (T5). */
 		provedCwd?: unknown;
 		permissionMode?: unknown;
+		/** What the host applied of the fork options; judged, never trusted. */
+		applied?: unknown;
 	},
 	seam: UpdateControlActionSeam = {},
 ) {
@@ -2139,7 +2141,11 @@ export async function updateControlAction(
 			);
 		} else if (forkSessionIdOf(current.metadata) !== null) {
 			await completeResumeAction(null, current, {
-				fork: { provedCwd: input.provedCwd, permissionMode: input.permissionMode },
+				fork: {
+					provedCwd: input.provedCwd,
+					permissionMode: input.permissionMode,
+					applied: input.applied,
+				},
 			});
 		} else {
 			// The host says it worked. If the row never became `managed`, it didn't: that's a failure.

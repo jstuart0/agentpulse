@@ -27,6 +27,8 @@ import {
 	type CodexApprovalReportRequest,
 	type NotApprovableReason,
 } from "../../shared/codex-approvals.js";
+import type { AppliedForkOptions } from "../../shared/session-resume.js";
+import { claudeToolKind } from "./claude-fork-tools.js";
 import type { BufferedChange, ParsedApproval } from "./codex-approval-params.js";
 
 const ID_MAX = 128;
@@ -70,6 +72,8 @@ export type ClaudeParseContext = {
 	configDir: string | null;
 	/** The input's JSON text occurs in the raw line unchanged (the wire checks it). */
 	inputStable: boolean;
+	/** What the fork was started with; decides which tool names are known. Absent: no options. */
+	applied?: AppliedForkOptions;
 	fs?: ClaudeFsPort;
 };
 
@@ -164,7 +168,8 @@ export function parseClaudeRequest(
 		if (!CLAUDE_REQUEST_META_KEYS.includes(key)) reasons.add("unknown_param");
 	}
 
-	const known = (CLAUDE_APPROVAL_TOOLS as readonly string[]).includes(toolName);
+	const kind = claudeToolKind(toolName, ctx.applied);
+	const known = kind !== null && (CLAUDE_APPROVAL_TOOLS as readonly string[]).includes(kind);
 	const treatments = known
 		? CLAUDE_TOOL_INPUT_TREATMENTS[toolName as ClaudeApprovalTool]
 		: undefined;

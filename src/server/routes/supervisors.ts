@@ -767,6 +767,7 @@ supervisorsAgentRouter.post(
 			accepted?: boolean;
 			provedCwd?: unknown;
 			permissionMode?: unknown;
+			applied?: unknown;
 		}>();
 		// A report names its status, and it must be a real one.
 		if (!["running", "succeeded", "failed"].includes(body.status)) {
@@ -781,6 +782,7 @@ supervisorsAgentRouter.post(
 			accepted: body.accepted === true,
 			provedCwd: body.provedCwd,
 			permissionMode: body.permissionMode,
+			applied: body.applied,
 		});
 		if (!action) return c.json({ error: "Control action not found" }, 404);
 		return c.json({ action });

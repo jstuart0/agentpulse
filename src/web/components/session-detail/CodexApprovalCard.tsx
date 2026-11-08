@@ -39,6 +39,7 @@ import {
 	availabilityHint,
 	cardStateOf,
 	changeSummary,
+	claudeToolKind,
 	commandStats,
 	commandTail,
 	confirmCopy,
@@ -48,6 +49,7 @@ import {
 	defaultDiffsOpen,
 	detailMatchesRow,
 	diffDeltaLabel,
+	exhaustiveToolKind,
 	filesSummary,
 	focusAfterClose,
 	forkModeOf,
@@ -944,18 +946,31 @@ function RequestBody({
 			</p>
 		) : null;
 	if (presentation?.requestKind === "claude_tool") {
-		const read = presentation.tool === "Read";
-		return (
-			<div className="space-y-1">
-				<p className="break-words text-sm text-foreground">
-					{read ? "Claude asks to read " : "Claude asks to fetch "}
-					<span className="font-mono">{presentation.target ?? ""}</span>
-				</p>
-				{read ? null : (
-					<p className="text-xs font-medium text-foreground">A URL can carry data out.</p>
-				)}
-			</div>
-		);
+		const kind = claudeToolKind(presentation);
+		switch (kind) {
+			case "read":
+			case "webfetch":
+				return (
+					<div className="space-y-1">
+						<p className="break-words text-sm text-foreground">
+							{kind === "read" ? "Claude asks to read " : "Claude asks to fetch "}
+							<span className="font-mono">{presentation.target ?? ""}</span>
+						</p>
+						{kind === "read" ? null : (
+							<p className="text-xs font-medium text-foreground">A URL can carry data out.</p>
+						)}
+					</div>
+				);
+			case "mcp":
+			case "agent":
+				return (
+					<div className="space-y-1">
+						<p className="break-words text-sm text-foreground">Claude asks to use a tool</p>
+					</div>
+				);
+			default:
+				return exhaustiveToolKind(kind);
+		}
 	}
 	if (presentation?.requestKind === "file_change") {
 		const flags =
@@ -1212,7 +1227,9 @@ function DialogFor({
 		host,
 		declinesAt,
 		owner: showOwner ? owner : null,
-		...(presentation.requestKind === "claude_tool" ? { tool: presentation.tool } : {}),
+		...(presentation.requestKind === "claude_tool"
+			? { tool: presentation.tool, toolKind: claudeToolKind(presentation) }
+			: {}),
 		...(presentation.requestKind === "file_change" && files.length === 1
 			? { writeKind: (files[0] as { kind: string }).kind }
 			: {}),

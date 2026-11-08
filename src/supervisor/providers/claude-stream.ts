@@ -34,9 +34,11 @@ import {
 	CLAUDE_FORK_CHECK_FAILED_ERROR,
 	CLAUDE_FORK_EXITED_SYNC_ERROR,
 	CLAUDE_FORK_FIRST_PROMPT_FAILED_ERROR,
+	CLAUDE_FORK_MCP_CHANGED_SYNC_ERROR,
 	CLAUDE_FORK_NO_RUNTIME_ERROR,
 	CLAUDE_FORK_PEER_SYNC_ERROR,
 	CLAUDE_FORK_SLASH_MESSAGE,
+	CLAUDE_FORK_SUBAGENT_AFTER_TURN_SYNC_ERROR,
 	CLAUDE_FORK_TERMINAL_FOUND_ERROR,
 	CLAUDE_FORK_UNSTOPPABLE_SYNC_ERROR,
 	CLAUDE_LOGIN_LOST_ERROR,
@@ -47,7 +49,12 @@ import type { ClaudeForkMode } from "../../shared/session-resume.js";
 import { disposeRuntimesAndExit } from "../services/fatal-exit.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
 import { listClaudeAgentEntries } from "./claude-agents.js";
-import { CLAUDE_FORK_TOOLS } from "./claude-argv.js";
+import {
+	type ForkRejectCode,
+	type ForkToolPolicy,
+	forkToolPolicy,
+	isAppliedMcpTool,
+} from "./claude-fork-tools.js";
 import { accountAgreesWithMode, describeLoginForLog } from "./claude-login-mode.js";
 import {
 	type ClaudeProcess,
@@ -57,7 +64,8 @@ import {
 } from "./claude-process.js";
 import type { LaunchCallbacks } from "./claude-shared.js";
 import {
-	type ToolCallRecord,
+	type TurnOutcomeKind,
+	callRowPayload,
 	callRowText,
 	refusedTurnText,
 	unaskedTurnText,
@@ -70,6 +78,14 @@ import {
 	denyResponse,
 } from "./claude-wire.js";
 import type { JsonRpcServerRequest } from "./codex-rpc.js";
+import {
+	type DetailJudge,
+	type ToolCallRecord,
+	cutDetailResult,
+	detailPathsOf,
+	newToolCallRecord,
+} from "./fork-tool-record.js";
+import type { ObservedTurn, TurnEnding } from "./fork-turn-observer.js";
 
 export const MAX_CLAUDE_STREAM_RUNTIMES = 8;
 /** How long a fork's own `agents --json` entry may take to appear. */
@@ -87,7 +103,6 @@ const MAX_SENT_TEXTS = 64;
 const MAX_WARNINGS_PER_TURN = 3;
 
 const MARKER = { claudeStreamRuntime: true } as const;
-const SIX: readonly string[] = CLAUDE_FORK_TOOLS;
 const REQUIRED_CAPABILITY = "interrupt_receipt_v1";
 
 /** The words a request is declined with when no card can be shown for it. Fixed: the model sees them. */
@@ -274,6 +289,16 @@ type Turn = {
 	resultSeen: boolean;
 	loginLost: boolean;
 	calls: Map<string, ToolCallRecord>;
+	/** A person asked this turn to stop and the host sent the interrupt (AGEN-119). Never set in Track 0. */
+	interruptRequested: boolean;
+	/** The end of this turn was handed to the observer. */
+	observed: boolean;
+	/** Each call's `detailVerdict`, being decided off the hot path; awaited before a record reaches the observer. */
+	verdicts: Map<string, Promise<void>>;
+	/** Calls already handed to `onCallResulted`. */
+	delivered: Set<string>;
+	/** Calls whose result arrived after the interrupt was requested: their rows wait for the real outcome. */
+	held: ToolCallRecord[];
 	/** Tool-use ids a request was already made for this turn: a second request for one is declined. */
 	requestedToolUses: Set<string>;
 	/** ManagedWarning rows written this turn, capped. */
@@ -301,6 +326,16 @@ export type ClaudeStreamOptions = {
 	/** Where Claude keeps its projects (for the peer message). Default `$CLAUDE_CONFIG_DIR` or `~/.claude`. */
 	configDir?: string;
 	approvals?: ClaudeApprovalPort | null;
+	/** What the fork's Claude may do. Default: no options. The same policy built `args`. */
+	policy?: ForkToolPolicy;
+	/** Called once per turn, whichever way it ends (see `fork-turn-observer.ts`). A throw is logged and swallowed. */
+	onTurnFinished?: (turn: ObservedTurn) => void;
+	/** Called when a call's result has arrived and its row is queued. */
+	onCallResulted?: (call: ToolCallRecord) => void;
+	/** Decides each call's `detailVerdict` from its intact input. Absent: `withhold`. */
+	detailJudge?: DetailJudge;
+	/** Undoes what preparing the fork's options wrote. Called once, when the fork ends for good. */
+	cleanup?: () => void | Promise<void>;
 	maxRuntimes?: number;
 	timings?: ClaudeStopTimings;
 	link?: ClaudeLinkOptions;
@@ -345,6 +380,20 @@ function forHostLog(value: unknown): string {
 	return out;
 }
 
+/** How a turn's outcome reads to a call row. */
+function turnOutcomeOf(outcome: TurnOutcome): TurnOutcomeKind {
+	if (outcome.ok) return "completed";
+	if (outcome.code === "stopped") return "stopped";
+	if (
+		outcome.code === "fatal" ||
+		outcome.code === "first_prompt_failed" ||
+		outcome.code === "exited"
+	) {
+		return "fatal";
+	}
+	return "failed";
+}
+
 export class ClaudeStreamRuntime {
 	state: RuntimeState = "starting";
 	private turn: Turn | null = null;
@@ -360,6 +409,8 @@ export class ClaudeStreamRuntime {
 	private readonly log: (line: string) => void;
 	private readonly listAgents: typeof listClaudeAgentEntries;
 	private readonly port: ClaudeApprovalPort | null;
+	private readonly policy: ForkToolPolicy;
+	private cleaned = false;
 	private readonly agentsEnv: Record<string, string>;
 	/** Resolves once, when the process has ended and everything it owed the server was reported. */
 	readonly closed: Promise<void>;
@@ -374,6 +425,7 @@ export class ClaudeStreamRuntime {
 		this.log = options.log ?? ((line) => console.warn(line));
 		this.listAgents = options.listAgents ?? listClaudeAgentEntries;
 		this.port = options.approvals ?? null;
+		this.policy = options.policy ?? forkToolPolicy();
 		this.agentsEnv = forkChildEnv(options.env);
 		this.closed = new Promise<void>((resolve) => {
 			this.closeResolve = resolve;
@@ -482,6 +534,11 @@ export class ClaudeStreamRuntime {
 			resultSeen: false,
 			loginLost: false,
 			calls: new Map(),
+			interruptRequested: false,
+			observed: false,
+			verdicts: new Map(),
+			delivered: new Set(),
+			held: [],
 			requestedToolUses: new Set(),
 			warnings: 0,
 			resolve,
@@ -620,12 +677,23 @@ export class ClaudeStreamRuntime {
 			return;
 		}
 		if (type === "assistant" || type === "user") {
-			if (!this.turn) {
-				this.raise("peer_turn");
+			const turn = this.turn;
+			const line = this.policy.classifyLine(message);
+			if (typeof line === "object") {
+				this.raise(line.reject);
 				return;
 			}
-			if (type === "assistant") this.onAssistant(message);
-			else this.onToolResults(message);
+			// A line with no turn open is a turn nobody sent; a subagent still working after its turn is its own
+			// ending (not a stranger's). The fork's own lines in the moment between its `result` and the end of
+			// the turn are accepted as before: Claude prints its closing text there (recorded, 2.1.318
+			// `key-restricted-clean`).
+			if (!turn || (turn.resultSeen && line === "subagent")) {
+				this.raise(line === "subagent" ? "subagent_after_turn" : "peer_turn");
+				return;
+			}
+			const subagent = line === "subagent";
+			if (type === "assistant") this.onAssistant(message, subagent);
+			else this.onToolResults(message, subagent);
 			return;
 		}
 		if (type === "result") {
@@ -677,16 +745,8 @@ export class ClaudeStreamRuntime {
 		if (!Array.isArray(init.capabilities) || !init.capabilities.includes(REQUIRED_CAPABILITY)) {
 			return "capability";
 		}
-		const tools = init.tools;
-		if (
-			!Array.isArray(tools) ||
-			tools.length !== SIX.length ||
-			!tools.every((t) => typeof t === "string" && SIX.includes(t)) ||
-			new Set(tools).size !== SIX.length
-		) {
-			return "tools";
-		}
-		if (!Array.isArray(init.mcp_servers) || init.mcp_servers.length !== 0) return "mcp_servers";
+		const toolsProblem = this.policy.initToolsProblem(init);
+		if (toolsProblem !== null) return toolsProblem;
 		if (!Array.isArray(init.slash_commands) || init.slash_commands.length !== 0)
 			return "slash_commands";
 		if (this.options.mode === "restricted") {
@@ -696,7 +756,7 @@ export class ClaudeStreamRuntime {
 		return null;
 	}
 
-	private onAssistant(message: ClaudeMessage): void {
+	private onAssistant(message: ClaudeMessage, subagent = false): void {
 		const turn = this.turn;
 		if (!turn) return;
 		const inner = isRecord(message.message) ? message.message : null;
@@ -705,24 +765,13 @@ export class ClaudeStreamRuntime {
 		for (const block of content) {
 			if (!isRecord(block)) continue;
 			if (block.type === "tool_use" && typeof block.id === "string") {
-				if (!turn.calls.has(block.id)) {
-					turn.calls.set(block.id, {
-						toolUseId: block.id,
-						name: typeof block.name === "string" ? block.name : "",
-						requested: false,
-						answer: null,
-						decidedElsewhere: false,
-						declinedLocally: false,
-						resulted: false,
-						isError: false,
-						nonExecutionKind: null,
-						decisionSource: null,
-					});
-				}
+				if (!turn.calls.has(block.id)) this.recordCall(turn, block, message, subagent);
 			} else if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
 				texts.push(block.text);
 			}
 		}
+		// A subagent's words are never the fork's own: the watcher's human gate reads them as Claude's.
+		if (subagent) return;
 		if (inner?.model === "<synthetic>" && /not logged in/i.test(texts.join(" "))) {
 			turn.loginLost = true;
 			return;
@@ -740,7 +789,40 @@ export class ClaudeStreamRuntime {
 		}
 	}
 
-	private onToolResults(message: ClaudeMessage): void {
+	/** Records one `tool_use` block, and starts deciding its detail verdict from the intact input. */
+	private recordCall(
+		turn: Turn,
+		block: Record<string, unknown>,
+		message: ClaudeMessage,
+		subagent: boolean,
+	): void {
+		const id = block.id as string;
+		const name = typeof block.name === "string" ? block.name : "";
+		const call = newToolCallRecord({
+			toolUseId: id,
+			name,
+			detailInput: block.input,
+			detailPaths: detailPathsOf(block.input),
+			agentId: subagent && typeof message.agent_id === "string" ? message.agent_id : null,
+			parentToolUseId:
+				typeof message.parent_tool_use_id === "string" ? message.parent_tool_use_id : null,
+		});
+		turn.calls.set(id, call);
+		const judge = this.options.detailJudge;
+		turn.verdicts.set(
+			id,
+			(judge ? judge(name, block.input) : Promise.resolve("withhold" as const)).then(
+				(verdict) => {
+					call.detailVerdict = verdict;
+				},
+				() => {
+					call.detailVerdict = "withhold";
+				},
+			),
+		);
+	}
+
+	private onToolResults(message: ClaudeMessage, _subagent = false): void {
 		const turn = this.turn;
 		if (!turn) return;
 		const inner = isRecord(message.message) ? message.message : null;
@@ -762,22 +844,78 @@ export class ClaudeStreamRuntime {
 				const source = isRecord(meta.permission_decision) ? meta.permission_decision.source : null;
 				call.decisionSource = typeof source === "string" ? source : null;
 			}
+			const text = resultText(block.content);
+			const cut = cutDetailResult(text);
+			call.detailResult = cut.text;
+			call.detailResultBytes = cut.bytes;
 			this.port?.toolResult(call.toolUseId, {
 				isError: call.isError,
 				nonExecutionKind: call.nonExecutionKind,
 				decisionSource: call.decisionSource,
-				content: resultText(block.content),
+				content: text,
 			});
-			void this.reportEventsSafely("tool-row", [this.rowEvent(callRowText(call), "call")]);
+			// Once a stop was asked for, a result is not yet "failed" or "ran": its row and its detail wait for
+			// the real outcome of the turn (AGEN-119). Calls that resulted before keep their live row.
+			if (turn.interruptRequested) {
+				turn.held.push(call);
+				continue;
+			}
+			this.emitResultedCall(turn, call, "running");
 		}
 	}
 
-	private rowEvent(content: string, kind: string) {
+	/** The row of a call whose result has arrived, then the observer's `onCallResulted` once its verdict is in. */
+	private emitResultedCall(turn: Turn, call: ToolCallRecord, outcome: TurnOutcomeKind): void {
+		void this.reportEventsSafely("tool-row", [this.callRow(call, outcome)]);
+		turn.delivered.add(call.toolUseId);
+		void this.observeCall(turn, call);
+	}
+
+	private callRow(call: ToolCallRecord, outcome: TurnOutcomeKind) {
+		return this.rowEvent(
+			callRowText(call, this.policy.naming),
+			"call",
+			callRowPayload(call, { turnOutcome: outcome }),
+		);
+	}
+
+	private async observeCall(turn: Turn, call: ToolCallRecord): Promise<void> {
+		await turn.verdicts.get(call.toolUseId);
+		try {
+			this.options.onCallResulted?.(call);
+		} catch (error) {
+			this.log(
+				`[claude-stream] the call observer threw (session=${this.sessionId}): ${forHostLog(error)}`,
+			);
+		}
+	}
+
+	/** Hands the end of a turn to the observer once, whichever way it ended. */
+	private async observeTurn(turn: Turn, ended: TurnEnding): Promise<void> {
+		if (turn.observed) return;
+		turn.observed = true;
+		const calls = [...turn.calls.values()].filter((c) => !turn.delivered.has(c.toolUseId));
+		await Promise.allSettled([...turn.verdicts.values()]);
+		try {
+			this.options.onTurnFinished?.({ actionId: turn.actionId, ended, calls });
+		} catch (error) {
+			this.log(
+				`[claude-stream] the turn observer threw (session=${this.sessionId}): ${forHostLog(error)}`,
+			);
+		}
+	}
+
+	/** Test seam: marks the running turn as one a person asked to stop (AGEN-119 sets it in production). */
+	_setInterruptRequestedForTest(value: boolean): void {
+		if (this.turn) this.turn.interruptRequested = value;
+	}
+
+	private rowEvent(content: string, kind: string, extra: Record<string, unknown> = {}) {
 		return {
 			eventType: "HeadlessStatus",
 			category: "progress_update" as const,
 			content,
-			rawPayload: { source: "claude_stream", kind, ...MARKER },
+			rawPayload: { source: "claude_stream", kind, ...MARKER, ...extra },
 		};
 	}
 
@@ -787,6 +925,7 @@ export class ClaudeStreamRuntime {
 			// The interrupt of a person's Stop ends the turn: the Stop reports `stopped`, and an idle report here would undo it.
 			this.port?.turnEnded();
 			this.turn = null;
+			void this.observeTurn(turn, "stopped");
 			turn.resolve({ ok: false, code: "stopped", error: STOPPED_BY_PERSON_ERROR });
 			return;
 		}
@@ -808,13 +947,22 @@ export class ClaudeStreamRuntime {
 		// Held requests for this turn can no longer be answered.
 		this.port?.turnEnded();
 		const calls = [...turn.calls.values()];
+		const turnOutcome = turnOutcomeOf(outcome);
 		const rows = [];
-		for (const call of calls) {
-			if (!call.resulted) rows.push(this.rowEvent(callRowText(call), "call"));
+		// Calls whose result arrived after an interrupt was asked for get their row, and their `onCallResulted`,
+		// now that the turn's real outcome is known (AGEN-119).
+		for (const call of turn.held) {
+			rows.push(this.callRow(call, turnOutcome));
+			turn.delivered.add(call.toolUseId);
+			void this.observeCall(turn, call);
 		}
-		const unasked = unaskedTurnText(calls, this.mode);
+		for (const call of calls) {
+			if (!call.resulted) rows.push(this.callRow(call, turnOutcome));
+		}
+		const naming = this.policy.naming;
+		const unasked = unaskedTurnText(calls, this.mode, naming);
 		if (unasked) rows.push(this.rowEvent(unasked, "turn_unasked"));
-		const refused = refusedTurnText(calls);
+		const refused = refusedTurnText(calls, naming);
 		if (refused) rows.push(this.rowEvent(refused, "turn_refused"));
 		rows.push({
 			eventType: outcome.ok ? "HeadlessPromptCompleted" : "HeadlessPromptFailed",
@@ -825,6 +973,7 @@ export class ClaudeStreamRuntime {
 		await this.reportEventsSafely("turn-end", rows);
 		this.turn = null;
 		await this.reportIdle();
+		await this.observeTurn(turn, "result");
 		turn.resolve(outcome);
 	}
 
@@ -832,6 +981,7 @@ export class ClaudeStreamRuntime {
 		if (this.fataling) return;
 		this.fataling = true;
 		this.port?.dispose();
+		void this.observeTurn(turn, "first_prompt_failed");
 		turn.resolve({
 			ok: false,
 			code: "first_prompt_failed",
@@ -877,7 +1027,12 @@ export class ClaudeStreamRuntime {
 		const duplicate = toolUseId !== "" && turn.requestedToolUses.has(toolUseId);
 		if (toolUseId !== "") turn.requestedToolUses.add(toolUseId);
 		if (record && !duplicate) record.requested = true;
-		const outsideTheSet = "agent_id" in params || !SIX.includes(toolName);
+		// Checks no policy can loosen: a tool the policy does not list (an `mcp__` tool counts only for an applied
+		// server) is declined. A request carrying `agent_id` also needs the policy's say-so, which by default is no.
+		const listed =
+			this.policy.tools.includes(toolName) || isAppliedMcpTool(toolName, this.policy.applied);
+		const outsideTheSet =
+			!listed || ("agent_id" in params && this.policy.requestAllowed(params) !== "allow");
 		if (malformed || duplicate || outsideTheSet || !this.port) {
 			this.declineLocally(requestId, duplicate ? undefined : record);
 			return;
@@ -935,7 +1090,7 @@ export class ClaudeStreamRuntime {
 
 	// ---- ending ----
 
-	private raise(kind: "id_changed" | "mode_changed" | "peer_turn"): void {
+	private raise(kind: "id_changed" | "mode_changed" | ForkRejectCode): void {
 		this.fatal(kind).catch((error) => {
 			this.log(
 				`[claude-stream] ending a fork failed (session=${this.sessionId}): ${forHostLog(error)}`,
@@ -959,7 +1114,7 @@ export class ClaudeStreamRuntime {
 		};
 	}
 
-	private async fatal(kind: "id_changed" | "mode_changed" | "peer_turn"): Promise<void> {
+	private async fatal(kind: "id_changed" | "mode_changed" | ForkRejectCode): Promise<void> {
 		if (this.fataling || this.state === "gone") return;
 		this.fataling = true;
 		this.log(`[claude-stream] protocol violation (session=${this.sessionId}): ${kind}`);
@@ -977,7 +1132,11 @@ export class ClaudeStreamRuntime {
 			? CLAUDE_FORK_UNSTOPPABLE_SYNC_ERROR
 			: kind === "peer_turn"
 				? CLAUDE_FORK_PEER_SYNC_ERROR
-				: CLAUDE_FORK_CHANGED_SYNC_ERROR;
+				: kind === "mcp_servers_changed"
+					? CLAUDE_FORK_MCP_CHANGED_SYNC_ERROR
+					: kind === "subagent_after_turn"
+						? CLAUDE_FORK_SUBAGENT_AFTER_TURN_SYNC_ERROR
+						: CLAUDE_FORK_CHANGED_SYNC_ERROR;
 		const events = [];
 		if (turn) {
 			events.push({
@@ -1001,6 +1160,7 @@ export class ClaudeStreamRuntime {
 			});
 		});
 		this.turn = null;
+		if (turn) void this.observeTurn(turn, "fatal");
 		turn?.resolve({ ok: false, code: "fatal", error: words });
 		if (!this.unstoppable) this.finish();
 	}
@@ -1060,6 +1220,7 @@ export class ClaudeStreamRuntime {
 			});
 		});
 		this.turn = null;
+		if (turn) void this.observeTurn(turn, "exit");
 		turn?.resolve({ ok: false, code: "exited", error: CLAUDE_FORK_EXITED_SYNC_ERROR });
 		this.finish();
 	}
@@ -1069,7 +1230,26 @@ export class ClaudeStreamRuntime {
 		this.state = "gone";
 		runtimes.delete(this.sessionId);
 		this.releaseSlot();
+		this.runCleanup();
 		this.closeResolve();
+	}
+
+	/** Undoes what preparing the fork's options wrote, once, whichever way the fork ended. Never throws. */
+	runCleanup(): void {
+		if (this.cleaned) return;
+		this.cleaned = true;
+		try {
+			const result = this.options.cleanup?.();
+			if (result instanceof Promise) {
+				result.catch((error) =>
+					this.log(
+						`[claude-stream] cleanup failed (session=${this.sessionId}): ${forHostLog(error)}`,
+					),
+				);
+			}
+		} catch (error) {
+			this.log(`[claude-stream] cleanup failed (session=${this.sessionId}): ${forHostLog(error)}`);
+		}
 	}
 
 	/**
@@ -1087,6 +1267,7 @@ export class ClaudeStreamRuntime {
 		});
 		this.port?.dispose();
 		this.turn = null;
+		if (turn) void this.observeTurn(turn, "stopped");
 		turn?.resolve({ ok: false, code: "stopped", error: STOPPED_BY_PERSON_ERROR });
 		if (result.gone) this.finish();
 		return result;
@@ -1105,7 +1286,9 @@ export class ClaudeStreamRuntime {
 				reach: this.options.stopReach,
 			})
 			.catch(() => ({ gone: false }));
-		this.turn?.resolve({ ok: false, code: "exited", error: CLAUDE_FORK_EXITED_SYNC_ERROR });
+		const turn = this.turn;
+		if (turn) void this.observeTurn(turn, "exit");
+		turn?.resolve({ ok: false, code: "exited", error: CLAUDE_FORK_EXITED_SYNC_ERROR });
 		this.turn = null;
 		if (result.gone) this.finish();
 		else this.unstoppable = true;
@@ -1256,12 +1439,20 @@ export async function startClaudeStream(
 	let proc: ClaudeProcess | undefined;
 	try {
 		const sourceBefore = options.sourceFile ? await statOrNull(options.sourceFile) : null;
+		const startLog = options.log ?? ((line: string) => console.warn(line));
 		proc = await spawnClaude({
 			executable: options.executable,
 			args: options.args,
 			cwd: options.cwd,
 			env: forkChildEnv(options.env),
-			link: options.link,
+			link: {
+				...options.link,
+				// A control request of a subtype the link doesn't carry is answered with an error, and logged by name.
+				onUnsupportedRequest: (subtype) =>
+					startLog(
+						`[claude-stream] declined a control request of an unsupported subtype (session=${options.sessionId}, subtype=${forHostLog(subtype)})`,
+					),
+			},
 			timings: options.timings ?? FORK_STOP_TIMINGS,
 		});
 		runtime = new ClaudeStreamRuntime(options, proc, release);
@@ -1307,6 +1498,14 @@ export async function startClaudeStream(
 			).gone;
 		}
 		if (gone) release();
+		// A runtime cleans up when it finishes; one that never existed (a failed spawn) has nobody to do it.
+		if (runtime) {
+			if (gone) runtime.runCleanup();
+		} else {
+			void Promise.resolve()
+				.then(() => options.cleanup?.())
+				.catch(() => {});
+		}
 		if (error instanceof ClaudeStartRefusal) throw error;
 		throw new ClaudeStartRefusal("rejected", "start");
 	}

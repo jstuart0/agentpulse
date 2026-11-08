@@ -34,6 +34,7 @@ import {
 	availabilityHint,
 	cardStateOf,
 	changeSummary,
+	claudeToolKind,
 	commandStats,
 	commandTail,
 	confirmCopy,
@@ -998,5 +999,111 @@ describe("showsAvailabilityHint: no 'update the supervisor' while the slot owns 
 		expect(showsAvailabilityHint({ managedState: "managed" })).toBe(true);
 		expect(showsAvailabilityHint(null)).toBe(true);
 		expect(showsAvailabilityHint(undefined)).toBe(true);
+	});
+});
+
+describe("the card kinds of a Claude tool request (AGEN-119..123 Track 0)", () => {
+	const summary = (tool: string) =>
+		({
+			requestKind: "claude_tool",
+			preview: { tool, target: "somewhere", pathOutsideCwd: false, cwd: null, nonAscii: false },
+		}) as never;
+
+	test("claudeToolKind sorts a request into one kind, and a name it has never seen reads as it always did", () => {
+		expect(claudeToolKind({ tool: "Read" })).toBe("read");
+		expect(claudeToolKind({ tool: "WebFetch" })).toBe("webfetch");
+		expect(claudeToolKind({ tool: "mcp" })).toBe("mcp");
+		expect(claudeToolKind({ tool: "mcp__probe__echo" })).toBe("mcp");
+		expect(claudeToolKind({ tool: "Agent" })).toBe("agent");
+		expect(claudeToolKind({ tool: "Task" })).toBe("agent");
+		expect(claudeToolKind({ tool: "WebFetch", mcp: { server: "s" } })).toBe("mcp");
+		expect(claudeToolKind({ tool: "WebFetch", agent: { subagentType: "x" } })).toBe("agent");
+		expect(claudeToolKind({ tool: "Something" })).toBe("webfetch");
+	});
+
+	test("Read and WebFetch say what they always said", () => {
+		expect(requestHeading(summary("Read"), "claude")).toBe("Claude asks to read somewhere");
+		expect(requestHeading(summary("WebFetch"), "claude")).toBe("Claude asks to fetch somewhere");
+		expect(
+			confirmCopy({
+				requestKind: "claude_tool",
+				fileCount: 0,
+				host: "m",
+				declinesAt: null,
+				tool: "Read",
+			}).title,
+		).toBe("Let Claude read this file?");
+		expect(
+			confirmCopy({
+				requestKind: "claude_tool",
+				fileCount: 0,
+				host: "m",
+				declinesAt: null,
+				tool: "WebFetch",
+			}).title,
+		).toBe("Fetch this URL from m?");
+		expect(
+			arrivalAnnouncement({
+				requestKind: "claude_tool",
+				fileCount: 0,
+				declinesAt: null,
+				pendingCount: 1,
+				agent: "claude",
+				tool: "Read",
+			}),
+		).toBe("Claude asks to read a file.");
+		expect(
+			arrivalAnnouncement({
+				requestKind: "claude_tool",
+				fileCount: 0,
+				declinesAt: null,
+				pendingCount: 1,
+				agent: "claude",
+				tool: "WebFetch",
+			}),
+		).toBe("Claude asks to fetch a URL.");
+	});
+
+	for (const tool of ["mcp", "Agent"]) {
+		test(`${tool}: all four renderers say Claude asks to use a tool, and never fetch or URL`, () => {
+			const outputs = [
+				requestHeading(summary(tool), "claude"),
+				...Object.values(
+					confirmCopy({
+						requestKind: "claude_tool",
+						fileCount: 0,
+						host: "m",
+						declinesAt: "12:00",
+						tool,
+					}),
+				).flat(),
+				arrivalAnnouncement({
+					requestKind: "claude_tool",
+					fileCount: 0,
+					declinesAt: null,
+					pendingCount: 1,
+					agent: "claude",
+					tool,
+				}),
+			];
+			expect(outputs.length).toBeGreaterThanOrEqual(5);
+			expect(requestHeading(summary(tool), "claude")).toBe("Claude asks to use a tool");
+			for (const text of outputs) {
+				expect(String(text), String(text)).not.toMatch(/fetch|url/i);
+			}
+		});
+	}
+});
+
+describe("the card's own tool split (source)", () => {
+	test("no Read-or-else split is left in the card or the view: both switch over the kind to a never check", () => {
+		const { readFileSync } = require("node:fs") as typeof import("node:fs");
+		const { join } = require("node:path") as typeof import("node:path");
+		const card = readFileSync(join(import.meta.dir, "CodexApprovalCard.tsx"), "utf8");
+		const view = readFileSync(join(import.meta.dir, "codex-approval-view.ts"), "utf8");
+		expect(card).not.toMatch(/\.tool === "Read"/);
+		expect(view).not.toMatch(/\.tool === "Read"/);
+		expect(card).toContain("exhaustiveToolKind(kind)");
+		expect(view.match(/exhaustiveToolKind\(kind\)/g)?.length).toBeGreaterThanOrEqual(3);
 	});
 });

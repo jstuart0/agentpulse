@@ -90,6 +90,7 @@ import {
 	canReadSession,
 	mayAnswerApproval,
 } from "./authorization.js";
+import { parseClaudeToolReport } from "./claude-tool-report.js";
 import {
 	type BuiltPresentation,
 	type PresentationAgent,
@@ -237,6 +238,7 @@ function outcomeOfClosed(
 		case "outcome_unknown":
 			return "may_have_run";
 		case "interrupted":
+		case "turn_stopped":
 			return "turn_ended";
 		case "runtime_gone":
 			return "codex_shut_down";
@@ -321,6 +323,7 @@ function resolvedWord(reason: ApprovalClosedReason, decision: ApprovalDecision |
 		case "runtime_gone":
 			return "ended";
 		case "session_stopped":
+		case "turn_stopped":
 			return "stopped";
 	}
 }
@@ -515,7 +518,8 @@ export function parseApprovalReport(body: unknown): CodexApprovalReportRequest |
 	) {
 		return null;
 	}
-	if (b.requestKind === "claude_tool" && tool !== "WebFetch" && tool !== "Read") return null;
+	const slots = parseClaudeToolReport(b);
+	if (slots === null) return null;
 	if (
 		(command === undefined && b.command !== undefined) ||
 		(cwd === undefined && b.cwd !== undefined) ||
@@ -564,6 +568,7 @@ export function parseApprovalReport(body: unknown): CodexApprovalReportRequest |
 		...(tool !== undefined ? { tool } : {}),
 		...(target !== undefined ? { target } : {}),
 		...(blockedPath !== undefined ? { blockedPath } : {}),
+		...slots,
 	};
 }
 

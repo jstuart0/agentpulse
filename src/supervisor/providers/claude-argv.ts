@@ -18,51 +18,7 @@ import {
 	type ClaudeForkMode,
 	isResumableSessionId,
 } from "../../shared/session-resume.js";
-
-/** The six tools a fork has (T8). Order is the order measured. */
-export const CLAUDE_FORK_TOOLS = [
-	"Bash",
-	"Read",
-	"Write",
-	"Edit",
-	"NotebookEdit",
-	"WebFetch",
-] as const;
-
-/** Everything else named, closed even where `--tools` already closes it: the argv measured is the argv shipped. */
-export const CLAUDE_FORK_DISALLOWED_TOOLS = [
-	"Agent",
-	"Task",
-	"SendMessage",
-	"ListAgents",
-	"CronCreate",
-	"CronDelete",
-	"CronList",
-	"ScheduleWakeup",
-	"EnterWorktree",
-	"ExitWorktree",
-	"Skill",
-	"Workflow",
-	"Monitor",
-	"AskUserQuestion",
-	"EnterPlanMode",
-	"ExitPlanMode",
-	"TaskStop",
-	"ReportFindings",
-	"ToolSearch",
-	"WebSearch",
-] as const;
-
-/**
- * The one inline settings object: ask for file changes and fetches, no background tasks, no hooks key, nothing
- * else. The env entry repeats what `forkChildEnv` sets: a user's own `settings.json` `env` could turn background
- * tasks back on, and flag settings outrank user settings (a Claude-started turn ends the fork; canary
- * `turn-guard`, 2.1.319).
- */
-export const CLAUDE_FORK_SETTINGS = {
-	permissions: { ask: ["Write(*)", "Edit(*)", "NotebookEdit(*)", "WebFetch(*)"] },
-	env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" },
-} as const;
+import { type ForkToolPolicy, forkToolPolicy } from "./claude-fork-tools.js";
 
 /** What the host records about a fork it started, and later requires before it resumes it in place. */
 export type ForkThreadRecord = { source: string; mode: ClaudeForkMode };
@@ -98,17 +54,9 @@ function baseArgs(mode: ClaudeForkMode): string[] {
 	];
 }
 
-function toolArgs(): string[] {
-	return [
-		"--tools",
-		CLAUDE_FORK_TOOLS.join(","),
-		"--strict-mcp-config",
-		"--disable-slash-commands",
-		"--disallowedTools",
-		CLAUDE_FORK_DISALLOWED_TOOLS.join(","),
-		"--settings",
-		JSON.stringify(CLAUDE_FORK_SETTINGS),
-	];
+/** What the tool policy says the fork's Claude gets: tools, the closed list, the inline settings, and `--mcp-config` only when applied. */
+function toolArgs(policy: ForkToolPolicy): string[] {
+	return [...policy.probeArgs, ...policy.extraArgs];
 }
 
 function assertSessionId(label: string, id: string): void {
@@ -120,7 +68,12 @@ function assertMode(mode: ClaudeForkMode): void {
 }
 
 /** A new session N that continues S's conversation. S is never opened for writing: the fork is a copy. */
-export function forkArgv(input: { source: string; fork: string; mode: ClaudeForkMode }): string[] {
+export function forkArgv(input: {
+	source: string;
+	fork: string;
+	mode: ClaudeForkMode;
+	policy?: ForkToolPolicy;
+}): string[] {
 	assertMode(input.mode);
 	assertSessionId("The source", input.source);
 	assertSessionId("The fork", input.fork);
@@ -134,7 +87,7 @@ export function forkArgv(input: { source: string; fork: string; mode: ClaudeFork
 		"--fork-session",
 		"--session-id",
 		input.fork,
-		...toolArgs(),
+		...toolArgs(input.policy ?? forkToolPolicy()),
 	];
 }
 
@@ -143,6 +96,7 @@ export function inPlaceArgv(input: {
 	fork: string;
 	record: ForkThreadRecord | null | undefined;
 	mode: ClaudeForkMode;
+	policy?: ForkToolPolicy;
 }): string[] {
 	assertMode(input.mode);
 	assertSessionId("The session", input.fork);
@@ -150,11 +104,17 @@ export function inPlaceArgv(input: {
 	if (!record || !isResumableSessionId(record.source) || record.source === input.fork) {
 		throw new ClaudeArgvError("This host has no record that it forked this session");
 	}
-	return [...baseArgs(input.mode), "--resume", input.fork, ...toolArgs()];
+	return [
+		...baseArgs(input.mode),
+		"--resume",
+		input.fork,
+		...toolArgs(input.policy ?? forkToolPolicy()),
+	];
 }
 
 /** The fork argv minus the three flags that name a conversation: what the login probes run (T4). */
-export function probeArgv(input: { mode: ClaudeForkMode }): string[] {
+export function probeArgv(input: { mode: ClaudeForkMode; policy?: ForkToolPolicy }): string[] {
 	assertMode(input.mode);
-	return [...baseArgs(input.mode), ...toolArgs()];
+	// The login probe never starts an MCP server: it keeps `--strict-mcp-config` and never an `--mcp-config` (F41).
+	return [...baseArgs(input.mode), ...(input.policy ?? forkToolPolicy()).probeArgs];
 }

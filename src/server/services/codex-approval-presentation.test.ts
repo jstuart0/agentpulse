@@ -619,3 +619,67 @@ describe("the parameter allowlist (D5)", () => {
 		expect(scanned).toBeGreaterThanOrEqual(4);
 	});
 });
+
+describe("reserved presentation slots (AGEN-119..123 Track 0)", () => {
+	const toolReport = (extra: Record<string, unknown> = {}) =>
+		({
+			...commandReport(),
+			requestKind: "claude_tool",
+			tool: "WebFetch",
+			target: "https://example.com/x",
+			...extra,
+		}) as Parameters<typeof buildPresentation>[0];
+
+	test("a report without a slot builds the presentation it always built: no slot key in the canonical JSON", () => {
+		for (const built of [
+			buildPresentation(commandReport()),
+			buildPresentation(fileChangeReport()),
+			buildPresentation(toolReport()),
+			buildPresentation(commandReport(), "claude"),
+		]) {
+			for (const slot of ["mcp", "agent", "fromSubagent"]) {
+				expect(built.presentationJson).not.toContain(`"${slot}"`);
+			}
+		}
+	});
+
+	const slots: Array<[string, Record<string, unknown>, string]> = [
+		["mcp", { mcp: { server: "probe", tool: "echo", rawToolName: "mcp__probe__echo" } }, "probe"],
+		[
+			"agent",
+			{ agent: { subagentType: "general-purpose", prompt: "look", builtIn: true } },
+			"general-purpose",
+		],
+		["fromSubagent", { fromSubagent: true }, "fromSubagent"],
+	];
+	for (const [name, extra, marker] of slots) {
+		test(`the ${name} slot is part of the hash: dropping it from the canonical input changes the hash`, () => {
+			const without = buildPresentation(toolReport());
+			const withSlot = buildPresentation(toolReport(extra));
+			expect(withSlot.presentationJson).toContain(marker);
+			expect(withSlot.hash).not.toBe(without.hash);
+			// Dropping the slot from the canonical input gives the slotless hash back: the slot is all that differs.
+			const dropped = JSON.parse(withSlot.presentationJson);
+			delete dropped[name];
+			expect(hashPresentation(dropped)).toBe(without.hash);
+		});
+	}
+
+	test("fromSubagent also covers a command and a file change", () => {
+		for (const report of [commandReport(), fileChangeReport()]) {
+			const plain = buildPresentation(report);
+			const marked = buildPresentation({ ...report, fromSubagent: true });
+			expect(marked.hash).not.toBe(plain.hash);
+			expect(marked.presentationJson).toContain('"fromSubagent":true');
+		}
+	});
+
+	test("a slot's text is cleaned like any other field: a secret in the Agent prompt makes the request unapprovable", () => {
+		const built = buildPresentation(
+			toolReport({ agent: { subagentType: "general-purpose", prompt: SECRET, builtIn: true } }),
+		);
+		expect(built.approvable).toBe(false);
+		expect(built.notApprovableReason).toBe("redacted");
+		expect(built.presentationJson).not.toContain(SECRET);
+	});
+});

@@ -1,0 +1,26 @@
+{
+	"note": "Pattern-based, applied in order to each serialised line. Nothing here names a person, a host or a path of the machine the captures were made on.",
+	"rules": [
+		{
+			"pattern": "-private-tmp-claude-\\d+-[A-Za-z0-9._-]*?-runs-([a-z0-9-]+?)-repo",
+			"replacement": "-scratch-measure-$1-repo"
+		},
+		{
+			"pattern": "/private/tmp/claude-\\d+/-[A-Za-z0-9._-]*?-runs-([a-z0-9-]+?)-repo/",
+			"replacement": "/scratch/measure/$1/"
+		},
+		{
+			"pattern": "/private/tmp/claude-\\d+/[^\"\\\\ ]*?/runs/([a-z0-9-]+)/",
+			"replacement": "/scratch/measure/$1/"
+		},
+		{ "pattern": "/(?:private/)?(?:Users|home)/[A-Za-z0-9._-]+", "replacement": "/home/user" },
+		{ "pattern": "-Users-[A-Za-z0-9]+-", "replacement": "-home-user-" },
+		{ "pattern": "claude-\\d{3,}", "replacement": "claude-uid" },
+		{ "pattern": "/private/tmp/", "replacement": "/scratch/" },
+		{ "pattern": "/opt/homebrew/bin/claude", "replacement": "/usr/local/bin/claude" },
+		{
+			"pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\\.[A-Za-z]{2,}",
+			"replacement": "user@example.invalid"
+		}
+	]
+}

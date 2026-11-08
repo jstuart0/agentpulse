@@ -60,6 +60,7 @@ export type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem };
 export type AiProviderKind = ProviderKind;
 export type AiWatcherPolicy = WatcherPolicy;
 export type { AskMessageRole, DecisionKind, HitlReplyKind } from "../../shared/types.js";
+import type { ForkOptionsRequest } from "../../shared/session-resume.js";
 import {
 	RELOAD_PROBE_TIMEOUT_MS,
 	decideFetchFailure,
@@ -576,7 +577,10 @@ export const api = {
 	 * Takes an observed Codex session over on the chosen machine. The body is exactly these two keys: the
 	 * server refuses any other, and the confirmation is the person's own statement, so it is always true here.
 	 */
-	bindSession: (sessionId: string, body: { targetSupervisorId: string }) =>
+	bindSession: (
+		sessionId: string,
+		body: { targetSupervisorId: string; forkOptions?: ForkOptionsRequest },
+	) =>
 		request<{ action: ControlAction; launchRequestId: string }>(
 			`/sessions/${encodeURIComponent(sessionId)}/bind`,
 			{
@@ -584,6 +588,10 @@ export const api = {
 				body: JSON.stringify({
 					targetSupervisorId: body.targetSupervisorId,
 					sameMachineConfirmed: true,
+					// Sent only when the person turned something on; the server refuses a body with other keys.
+					...(body.forkOptions && Object.keys(body.forkOptions).length > 0
+						? { forkOptions: body.forkOptions }
+						: {}),
 				}),
 			},
 		),

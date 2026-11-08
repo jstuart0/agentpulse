@@ -174,7 +174,9 @@ export type ControlActionType =
 	| "resume"
 	| "rename"
 	| "prompt"
-	| "cleanup_workarea";
+	| "cleanup_workarea"
+	// AGEN-119: stops a fork's running turn and keeps the session. Written by the server only once the track lands.
+	| "interrupt";
 export type ControlActionStatus = "queued" | "running" | "succeeded" | "failed";
 export type EventSource =
 	| "observed_hook"

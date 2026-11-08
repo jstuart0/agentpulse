@@ -13,10 +13,14 @@ import { forkFirstRowContent } from "../../shared/claude-fork-copy.js";
 import {
 	CLAUDE_TAKEOVER_PRIVILEGES,
 	type ClaudeForkMode,
+	FORK_OPTIONS_OFF,
 	type ResumeFailureKind,
 	SESSION_RESUMED_EVENT_TYPE,
+	forkOptionsRequested,
 	isClaudeForkMode,
 	isResumableSessionId,
+	parseAppliedForkOptions,
+	parseForkOptionsRequest,
 } from "../../shared/session-resume.js";
 import type { LaunchSpec, SupervisorRecord } from "../../shared/types.js";
 import type { Actor } from "../auth/actor.js";
@@ -24,7 +28,7 @@ import { assertOwnerAssignable } from "../auth/owner-state.js";
 import { config } from "../config.js";
 import { events, apiKeys, controlActions, sessions, users } from "../db/schema/index.js";
 import { jsonExtractText } from "../db/sql-helpers.js";
-import { mayBindSession, mayBindToHost } from "./authorization.js";
+import { mayBindSession, mayBindToHost, mayUseForkOptionsOnHost } from "./authorization.js";
 import { getModeOn } from "./instance-mode.js";
 import { buildLaunchSpec, isWithinTrustedRoot } from "./launch-compatibility.js";
 import {
@@ -46,6 +50,8 @@ export class ForkSettleRollback extends Error {
 export interface ForkSettleReport {
 	provedCwd: unknown;
 	permissionMode: unknown;
+	/** What the host says it applied of the fork options. Judged for shape; absent from a host older than the options. */
+	applied?: unknown;
 }
 
 export type ForkSettleResult =
@@ -200,6 +206,14 @@ export async function settleClaudeTakeover(
 		enrollmentState: host.enrollmentState,
 	});
 	if (hostVerdict !== null) return { ok: false, kind: "ownership_changed" };
+	// The options run the person's own configuration on the host: judged again, as the bind judged them.
+	const requestedOptions = parseForkOptionsRequest(meta.forkOptions) ?? {};
+	if (
+		forkOptionsRequested(requestedOptions) &&
+		mayUseForkOptionsOnHost(actor, instanceMode, { ownerUserId: host.ownerUserId }) !== null
+	) {
+		return { ok: false, kind: "ownership_changed" };
+	}
 
 	// Parity with the bind: a member's takeover needs the key that reported S to belong to the host's owner.
 	if (instanceMode === "team" && actor.role !== "admin") {
@@ -244,7 +258,12 @@ export async function settleClaudeTakeover(
 			status: "idle",
 			isWorking: false,
 			lastActivityAt: timestamp,
-			metadata: { forkedFromSessionId: sourceId, forkPermissionBranch: mode },
+			metadata: {
+				forkedFromSessionId: sourceId,
+				forkPermissionBranch: mode,
+				// Server-owned: what the host says it applied, or none (a host older than the options).
+				forkOptions: parseAppliedForkOptions(report.applied) ?? FORK_OPTIONS_OFF,
+			},
 		})
 		.onConflictDoNothing()
 		.returning({ id: sessions.id });

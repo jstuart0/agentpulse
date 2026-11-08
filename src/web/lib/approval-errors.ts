@@ -55,6 +55,7 @@ const ERROR_COPY: Record<ApprovalErrorCode, (ctx: ErrorCtx) => string> = {
 	presentation_changed: ({ agent }) =>
 		`${agentName(agent)} changed what it's asking after you opened it. Nothing was sent. Review the new version.`,
 	session_stopped: () => "This session was stopped, so nothing was sent.",
+	turn_interrupted: () => "The turn was stopped, so this was declined. Nothing ran.",
 };
 
 export const UNCONFIRMED_COPY =
@@ -78,7 +79,8 @@ export function refusalMeansStale(code: string | null): boolean {
 		code === "session_stopped" ||
 		code === "approval_not_found" ||
 		code === "host_offline" ||
-		code === "host_gone"
+		code === "host_gone" ||
+		code === "turn_interrupted"
 	);
 }
 

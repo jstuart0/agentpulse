@@ -117,6 +117,14 @@ export const CLAUDE_FORK_CHANGED_SYNC_ERROR =
 export const CLAUDE_FORK_PEER_SYNC_ERROR =
 	"Something else on this machine sent this session a message, so AgentPulse stopped it.";
 
+/** A fork's MCP servers were not the ones the host applied (a changed file or an extra server); the host stopped it. Fixed. */
+export const CLAUDE_FORK_MCP_CHANGED_SYNC_ERROR =
+	"This session's MCP servers weren't the ones AgentPulse started it with, so AgentPulse stopped it.";
+
+/** A subagent kept working after its turn ended; the host stopped the fork. Fixed (not the peer words: nobody else sent anything). */
+export const CLAUDE_FORK_SUBAGENT_AFTER_TURN_SYNC_ERROR =
+	"A subagent kept working after the turn ended, so AgentPulse stopped this session. Resume it to keep going.";
+
 /**
  * AgentPulse tried to end a fork's process (a protocol violation, or a failed start) and could not confirm it
  * ended. The host keeps holding the fork, so it cannot be resumed beside the process; End it again. Fixed.

@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import type { ForkOptionsRequest } from "../../../shared/session-resume.js";
 import type { Session, SupervisorRecord } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../../hooks/useOwnershipUi.js";
@@ -16,6 +17,10 @@ import {
 	CLAUDE_PICK_MACHINE_FIRST,
 	CLAUDE_RESUME_COMMAND_LEAD,
 	type ClaudeDialogLines,
+	FORK_OPTIONS_CLOSING,
+	FORK_OPTIONS_LEGEND,
+	FORK_OPTION_CONTROLS,
+	type ForkOptionControl,
 	claudeConfirmLabel,
 	claudeContinuedAs,
 	claudeCopyCommandLabel,
@@ -199,6 +204,52 @@ export function ClaudeDialogDescription({ lines }: { lines: ClaudeDialogLines })
 	);
 }
 
+/**
+ * The options a person can turn on for a continued Claude session, below the machine picker. Drawn only when a
+ * ticket has shipped a control; the closing line says the choice is for the life of the session.
+ */
+export function ForkOptionsFieldset({
+	controls,
+	value,
+	onChange,
+}: {
+	controls: readonly ForkOptionControl[];
+	value: ForkOptionsRequest;
+	onChange: (next: ForkOptionsRequest) => void;
+}) {
+	const baseId = useId();
+	if (controls.length === 0) return null;
+	return (
+		<fieldset className="space-y-2">
+			<legend className="text-sm font-medium text-foreground">{FORK_OPTIONS_LEGEND}</legend>
+			{controls.map((control) => {
+				const id = `${baseId}-${control.key}`;
+				return (
+					<div key={control.key} className="flex items-start gap-2">
+						<input
+							id={id}
+							type="checkbox"
+							checked={value[control.key] === true}
+							onChange={(e) => onChange({ ...value, [control.key]: e.target.checked })}
+							aria-describedby={`${id}-help`}
+							className="mt-1 h-5 w-5 shrink-0"
+						/>
+						<div>
+							<label htmlFor={id} className="text-sm text-foreground">
+								{control.label}
+							</label>
+							<p id={`${id}-help`} className={`text-xs text-muted-foreground ${WRAP}`}>
+								{control.help}
+							</p>
+						</div>
+					</div>
+				);
+			})}
+			<p className={`text-xs text-muted-foreground ${WRAP}`}>{FORK_OPTIONS_CLOSING}</p>
+		</fieldset>
+	);
+}
+
 /** The dialog's form: which machine, and the facts to check it by. No machine is chosen for the person. */
 export function TakeoverDialogFields({
 	options,
@@ -354,6 +405,7 @@ export function SessionTakeoverCard({
 
 	const [open, setOpen] = useState(false);
 	const [hostId, setHostId] = useState("");
+	const [forkOptions, setForkOptions] = useState<ForkOptionsRequest>({});
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [submittedTo, setSubmittedTo] = useState<string | null>(null);
@@ -394,6 +446,7 @@ export function SessionTakeoverCard({
 	const claude = session.agentType === "claude_code";
 	const claudeLines = claude
 		? claudeDialogLines({
+				requested: forkOptions,
 				sessionName,
 				machine: chosen?.name ?? null,
 				cwd: session.cwd ?? null,
@@ -420,7 +473,7 @@ export function SessionTakeoverCard({
 			// The answer names a carrier launch that exists only once the host has settled (a read of it before
 			// then is a 404, and after a failure it never exists), so nothing reads the answer here: the page
 			// learns the outcome from the session's control actions and, on success, from `continuedIn`.
-			await api.bindSession(session.sessionId, { targetSupervisorId: chosen.id });
+			await api.bindSession(session.sessionId, { targetSupervisorId: chosen.id, forkOptions });
 		} catch (failure) {
 			setError(
 				bindRefusalMessage(failure, {
@@ -495,19 +548,28 @@ export function SessionTakeoverCard({
 					onConfirm={() => void confirm()}
 					onCancel={() => setOpen(false)}
 					fields={
-						<TakeoverDialogFields
-							options={options}
-							hostId={hostId}
-							onHost={(id) => {
-								setHostId(id);
-								setError(null);
-							}}
-							lines={lines}
-							placeholder={claude ? CLAUDE_PICK_MACHINE_FIRST : undefined}
-							directory={claudeLines?.directory}
-							ownerLine={claudeLines?.ownerLine ?? null}
-							autoFocus={claude}
-						/>
+						<>
+							<TakeoverDialogFields
+								options={options}
+								hostId={hostId}
+								onHost={(id) => {
+									setHostId(id);
+									setError(null);
+								}}
+								lines={lines}
+								placeholder={claude ? CLAUDE_PICK_MACHINE_FIRST : undefined}
+								directory={claudeLines?.directory}
+								ownerLine={claudeLines?.ownerLine ?? null}
+								autoFocus={claude}
+							/>
+							{claude ? (
+								<ForkOptionsFieldset
+									controls={FORK_OPTION_CONTROLS}
+									value={forkOptions}
+									onChange={setForkOptions}
+								/>
+							) : null}
+						</>
 					}
 				>
 					{claudeLines ? (

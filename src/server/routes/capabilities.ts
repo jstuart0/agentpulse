@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import pkg from "../../../package.json" with { type: "json" };
+import { parseForkOptionsRequest } from "../../shared/session-resume.js";
 import { SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE, SCOPE_RESPOND } from "../auth/api-key.js";
 import { getAuthUser, requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope, resolveEffectiveRole } from "../auth/route-scope-policy.js";
@@ -13,7 +14,16 @@ import { type PushAvailability, pushAvailability } from "../services/push/push-r
 export const CAPABILITIES_API_LEVEL = 1;
 
 /** What makes a feature true: a mounted HTTP route, or the WebSocket upgrade path. */
-export type CapabilityProof = { kind: "route"; method: string; path: string } | { kind: "ws" };
+export type CapabilityProof =
+	| { kind: "route"; method: string; path: string }
+	| { kind: "ws" }
+	/** The bind body accepts this fork-option key: the option exists, not merely that `/bind` is mounted. */
+	| { kind: "bindBodyKey"; key: string };
+
+/** Whether the bind body's validator accepts `{ [key]: true }` as its fork options; what a `bindBodyKey` proof is held to. */
+export function bindBodyKeyAccepted(key: string): boolean {
+	return parseForkOptionsRequest({ [key]: true }) !== null;
+}
 
 export interface CapabilityFeature {
 	/** Key under `features` in the response. */

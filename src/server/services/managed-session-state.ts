@@ -149,6 +149,8 @@ const SERVER_OWNED_METADATA_KEYS = [
 	"forkedFromSessionId",
 	"forkPermissionBranch",
 	"peerTurn",
+	// What a fork was started with (AGEN-119..123): written by the takeover's settle from the host's report.
+	"forkOptions",
 ] as const;
 
 // Test seam (AGEN-115): runs after a report's open-action check and before its writes, so a test can land a

@@ -42,6 +42,12 @@ import {
 	exitCodeFor,
 	mutationTargets,
 } from "./claude-canary-runner.js";
+import { T119_SCENARIOS, T119_SCENARIO_IDS } from "./claude-canary-scenarios/t119.js";
+import { T120_SCENARIOS, T120_SCENARIO_IDS } from "./claude-canary-scenarios/t120.js";
+import { T121_SCENARIOS, T121_SCENARIO_IDS } from "./claude-canary-scenarios/t121.js";
+import { T122_SCENARIOS, T122_SCENARIO_IDS } from "./claude-canary-scenarios/t122.js";
+import { T123_SCENARIOS, T123_SCENARIO_IDS } from "./claude-canary-scenarios/t123.js";
+import { acquireCanaryLock } from "./lib/claude-canary-lock.js";
 import { redactKey } from "./lib/claude-canary-safety.js";
 import { ClaudeStream, runClaude, scrubOwnSockets } from "./lib/claude-canary-spawn.js";
 import { killOwnClaudeProcesses, ownClaudePids } from "./lib/claude-own-pids.js";
@@ -52,9 +58,9 @@ const MODEL = "claude-haiku-5-5";
 const MINUTE = 60_000;
 
 // biome-ignore lint/suspicious/noExplicitAny: the script talks to the server's rows and the DTOs loosely
-type Any = any;
+export type Any = any;
 
-export const CLAUDE_SCENARIO_IDS = [
+const BASE_SCENARIO_IDS = [
 	"takeover",
 	"n-equals-s",
 	"approve-write",
@@ -82,6 +88,16 @@ export const CLAUDE_SCENARIO_IDS = [
 	"recover-in-place",
 	"background-env",
 ] as const;
+
+/** The base scenarios, then each fork follow-up ticket's own (empty until that ticket's track adds some). */
+export const CLAUDE_SCENARIO_IDS = [
+	...BASE_SCENARIO_IDS,
+	...T119_SCENARIO_IDS,
+	...T120_SCENARIO_IDS,
+	...T121_SCENARIO_IDS,
+	...T122_SCENARIO_IDS,
+	...T123_SCENARIO_IDS,
+] as const;
 export type ClaudeScenarioId = (typeof CLAUDE_SCENARIO_IDS)[number];
 
 export interface ClaudeCanaryOptions {
@@ -97,7 +113,7 @@ export interface ClaudeCanaryOptions {
 }
 
 /** Whether a pid exists (signal 0 sends nothing): only ever asked about pids this run saw in its own tree. */
-const pidAlive = (pid: number): boolean => {
+export const pidAlive = (pid: number): boolean => {
 	try {
 		process.kill(pid, 0);
 		return true;
@@ -109,11 +125,12 @@ const pidAlive = (pid: number): boolean => {
 /** Set once by `runClaudeCanary`, before any child exists. */
 let guard: ClaudeGuard | null = null;
 
-const sleep = (ms: number) => new Promise<void>((resolveSleep) => setTimeout(resolveSleep, ms));
+export const sleep = (ms: number) =>
+	new Promise<void>((resolveSleep) => setTimeout(resolveSleep, ms));
 
 // ── Per-scenario recorder and the taps on the real wire ─────────────────────
 
-interface Recorder {
+export interface Recorder {
 	/** Every line Claude wrote, across every child this scenario started. */
 	lines: Array<Record<string, Any>>;
 	/** Every line the supervisor wrote to a child. */
@@ -127,9 +144,13 @@ interface Recorder {
 }
 let current: Recorder | null = null;
 let tapsInstalled = false;
-const partial = new WeakMap<object, string>();
+export const partial = new WeakMap<object, string>();
 
-async function installTaps(ledger: SpendLedger, onOver: () => void, getScenario: () => string) {
+export async function installTaps(
+	ledger: SpendLedger,
+	onOver: () => void,
+	getScenario: () => string,
+) {
 	if (tapsInstalled) return;
 	tapsInstalled = true;
 	const { ClaudeLink } = await import("../src/supervisor/providers/claude-wire.js");
@@ -226,7 +247,7 @@ async function installTaps(ledger: SpendLedger, onOver: () => void, getScenario:
 
 // ── Expectations ────────────────────────────────────────────────────────────
 
-class Judge {
+export class Judge {
 	readonly list: Expectation[] = [];
 	private stopped = false;
 	add(kind: ExpectationKind, name: string, ok: boolean, detail?: unknown): boolean {
@@ -248,7 +269,7 @@ class Judge {
 
 // ── The run's context ───────────────────────────────────────────────────────
 
-interface Run {
+export interface Run {
 	root: string;
 	base: string;
 	key: string;
@@ -264,7 +285,7 @@ interface Run {
 	budgetBlown: boolean;
 }
 
-interface Host {
+export interface Host {
 	scenarioRoot: string;
 	home: string;
 	cfg: string;
@@ -280,14 +301,14 @@ interface Host {
 	dispose: () => Promise<void>;
 }
 
-const personHeaders = async (run: Run) => {
+export const personHeaders = async (run: Run) => {
 	const headers = await run.team.cookieHeadersFor(run.person.id);
 	headers.set("Origin", run.base);
 	headers.set("Content-Type", "application/json");
 	return headers as Headers;
 };
 
-async function post(run: Run, path: string, body?: unknown) {
+export async function post(run: Run, path: string, body?: unknown) {
 	const res = await fetch(`${run.base}/api/v1${path}`, {
 		method: "POST",
 		headers: await personHeaders(run),
@@ -296,12 +317,12 @@ async function post(run: Run, path: string, body?: unknown) {
 	return { status: res.status, body: (await res.json().catch(() => null)) as Any };
 }
 
-async function get(run: Run, path: string) {
+export async function get(run: Run, path: string) {
 	const res = await fetch(`${run.base}/api/v1${path}`, { headers: await personHeaders(run) });
 	return { status: res.status, body: (await res.json().catch(() => null)) as Any };
 }
 
-async function until<T>(
+export async function until<T>(
 	what: string,
 	ms: number,
 	fn: () => Promise<T | undefined | false> | T,
@@ -316,7 +337,11 @@ async function until<T>(
 }
 
 /** A supervisor of this scenario's own: a fresh home, config dir and registration, wired as `index.ts` wires it. */
-async function startHost(run: Run, scenario: string, creds: "login" | "none"): Promise<Host> {
+export async function startHost(
+	run: Run,
+	scenario: string,
+	creds: "login" | "none",
+): Promise<Host> {
 	const scenarioRoot = join(run.root, `${scenario}-${run.login}`);
 	const home = join(scenarioRoot, "home");
 	const cfg = join(scenarioRoot, "cfg");
@@ -728,12 +753,12 @@ async function startHost(run: Run, scenario: string, creds: "login" | "none"): P
 	};
 }
 
-const lieAbout = { source: "", fork: "" };
+export const lieAbout = { source: "", fork: "" };
 /** The pid of a stand-in process this run started, for the layers that hide it. */
-const standIn: { pid: number } = { pid: -1 };
+export const standIn: { pid: number } = { pid: -1 };
 
 /** The argv without the three flags that name a new conversation: the fork then writes into the source. */
-function dropFork(args: string[]): string[] {
+export function dropFork(args: string[]): string[] {
 	const out: string[] = [];
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] === "--fork-session") continue;
@@ -749,7 +774,7 @@ function dropFork(args: string[]): string[] {
 }
 
 /** A supervisor process of this run's own, in its own throwaway home: the real `src/supervisor/index.ts`. */
-interface RealSupervisor {
+export interface RealSupervisor {
 	pid: number;
 	proc: ChildProcess;
 	log: string[];
@@ -758,9 +783,9 @@ interface RealSupervisor {
 	stop: () => Promise<void>;
 }
 
-const SUPERVISOR_ENTRY = join(import.meta.dir, "..", "src", "supervisor", "index.ts");
+export const SUPERVISOR_ENTRY = join(import.meta.dir, "..", "src", "supervisor", "index.ts");
 
-async function startRealSupervisor(
+export async function startRealSupervisor(
 	run: Run,
 	host: { home: string; cfg: string; work: string; scenarioRoot: string; hostName: string },
 	enrollmentToken: string | null,
@@ -851,9 +876,9 @@ async function startRealSupervisor(
 // ── Source session S ────────────────────────────────────────────────────────
 
 /** The encoding Claude uses for a project directory name (every non-alphanumeric character becomes `-`). */
-const projectDirName = (cwd: string) => cwd.replace(/[^A-Za-z0-9]/g, "-");
+export const projectDirName = (cwd: string) => cwd.replace(/[^A-Za-z0-9]/g, "-");
 
-function hashTree(dir: string): Record<string, string> {
+export function hashTree(dir: string): Record<string, string> {
 	const out: Record<string, string> = {};
 	if (!existsSync(dir)) return out;
 	for (const name of readdirSync(dir).sort()) {
@@ -865,7 +890,7 @@ function hashTree(dir: string): Record<string, string> {
 	return out;
 }
 
-interface Source {
+export interface Source {
 	id: string | null;
 	why?: string;
 	cwd: string;
@@ -875,7 +900,7 @@ interface Source {
 }
 
 /** Makes S the way a person would have: one `-p` turn under the throwaway config, key login, cheapest model. */
-function makeSource(run: Run, host: Host, sentinel: string, prompt: string): Source {
+export function makeSource(run: Run, host: Host, sentinel: string, prompt: string): Source {
 	const cwd = realpathSync(host.work);
 	spawnSync("git", ["init", "-q"], { cwd });
 	const result = runClaude(
@@ -922,7 +947,7 @@ function makeSource(run: Run, host: Host, sentinel: string, prompt: string): Sou
 	};
 }
 
-async function insertObserved(run: Run, source: Source, name: string) {
+export async function insertObserved(run: Run, source: Source, name: string) {
 	if (!source.id) return;
 	await run
 		.getDb()
@@ -938,10 +963,10 @@ async function insertObserved(run: Run, source: Source, name: string) {
 		});
 }
 
-const randomSentinel = (prefix: string) =>
+export const randomSentinel = (prefix: string) =>
 	`${prefix}${crypto.randomUUID().replaceAll("-", "").slice(0, 10)}`;
 
-async function actionFor(run: Run, sessionId: string, type: string) {
+export async function actionFor(run: Run, sessionId: string, type: string) {
 	const rows = await run
 		.getDb()
 		.select()
@@ -956,7 +981,7 @@ async function actionFor(run: Run, sessionId: string, type: string) {
 	return rows[0] as Any;
 }
 
-const sessionRow = async (run: Run, sessionId: string) =>
+export const sessionRow = async (run: Run, sessionId: string) =>
 	(
 		await run
 			.getDb()
@@ -965,7 +990,7 @@ const sessionRow = async (run: Run, sessionId: string) =>
 			.where(run.orm.eq(run.t.sessions.sessionId, sessionId))
 	)[0] as Any;
 
-const managedRow = async (run: Run, sessionId: string) =>
+export const managedRow = async (run: Run, sessionId: string) =>
 	(
 		await run
 			.getDb()
@@ -974,7 +999,7 @@ const managedRow = async (run: Run, sessionId: string) =>
 			.where(run.orm.eq(run.t.managedSessions.sessionId, sessionId))
 	)[0] as Any;
 
-interface TakeoverOutcome {
+export interface TakeoverOutcome {
 	status: number;
 	action: Any;
 	fork: string | null;
@@ -982,7 +1007,7 @@ interface TakeoverOutcome {
 }
 
 /** Takes S over through the real route and waits for the host to settle the action. */
-async function takeOver(run: Run, host: Host, sourceId: string): Promise<TakeoverOutcome> {
+export async function takeOver(run: Run, host: Host, sourceId: string): Promise<TakeoverOutcome> {
 	const sent = await post(run, `/sessions/${sourceId}/bind`, {
 		targetSupervisorId: host.supervisorId,
 		sameMachineConfirmed: true,
@@ -998,13 +1023,14 @@ async function takeOver(run: Run, host: Host, sourceId: string): Promise<Takeove
 	return { status: 202, action, fork: fork ?? null, error: action?.error };
 }
 
-const forkLines = (rec: Recorder, type: string) => rec.lines.filter((line) => line.type === type);
-const initLines = (rec: Recorder) =>
+export const forkLines = (rec: Recorder, type: string) =>
+	rec.lines.filter((line) => line.type === type);
+export const initLines = (rec: Recorder) =>
 	rec.lines.filter((line) => line.type === "system" && line.subtype === "init");
-const userLinesOut = (rec: Recorder) => rec.out.filter((line) => line.type === "user");
-const resultCount = (rec: Recorder) => forkLines(rec, "result").length;
+export const userLinesOut = (rec: Recorder) => rec.out.filter((line) => line.type === "user");
+export const resultCount = (rec: Recorder) => forkLines(rec, "result").length;
 
-async function promptAndWait(
+export async function promptAndWait(
 	run: Run,
 	rec: Recorder,
 	sessionId: string,
@@ -1020,7 +1046,7 @@ async function promptAndWait(
 	return { ...sent, done: Boolean(done) };
 }
 
-const approvalRows = async (run: Run, sessionId: string) =>
+export const approvalRows = async (run: Run, sessionId: string) =>
 	(await run
 		.getDb()
 		.select()
@@ -1028,7 +1054,7 @@ const approvalRows = async (run: Run, sessionId: string) =>
 		.where(run.orm.eq(run.t.codexApprovals.sessionId, sessionId))) as Any[];
 
 /** Waits for a pending approval, reads its detail as a person would, and answers it. */
-async function answerNext(
+export async function answerNext(
 	run: Run,
 	sessionId: string,
 	decision: "accept" | "decline",
@@ -1056,21 +1082,21 @@ async function answerNext(
 // ── Scenarios ───────────────────────────────────────────────────────────────
 
 /** A card that was really waiting for the person: the answer was taken (a request a hook or a rule decided first is refused with 409). */
-const cardAnswered = (answered: Any): boolean =>
+export const cardAnswered = (answered: Any): boolean =>
 	Boolean(answered) && answered.answer?.status === 200;
 
-const ALLOW_HOOK_OUTPUT =
+export const ALLOW_HOOK_OUTPUT =
 	'{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}';
 
 /** Adds keys to the throwaway user `settings.json` (which already names the helper under `--login helper`). */
-function mergeUserSettings(host: { cfg: string }, extra: Record<string, unknown>): void {
+export function mergeUserSettings(host: { cfg: string }, extra: Record<string, unknown>): void {
 	const path = join(host.cfg, "settings.json");
 	const current = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
 	writeFileSync(path, JSON.stringify({ ...current, ...extra }));
 }
 
 /** Waits for Claude to call a tool (seen on the wire) whose input mentions `needle`. */
-async function sawToolUse(
+export async function sawToolUse(
 	rec: Recorder,
 	name: string,
 	needle: string,
@@ -1092,13 +1118,13 @@ async function sawToolUse(
 }
 
 /** Whether a WebFetch result carrying example.com's page came back. */
-const fetchedPage = (rec: Recorder): boolean =>
+export const fetchedPage = (rec: Recorder): boolean =>
 	rec.lines.some(
 		(line) => line.type === "user" && JSON.stringify(line.message ?? {}).includes("Example Domain"),
 	);
 
 /** The headless launch is run by this process (the supervisor's stand-in here), so the login goes into its environment for the scenario. */
-function headlessEnv(run: Run): () => void {
+export function headlessEnv(run: Run): () => void {
 	const name = run.login === "key" ? "ANTHROPIC_API_KEY" : "CANARY_HELPER_VALUE";
 	process.env[name] = run.key;
 	return () => {
@@ -1108,7 +1134,7 @@ function headlessEnv(run: Run): () => void {
 }
 
 /** A started host, S, an optional setup step, and a finished takeover: what most scenarios begin with. */
-async function prelude(
+export async function prelude(
 	run: Run,
 	rec: Recorder,
 	judge: Judge,
@@ -1138,7 +1164,7 @@ async function prelude(
 }
 
 /** A stream-json `claude --resume <id>` started by this run: a second process that `agents --json` lists for that session. */
-async function standInProcess(
+export async function standInProcess(
 	run: Run,
 	host: Host,
 	cwd: string,
@@ -1177,7 +1203,7 @@ async function standInProcess(
 }
 
 /** Whether `agents --json` (run in the empty probe directory) lists `id`. */
-function listedFor(run: Run, host: Host, _cwd: string, id: string): boolean {
+export function listedFor(run: Run, host: Host, _cwd: string, id: string): boolean {
 	const result = runClaude(["agents", "--json"], {
 		scratchRoot: run.root,
 		home: host.home,
@@ -1193,7 +1219,7 @@ function listedFor(run: Run, host: Host, _cwd: string, id: string): boolean {
 }
 
 /** Kills the fork's process (a pid naming this run's config directory), then Resume: re-fork when never prompted, in place otherwise. */
-async function recoverScenario(
+export async function recoverScenario(
 	run: Run,
 	rec: Recorder,
 	judge: Judge,
@@ -1269,9 +1295,13 @@ async function recoverScenario(
 	return out;
 }
 
-type ScenarioFn = (run: Run, rec: Recorder, judge: Judge) => Promise<Record<string, unknown>>;
+export type ScenarioFn = (
+	run: Run,
+	rec: Recorder,
+	judge: Judge,
+) => Promise<Record<string, unknown>>;
 
-const SCENARIOS: Record<ClaudeScenarioId, ScenarioFn> = {
+const BASE_SCENARIOS: Record<(typeof BASE_SCENARIO_IDS)[number], ScenarioFn> = {
 	/** S is taken over: the fork's own id is N (never S), mode follows the login, recall works, S is untouched. */
 	async takeover(run, rec, judge) {
 		const host = await startHost(run, "takeover", "login");
@@ -2580,15 +2610,25 @@ const SCENARIOS: Record<ClaudeScenarioId, ScenarioFn> = {
 	},
 };
 
+/** The base scenarios, then each fork follow-up ticket's own. */
+const SCENARIOS: Record<ClaudeScenarioId, ScenarioFn> = {
+	...BASE_SCENARIOS,
+	...T119_SCENARIOS,
+	...T120_SCENARIOS,
+	...T121_SCENARIOS,
+	...T122_SCENARIOS,
+	...T123_SCENARIOS,
+};
+
 // ── Shared scenario bodies and small helpers ───────────────────────────────
 
-function sameExisting(s: Source): boolean {
+export function sameExisting(s: Source): boolean {
 	const after = hashTree(s.projectDir);
 	return Object.entries(s.hashes).every(([name, hash]) => after[name] === hash);
 }
 
 /** `sleep 100` processes in the process tree under this run's Claude processes (the Bash descendant). */
-function sleepersOf(roots: number[]): number[] {
+export function sleepersOf(roots: number[]): number[] {
 	const listing = spawnSync("ps", ["-axo", "pid=,ppid=,command="], {
 		encoding: "utf8",
 		maxBuffer: 1 << 26,
@@ -2617,7 +2657,7 @@ function sleepersOf(roots: number[]): number[] {
 	return found;
 }
 
-async function sessionAssistantText(run: Run, sessionId: string): Promise<string> {
+export async function sessionAssistantText(run: Run, sessionId: string): Promise<string> {
 	const rows = (await run
 		.getDb()
 		.select()
@@ -2631,7 +2671,7 @@ async function sessionAssistantText(run: Run, sessionId: string): Promise<string
 		.join("\n");
 }
 
-async function fileScenario(
+export async function fileScenario(
 	run: Run,
 	rec: Recorder,
 	judge: Judge,
@@ -2683,7 +2723,7 @@ async function fileScenario(
 	return out;
 }
 
-interface SeededFile {
+export interface SeededFile {
 	name: string;
 	file: string;
 	seed: string;
@@ -2695,7 +2735,7 @@ interface SeededFile {
 }
 
 /** A file tool (Edit, NotebookEdit) approved at the card: the file ends as the shown change says. */
-async function seededFileScenario(
+export async function seededFileScenario(
 	run: Run,
 	rec: Recorder,
 	judge: Judge,
@@ -2789,6 +2829,18 @@ export async function runClaudeCanary(options: ClaudeCanaryOptions): Promise<num
 		console.error("[claude] the key must be in this command's environment (ANTHROPIC_API_KEY)");
 		return 2;
 	}
+	// One live run at a time on this machine; the lock is released on every way out.
+	let releaseLock: () => void;
+	try {
+		releaseLock = await acquireCanaryLock({
+			alive: pidAlive,
+			log: (line) => console.error(line),
+		});
+	} catch (error) {
+		console.error(`[claude] ${error instanceof Error ? error.message : String(error)}`);
+		return 2;
+	}
+	process.on("exit", releaseLock);
 	// From here the key lives only in this const and in children's environments.
 	// biome-ignore lint/performance/noDelete: an unset variable, not the string "undefined"
 	delete process.env.ANTHROPIC_API_KEY;
@@ -2958,5 +3010,6 @@ export async function runClaudeCanary(options: ClaudeCanaryOptions): Promise<num
 	const text = redactKey(JSON.stringify(summary, null, 2), key);
 	console.log(text);
 	if (options.resultPath) writeFileSync(options.resultPath, text, { mode: 0o600 });
+	releaseLock();
 	return summary.exit;
 }

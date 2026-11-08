@@ -67,6 +67,7 @@ const REFUSAL_STATUS: Readonly<Record<ApprovalRefusalCode, 400 | 403 | 404 | 409
 	session_stopping: 409,
 	identity_conflict: 409,
 	session_not_owned: 403,
+	turn_interrupted: 409,
 };
 
 function refuse(c: Context, code: ApprovalRefusalCode): Response {

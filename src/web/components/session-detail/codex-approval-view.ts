@@ -376,6 +376,36 @@ export function crossedTwoMinutes(previous: number, now: number): boolean {
 
 // ── what a request says about itself ────────────────────────────────────────
 
+/**
+ * What a Claude `claude_tool` request is, for the words around it. Every place that words one switches over
+ * this and ends in `exhaustive`, so a kind added later is a compile error here rather than a card that says
+ * "fetch" about a tool it does not fetch with (AGEN-119..123 Track 0). `mcp` and `agent` are filled in by their
+ * tickets; until then they say "a tool", which is true of both.
+ */
+export type ClaudeToolKind = "read" | "webfetch" | "mcp" | "agent";
+
+export function claudeToolKind(input: {
+	tool?: string | null;
+	mcp?: unknown;
+	agent?: unknown;
+}): ClaudeToolKind {
+	if (input.agent !== undefined && input.agent !== null) return "agent";
+	if (input.mcp !== undefined && input.mcp !== null) return "mcp";
+	const tool = input.tool ?? "";
+	if (tool === "Read") return "read";
+	if (tool === "Agent" || tool === "Task") return "agent";
+	if (tool === "mcp" || tool.startsWith("mcp__")) return "mcp";
+	// WebFetch, and any name an older client never saw: worded as it always was.
+	return "webfetch";
+}
+
+export function exhaustiveToolKind(value: never): never {
+	throw new Error(`unhandled tool kind: ${String(value)}`);
+}
+
+/** "Claude asks to use a tool": the words for the kinds whose own copy has not been written. */
+const USE_A_TOOL = "asks to use a tool";
+
 export function requestHeading(
 	approval: Pick<CodexApprovalSummary, "requestKind" | "preview">,
 	agent: ApprovalAgent = "codex",
@@ -384,8 +414,19 @@ export function requestHeading(
 	if (approval.requestKind === "command") return `${name} asks to run a command`;
 	if (approval.requestKind === "claude_tool") {
 		const target = approval.preview?.target;
-		const verb = approval.preview?.tool === "Read" ? "read" : "fetch";
-		return target ? `${name} asks to ${verb} ${target}` : `${name} asks to ${verb} something`;
+		const kind = claudeToolKind({ tool: approval.preview?.tool });
+		switch (kind) {
+			case "read":
+			case "webfetch": {
+				const verb = kind === "read" ? "read" : "fetch";
+				return target ? `${name} asks to ${verb} ${target}` : `${name} asks to ${verb} something`;
+			}
+			case "mcp":
+			case "agent":
+				return `${name} ${USE_A_TOOL}`;
+			default:
+				return exhaustiveToolKind(kind);
+		}
 	}
 	const n = approval.preview?.fileCount ?? 0;
 	return n > 0
@@ -718,6 +759,8 @@ export function confirmCopy(input: {
 	owner?: string | null;
 	/** A Claude request's tool, for a `claude_tool` card. */
 	tool?: string;
+	/** Set when the card knows the kind from the presentation's slots (an MCP tool, the Agent call). */
+	toolKind?: ClaudeToolKind;
 	/** The kind of the one file a Claude Write changes (`write`, `add`, `write_unchecked`), for its title. */
 	writeKind?: string | null;
 }): ConfirmCopy {
@@ -739,15 +782,33 @@ export function confirmCopy(input: {
 		};
 	}
 	if (input.requestKind === "claude_tool") {
-		const read = input.tool === "Read";
-		return {
-			title: read ? "Let Claude read this file?" : `Fetch this URL from ${host}?`,
-			confirmLabel: read ? "Allow reading it" : "Fetch it",
-			cancelLabel: "Back",
-			closing: read
-				? ["Claude will see what's in it. Runs once.", ...closing.slice(1)]
-				: ["A URL can carry data out. Runs once.", ...closing.slice(1)],
-		};
+		const kind = input.toolKind ?? claudeToolKind({ tool: input.tool });
+		switch (kind) {
+			case "read":
+				return {
+					title: "Let Claude read this file?",
+					confirmLabel: "Allow reading it",
+					cancelLabel: "Back",
+					closing: ["Claude will see what's in it. Runs once.", ...closing.slice(1)],
+				};
+			case "webfetch":
+				return {
+					title: `Fetch this URL from ${host}?`,
+					confirmLabel: "Fetch it",
+					cancelLabel: "Back",
+					closing: ["A URL can carry data out. Runs once.", ...closing.slice(1)],
+				};
+			case "mcp":
+			case "agent":
+				return {
+					title: "Let Claude use this tool?",
+					confirmLabel: "Allow this call",
+					cancelLabel: "Back",
+					closing: ["Runs once. AgentPulse can't undo it.", ...closing.slice(1)],
+				};
+			default:
+				return exhaustiveToolKind(kind);
+		}
 	}
 	if (
 		input.writeKind === "write" ||
@@ -881,6 +942,20 @@ export function shouldRefetchOnSession(input: {
 
 // ── announcements and focus ─────────────────────────────────────────────────
 
+function toolAnnouncement(kind: ClaudeToolKind): string {
+	switch (kind) {
+		case "read":
+			return "asks to read a file";
+		case "webfetch":
+			return "asks to fetch a URL";
+		case "mcp":
+		case "agent":
+			return USE_A_TOOL;
+		default:
+			return exhaustiveToolKind(kind);
+	}
+}
+
 export function arrivalAnnouncement(input: {
 	requestKind: CodexApprovalSummary["requestKind"];
 	fileCount: number;
@@ -889,6 +964,7 @@ export function arrivalAnnouncement(input: {
 	agent?: ApprovalAgent;
 	/** A `claude_tool` request's tool: spoken without its target, which can be a long URL or path. */
 	tool?: string;
+	toolKind?: ClaudeToolKind;
 }): string {
 	if (input.pendingCount > 1) return `${input.pendingCount} requests need an answer.`;
 	const name = agentName(input.agent ?? "codex");
@@ -896,7 +972,7 @@ export function arrivalAnnouncement(input: {
 		input.requestKind === "command"
 			? `${name} asks to run a command.`
 			: input.requestKind === "claude_tool"
-				? `${name} asks to ${input.tool === "Read" ? "read a file" : "fetch a URL"}.`
+				? `${name} ${toolAnnouncement(input.toolKind ?? claudeToolKind({ tool: input.tool }))}.`
 				: `${name} asks to change ${plural(input.fileCount, "file", "files")}.`;
 	return input.declinesAt ? `${asks} Declines at ${input.declinesAt}.` : asks;
 }

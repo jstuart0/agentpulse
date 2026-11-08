@@ -101,3 +101,40 @@ export function isForkTurnSummary(content: string | null | undefined): boolean {
 		(content.startsWith(TURN_UNASKED_PREFIX) || content.startsWith(TURN_REFUSED_PREFIX))
 	);
 }
+
+/**
+ * What a fork call row can say happened, one list for rows and for stored detail (AGEN-122, AGEN-123): the
+ * host's `CallRowKind` values plus `stopped`, a call cut short by a person's Stop turn.
+ */
+export const FORK_CALL_OUTCOMES = [
+	"approved",
+	"unasked",
+	"failed",
+	"declined",
+	"refused",
+	"elsewhere",
+	"local_decline",
+	"no_result",
+	"stopped",
+] as const;
+export type ForkCallOutcome = (typeof FORK_CALL_OUTCOMES)[number];
+
+/** The tools a fork has when no option adds one. An `mcp__<server>__<tool>` name is reported as `mcp`, never by name. */
+export const FORK_TOOL_NAMES = [
+	"Bash",
+	"Read",
+	"Write",
+	"Edit",
+	"NotebookEdit",
+	"WebFetch",
+] as const;
+export type ForkToolName = (typeof FORK_TOOL_NAMES)[number];
+
+/** The prefix Claude gives a tool a user MCP server provides. */
+export const MCP_TOOL_PREFIX = "mcp__";
+
+/** What a row or a stored call may say about the tool: a name from the six, `mcp` for any MCP tool, else null. */
+export function reportedForkTool(name: string): ForkToolName | "mcp" | null {
+	if (name.startsWith(MCP_TOOL_PREFIX)) return "mcp";
+	return (FORK_TOOL_NAMES as readonly string[]).includes(name) ? (name as ForkToolName) : null;
+}

@@ -5,6 +5,7 @@
  * to keep working. Pure functions, so each sentence is tested without rendering.
  */
 import { forkModeLine, forkSentenceName } from "../../../shared/claude-fork-copy.js";
+import type { AppliedForkOptions, ForkOptionsRequest } from "../../../shared/session-resume.js";
 import {
 	type ForkInfo,
 	type ForkSource,
@@ -25,6 +26,19 @@ export const FORK_SOURCE_DELETED = "Continued from a session that was deleted.";
 export type ForkLink =
 	| { kind: "link"; sourceId: string; text: string }
 	| { kind: "text"; text: string };
+
+/**
+ * The line that says which fork options a session was started with, and which it asked for but didn't get
+ * (a version AgentPulse hasn't measured them on, a changed file). Null until AGEN-121 and AGEN-120 write the
+ * words, so a session shows exactly what it showed before.
+ */
+export function forkOptionsLine(
+	_requested: ForkOptionsRequest | null | undefined,
+	_applied: AppliedForkOptions | null | undefined,
+	_machine: string | null | undefined,
+): string | null {
+	return null;
+}
 
 export interface ForkStatusView {
 	heading: string;
