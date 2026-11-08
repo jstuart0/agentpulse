@@ -1,3 +1,4 @@
+import { Square } from "lucide-react";
 import { type RefObject, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Session } from "../../../shared/types.js";
@@ -32,11 +33,21 @@ import {
 	offersNewSession,
 } from "./prompt-composer-view.js";
 import type { TakeoverAttempt } from "./session-takeover-view.js";
+import { STOPPING_TURN_LABEL, STOP_TURN_LABEL, STOP_TURN_NOTICE } from "./stop-view.js";
 import { usePromptComposer } from "./usePromptComposer.js";
 
 /** Keeps a long name or sentence inside a phone's width. */
 const WRAP = "[overflow-wrap:anywhere]";
 const NO_ATTEMPT: TakeoverAttempt = { state: "none" };
+
+/** Stop turn in the prompt box (AGEN-119): offered while a continued session's turn runs, in place of Send. */
+export interface StopTurnControl {
+	/** The turn is running and this viewer may stop it. */
+	available: boolean;
+	/** A Stop turn is queued or running: the button is off and says so. */
+	inFlight: boolean;
+	onStop: () => void;
+}
 
 /**
  * The prompt box for a managed session, or nothing. It is keyed by session, so a draft, a send in
@@ -51,6 +62,7 @@ export function SessionComposerSlot({
 	focusToken = 0,
 	stoppingText = null,
 	onEnd,
+	stopTurn = null,
 }: {
 	session: Session;
 	/** Where a resume of this session stands, derived from its control actions by the page. */
@@ -62,6 +74,8 @@ export function SessionComposerSlot({
 	stoppingText?: string | null;
 	/** Opens the End confirmation: offered first when a stranger's message stopped a continued session. */
 	onEnd?: () => void;
+	/** Stop turn replaces Send while a continued session's turn runs. */
+	stopTurn?: StopTurnControl | null;
 }) {
 	const ui = useOwnershipUi();
 	const userId = useUserStore((s) => s.userId);
@@ -84,6 +98,7 @@ export function SessionComposerSlot({
 			focusToken={focusToken}
 			stoppingText={stoppingText}
 			onEnd={onEnd}
+			stopTurn={stopTurn}
 		/>
 	);
 }
@@ -96,6 +111,7 @@ export function SessionPromptComposer({
 	focusToken = 0,
 	stoppingText = null,
 	onEnd,
+	stopTurn = null,
 }: {
 	session: Session;
 	mode: ComposerMode | null;
@@ -104,6 +120,7 @@ export function SessionPromptComposer({
 	focusToken?: number;
 	stoppingText?: string | null;
 	onEnd?: () => void;
+	stopTurn?: StopTurnControl | null;
 }) {
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const focusedFor = useRef(0);
@@ -249,6 +266,7 @@ export function SessionPromptComposer({
 			}
 			sideText={hostBlockedReason ?? interactiveControlReason ?? mode.side}
 			stoppingNotice={stoppingText}
+			stopTurn={stopTurn}
 			unavailable={!interactiveControlReady || hostBlocked}
 			textareaRef={textareaRef}
 			onEdit={edit}
@@ -387,6 +405,8 @@ export interface ComposerBodyProps {
 	 * selectable (so the draft can be copied) but takes no more typing and can't send.
 	 */
 	stoppingNotice?: string | null;
+	/** Stop turn in place of Send (AGEN-119). Null: Send, as always. */
+	stopTurn?: StopTurnControl | null;
 	/** The host or the terminal can't take a prompt right now; the box is off and the side text says why. */
 	unavailable: boolean;
 	textareaRef?: RefObject<HTMLTextAreaElement | null>;
@@ -404,6 +424,7 @@ export function ComposerBody({
 	notice,
 	sideText,
 	stoppingNotice = null,
+	stopTurn = null,
 	unavailable,
 	textareaRef,
 	onEdit,
@@ -417,7 +438,14 @@ export function ComposerBody({
 	const box = boxState(mode, phase, { posting });
 	const status = composerStatus(mode, phase, justSent);
 	const stopping = stoppingNotice !== null;
-	const shownNotice = stopping ? stoppingNotice : phase.step === "idle" ? notice : null;
+	const stopTurnShown = stopTurn?.available === true && !stopping;
+	const shownNotice = stopping
+		? stoppingNotice
+		: stopTurnShown
+			? STOP_TURN_NOTICE
+			: phase.step === "idle"
+				? notice
+				: null;
 	const codex = mode.kind === "codex" || mode.kind === "claude_taken_over";
 	const fork = mode.kind === "claude_taken_over";
 	const describedBy =
@@ -463,17 +491,30 @@ export function ComposerBody({
 						className="min-h-20 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground read-only:opacity-80"
 					/>
 					<div className="flex flex-col gap-2 md:w-40">
-						<button
-							type="button"
-							onClick={onSubmit}
-							aria-disabled={box.sendDisabled || undefined}
-							disabled={!prompt.trim() || unavailable || stopping}
-							className={`rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 aria-disabled:opacity-50${
-								codex ? " min-h-[44px] md:min-h-0" : ""
-							}`}
-						>
-							{box.buttonText}
-						</button>
+						{stopTurnShown && stopTurn ? (
+							<button
+								type="button"
+								data-stop-turn=""
+								onClick={stopTurn.onStop}
+								disabled={stopTurn.inFlight}
+								className="inline-flex min-h-[44px] min-w-[8.5rem] items-center justify-center gap-2 rounded-md border border-border bg-muted px-4 py-2 text-sm font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60 md:min-h-0"
+							>
+								<Square className="h-3 w-3 fill-current" aria-hidden="true" />
+								{stopTurn.inFlight ? STOPPING_TURN_LABEL : STOP_TURN_LABEL}
+							</button>
+						) : (
+							<button
+								type="button"
+								onClick={onSubmit}
+								aria-disabled={box.sendDisabled || undefined}
+								disabled={!prompt.trim() || unavailable || stopping}
+								className={`rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 aria-disabled:opacity-50${
+									codex ? " min-h-[44px] md:min-h-0" : ""
+								}`}
+							>
+								{box.buttonText}
+							</button>
+						)}
 						{sideText ? (
 							<div
 								className={`text-[11px] text-muted-foreground${codex ? " hidden md:block" : ""}`}

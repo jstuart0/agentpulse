@@ -57,6 +57,8 @@ interface SessionHeaderProps {
 	onStop: () => void;
 	/** A stop is queued or running: the button is off and the line says so (AGEN-110). */
 	stopping?: boolean;
+	/** Stop turn (AGEN-119): on a phone the overflow menu offers it above End session. The prompt box has the control at every width. */
+	stopTurn?: { available: boolean; inFlight: boolean; onStop: () => void } | null;
 	/** False for a viewer who may not change this session (team mode, not the owner or an admin): Stop is off, with the reason. */
 	mayStop?: boolean;
 	/** The one acknowledge-family action available right now (AGEN), or null when none applies (see permissionWaitNote/notOwnerNote for why). */
@@ -99,6 +101,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 		onRefresh,
 		onStop,
 		stopping = false,
+		stopTurn = null,
 		mayStop = true,
 		ackAction,
 		permissionWaitNote,
@@ -362,6 +365,9 @@ export function SessionHeader(props: SessionHeaderProps) {
 							stopLabel={stopControlLabel(session)}
 							stopDisabledReason={stopBlockedReason}
 							stopping={stopping}
+							canStopTurn={stopTurn?.available === true}
+							stoppingTurn={stopTurn?.inFlight === true}
+							onStopTurn={stopTurn?.onStop}
 							onJumpTop={onJumpTop}
 							onJumpBottom={onJumpBottom}
 							onStop={onStop}

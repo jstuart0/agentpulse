@@ -54,6 +54,29 @@ describe("stop_session / retry_launch / prompt_session (assertions 9-10, L2 mana
 		expect(seen).toBe("s1");
 	});
 
+	test("stop_session_turn -> client.interruptSession(sessionId), and says it keeps the session open", async () => {
+		let seen: string | undefined;
+		const client = fakeClient({
+			interruptSession: async (sessionId) => {
+				seen = sessionId;
+				return { action: { ...FAKE_ACTION, actionType: "interrupt" } as ControlAction };
+			},
+		});
+		const ctx = newContext(client);
+		registerSessionActionTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "stop_session_turn",
+			arguments: { session_id: "s1" },
+		});
+		expect(result.isError).toBeFalsy();
+		expect(seen).toBe("s1");
+		const listed = await mcpClient.listTools();
+		const tool = listed.tools.find((t) => t.name === "stop_session_turn");
+		expect(tool?.description).toContain("keep the session open");
+		expect(tool?._meta?.["anthropic/requiresUserInteraction"]).toBe(true);
+	});
+
 	test("retry_launch -> client.retryLaunch(sessionId)", async () => {
 		let seen: string | undefined;
 		const client = fakeClient({

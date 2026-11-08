@@ -232,9 +232,10 @@ describe("copy", () => {
 	});
 
 	test("'Nothing ran' appears only where no accept can have been delivered", () => {
-		const mayRun = CODEX_APPROVAL_OUTCOMES.filter(
-			(o) => !outcomeLine(o, "H", "T").includes("Nothing ran"),
-		);
+		// A stopped turn says "That request didn't run": its accept was never issued (one that was reads may_have_run).
+		const saysNothingRan = (line: string) =>
+			line.includes("Nothing ran") || line.includes("That request didn't run");
+		const mayRun = CODEX_APPROVAL_OUTCOMES.filter((o) => !saysNothingRan(outcomeLine(o, "H", "T")));
 		expect(mayRun.map(String).sort()).toEqual(
 			[
 				"approved_sent",
@@ -518,6 +519,20 @@ describe("mid-confirm events", () => {
 			"The turn ended before this was answered. Nothing ran.",
 		);
 		expect(midConfirmView("closed", null, "H", () => null).text).toBe(CLOSED_TEXT);
+	});
+
+	test("a turn a person stopped has its own words, different from a turn that ended on its own (AGEN-119)", () => {
+		const view = (over: Partial<CodexApprovalSummary>) =>
+			midConfirmView("closed", row(over), "H", (stored) => stored && "T");
+		const stopped = view({ outcome: "turn_stopped", decision: "decline" }).text;
+		const ended = view({ outcome: "turn_ended", decision: "decline" }).text;
+		expect(stopped).toBe("The turn was stopped before this was answered. That request didn't run.");
+		expect(stopped).not.toBe(ended);
+		expect(view({ outcome: "turn_stopped", decision: "accept" }).text).toBe(
+			"You approved this, but the turn was stopped before it was sent. That request didn't run.",
+		);
+		// `interrupted`'s neutral words are unchanged.
+		expect(ended).toBe("The turn ended before this was answered. Nothing ran.");
 	});
 
 	test("closed reasons the server can send all land on a known event", () => {

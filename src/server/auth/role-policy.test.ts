@@ -209,6 +209,7 @@ const EXPECTED_OWNER_CHECKED_ROUTES = new Set([
 	// Session-changing routes the app composer uses, and the Ask cancel (the asker only).
 	"POST /sessions/:sessionId/prompt",
 	"POST /sessions/:sessionId/stop",
+	"POST /sessions/:sessionId/interrupt",
 	"POST /sessions/:sessionId/retry",
 	"POST /sessions/:sessionId/bind",
 	"POST /sessions/:sessionId/resume",

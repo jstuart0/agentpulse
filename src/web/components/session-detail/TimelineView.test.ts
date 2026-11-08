@@ -124,6 +124,36 @@ describe("a failed prompt turn on the timeline (AGEN-91)", () => {
 		);
 	});
 
+	test("a turn a person stopped is not an alarm: the default tone, by its status or (in a compact read) by its words", () => {
+		const stopped = {
+			...failed,
+			content: "Turn stopped by a person.",
+			rawPayload: { status: "interrupted" },
+		};
+		expect(eventRowTone(stopped as never)).toBe("default");
+		expect(eventRowTone({ ...failed, rawPayload: { status: "interrupted" } } as never)).toBe(
+			"default",
+		);
+		expect(
+			eventRowTone({
+				...failed,
+				content: "Turn stopped by a person.",
+				rawPayload: undefined,
+			} as never),
+		).toBe("default");
+		// A real failure keeps its tone, and so does a stranger's row that merely reuses the words.
+		expect(
+			eventRowTone({
+				...failed,
+				content: "Claude ended this turn with an error.",
+				rawPayload: { status: "turn_error" },
+			} as never),
+		).toBe("amber");
+		expect(eventRowTone({ ...otherSystem, content: "Turn stopped by a person." } as never)).toBe(
+			"default",
+		);
+	});
+
 	test("the row is drawn amber; an ordinary system row is not", () => {
 		expect(eventRowTone(failed)).toBe("amber");
 		expect(eventRowTone(otherSystem)).toBe("default");

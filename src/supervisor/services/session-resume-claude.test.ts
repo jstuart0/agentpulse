@@ -199,6 +199,8 @@ function build(
 					cancel() {},
 					toolResult() {},
 					turnEnded() {},
+					fenceTurn() {},
+					liftTurnFence() {},
 					fence() {},
 					dispose: () => void disposed.push("disposed"),
 				}) as never,

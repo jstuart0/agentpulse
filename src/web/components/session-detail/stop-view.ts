@@ -10,6 +10,7 @@ import { forkSentenceName } from "../../../shared/claude-fork-copy.js";
 import { cleanHostText } from "../../../shared/clean-host-text.js";
 import { CONTROL_TIMEOUT_ERROR } from "../../../shared/managed-messages.js";
 import { STOP_NOT_SUPPORTED, STOP_NOT_SUPPORTED_MESSAGE } from "../../../shared/stop-runtime.js";
+import { SESSION_ENDED_FIRST, TURN_ALREADY_ENDED } from "../../../shared/stop-turn.js";
 import type { ControlAction, Session } from "../../../shared/types.js";
 import { describeApiError } from "../../lib/api-errors.js";
 import { ApiError } from "../../lib/api.js";
@@ -219,4 +220,133 @@ export function stopFailureText(
 		return `${host ?? "This session's host"} didn't confirm the stop. ${agentName(session)} may still be running.`;
 	}
 	return cleanHostText(newest.error) ?? STOP_FAILED_FALLBACK;
+}
+
+// ── Stop turn (AGEN-119) ────────────────────────────────────────────────────
+
+/** The words of the prompt box's Stop turn control, and of what the page says around it. */
+export const STOP_TURN_LABEL = "Stop turn";
+export const STOPPING_TURN_LABEL = "Stopping turn…";
+export const STOP_TURN_NOTICE =
+	"Claude is working. Stop turn ends what it's doing; the session stays open.";
+export const STOP_TURN_ANNOUNCE_START = "Stopping the turn…";
+export const STOP_TURN_ANNOUNCE_DONE = "Turn stopped. You can send a prompt.";
+const STOP_TURN_ANNOUNCE_ALREADY = "Claude had already finished the turn.";
+const STOP_TURN_FAILED_FALLBACK = "The turn didn't stop. Try again, or end the session.";
+
+type InFlightAction = Pick<ControlAction, "actionType" | "status">;
+
+/** The turn a continued Claude session is running: its newest prompt action, while the host reports it `running`. */
+export function runningForkTurn<T extends InFlightAction & Pick<ControlAction, "createdAt">>(
+	session: ForkAware & Pick<Session, "agentType">,
+	actions: readonly T[],
+): T | null {
+	if (session.agentType !== "claude_code" || !isFork(session)) return null;
+	let newest: T | null = null;
+	for (const action of actions) {
+		if (action.actionType !== "prompt") continue;
+		if (newest === null || action.createdAt > newest.createdAt) newest = action;
+	}
+	return newest?.status === "running" ? newest : null;
+}
+
+/**
+ * Whether the prompt box offers Stop turn in place of Send: a continued Claude session whose prompt the host is
+ * running, for someone who may change the session, on a server that advertises `claudeStopTurn`. A stop of the
+ * whole session in flight takes the box instead ("Stopping Claude..."). Display only: the server decides.
+ */
+export function canStopTurn(
+	session: ForkAware & Pick<Session, "agentType" | "managedSession">,
+	actions: readonly (InFlightAction & Pick<ControlAction, "createdAt">)[],
+	access: { mayChange: boolean; advertised: boolean },
+): boolean {
+	if (!access.mayChange || !access.advertised) return false;
+	if (stopInFlight(actions)) return false;
+	return runningForkTurn(session, actions) !== null;
+}
+
+/** True while a Stop turn is queued or running: the server's own record, so it survives a reload. */
+export function stopTurnInFlight(actions: readonly InFlightAction[]): boolean {
+	return actions.some(
+		(a) => a.actionType === "interrupt" && (a.status === "queued" || a.status === "running"),
+	);
+}
+
+/** What `stopTurnRefusalMessage` says per code (F47). `no_turn_running` is information, not an error. */
+export function stopTurnRefusalMessage(
+	error: unknown,
+	session: Pick<Session, "managedSession">,
+): string | null {
+	if (error instanceof ApiError) {
+		switch (error.code) {
+			case "no_turn_running":
+				return STOP_TURN_ANNOUNCE_ALREADY;
+			case "interrupt_not_supported":
+				return "This session can't stop a turn and stay open. Use End session instead.";
+			case "host_upgrade_required":
+				return `${hostNameOf(session)} is running an older supervisor that can't stop a turn. Update it, or end the session.`;
+			case "not_owner":
+				return "Only the owner or an admin can stop this turn.";
+			case "launch_mismatch":
+			case "not_managed":
+				return "This session can't be stopped from here.";
+			case "rate_limited":
+				return "Too many stops in a minute. Try again shortly.";
+		}
+	}
+	return hostRefusalMessage(error, session);
+}
+
+/** What the page shows when the Stop turn request itself failed. */
+export function stopTurnRequestFailure(
+	error: unknown,
+	session: Pick<Session, "managedSession">,
+): string {
+	return (
+		stopTurnRefusalMessage(error, session) ?? describeApiError(error, STOP_TURN_FAILED_FALLBACK)
+	);
+}
+
+/** The newest control action is a Stop turn that went through. */
+export function stopTurnSucceeded(actions: readonly ActionLike[]): boolean {
+	const newest = newestAction(actions);
+	return newest?.actionType === "interrupt" && newest.status === "succeeded";
+}
+
+/** The newest Stop turn ended because the turn had already finished by itself: it ran, and found nothing to stop. */
+export function stopTurnFoundNothing(
+	actions: readonly (ActionLike & Pick<ControlAction, "metadata">)[],
+): boolean {
+	const newest = newestAction(actions);
+	return (
+		newest?.actionType === "interrupt" &&
+		newest.status === "succeeded" &&
+		(newest.metadata as Record<string, unknown> | null)?.interrupted === false
+	);
+}
+
+/**
+ * The newest control action is a Stop turn that failed: the standing alert near the composer, until something
+ * newer happens. A turn that had already ended, or a session that was ended first, is not a failure to show.
+ */
+export function stopTurnFailureText(actions: readonly ActionLike[]): string | null {
+	const newest = newestAction(actions);
+	if (newest === null || newest.actionType !== "interrupt" || newest.status !== "failed") {
+		return null;
+	}
+	if (newest.error === TURN_ALREADY_ENDED || newest.error === SESSION_ENDED_FIRST) return null;
+	if (newest.error === CONTROL_TIMEOUT_ERROR) {
+		return "The host didn't confirm the stop. The turn may still be running.";
+	}
+	return cleanHostText(newest.error) ?? STOP_TURN_FAILED_FALLBACK;
+}
+
+/** The sentence spoken when a followed Stop turn settles; null when it should stay quiet. */
+export function stopTurnSettledText(
+	actions: readonly (ActionLike & Pick<ControlAction, "metadata">)[],
+): string | null {
+	const failure = stopTurnFailureText(actions);
+	if (failure !== null) return failure;
+	if (!stopTurnSucceeded(actions)) return null;
+	return stopTurnFoundNothing(actions) ? STOP_TURN_ANNOUNCE_ALREADY : STOP_TURN_ANNOUNCE_DONE;
 }

@@ -82,6 +82,7 @@ import {
 	sessions,
 	users,
 } from "../db/schema/index.js";
+import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { logAdminAction } from "./audit-log.js";
 import {
@@ -238,8 +239,9 @@ function outcomeOfClosed(
 		case "outcome_unknown":
 			return "may_have_run";
 		case "interrupted":
-		case "turn_stopped":
 			return "turn_ended";
+		case "turn_stopped":
+			return "turn_stopped";
 		case "runtime_gone":
 			return "codex_shut_down";
 		case "decided_elsewhere":
@@ -266,6 +268,45 @@ function stopActiveFor(tx: Tx) {
 				inArray(controlActions.status, ["queued", "running"]),
 			),
 		);
+}
+
+/**
+ * A Stop turn (AGEN-119) names this approval's turn: an `interrupt` action queued, running or done whose
+ * `targetPromptActionId` is the approval's `turn_id`. A failed one (the turn didn't stop, the host dropped it)
+ * lifts the fence, matching the host, which lifts its own. It takes no lock, so unlike a Stop it is found
+ * through its target, not through the session's lock holder.
+ */
+function interruptActiveFor(tx: Tx) {
+	return tx
+		.select({ one: sql`1` })
+		.from(controlActions)
+		.where(
+			and(
+				eq(controlActions.sessionId, codexApprovals.sessionId),
+				eq(controlActions.actionType, "interrupt"),
+				inArray(controlActions.status, ["queued", "running", "succeeded"]),
+				eq(
+					jsonExtractText(controlActions.metadata, "$.targetPromptActionId"),
+					codexApprovals.turnId,
+				),
+			),
+		);
+}
+
+async function turnHasActiveInterrupt(tx: Tx, sessionId: string, turnId: string): Promise<boolean> {
+	const rows = await tx
+		.select({ one: sql`1` })
+		.from(controlActions)
+		.where(
+			and(
+				eq(controlActions.sessionId, sessionId),
+				eq(controlActions.actionType, "interrupt"),
+				inArray(controlActions.status, ["queued", "running", "succeeded"]),
+				eq(jsonExtractText(controlActions.metadata, "$.targetPromptActionId"), turnId),
+			),
+		)
+		.limit(1);
+	return rows.length > 0;
 }
 
 async function sessionHasActiveStop(tx: Tx, sessionId: string): Promise<boolean> {
@@ -718,6 +759,10 @@ export async function recordApprovalRequest(
 			}
 			built = buildPresentation(report, agent);
 			if (await sessionHasActiveStop(tx, sessionId)) throw new ApprovalRefusal("session_stopping");
+			// A request on a turn a person has already stopped: the host declines that one request.
+			if (await turnHasActiveInterrupt(tx, sessionId, report.turnId)) {
+				throw new ApprovalRefusal("turn_interrupted");
+			}
 
 			const sameRequest = and(
 				eq(codexApprovals.sessionId, sessionId),
@@ -929,6 +974,7 @@ function isDecision(value: unknown): value is ApprovalDecision {
 function refusalForRow(effective: EffectiveApproval): ApprovalRefusal | null {
 	if (effective.state === "closed") {
 		if (effective.closedReason === "session_stopped") return new ApprovalRefusal("session_stopped");
+		if (effective.closedReason === "turn_stopped") return new ApprovalRefusal("turn_interrupted");
 		if (effective.closedReason === "expired") return new ApprovalRefusal("expired");
 		return new ApprovalRefusal("already_resolved");
 	}
@@ -1005,6 +1051,7 @@ export async function answerApproval(
 			eq(codexApprovals.status, "pending"),
 			gt(codexApprovals.expiresAt, at),
 			notExists(stopActiveFor(tx)),
+			notExists(interruptActiveFor(tx)),
 		];
 		if (decision === "accept" && hash !== null) {
 			conditions.push(
@@ -1073,6 +1120,9 @@ async function refusalAfterLostRace(
 	const stateRefusal = refusalForRow(deriveApprovalOutcome(row, nowMs));
 	if (stateRefusal) return stateRefusal;
 	if (await sessionHasActiveStop(db, sessionId)) return new ApprovalRefusal("session_stopped");
+	if (await turnHasActiveInterrupt(db, sessionId, row.turnId)) {
+		return new ApprovalRefusal("turn_interrupted");
+	}
 	if (hash !== null && row.presentationHash !== hash)
 		return new ApprovalRefusal("presentation_changed");
 	if (hash !== null && !row.approvable) return new ApprovalRefusal("not_approvable");
@@ -1539,6 +1589,7 @@ async function issueOrRefuse(
 				isNull(codexApprovals.fencedAt),
 				or(ne(codexApprovals.decision, "accept"), gte(codexApprovals.answeredAt, cutoff)),
 				notExists(stopActiveFor(tx)),
+				notExists(interruptActiveFor(tx)),
 			),
 		)
 		.returning({ id: codexApprovals.id });
@@ -1562,6 +1613,21 @@ async function issueOrRefuse(
 	const undelivered = now.firstDeliveredAt === null;
 	if (stopped) {
 		if (undelivered) return closeNow("session_stopped");
+		await tx
+			.update(codexApprovals)
+			.set({ fencedAt: at, updatedAt: at })
+			.where(
+				and(
+					eq(codexApprovals.id, row.id),
+					eq(codexApprovals.status, "answered"),
+					isNull(codexApprovals.fencedAt),
+				),
+			);
+		return decline();
+	}
+	if (await turnHasActiveInterrupt(tx, row.sessionId, row.turnId)) {
+		// The turn was stopped after this was answered: never issued if it hadn't been, fenced if it had.
+		if (undelivered) return closeNow("turn_stopped");
 		await tx
 			.update(codexApprovals)
 			.set({ fencedAt: at, updatedAt: at })

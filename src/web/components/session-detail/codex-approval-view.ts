@@ -282,6 +282,11 @@ const OUTCOME_LINES: Record<CodexApprovalOutcome, (ctx: OutcomeCtx) => string> =
 		decision === "accept"
 			? "You approved this, but the turn ended before it was sent. Nothing ran."
 			: "The turn ended before this was answered. Nothing ran.",
+	// A person pressed Stop turn: the session is still open, so the words say the turn, not the session.
+	turn_stopped: ({ decision }) =>
+		decision === "accept"
+			? "You approved this, but the turn was stopped before it was sent. That request didn't run."
+			: "The turn was stopped before this was answered. That request didn't run.",
 	codex_shut_down: ({ decision, agent }) => {
 		// The outcome keeps its stored name (a rename would break every client that decodes it); a Claude
 		// fork says it stopped running.

@@ -567,6 +567,12 @@ export const api = {
 			method: "POST",
 		}),
 
+	/** Stop turn (AGEN-119): ends what a continued Claude session is doing and keeps the session open. */
+	interruptSession: (sessionId: string) =>
+		request<{ action: ControlAction }>(`/sessions/${sessionId}/interrupt`, {
+			method: "POST",
+		}),
+
 	sendSessionPrompt: (sessionId: string, prompt: string) =>
 		request<{ action: ControlAction }>(`/sessions/${sessionId}/prompt`, {
 			method: "POST",

@@ -8,6 +8,7 @@
  * proposal resolver (a guard test checks that), so no code path here can type a
  * prompt into a session.
  */
+import { INTERRUPTED_STATUS } from "../../../../shared/stop-turn.js";
 import { config } from "../../../config.js";
 import { getDb } from "../../../db/client.js";
 import { OwnTurnBusyError } from "../../../util/own-turn.js";
@@ -131,6 +132,8 @@ function failedTurnWording<T extends { verdict: string; why: string }>(
 	trigger: NotifyTrigger,
 	answer: T,
 ): T {
+	// A turn a person stopped on purpose (Stop turn, AGEN-119) is not a failure to report as one.
+	if (trigger.rawPayload?.status === INTERRUPTED_STATUS) return answer;
 	const note = UNFINISHED_TURN_NOTES.get(trigger.eventType ?? "");
 	if (note === undefined || answer.verdict !== "finished") return answer;
 	return { ...answer, verdict: "needs_you", why: note };

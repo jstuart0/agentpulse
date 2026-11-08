@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { ControlAction } from "../../shared/types.js";
 import { flush, installDomStubs, removeDomStubs, renderHook } from "../test-utils/render-hook.js";
-import { type StopFollowOptions, useStopFollow } from "./useStopFollow.js";
+import { type StopFollowOptions, useStopFollow, useStopTurnFollow } from "./useStopFollow.js";
 
 beforeAll(installDomStubs);
 afterAll(removeDomStubs);
@@ -144,6 +144,120 @@ describe("useStopFollow", () => {
 		const { props, spoken } = setup({ controlActions: [stop("running")] });
 		const view = await mount(props);
 		await view.render({ ...props, sessionId: "s2", controlActions: [stop("failed", "Nope.")] });
+		expect(spoken).toEqual([]);
+		await view.unmount();
+	});
+});
+
+function interrupt(
+	status: ControlAction["status"],
+	error: string | null = null,
+	metadata: Record<string, unknown> | null = null,
+): ControlAction {
+	return {
+		id: "i1",
+		sessionId: "s1",
+		actionType: "interrupt",
+		status,
+		error,
+		metadata,
+		createdAt: "2026-11-08T10:00:00.000Z",
+	} as ControlAction;
+}
+
+describe("useStopTurnFollow (AGEN-119)", () => {
+	const mountTurn = async (props: StopFollowOptions) => {
+		const view = renderHook(useStopTurnFollow, props);
+		await view.render(props);
+		return view;
+	};
+
+	test("while a Stop turn is queued or running it refreshes on its own timer; a Stop is not followed by it", async () => {
+		const { props, reloads } = setup({ controlActions: [interrupt("running")] });
+		const view = await mountTurn(props);
+		expect(view.current.value?.stoppingTurn).toBe(true);
+		await flush(60);
+		expect(reloads()).toBeGreaterThanOrEqual(3);
+		await view.unmount();
+
+		const other = setup({ controlActions: [stop("running")] });
+		const quiet = await mountTurn(other.props);
+		expect(quiet.current.value?.stoppingTurn).toBe(false);
+		await flush(40);
+		expect(other.reloads()).toBe(0);
+		await quiet.unmount();
+	});
+
+	test("success is announced once as 'Turn stopped. You can send a prompt.' and counted, for focus", async () => {
+		const { props, spoken } = setup({ controlActions: [interrupt("running")] });
+		const view = await mountTurn(props);
+		const done = {
+			...props,
+			controlActions: [interrupt("succeeded", null, { interrupted: true })],
+		};
+		await view.render(done);
+		await flush(10);
+		expect(spoken).toEqual(["Turn stopped. You can send a prompt."]);
+		expect(view.current.value?.succeeded).toBe(1);
+		expect(view.current.value?.failure).toBeNull();
+		await view.render({ ...done });
+		await flush(20);
+		expect(spoken).toHaveLength(1);
+		await view.unmount();
+	});
+
+	test("failure is announced once with the host's words, stays as the standing failure, and does not move focus", async () => {
+		const { props, spoken } = setup({ controlActions: [interrupt("running")] });
+		const view = await mountTurn(props);
+		await view.render({
+			...props,
+			controlActions: [
+				interrupt(
+					"failed",
+					"Claude didn't stop within 30 seconds and is still working. Try again, or end the session.",
+				),
+			],
+		});
+		await flush(10);
+		expect(spoken).toEqual([
+			"Claude didn't stop within 30 seconds and is still working. Try again, or end the session.",
+		]);
+		expect(view.current.value?.failure).toContain("30 seconds");
+		expect(view.current.value?.succeeded).toBe(0);
+		await view.unmount();
+	});
+
+	test("a turn that had already finished is said plainly, and an 'already ended' failure stays quiet", async () => {
+		const natural = setup({ controlActions: [interrupt("running")] });
+		const a = await mountTurn(natural.props);
+		await a.render({
+			...natural.props,
+			controlActions: [interrupt("succeeded", null, { interrupted: false })],
+		});
+		await flush(10);
+		expect(natural.spoken).toEqual(["Claude had already finished the turn."]);
+		await a.unmount();
+
+		const ended = setup({ controlActions: [interrupt("running")] });
+		const b = await mountTurn(ended.props);
+		await b.render({
+			...ended.props,
+			controlActions: [interrupt("failed", "The turn had already ended.")],
+		});
+		await flush(10);
+		expect(ended.spoken).toEqual([]);
+		expect(b.current.value?.failure).toBeNull();
+		await b.unmount();
+	});
+
+	test("an outcome that arrives with a change of session is not announced", async () => {
+		const { props, spoken } = setup({ controlActions: [interrupt("running")] });
+		const view = await mountTurn(props);
+		await view.render({
+			...props,
+			sessionId: "s2",
+			controlActions: [interrupt("failed", "Nope.")],
+		});
 		expect(spoken).toEqual([]);
 		await view.unmount();
 	});

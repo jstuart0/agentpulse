@@ -146,6 +146,12 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		value: true,
 	},
 	{
+		// A person can stop what a continued Claude session is doing and keep it open (AGEN-119).
+		name: "claudeStopTurn",
+		proof: { kind: "route", method: "POST", path: "/sessions/:sessionId/interrupt" },
+		value: true,
+	},
+	{
 		// `stuck` and `risky` pushes from the health job; it runs only while AI is active, beside push.
 		name: "healthPush",
 		proof: { kind: "route", method: "GET", path: "/ai/inbox" },

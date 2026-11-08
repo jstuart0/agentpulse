@@ -1017,6 +1017,7 @@ export type CodexApprovalOutcome =
 	| "revision_changed"
 	| "may_have_run"
 	| "turn_ended"
+	| "turn_stopped"
 	| "codex_shut_down"
 	| "session_stopped"
 	| "approved_then_stopped"

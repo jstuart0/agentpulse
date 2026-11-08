@@ -4,6 +4,7 @@ import type { Session, SessionEvent } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { buildExportMarkdown } from "./export-markdown.js";
 import { launchLinkLabel } from "./session-takeover-view.js";
+import { STOPPING_TURN_LABEL, STOP_TURN_LABEL } from "./stop-view.js";
 
 interface SessionOverflowMenuProps {
 	session: Session;
@@ -16,6 +17,11 @@ interface SessionOverflowMenuProps {
 	stopDisabledReason?: string | null;
 	/** A stop is on its way: the item is off, with no sentence (the composer says it). */
 	stopping?: boolean;
+	/** A continued session's turn is running and this viewer may stop it (AGEN-119): a "Stop turn" item, above End session. */
+	canStopTurn?: boolean;
+	/** A Stop turn is on its way: the item is off. */
+	stoppingTurn?: boolean;
+	onStopTurn?: () => void;
 	onJumpTop: () => void;
 	onJumpBottom: () => void;
 	onStop: () => void;
@@ -33,6 +39,9 @@ export function SessionOverflowMenu({
 	stopLabel,
 	stopDisabledReason = null,
 	stopping = false,
+	canStopTurn = false,
+	stoppingTurn = false,
+	onStopTurn,
 	onJumpTop,
 	onJumpBottom,
 	onStop,
@@ -119,9 +128,21 @@ export function SessionOverflowMenu({
 							}}
 						/>
 					)}
+					{canStopTurn && onStopTurn && (
+						<MenuItem
+							label={stoppingTurn ? STOPPING_TURN_LABEL : STOP_TURN_LABEL}
+							tall
+							disabled={stoppingTurn}
+							onClick={() => {
+								onStopTurn();
+								setOpen(false);
+							}}
+						/>
+					)}
 					{canStop && (
 						<MenuItem
 							label={stopLabel}
+							tall={canStopTurn}
 							tone="danger"
 							disabledReason={stopDisabledReason}
 							disabled={stopDisabledReason !== null || stopping}
@@ -137,14 +158,17 @@ export function SessionOverflowMenu({
 	);
 }
 
-function MenuItem({
+export function MenuItem({
 	label,
 	onClick,
 	tone = "default",
 	disabled = false,
 	disabledReason = null,
+	tall = false,
 }: {
 	label: string;
+	/** At least 44 px high: a touch target (the items beside Stop turn). */
+	tall?: boolean;
 	onClick: () => void;
 	tone?: "default" | "danger";
 	disabled?: boolean;
@@ -161,8 +185,8 @@ function MenuItem({
 				disabled={disabled}
 				aria-describedby={disabledReason ? reasonId : undefined}
 				className={`block w-full text-left px-3 py-1.5 hover:bg-muted disabled:opacity-50 disabled:hover:bg-transparent ${
-					tone === "danger" ? "text-red-700 dark:text-red-300" : "text-foreground"
-				}`}
+					tall ? "min-h-[44px]" : ""
+				} ${tone === "danger" ? "text-red-700 dark:text-red-300" : "text-foreground"}`}
 			>
 				{label}
 			</button>

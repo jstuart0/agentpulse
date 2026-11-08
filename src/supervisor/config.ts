@@ -8,6 +8,7 @@ import {
 	writePrivateFileSyncNoFollow,
 } from "../shared/private-file.js";
 import { CLAUDE_TAKEOVER, RESUMES_SESSIONS } from "../shared/session-resume.js";
+import { CLAUDE_TURN_INTERRUPT } from "../shared/stop-turn.js";
 import type { SupervisorRegistrationInput } from "../shared/types.js";
 
 export interface SupervisorConfig {
@@ -90,6 +91,7 @@ export function buildDefaultConfig(): SupervisorConfig {
 				"headless_claude",
 				CLAUDE_STOP,
 				CLAUDE_TURN_CONTROL,
+				CLAUDE_TURN_INTERRUPT,
 				"enforces_launch_privileges",
 				"offline_outbox",
 			],
@@ -255,6 +257,7 @@ export async function withExecutableCapabilities(
 				"headless_claude",
 				CLAUDE_STOP,
 				CLAUDE_TURN_CONTROL,
+				CLAUDE_TURN_INTERRUPT,
 				"enforces_launch_privileges",
 				"offline_outbox",
 				...(git.resolvedPath ? ["can_scaffold_workarea", "can_clone_repo"] : []),

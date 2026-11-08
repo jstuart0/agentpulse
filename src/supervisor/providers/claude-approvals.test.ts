@@ -1580,3 +1580,75 @@ describe("through the stream runtime", () => {
 		expect(h.fake.badResponses()).toEqual([]);
 	});
 });
+
+// ======================================================================================================
+describe("the turn fence of Stop turn (AGEN-119)", () => {
+	test("fenceTurn declines what the turn holds, with the turn's own reason, and the session stays answerable for the next turn", async () => {
+		const a = armed();
+		await openBash(a, "r1");
+		a.port.fenceTurn();
+		expect(a.written.map((w) => `${w.id}:${w.body.behavior}`)).toEqual(["r1:deny"]);
+		expect(a.warnings.map((w) => w.detail.reason)).toEqual(["turn_interrupted"]);
+		// A request on the same, fenced turn is denied on arrival and never reported.
+		const reportsBefore = a.reports.length;
+		a.request("r2", "Bash", { command: "ls" });
+		await settle();
+		expect(a.written.map((w) => `${w.id}:${w.body.behavior}`)).toEqual(["r1:deny", "r2:deny"]);
+		expect(a.reports.length).toBe(reportsBefore);
+		// The turn ends: the fence goes with it, and the next turn's request is a card again.
+		a.port.turnEnded();
+		a.request("r3", "Bash", { command: "pwd" });
+		await settle();
+		expect(a.reports.length).toBe(reportsBefore + 1);
+		expect(a.written.map((w) => w.id)).toEqual(["r1", "r2"]);
+	});
+
+	test("liftTurnFence (the turn didn't stop in time): later requests are cards again", async () => {
+		const a = armed();
+		a.port.fenceTurn();
+		a.request("r1", "Bash", { command: "ls" });
+		await settle();
+		expect(a.written.map((w) => w.body.behavior)).toEqual(["deny"]);
+		a.port.liftTurnFence();
+		a.request("r2", "Bash", { command: "pwd" });
+		await settle();
+		expect(a.reports).toHaveLength(1);
+		expect(a.written).toHaveLength(1);
+	});
+
+	test("a request already answered keeps its own outcome: the turn fence only declines what is unanswered", async () => {
+		const a = armed();
+		await openBash(a);
+		a.script.sync = async () => ({ answers: [a.answerOf("ap-1", "accept")] });
+		await a.tracker.tick();
+		expect(a.written.map((w) => w.body.behavior)).toEqual(["allow"]);
+		a.port.fenceTurn();
+		expect(a.written.map((w) => w.body.behavior)).toEqual(["allow"]);
+	});
+
+	test("it is not the session fence: dispose is not called and a later Stop's fence still works", async () => {
+		const a = armed();
+		a.port.fenceTurn();
+		a.port.turnEnded();
+		await openBash(a, "r9");
+		a.port.fence();
+		expect(a.written.map((w) => `${w.id}:${w.body.behavior}`)).toEqual(["r9:deny"]);
+	});
+
+	test("the server's report refusal turn_interrupted declines that one request and leaves the session alone", async () => {
+		const a = armed();
+		a.script.report = async () => {
+			throw new SupervisorRequestError(409, "turn_interrupted", "turn_interrupted");
+		};
+		a.request("r1", "Bash", { command: "ls" });
+		await settle();
+		expect(a.written.map((w) => w.body.behavior)).toEqual(["deny"]);
+		expect(a.warnings.map((w) => w.detail.reason)).toEqual(["turn_interrupted"]);
+		// Not a rollback: the next request reports normally and the breaker is untouched.
+		a.script.report = async () => ({ approvalId: "ap-ok" });
+		a.request("r2", "Bash", { command: "pwd" });
+		await settle();
+		expect(a.reports.length).toBeGreaterThanOrEqual(1);
+		expect(a.written).toHaveLength(1);
+	});
+});

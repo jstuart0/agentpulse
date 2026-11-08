@@ -386,6 +386,7 @@ export const OWNER_CHECKED_ROUTES: ReadonlySet<string> = new Set([
 	// The session-changing routes the app's composer uses, and the Ask cancel (the asker only).
 	"POST /sessions/:sessionId/prompt",
 	"POST /sessions/:sessionId/stop",
+	"POST /sessions/:sessionId/interrupt",
 	"POST /sessions/:sessionId/retry",
 	// Taking an observed session over: strict owner-or-admin (an unowned session is an admin's), a signed-in
 	// person only, and in no scope grant. Judged in the handler by assertCanBindSession.

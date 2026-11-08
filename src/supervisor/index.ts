@@ -14,6 +14,7 @@ import { claudeStreamRuntimeCount } from "./providers/claude-stream.js";
 import {
 	hasClaudeStreamRuntime,
 	hasHeadlessRuntime,
+	interruptClaudeStreamSession,
 	launchClaudeHeadlessRequest,
 	launchClaudeInteractiveRequest,
 	promptClaudeHeadlessSession,
@@ -380,6 +381,7 @@ async function main() {
 			stopHeadlessClaude,
 			promptClaudeStreamSession,
 			stopClaudeStreamSession,
+			interruptClaudeStreamSession,
 			hasClaudeStreamRuntime,
 			hasHeadlessRuntime,
 		},

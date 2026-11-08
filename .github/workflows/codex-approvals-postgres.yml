@@ -18,6 +18,7 @@ on:
       - "src/server/services/codex-approval*"
       - "src/server/routes/codex-approvals*"
       - "src/server/routes/session-bind*"
+      - "src/server/routes/sessions-interrupt*"
       - "src/server/services/session-binding*"
       - "src/server/services/session-resume-lifecycle*"
       - "src/server/services/control-actions.ts"
@@ -137,7 +138,10 @@ jobs:
             src/server/services/session-binding-claude.test.ts \
             src/server/services/fork-live-paths.test.ts \
             src/server/routes/claude-fork-routes.test.ts \
-            src/server/services/ai/continue-decision-fork.test.ts 2>&1 | tee claude-turn.log
+            src/server/services/ai/continue-decision-fork.test.ts \
+            src/server/services/control-actions-claude-interrupt.test.ts \
+            src/server/services/codex-approvals-turn-fence.test.ts \
+            src/server/routes/sessions-interrupt.test.ts 2>&1 | tee claude-turn.log
           if grep -Eq '^ *[1-9][0-9]* skip' claude-turn.log; then
             echo "A Claude turn guard test was skipped on Postgres." >&2
             exit 1

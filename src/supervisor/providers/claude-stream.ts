@@ -46,6 +46,15 @@ import {
 	STOPPED_BY_PERSON_ERROR,
 } from "../../shared/managed-messages.js";
 import type { ClaudeForkMode } from "../../shared/session-resume.js";
+import {
+	CLAUDE_INTERRUPT_RESULT_WAIT_MS,
+	INTERRUPTED_BEFORE_SEND_CODE,
+	INTERRUPTED_STATUS,
+	INTERRUPTED_TERMINAL_REASONS,
+	STOPPED_BEFORE_SEND,
+	TURN_ERRORED_AFTER_STOP,
+	TURN_STOPPED_BY_PERSON,
+} from "../../shared/stop-turn.js";
 import { disposeRuntimesAndExit } from "../services/fatal-exit.js";
 import { reportInSessionSafely } from "../services/report-resilience.js";
 import { listClaudeAgentEntries } from "./claude-agents.js";
@@ -144,7 +153,8 @@ export class ClaudePromptRefusal extends Error {
 			| "check_failed"
 			| "no_runtime"
 			| "stopping"
-			| "not_recorded",
+			| "not_recorded"
+			| "interrupted_before_send",
 		message: string,
 	) {
 		super(message);
@@ -193,6 +203,13 @@ export interface ClaudeApprovalPort {
 	turnEnded(): void;
 	/** Stop is about to wait: no answer may be issued after this. */
 	fence(): void;
+	/**
+	 * A person stopped the running turn (AGEN-119): decline what it holds and refuse its new requests until
+	 * `turnEnded` or `liftTurnFence`. The session stays alive, so nothing here disposes.
+	 */
+	fenceTurn(): void;
+	/** The turn did not stop in time: its later requests get cards again, as the server's predicate says. */
+	liftTurnFence(): void;
 	/** The runtime is gone: close what is held (`runtime_gone`). */
 	dispose(): void;
 }
@@ -209,10 +226,22 @@ export type TurnOutcome =
 				| "turn_error"
 				| "exited"
 				| "stopped"
+				| "interrupted"
 				| "first_prompt_failed"
 				| "fatal";
 			error: string;
 	  };
+
+/**
+ * What `interruptTurn` found. `interrupted`: the turn ended as a person's stop (`beforeSend` when the prompt
+ * was cancelled before anything reached Claude). `not_interrupted`: no turn by that id, or it ended its own way.
+ * `didnt_stop`: Claude did not end the turn in time. `not_sent`: the interrupt could not be written.
+ */
+export type InterruptResult =
+	| { status: "interrupted"; beforeSend?: true }
+	| { status: "not_interrupted" }
+	| { status: "didnt_stop" }
+	| { status: "not_sent" };
 
 export type SendPromptResult = {
 	/** Resolves once, when the turn ends. */
@@ -289,8 +318,16 @@ type Turn = {
 	resultSeen: boolean;
 	loginLost: boolean;
 	calls: Map<string, ToolCallRecord>;
-	/** A person asked this turn to stop and the host sent the interrupt (AGEN-119). Never set in Track 0. */
+	/** A person asked this turn to stop and the host sent the interrupt (AGEN-119). */
 	interruptRequested: boolean;
+	/** A person asked for the stop before the prompt was sent: `sendPrompt` sends nothing (F37). */
+	cancelBeforeSend: boolean;
+	/** Settled by `sendPrompt` once it knows whether the cancel took: true, nothing was sent; false, it failed another way. */
+	sendCancelled: { promise: Promise<boolean>; settle: (cancelled: boolean) => void };
+	/** The one answer every `interruptTurn` for this turn gets (a repeated press shares the first). */
+	interruptOutcome: Promise<InterruptResult> | null;
+	/** Resolves when the turn ends, however it ends. */
+	done: Promise<TurnOutcome>;
 	/** The end of this turn was handed to the observer. */
 	observed: boolean;
 	/** Each call's `detailVerdict`, being decided off the hot path; awaited before a record reaches the observer. */
@@ -337,6 +374,8 @@ export type ClaudeStreamOptions = {
 	/** Undoes what preparing the fork's options wrote. Called once, when the fork ends for good. */
 	cleanup?: () => void | Promise<void>;
 	maxRuntimes?: number;
+	/** How long `interruptTurn` waits for the turn's `result`. Default `CLAUDE_INTERRUPT_RESULT_WAIT_MS`; tests shorten it. */
+	interruptWaitMs?: number;
 	timings?: ClaudeStopTimings;
 	link?: ClaudeLinkOptions;
 	ownIdWaitMs?: number;
@@ -384,6 +423,7 @@ function forHostLog(value: unknown): string {
 function turnOutcomeOf(outcome: TurnOutcome): TurnOutcomeKind {
 	if (outcome.ok) return "completed";
 	if (outcome.code === "stopped") return "stopped";
+	if (outcome.code === "interrupted") return "interrupted";
 	if (
 		outcome.code === "fatal" ||
 		outcome.code === "first_prompt_failed" ||
@@ -524,6 +564,10 @@ export class ClaudeStreamRuntime {
 		const done = new Promise<TurnOutcome>((r) => {
 			resolve = r;
 		});
+		let settleCancel!: (cancelled: boolean) => void;
+		const sendCancelled = new Promise<boolean>((r) => {
+			settleCancel = r;
+		});
 		const turn: Turn = {
 			actionId,
 			uuid,
@@ -535,6 +579,10 @@ export class ClaudeStreamRuntime {
 			loginLost: false,
 			calls: new Map(),
 			interruptRequested: false,
+			cancelBeforeSend: false,
+			sendCancelled: { promise: sendCancelled, settle: settleCancel },
+			interruptOutcome: null,
+			done,
 			observed: false,
 			verdicts: new Map(),
 			delivered: new Set(),
@@ -580,6 +628,7 @@ export class ClaudeStreamRuntime {
 			}
 		} catch (error) {
 			release();
+			turn.sendCancelled.settle(false);
 			// The server may hold a turn start for a prompt that will not be sent (a recorded prompt the process
 			// never got, or a gate that threw after the server heard): an idle report ends the working state it
 			// set. A stop or a dead process reports its own end.
@@ -594,6 +643,27 @@ export class ClaudeStreamRuntime {
 			throw error;
 		}
 
+		// A person stopped the turn before the prompt got here: nothing is sent, and the server's turn ends as
+		// any interrupted turn does (not an idle report, which would leave the acknowledgement undone).
+		if (turn.cancelBeforeSend) {
+			release();
+			await this.reportEventsSafely("interrupted-before-send", [
+				{
+					eventType: "HeadlessPromptFailed",
+					category: "system_event" as const,
+					content: TURN_STOPPED_BY_PERSON,
+					rawPayload: {
+						status: INTERRUPTED_STATUS,
+						code: INTERRUPTED_BEFORE_SEND_CODE,
+						...MARKER,
+					},
+				},
+			]);
+			void this.observeTurn(turn, "interrupted");
+			turn.sendCancelled.settle(true);
+			turn.resolve({ ok: false, code: "interrupted", error: STOPPED_BEFORE_SEND });
+			throw new ClaudePromptRefusal("interrupted_before_send", STOPPED_BEFORE_SEND);
+		}
 		turn.phase = "sent";
 		this.ownUuids.add(uuid);
 		this.sentTexts.push(text);
@@ -873,7 +943,7 @@ export class ClaudeStreamRuntime {
 
 	private callRow(call: ToolCallRecord, outcome: TurnOutcomeKind) {
 		return this.rowEvent(
-			callRowText(call, this.policy.naming),
+			callRowText(call, this.policy.naming, { turnOutcome: outcome }),
 			"call",
 			callRowPayload(call, { turnOutcome: outcome }),
 		);
@@ -931,14 +1001,89 @@ export class ClaudeStreamRuntime {
 		}
 		const apiError = result.terminal_reason === "api_error";
 		const failed = apiError || result.is_error === true;
-		const outcome: TurnOutcome = !failed
-			? { ok: true }
-			: turn.loginLost
-				? { ok: false, code: "login_lost", error: CLAUDE_LOGIN_LOST_ERROR }
-				: apiError
-					? { ok: false, code: "api_error", error: CLAUDE_API_ERROR_MESSAGE }
-					: { ok: false, code: "turn_error", error: TURN_ERROR_MESSAGE };
+		// "Stopped by a person" is decided from the result itself, never from the flag alone (F38): the turn may
+		// have finished on its own just before the interrupt landed.
+		const interrupted =
+			turn.interruptRequested &&
+			result.is_error === true &&
+			typeof result.terminal_reason === "string" &&
+			INTERRUPTED_TERMINAL_REASONS.includes(result.terminal_reason);
+		const outcome: TurnOutcome = interrupted
+			? { ok: false, code: "interrupted", error: TURN_STOPPED_BY_PERSON }
+			: !failed
+				? { ok: true }
+				: turn.loginLost
+					? { ok: false, code: "login_lost", error: CLAUDE_LOGIN_LOST_ERROR }
+					: apiError
+						? { ok: false, code: "api_error", error: CLAUDE_API_ERROR_MESSAGE }
+						: turn.interruptRequested
+							? { ok: false, code: "turn_error", error: TURN_ERRORED_AFTER_STOP }
+							: { ok: false, code: "turn_error", error: TURN_ERROR_MESSAGE };
 		void this.finishTurn(turn, outcome);
+	}
+
+	/**
+	 * A person's Stop turn (AGEN-119): ends what the turn is doing and keeps the process, the session and the
+	 * lock-holding prompt. Nothing is signalled. Asked again for the same turn, it shares the first answer.
+	 */
+	interruptTurn(targetActionId: string): Promise<InterruptResult> {
+		const turn = this.turn;
+		if (
+			!turn ||
+			turn.actionId !== targetActionId ||
+			this.stopRequested ||
+			this.fataling ||
+			this.isGone
+		) {
+			return Promise.resolve({ status: "not_interrupted" });
+		}
+		if (turn.interruptOutcome) return turn.interruptOutcome;
+		const run = (
+			turn.phase === "sent" ? this.interruptSentTurn(turn) : this.cancelUnsentTurn(turn)
+		).then((result) => {
+			// "Try again" is offered after a stop that didn't take: the next press starts a fresh attempt.
+			if (result.status === "didnt_stop" || result.status === "not_sent")
+				turn.interruptOutcome = null;
+			return result;
+		});
+		turn.interruptOutcome = run;
+		return run;
+	}
+
+	/** The prompt has not reached Claude: `sendPrompt` checks the flag right before it writes the user line (F37). */
+	private async cancelUnsentTurn(turn: Turn): Promise<InterruptResult> {
+		turn.cancelBeforeSend = true;
+		return (await turn.sendCancelled.promise)
+			? { status: "interrupted", beforeSend: true }
+			: { status: "not_interrupted" };
+	}
+
+	private async interruptSentTurn(turn: Turn): Promise<InterruptResult> {
+		turn.interruptRequested = true;
+		this.port?.fenceTurn();
+		const waitMs = this.options.interruptWaitMs ?? CLAUDE_INTERRUPT_RESULT_WAIT_MS;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let failed!: () => void;
+		const notSent = new Promise<"not_sent">((resolve) => {
+			failed = () => resolve("not_sent");
+		});
+		const timeout = new Promise<"timeout">((resolve) => {
+			timer = setTimeout(() => resolve("timeout"), waitMs);
+			timer.unref?.();
+		});
+		this.proc.link.interrupt().catch(() => failed());
+		const settled = await Promise.race([turn.done, notSent, timeout]);
+		clearTimeout(timer);
+		if (settled === "timeout" || settled === "not_sent") {
+			// Claude did not stop: the turn goes on as it was, and its later requests get cards again (the
+			// server's fence ignores a failed interrupt, so the host's must too).
+			turn.interruptRequested = false;
+			this.port?.liftTurnFence();
+			return { status: settled === "timeout" ? "didnt_stop" : "not_sent" };
+		}
+		return !settled.ok && settled.code === "interrupted"
+			? { status: "interrupted" }
+			: { status: "not_interrupted" };
 	}
 
 	/** The one place a turn ends: rows, the marked end event, the idle report, then the action's outcome. */
@@ -973,7 +1118,10 @@ export class ClaudeStreamRuntime {
 		await this.reportEventsSafely("turn-end", rows);
 		this.turn = null;
 		await this.reportIdle();
-		await this.observeTurn(turn, "result");
+		await this.observeTurn(
+			turn,
+			!outcome.ok && outcome.code === "interrupted" ? "interrupted" : "result",
+		);
 		turn.resolve(outcome);
 	}
 
@@ -1597,4 +1745,14 @@ export async function stopClaudeStreamSession(
 	runtime.settled(); // a Stop claimed for N is proof of settle, as a prompt is
 	const result = await runtime.stop(timings);
 	return { hadChild: true, gone: result.gone, unchecked: !result.checked };
+}
+
+/** A person's Stop turn for the fork of a session (AGEN-119): no fork held here is `not_interrupted`. */
+export async function interruptClaudeStreamSession(
+	sessionId: string,
+	targetActionId: string,
+): Promise<InterruptResult> {
+	const runtime = runtimes.get(sessionId);
+	if (!runtime) return { status: "not_interrupted" };
+	return runtime.interruptTurn(targetActionId);
 }

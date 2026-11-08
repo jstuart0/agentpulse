@@ -220,6 +220,12 @@ export function recordingPort(): ClaudeApprovalPort & {
 		toolResult(id: string) {
 			port.calls.push(`toolResult:${id}`);
 		},
+		fenceTurn() {
+			port.calls.push("fenceTurn");
+		},
+		liftTurnFence() {
+			port.calls.push("liftTurnFence");
+		},
 		turnEnded() {
 			port.calls.push("turnEnded");
 		},

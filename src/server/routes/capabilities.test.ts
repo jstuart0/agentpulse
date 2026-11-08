@@ -152,6 +152,7 @@ describe("GET /capabilities", () => {
 				codexApprovals: true,
 				claudeApprovals: true,
 				claudeTakeover: true,
+				claudeStopTurn: true,
 			});
 			expect(body.pushEvents).toEqual(["ask_reply"]);
 			expect(Object.keys(body.ai).sort()).toEqual(["active", "build", "provider", "vectorSearch"]);

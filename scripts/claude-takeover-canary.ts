@@ -298,6 +298,12 @@ export interface Host {
 	forkRecord: Any;
 	hold: { on: boolean; release: () => void; gate: Promise<void> };
 	armed: { inPlaceFirst: boolean };
+	/**
+	 * The control loop takes one action at a time, as the canary always has. A scenario that needs an action
+	 * claimed WHILE another's handler is still running (the production supervisor polls unserialised, so a Stop turn
+	 * can be claimed during a prompt's pre-send checks) turns `concurrent` on.
+	 */
+	pump: { concurrent: boolean };
 	dispatchLaunch: (launch: Any) => Promise<void>;
 	dispose: () => Promise<void>;
 }
@@ -678,6 +684,7 @@ export async function startHost(
 			stopHeadlessClaude: headless.stopHeadlessClaude,
 			promptClaudeStreamSession: stream.promptClaudeStreamSession,
 			stopClaudeStreamSession: stream.stopClaudeStreamSession,
+			interruptClaudeStreamSession: stream.interruptClaudeStreamSession,
 			hasClaudeStreamRuntime: stream.hasClaudeStreamRuntime,
 			hasHeadlessRuntime: headless.hasHeadlessRuntime,
 		},
@@ -705,9 +712,10 @@ export async function startHost(
 		finalReport,
 	});
 	let pumping = false;
+	const pump = { concurrent: false };
 	intervals.push(
 		setInterval(() => {
-			if (pumping) return;
+			if (pumping && !pump.concurrent) return;
 			pumping = true;
 			void (async () => {
 				try {
@@ -749,6 +757,7 @@ export async function startHost(
 		forkRecord,
 		hold,
 		armed,
+		pump,
 		dispatchLaunch,
 		async dispose() {
 			hold.on = false;

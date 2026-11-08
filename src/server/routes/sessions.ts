@@ -63,11 +63,17 @@ import {
 	HostOfflineError,
 	HostUpgradeRequiredError,
 	HumanRequiredError,
+	InterruptNotSupportedError,
+	LaunchMismatchError,
 	ManagedStateNotContinuableError,
+	NoTurnRunningError,
 	NothingToStopError,
 	PromptUnsafeError,
+	SessionNotFoundError,
+	SessionNotManagedError,
 	StopNotSupportedError,
 	listControlActionsForSession,
+	queueInterruptAction,
 	queuePromptAction,
 	queueStopAction,
 	redactControlAction,
@@ -85,6 +91,10 @@ import {
 	getSessionDetail,
 	getSessionName,
 } from "../services/session-detail.js";
+import {
+	sessionInterruptRetryAfterSeconds,
+	tryConsumeSessionInterrupt,
+} from "../services/session-interrupt-limit.js";
 import { changeSessionOwner } from "../services/session-owner-admin.js";
 import {
 	type SessionListField,
@@ -957,6 +967,50 @@ sessionsRouter.post("/sessions/:sessionId/stop", async (c: Context) => {
 		// An unexpected failure: the detail goes to the log, never into the response.
 		console.error("[sessions] stop could not be queued:", error);
 		return c.json({ error: "Unable to queue stop" }, 400);
+	}
+});
+
+/**
+ * Stop turn (AGEN-119): ends what a continued Claude session is doing and keeps it open. It runs nothing, so a
+ * `manage` key may press it as it may Stop; owner or admin in team mode. A foreign Origin is refused, and so is
+ * (with authentication off) a Host that is neither loopback nor allowlisted. Six a minute per caller.
+ */
+sessionsRouter.post("/sessions/:sessionId/interrupt", async (c: Context) => {
+	const foreign = refuseBadOrigin(c);
+	if (foreign) return foreign;
+	const host = c.req.header("Host");
+	if (config.disableAuth && host !== undefined && !isTrustedHostWhenAuthOff(host)) {
+		return c.json({ error: "bad_origin" }, 403);
+	}
+	const sessionId = c.req.param("sessionId") ?? "";
+	const refusal = await refuseUnlessMayChange(c, sessionId);
+	if (refusal) return refusal;
+	const authUser = c.get("authUser") as AuthUser | undefined;
+	const subject = authUser?.userId ?? authUser?.keyId ?? "anonymous";
+	if (!tryConsumeSessionInterrupt(subject)) {
+		c.header("Retry-After", String(sessionInterruptRetryAfterSeconds(subject)));
+		return c.json({ error: "rate_limited" }, 429);
+	}
+	try {
+		const action = await queueInterruptAction(sessionId, actorFromAuthUser(authUser), {
+			keyId: authUser?.keyId ?? null,
+		});
+		return c.json({ action: redactControlAction(action, { includePrompt: false }) }, 202);
+	} catch (error) {
+		if (error instanceof SessionNotFoundError) return c.json({ error: "session_not_found" }, 404);
+		if (error instanceof SessionNotManagedError) {
+			return c.json({ error: "not_managed", message: error.message }, 409);
+		}
+		if (error instanceof LaunchMismatchError) {
+			return c.json({ error: "launch_mismatch", message: error.message }, 409);
+		}
+		if (error instanceof InterruptNotSupportedError || error instanceof NoTurnRunningError) {
+			return c.json({ error: error.code, message: error.message }, 409);
+		}
+		const hostRefusal = hostRefusalResponse(c, error);
+		if (hostRefusal) return hostRefusal;
+		console.error("[sessions] interrupt could not be queued:", error);
+		return c.json({ error: "Unable to queue interrupt" }, 400);
 	}
 });
 

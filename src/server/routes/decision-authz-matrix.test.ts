@@ -1191,6 +1191,10 @@ describe("coverage", () => {
 			file: "routes/action-request-approval.test.ts",
 			marker: "action-requests",
 		},
+		"POST /sessions/:sessionId/interrupt": {
+			file: "routes/sessions-interrupt.test.ts",
+			marker: "not_owner",
+		},
 		"POST /sessions/:sessionId/acknowledge": {
 			file: "routes/sessions-respond-ack.test.ts",
 			marker: "acknowledge",

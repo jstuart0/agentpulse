@@ -4,6 +4,7 @@ import {
 	HOST_RESTARTED_SYNC_ERROR,
 } from "../../shared/managed-messages.js";
 import { resumeFailureMessage } from "../../shared/session-resume.js";
+import { INTERRUPTED_BEFORE_SEND_CODE, INTERRUPTED_STATUS } from "../../shared/stop-turn.js";
 import { isWithinWindow } from "../../shared/time-window.js";
 import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type {
@@ -681,7 +682,8 @@ export interface TurnBoundaryEvent {
 	rawPayload?: Record<string, unknown> | null;
 }
 
-type TurnChange = "start" | "launch_start" | "end" | "stopped";
+/** `end_interrupted`: a fork's turn a person stopped (AGEN-119). It ends the turn like `end` and also acknowledges it, so the session reads IDLE rather than WAITING for a result nobody is waiting for. */
+type TurnChange = "start" | "launch_start" | "end" | "end_interrupted" | "stopped";
 
 /**
  * Which runtime's marker an event carries: a Codex app-server's (`codexRuntime`) or a takeover fork's
@@ -708,8 +710,18 @@ function turnChangeOf(
 		case "ManagedSessionStart":
 			return agent && !late ? { change: "launch_start", agent } : null;
 		case "HeadlessPromptCompleted":
-		case "HeadlessPromptFailed":
 			return agent ? { change: "end", agent } : null;
+		case "HeadlessPromptFailed":
+			if (!agent) return null;
+			return {
+				change:
+					agent === "claude_code" &&
+					(event.rawPayload?.status === INTERRUPTED_STATUS ||
+						event.rawPayload?.code === INTERRUPTED_BEFORE_SEND_CODE)
+						? "end_interrupted"
+						: "end",
+				agent,
+			};
 		case "ManagedSessionStopped":
 			return { change: "stopped", agent: null };
 		default:
@@ -763,12 +775,13 @@ export async function applyManagedTurnBoundaries(
 	const updates: Record<string, unknown> =
 		last.change === "stopped"
 			? { isWorking: false, currentTurnStartedAt: null }
-			: last.change === "end"
+			: last.change === "end" || last.change === "end_interrupted"
 				? {
 						isWorking: false,
 						currentTurnStartedAt: null,
 						lastAgentTurnCompletedAt: now,
 						lastActivityAt: now,
+						...(last.change === "end_interrupted" ? { lastUserAcknowledgedAt: now } : {}),
 					}
 				: {
 						isWorking: true,

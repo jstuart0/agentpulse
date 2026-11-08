@@ -52,6 +52,13 @@ export type FakeConfig = {
 	 */
 	unprompted?: Record<string, unknown>[];
 	unpromptedTrigger?: string;
+	/**
+	 * What an `interrupt` control request does (AGEN-119). Absent: the turn aborts with an `aborted_tools` result.
+	 * `"ignore"`: answered success and nothing else happens (a Claude that does not stop). `{ frames }`: those
+	 * frames are sent, in order, after the answer, instead of the default result (a recorded interrupted turn,
+	 * a natural result, an errored one). The turn is aborted either way, so a held turn script ends.
+	 */
+	onInterrupt?: "ignore" | { frames: Record<string, unknown>[] };
 };
 
 const configPath = process.env.FAKE_CLAUDE_CONFIG;
@@ -185,9 +192,11 @@ if (argv[0] !== "agents") {
 	let aborted = false;
 	let turnsStarted = 0;
 	let userLines = 0;
+	let currentUuid: string | null = null;
 
 	async function runTurn(steps: Step[], uuid: string | null) {
 		aborted = false;
+		currentUuid = uuid;
 		for (const step of steps) {
 			if (aborted) return;
 			if ("say" in step) {
@@ -279,8 +288,11 @@ if (argv[0] !== "agents") {
 				});
 				if (!config.unpromptedTrigger) sendUnprompted();
 			} else if (subtype === "interrupt") {
-				aborted = true;
-				waiter?.();
+				const ignore = config.onInterrupt === "ignore";
+				if (!ignore) {
+					aborted = true;
+					waiter?.();
+				}
 				emit({
 					type: "control_response",
 					response: {
@@ -289,13 +301,19 @@ if (argv[0] !== "agents") {
 						response: { still_queued: [] },
 					},
 				});
-				emit({
-					type: "result",
-					subtype: "error_during_execution",
-					is_error: true,
-					terminal_reason: "aborted_tools",
-					session_id: sessionId,
-				});
+				if (ignore) return;
+				if (config.onInterrupt && typeof config.onInterrupt === "object") {
+					for (const frame of config.onInterrupt.frames)
+						emit(sub(frame, currentUuid) as Record<string, unknown>);
+				} else {
+					emit({
+						type: "result",
+						subtype: "error_during_execution",
+						is_error: true,
+						terminal_reason: "aborted_tools",
+						session_id: sessionId,
+					});
+				}
 			}
 			return;
 		}

@@ -31,6 +31,7 @@ import {
 	STOP_FAILED_ERROR,
 } from "../shared/managed-messages.js";
 import { STOP_RUNTIMES } from "../shared/stop-runtime.js";
+import { TURN_DIDNT_STOP, TURN_STOP_NOT_SENT } from "../shared/stop-turn.js";
 import type { ControlAction, ManagedState } from "../shared/types.js";
 import { MANAGED_STATES } from "../shared/types.js";
 import type { LaunchCallbacks } from "./providers/claude-shared.js";
@@ -38,6 +39,7 @@ import { ClaudePromptRefusal, ClaudePromptWithheld } from "./providers/claude-st
 import type {
 	hasClaudeStreamRuntime,
 	hasHeadlessRuntime,
+	interruptClaudeStreamSession,
 	promptClaudeHeadlessSession,
 	promptClaudeInteractiveSession,
 	promptClaudeStreamSession,
@@ -65,6 +67,8 @@ export type ControlProviders = {
 	/** A takeover fork's long-lived process (AGEN-117 T16). */
 	promptClaudeStreamSession: typeof promptClaudeStreamSession;
 	stopClaudeStreamSession: typeof stopClaudeStreamSession;
+	/** Stop turn: ends what a fork's Claude is doing and keeps the process (AGEN-119). */
+	interruptClaudeStreamSession: typeof interruptClaudeStreamSession;
 	hasClaudeStreamRuntime: typeof hasClaudeStreamRuntime;
 	hasHeadlessRuntime: typeof hasHeadlessRuntime;
 };
@@ -321,6 +325,50 @@ export function createControlActionHandler(
 				return failStop(action, STOP_WORDS.terminal);
 			default:
 				return failStop(action, STOP_WORDS.unsupported);
+		}
+	}
+
+	/**
+	 * Stop turn (AGEN-119): a fork's turn is ended with Claude's own interrupt and nothing is signalled. The
+	 * action ends `succeeded` with `{ interrupted, beforeSend? }` (false when the turn had already ended its own
+	 * way) or `failed` with fixed words. It touches no lock: the prompt that holds it reports its own end.
+	 */
+	async function interrupt(action: ControlAction, sessionId: string) {
+		const metadata = asRecord(action.metadata) ?? {};
+		const target = metadata.targetPromptActionId;
+		if (readStopRuntime(action) !== STOP_RUNTIMES.claudeStream || typeof target !== "string") {
+			await report(action, { status: "failed", error: STOP_WORDS.unsupported });
+			return;
+		}
+		try {
+			const result = await providers.interruptClaudeStreamSession(sessionId, target);
+			switch (result.status) {
+				case "interrupted":
+					await report(action, {
+						status: "succeeded",
+						metadata: {
+							...metadata,
+							interrupted: true,
+							...(result.beforeSend ? { beforeSend: true } : {}),
+						},
+					});
+					return;
+				case "not_interrupted":
+					await report(action, {
+						status: "succeeded",
+						metadata: { ...metadata, interrupted: false },
+					});
+					return;
+				case "didnt_stop":
+					await report(action, { status: "failed", error: TURN_DIDNT_STOP });
+					return;
+				case "not_sent":
+					await report(action, { status: "failed", error: TURN_STOP_NOT_SENT });
+					return;
+			}
+		} catch (error) {
+			log(`[control-actions] claude fork interrupt failed: ${errorText(error)}`);
+			await report(action, { status: "failed", error: TURN_STOP_NOT_SENT });
 		}
 	}
 
@@ -641,6 +689,7 @@ export function createControlActionHandler(
 		}
 
 		if (action.actionType === "stop" && sessionId) return stop(action, sessionId);
+		if (action.actionType === "interrupt" && sessionId) return interrupt(action, sessionId);
 		if (action.actionType === "prompt" && sessionId) return prompt(action, sessionId);
 		if (action.actionType === "cleanup_workarea") return cleanup(action);
 

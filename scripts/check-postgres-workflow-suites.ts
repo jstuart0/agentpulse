@@ -21,6 +21,10 @@ export const EXPECTED_SUITES: readonly string[] = [
 	"src/server/services/ai/session-summary/evidence-loader.test.ts",
 	"src/server/services/ai/session-summary/ledger.test.ts",
 	"src/server/services/session-summary-plans.test.ts",
+	// AGEN-119: Stop turn
+	"src/server/services/control-actions-claude-interrupt.test.ts",
+	"src/server/services/codex-approvals-turn-fence.test.ts",
+	"src/server/routes/sessions-interrupt.test.ts",
 ];
 
 /** Every path-like token of every `run:` block (folded `>-`, literal `|` or one line). */

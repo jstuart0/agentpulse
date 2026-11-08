@@ -136,6 +136,7 @@ function build(
 			spawned.stop++;
 			return { hadChild: true, gone: true, unchecked: false };
 		},
+		interruptClaudeStreamSession: async () => ({ status: "not_interrupted" as const }),
 		stopHeadlessClaude: async () => ({ hadChild: false, gone: true, unchecked: false }),
 		...opts.providers,
 	} as unknown as ControlProviders;

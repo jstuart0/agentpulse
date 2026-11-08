@@ -306,6 +306,8 @@ export interface AgentPulseClient {
 	): Promise<CreateLaunchResult>;
 	promptSession(sessionId: string, prompt: string): Promise<ControlActionResult>;
 	stopSession(sessionId: string): Promise<ControlActionResult>;
+	/** POST /sessions/:id/interrupt: ends a continued Claude session's running turn and keeps the session open. */
+	interruptSession(sessionId: string): Promise<ControlActionResult>;
 	retryLaunch(sessionId: string): Promise<RetryLaunchResult>;
 	/** GET /sessions/:id/approvals (manage-only). A server without the route answers 404 with no error code. */
 	listApprovals(sessionId: string): Promise<CodexApprovalList>;
@@ -545,6 +547,10 @@ export function createHttpClient(options: CreateHttpClientOptions): AgentPulseCl
 			}),
 		stopSession: (sessionId) =>
 			request<ControlActionResult>(`/sessions/${encodeURIComponent(sessionId)}/stop`, {
+				method: "POST",
+			}),
+		interruptSession: (sessionId) =>
+			request<ControlActionResult>(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
 				method: "POST",
 			}),
 		retryLaunch: (sessionId) =>

@@ -220,6 +220,7 @@ export type RefusalReason =
 	| "server_refused"
 	| "too_many_pending"
 	| "session_stopping"
+	| "turn_interrupted"
 	| "identity_conflict"
 	| "session_not_owned"
 	| "decided_elsewhere";
@@ -236,6 +237,7 @@ const REASON_TAIL: Partial<Record<RefusalReason, string>> = {
 	server_refused: "AgentPulse's server wouldn't take it.",
 	too_many_pending: "Too many requests were waiting for this session.",
 	session_stopping: "The session was being stopped.",
+	turn_interrupted: "The turn was stopped.",
 	identity_conflict: "The request clashed with an earlier one.",
 	session_not_owned: "This host doesn't own the session.",
 	decided_elsewhere: "Something else on this machine decided it first.",
@@ -309,6 +311,8 @@ type State = {
 	launch: ApprovalLaunch;
 	verdict: Verdict | null;
 	fenced: boolean;
+	/** A person stopped the running turn (AGEN-119): its requests are declined until the turn ends or the fence is lifted. */
+	turnFenced: boolean;
 	disposed: boolean;
 	requests: Map<string, Held>;
 	changes: Map<string, BufferedChange[]>;
@@ -699,6 +703,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 	const FATAL_REFUSALS: Record<string, RefusalReason> = {
 		too_many_pending: "too_many_pending",
 		session_stopping: "session_stopping",
+		turn_interrupted: "turn_interrupted",
 		identity_conflict: "identity_conflict",
 		session_not_owned: "session_not_owned",
 	};
@@ -1259,6 +1264,11 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 			warn(state, call.method, spec, "fenced");
 			return;
 		}
+		if (state.turnFenced) {
+			denyUnheld(ctx, id);
+			warn(state, call.method, spec, "turn_interrupted");
+			return;
+		}
 		if (pendingCount() >= maxOpen) {
 			denyUnheld(ctx, id);
 			warn(state, call.method, spec, "over_capacity");
@@ -1362,6 +1372,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 
 	/** The turn ended: nothing held for it can still be answered. */
 	function onClaudeTurnEnded(state: State) {
+		state.turnFenced = false;
 		for (const held of [...state.requests.values()]) {
 			if (held.terminal) continue;
 			if (held.sent === null) {
@@ -1407,6 +1418,19 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 		}
 	}
 
+	/**
+	 * A person stopped the running turn (AGEN-119): what this turn holds, unanswered, is declined, and no new
+	 * request of the turn becomes a card until the turn ends or the host gives up waiting (`liftTurnFence`).
+	 * Requests already answered keep their own outcome.
+	 */
+	function fenceTurnState(state: State) {
+		state.turnFenced = true;
+		for (const held of [...state.requests.values()]) {
+			if (held.terminal || held.sent !== null || held.closedByCodex) continue;
+			declineLocally(held, "turn_interrupted", "declined_local");
+		}
+	}
+
 	function pendingCount(): number {
 		let open = 0;
 		for (const held of all) if (!held.terminal && held.sent === null && !held.closedByCodex) open++;
@@ -1424,6 +1448,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 				launch,
 				verdict: null,
 				fenced: false,
+				turnFenced: false,
 				disposed: false,
 				requests: new Map(),
 				changes: new Map(),
@@ -1447,6 +1472,7 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 				launch,
 				verdict: options.verdict,
 				fenced: false,
+				turnFenced: false,
 				disposed: false,
 				requests: new Map(),
 				changes: new Map(),
@@ -1461,6 +1487,10 @@ export function createCodexApprovalTracker(options: TrackerOptions = {}): CodexA
 				toolResult: (toolUseId, info) => onClaudeResult(state, toolUseId, info),
 				turnEnded: () => onClaudeTurnEnded(state),
 				fence: () => fenceState(state),
+				fenceTurn: () => fenceTurnState(state),
+				liftTurnFence: () => {
+					state.turnFenced = false;
+				},
 				dispose: () => disposeState(state),
 			};
 		},

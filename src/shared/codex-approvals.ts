@@ -159,6 +159,8 @@ export const CODEX_APPROVAL_OUTCOMES = [
 	"revision_changed",
 	"may_have_run",
 	"turn_ended",
+	// AGEN-119: a person stopped the turn this request belonged to (Stop turn); the session stays open.
+	"turn_stopped",
 	"codex_shut_down",
 	"session_stopped",
 	"approved_then_stopped",
