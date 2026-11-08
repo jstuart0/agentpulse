@@ -55,6 +55,8 @@ export type DedupPolicy =
 			 * receipt already stops a retry). Authority dedup of assistant text still applies.
 			 */
 			keepEventTypes?: ReadonlySet<string>;
+			/** Per-event form of `keepEventTypes`, for a row that only some events of a type are. */
+			keepEvent?: (event: NormalizedEvent) => boolean;
 	  }
 	| { kind: "hook_delivery"; ctx: HookDeliveryContext; rawPayload: unknown };
 
@@ -160,6 +162,7 @@ function planContentWindow(
 	incoming: NormalizedEvent[],
 	nowIso: string,
 	keepEventTypes?: ReadonlySet<string>,
+	keepEvent?: (event: NormalizedEvent) => boolean,
 ): InsertPlan {
 	// Stored rows are keyed without rawPayload (it isn't loaded), so the
 	// transcript id only distinguishes rows within one batch.
@@ -175,7 +178,7 @@ function planContentWindow(
 
 	for (const event of incoming) {
 		const key = contentWindowKey(event);
-		const kept = keepEventTypes?.has(event.eventType) === true;
+		const kept = keepEventTypes?.has(event.eventType) === true || keepEvent?.(event) === true;
 		if (!kept && seen.has(key)) {
 			countDrop(plan.drops, "contentWindow");
 			continue;
@@ -406,7 +409,13 @@ export function planEventInsert(args: {
 }): InsertPlan {
 	switch (args.policy.kind) {
 		case "content_window":
-			return planContentWindow(args.recent, args.incoming, args.nowIso, args.policy.keepEventTypes);
+			return planContentWindow(
+				args.recent,
+				args.incoming,
+				args.nowIso,
+				args.policy.keepEventTypes,
+				args.policy.keepEvent,
+			);
 		case "hook_delivery":
 			return planHookDelivery(
 				args.recent,

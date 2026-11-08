@@ -725,6 +725,31 @@ describe("repeats under a delivery id", () => {
 		expect(rows.filter((e) => e.eventType === "HeadlessPromptCompleted")).toHaveLength(2);
 	});
 
+	test("AGEN-122: an identical fork call row in a second batch is stored; non-fork HeadlessStatus and ManagedWarning still dedupe; a replayed delivery id stores nothing", async () => {
+		const sessionId = await claudeSession(hostA);
+		const forkCall = {
+			eventType: "HeadlessStatus",
+			category: "progress_update",
+			content: "Read: ran without asking",
+			rawPayload: { claudeStreamRuntime: true, kind: "call", tool: "Read", toolOutcome: "ran" },
+		};
+		const plainStatus = {
+			eventType: "HeadlessStatus",
+			category: "progress_update",
+			content: "still working",
+			rawPayload: {},
+		};
+		await ok(await postEvents(hostA, sessionId, [forkCall, plainStatus, warning()]));
+		await ok(await postEvents(hostA, sessionId, [forkCall, plainStatus, warning()]));
+		const replayId = crypto.randomUUID();
+		await ok(await postEvents(hostA, sessionId, [forkCall], { deliveryId: replayId }));
+		await ok(await postEvents(hostA, sessionId, [forkCall], { deliveryId: replayId }));
+		const rows = await storedEvents(sessionId);
+		expect(rows.filter((e) => e.content === "Read: ran without asking")).toHaveLength(3);
+		expect(rows.filter((e) => e.content === "still working")).toHaveLength(1);
+		expect(rows.filter((e) => e.eventType === "ManagedWarning")).toHaveLength(1);
+	});
+
 	test("computeTurnKey differs for two identical stored prompts and is never t:", async () => {
 		const sessionId = await codexSession(hostA);
 		await ok(await postEvents(hostA, sessionId, [submitted("continue"), turnEnd()]));

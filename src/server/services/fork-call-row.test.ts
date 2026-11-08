@@ -1,7 +1,7 @@
 /** AGEN-122 (F14, F51): the per-kind whitelist for a fork row's payload. Pure; no database. */
 import { describe, expect, test } from "bun:test";
 import { FORK_CALL_OUTCOMES, FORK_TOOL_NAMES } from "../../shared/claude-fork-copy.js";
-import { normalizeForkRowPayload } from "./fork-call-row.js";
+import { isForkRowEvent, normalizeForkRowPayload } from "./fork-call-row.js";
 
 const MARKED = { source: "claude_stream", claudeStreamRuntime: true } as const;
 const EXTRAS = {
@@ -140,5 +140,20 @@ describe("normalizeForkRowPayload", () => {
 			claudeStreamRuntime: true,
 			kind: "call",
 		});
+	});
+});
+
+describe("isForkRowEvent (AGEN-122)", () => {
+	test("needs HeadlessStatus, the marker and a kind", () => {
+		const raw = { claudeStreamRuntime: true, kind: "turn_unasked" };
+		expect(isForkRowEvent({ eventType: "HeadlessStatus", rawPayload: raw })).toBe(true);
+		expect(isForkRowEvent({ eventType: "ManagedWarning", rawPayload: raw })).toBe(false);
+		expect(isForkRowEvent({ eventType: "HeadlessStatus", rawPayload: { kind: "call" } })).toBe(
+			false,
+		);
+		expect(
+			isForkRowEvent({ eventType: "HeadlessStatus", rawPayload: { claudeStreamRuntime: true } }),
+		).toBe(false);
+		expect(isForkRowEvent({ eventType: "HeadlessStatus", rawPayload: null })).toBe(false);
 	});
 });

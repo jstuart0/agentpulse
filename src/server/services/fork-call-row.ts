@@ -55,6 +55,26 @@ function callRow(raw: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * True for a managed `HeadlessStatus` row the host marked as a continued Claude session's own row with a `kind`
+ * (`call`, `turn_unasked`, `turn_refused`, ...). Each stands for a distinct occurrence even when its text repeats
+ * (the same tool call in a second turn), and the timeline row is what carries the Details control, so the
+ * content window must not drop it. The marker is sender-supplied: a forged one only lets that supervisor's own
+ * session keep duplicate rows, since supervisor writes are ownership-checked.
+ */
+export function isForkRowEvent(event: {
+	eventType: string;
+	rawPayload?: Record<string, unknown> | null;
+}): boolean {
+	const raw = event.rawPayload;
+	return (
+		event.eventType === "HeadlessStatus" &&
+		raw?.[MARKER_KEY] === true &&
+		typeof raw.kind === "string" &&
+		raw.kind !== ""
+	);
+}
+
+/**
  * Rows by `kind`. `turn_unasked` and `turn_refused` carry their counted names in their content only, so they
  * keep no payload beyond the three every kind keeps. A row with no `kind` is a turn or lifecycle event
  * (`HeadlessPromptFailed` and the like): it keeps its `status`, and `code` where a refusal names one.
