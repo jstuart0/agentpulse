@@ -3,13 +3,16 @@ import { eq } from "drizzle-orm";
 import "./ai/__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../db/client.js");
-const { managedSessions, sessions } = await import("../db/schema/index.js");
-const { upsertManagedSessionState } = await import("./managed-session-state.js");
+const { events, managedSessions, sessions } = await import("../db/schema/index.js");
+const { appendManagedSessionEvents, upsertManagedSessionState } = await import(
+	"./managed-session-state.js"
+);
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
 
 beforeAll(() => initializeDatabase());
 
 beforeEach(async () => {
+	await getDb().delete(events).execute();
 	await getDb().delete(managedSessions).execute();
 	await getDb().delete(sessions).execute();
 });
@@ -103,5 +106,93 @@ describe("upsertManagedSessionState — result.session carries nameSource/native
 
 		expect(result.session.nameSource).toBe("generated");
 		expect(result.session.nativeName).toBeNull();
+	});
+});
+
+// AGEN-122 (F14, F51): what a fork's rows store is rebuilt from a whitelist on the way in.
+describe("appendManagedSessionEvents: a fork's row payloads are whitelisted", () => {
+	const storedPayloads = async (sessionId: string) =>
+		(
+			await getDb().select().from(events).where(eq(events.sessionId, sessionId)).orderBy(events.id)
+		).map((e) => e.rawPayload as Record<string, unknown>);
+
+	test("a call row stores its five keys; an exit code out of range is dropped while the row stores", async () => {
+		await mkSession("fork-1");
+		await seedOwnedLaunch("fork-1", "sup-1");
+		await appendManagedSessionEvents("sup-1", "fork-1", [
+			{
+				eventType: "HeadlessStatus",
+				category: "progress_update",
+				content: "Bash: didn't succeed",
+				rawPayload: {
+					source: "claude_stream",
+					kind: "call",
+					claudeStreamRuntime: true,
+					tool: "Bash",
+					toolOutcome: "failed",
+					is_error: true,
+					exit_code: 300,
+					tool_use_id: "toolu_01abc",
+					command: "cat ~/.ssh/id_rsa",
+				},
+			},
+			{
+				eventType: "HeadlessStatus",
+				category: "progress_update",
+				content: "Bash: didn't succeed (second)",
+				rawPayload: {
+					source: "claude_stream",
+					kind: "call",
+					claudeStreamRuntime: true,
+					tool: "Bash",
+					toolOutcome: "failed",
+					is_error: true,
+					exit_code: 3,
+					tool_use_id: "toolu_02abc",
+				},
+			},
+		]);
+		const [dropped, kept] = await storedPayloads("fork-1");
+		expect(dropped).toEqual({
+			source: "claude_stream",
+			kind: "call",
+			claudeStreamRuntime: true,
+			tool: "Bash",
+			toolOutcome: "failed",
+			is_error: true,
+			tool_use_id: "toolu_01abc",
+		});
+		expect(kept?.exit_code).toBe(3);
+	});
+
+	test("an unasked-turn row with an extra key is stored without it; a row without the marker is untouched", async () => {
+		await mkSession("fork-2");
+		await seedOwnedLaunch("fork-2", "sup-1");
+		await appendManagedSessionEvents("sup-1", "fork-2", [
+			{
+				eventType: "HeadlessStatus",
+				category: "progress_update",
+				content: "x",
+				rawPayload: {
+					source: "claude_stream",
+					kind: "turn_unasked",
+					claudeStreamRuntime: true,
+					command: "rm -rf /",
+				},
+			},
+			{
+				eventType: "ManagedWarning",
+				category: "system_event",
+				content: "y",
+				rawPayload: { anything: "stays" },
+			},
+		]);
+		const [row, other] = await storedPayloads("fork-2");
+		expect(row).toEqual({
+			source: "claude_stream",
+			kind: "turn_unasked",
+			claudeStreamRuntime: true,
+		});
+		expect(other).toEqual({ anything: "stays" });
 	});
 });

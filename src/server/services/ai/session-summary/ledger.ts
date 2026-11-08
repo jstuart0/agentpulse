@@ -71,6 +71,12 @@ export interface EvidenceRow {
 	response: string | null;
 	/** The last 2,000 characters of the response, or the failure's `error` text, only for a failed tool row. */
 	responseTail: string | null;
+	/**
+	 * A continued Claude session's per-call row (AGEN-122): the tool (one of the fixed six, or `mcp`) and the
+	 * outcome the host recorded. The row has no command or response; only the loader's SQL sets it, and only
+	 * for a row the host marked as its own.
+	 */
+	forkCall?: { tool: string | null; outcome: string } | null;
 }
 
 /** What the scan did, for the coverage arithmetic. */
@@ -303,7 +309,8 @@ type RowClass =
 	| { kind: "one_liner"; label: string; observed: boolean }
 	| { kind: "edit" }
 	| { kind: "shell" }
-	| { kind: "tool"; name: string };
+	| { kind: "tool"; name: string }
+	| { kind: "fork_call"; tool: string | null; status: Status };
 
 // OBSERVED is what the system itself did or saw; CLAIMED is what a person or a
 // model wrote (ruling R-C). The `ai_*` rows, one by one:
@@ -351,6 +358,14 @@ export function userPromptTexts(input: Pick<LedgerInput, "rows" | "firstPromptRo
 }
 
 function classifyRow(row: EvidenceRow): RowClass {
+	// Before the one-liner lookup: a fork call row's category is `progress_update`.
+	if (row.forkCall) {
+		return {
+			kind: "fork_call",
+			tool: row.forkCall.tool,
+			status: row.forkCall.outcome === "failed" ? "failed" : "ok",
+		};
+	}
 	const category =
 		row.category ??
 		(row.eventType === "UserPromptSubmit"
@@ -638,6 +653,17 @@ function draftFor(
 				failed: status === "failed",
 			});
 		}
+		case "fork_call":
+			return done({
+				...base,
+				kind: "tool",
+				body: `OBSERVED ${toolLabel(cls.tool ?? "tool")} call: ${resultWord(cls.status)} (observed; command not recorded)`,
+				fact: { kind: "tool", result: cls.status },
+				observed: true,
+				collapseKey: null,
+				editPaths: [],
+				failed: cls.status === "failed",
+			});
 		case "tool": {
 			const status = statusOf(row, env.hasFailureEvent);
 			return done({

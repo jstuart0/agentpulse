@@ -41,6 +41,7 @@ import {
 	insertManagedEvents,
 	insertNormalizedEvents,
 } from "./event-processor.js";
+import { normalizeForkRowPayload } from "./fork-call-row.js";
 import { cleanMachineName } from "./machine-name.js";
 import { generateSessionName } from "./name-generator.js";
 import { ownerForNewSession } from "./session-attribution.js";
@@ -626,7 +627,7 @@ async function prepareManagedEvents(
 		toolName: null,
 		toolInput: null,
 		toolResponse: null,
-		rawPayload: event.rawPayload ?? {},
+		rawPayload: normalizeForkRowPayload(event.rawPayload ?? {}),
 		occurredAt: acceptedOccurredAt(supervisorId, event.occurredAt, nowMs),
 	}));
 }

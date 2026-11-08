@@ -266,8 +266,27 @@ function humanizeMs(ms: number): string {
 
 function countToolFailures(events: SessionEvent[]): { total: number; distinctTools: number } {
 	const failures = events.filter((e) => isToolFailure(e));
-	const tools = new Set(failures.map((e) => e.toolName ?? "unknown"));
+	const tools = new Set(failures.map((e) => e.toolName ?? forkCallTool(e) ?? "unknown"));
 	return { total: failures.length, distinctTools: tools.size };
+}
+
+/**
+ * The per-call row a continued Claude session's host writes (AGEN-117, AGEN-122). It is a `HeadlessStatus` row
+ * of category `progress_update`, with no tool name or response: the structured outcome is in its payload. Only
+ * the host's runtime marker makes it one, so a hook writer's `HeadlessStatus` row is not.
+ */
+function isForkCallRow(event: SessionEvent): boolean {
+	const payload = event.rawPayload;
+	return (
+		event.eventType === "HeadlessStatus" &&
+		payload?.claudeStreamRuntime === true &&
+		payload.kind === "call"
+	);
+}
+
+function forkCallTool(event: SessionEvent): string | null {
+	const tool = event.rawPayload?.tool;
+	return isForkCallRow(event) && typeof tool === "string" ? tool : null;
 }
 
 /**
@@ -278,6 +297,7 @@ function countToolFailures(events: SessionEvent[]): { total: number; distinctToo
  * counting it made ordinary sessions read as stuck.
  */
 function isToolFailure(event: SessionEvent): boolean {
+	if (isForkCallRow(event)) return event.rawPayload?.toolOutcome === "failed";
 	if (event.category !== "tool_event") return false;
 	if (event.eventType === "PostToolUseFailure") {
 		return event.rawPayload?.is_interrupt !== true;

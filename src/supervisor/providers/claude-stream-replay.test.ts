@@ -32,9 +32,18 @@ afterEach(async () => {
 	for (const h of harnesses.splice(0)) h.cleanup();
 });
 
-/** The one key Track 0 adds to a call row; everything else must be byte-equal to base. */
+/** The keys later tracks add to a call row (Track 0: the id; AGEN-122: the structured outcome); everything else must be byte-equal to base. */
+const ADDED_CALL_ROW_KEYS = new Set([
+	"tool_use_id",
+	"tool",
+	"toolOutcome",
+	"is_error",
+	"exit_code",
+]);
 function withoutToolUseId(value: unknown): unknown {
-	return JSON.parse(JSON.stringify(value, (key, v) => (key === "tool_use_id" ? undefined : v)));
+	return JSON.parse(
+		JSON.stringify(value, (key, v) => (ADDED_CALL_ROW_KEYS.has(key) ? undefined : v)),
+	);
 }
 
 /**

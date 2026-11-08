@@ -5,7 +5,12 @@
  * lives. A name outside the six (impossible under `--tools`, but a model chooses the names it calls) is
  * never printed.
  */
-import { TURN_REFUSED_PREFIX, TURN_UNASKED_PREFIX } from "../../shared/claude-fork-copy.js";
+import {
+	type ForkCallOutcome,
+	TURN_REFUSED_PREFIX,
+	TURN_UNASKED_PREFIX,
+	reportedForkTool,
+} from "../../shared/claude-fork-copy.js";
 import type { ClaudeForkMode } from "../../shared/session-resume.js";
 import { type ForkNaming, forkToolPolicy } from "./claude-fork-tools.js";
 import type { ToolCallRecord } from "./fork-tool-record.js";
@@ -41,16 +46,67 @@ export function printableTool(name: string, naming: ForkNaming = DEFAULT_NAMING)
 	return naming.printableTool(name);
 }
 
+/** `Exit code <digits>` at the very start of a Bash result, then a line break or the end of the text. */
+const EXIT_CODE_LINE = /^Exit code (\d+)(?:\n|$)/;
+const MAX_EXIT_CODE = 255;
+
 /**
- * The keys a call row adds to its `rawPayload`, beside `source`, `kind` and the runtime marker. Only the
- * tool-use id in Track 0 (it pairs a Pre and a Post and is already in the compact subset); AGEN-122 owns the
- * body and adds the structured outcome keys.
+ * The exit code Claude printed for a failed Bash call, or null. Nothing is inferred: a success prints no
+ * prefix, so a success has no code and never a 0 (a made-up 0 would let the Summary call something passed).
+ * Only an integer in [0, 255] counts; anything else Claude might print is left out.
  */
-export function callRowPayload(
-	call: ToolCallRecord,
-	_ctx: CallRowContext,
-): Record<string, unknown> {
-	return { tool_use_id: call.toolUseId };
+export function bashExitCodeOf(call: ToolCallRecord): number | null {
+	if (call.name !== "Bash" || call.detailResult === null) return null;
+	const match = EXIT_CODE_LINE.exec(call.detailResult);
+	if (!match) return null;
+	const code = Number(match[1]);
+	return Number.isSafeInteger(code) && code <= MAX_EXIT_CODE ? code : null;
+}
+
+/** `tool_result_meta[].non_execution_kind` Claude 2.1.319 gives a call cut short by an interrupt (recorded: `int-bash-key`). */
+const INTERRUPTED_NON_EXECUTION_KIND = "user-rejected";
+
+/**
+ * A call whose error is the interrupt's: it resulted with an error that no permission decision made. A refusal
+ * by a rule or a person's card carries a `permission_decision` (`config`, `user_reject`); an interrupted call
+ * carries none, and its `non_execution_kind` is `user-rejected` (or absent on a tool that ran to its end).
+ */
+function erroredByInterrupt(call: ToolCallRecord): boolean {
+	return (
+		call.resulted &&
+		call.isError &&
+		!call.declinedLocally &&
+		!call.decidedElsewhere &&
+		call.decisionSource === null &&
+		(call.nonExecutionKind === null || call.nonExecutionKind === INTERRUPTED_NON_EXECUTION_KIND)
+	);
+}
+
+/**
+ * What a call's row says happened. An errored call of a turn a person stopped is `stopped`, not `failed`: the
+ * error is the interrupt's, and it must not read as a tool failure (F39).
+ */
+export function callRowOutcome(call: ToolCallRecord, ctx?: CallRowContext): ForkCallOutcome {
+	if (ctx?.turnOutcome === "interrupted" && erroredByInterrupt(call)) return "stopped";
+	return callRowKind(call);
+}
+
+/**
+ * The keys a call row adds to its `rawPayload`, beside `source`, `kind` and the runtime marker: the
+ * structured outcome, never the command, path, URL or output. `tool` is one of the fixed six, or `mcp` for any
+ * MCP tool (never the server or tool name); `exit_code` only when Claude printed one for a failed Bash call.
+ */
+export function callRowPayload(call: ToolCallRecord, ctx: CallRowContext): Record<string, unknown> {
+	const toolOutcome = callRowOutcome(call, ctx);
+	const tool = reportedForkTool(call.name);
+	const exitCode = toolOutcome === "failed" ? bashExitCodeOf(call) : null;
+	return {
+		...(tool === null ? {} : { tool }),
+		toolOutcome,
+		is_error: call.isError,
+		...(exitCode === null ? {} : { exit_code: exitCode }),
+		tool_use_id: call.toolUseId,
+	};
 }
 
 /** Which row a call earns, in the order T18's table reads. */
@@ -67,7 +123,7 @@ export function callRowKind(call: ToolCallRecord): CallRowKind {
 	return call.requested && call.answer === "allow" ? "approved" : "unasked";
 }
 
-const ROW_WORDS: Record<CallRowKind, string> = {
+const ROW_WORDS: Record<ForkCallOutcome, string> = {
 	approved: "ran, you approved it",
 	unasked: "ran without asking",
 	failed: "didn't succeed",
@@ -76,11 +132,16 @@ const ROW_WORDS: Record<CallRowKind, string> = {
 	elsewhere: "may have run",
 	local_decline: "AgentPulse declined it; you weren't asked",
 	no_result: "called, no result seen",
+	stopped: "stopped when you stopped the turn",
 };
 
-export function callRowText(call: ToolCallRecord, naming: ForkNaming = DEFAULT_NAMING): string {
+export function callRowText(
+	call: ToolCallRecord,
+	naming: ForkNaming = DEFAULT_NAMING,
+	ctx?: CallRowContext,
+): string {
 	const prefix = call.agentId === null ? "" : naming.subagentPrefix;
-	return `${prefix}${naming.printableTool(call.name)}: ${ROW_WORDS[callRowKind(call)]}`;
+	return `${prefix}${naming.printableTool(call.name)}: ${ROW_WORDS[callRowOutcome(call, ctx)]}`;
 }
 
 /** `Read (4), Bash (2)`: names from the six only, most first, ties in the order of the six. */

@@ -136,3 +136,55 @@ describe("compactEvent and rawPayload", () => {
 		expect("rawPayload" in compactEvent({ id: 2 })).toBe(false);
 	});
 });
+
+describe("AGEN-122 a fork call row adds no member to the compact subset", () => {
+	const COMPACT_MEMBERS = [
+		"duration_ms",
+		"exit_code",
+		"interrupted",
+		"is_error",
+		"success",
+		"tool_use_id",
+	];
+	const callRow = {
+		source: "claude_stream",
+		kind: "call",
+		claudeStreamRuntime: true,
+		tool: "Bash",
+		toolOutcome: "failed",
+		is_error: true,
+		exit_code: 3,
+		tool_use_id: "toolu_01abc",
+	};
+
+	test("its compact rawPayload is exactly is_error, exit_code and tool_use_id (the stored values)", () => {
+		expect(compactRawPayload(callRow)).toEqual({
+			is_error: true,
+			exit_code: 3,
+			tool_use_id: "toolu_01abc",
+		});
+		// A successful call carries no code and the compact form has none to invent.
+		expect(
+			compactRawPayload({
+				...callRow,
+				toolOutcome: "approved",
+				is_error: false,
+				exit_code: undefined,
+			}),
+		).toEqual({ is_error: false, tool_use_id: "toolu_01abc" });
+	});
+
+	test("the six members of CompactRawPayload are closed: a payload carrying every key a fork row has still yields a subset of the six", () => {
+		const everything = compactRawPayload({
+			...callRow,
+			duration_ms: 5,
+			success: true,
+			interrupted: false,
+			toolOutcome: "stopped",
+			command: "x",
+		});
+		expect(Object.keys(everything ?? {}).sort()).toEqual(COMPACT_MEMBERS);
+		// The outcome word and tool name never cross, and the iOS contract's closed schema holds.
+		expect(JSON.stringify(everything)).not.toMatch(/toolOutcome|stopped|Bash/);
+	});
+});

@@ -45,6 +45,7 @@ import {
 import { T119_SCENARIOS, T119_SCENARIO_IDS } from "./claude-canary-scenarios/t119.js";
 import { T120_SCENARIOS, T120_SCENARIO_IDS } from "./claude-canary-scenarios/t120.js";
 import { T121_SCENARIOS, T121_SCENARIO_IDS } from "./claude-canary-scenarios/t121.js";
+import { T122_EVENT_MUTATIONS } from "./claude-canary-scenarios/t122-mutations.js";
 import { T122_SCENARIOS, T122_SCENARIO_IDS } from "./claude-canary-scenarios/t122.js";
 import { T123_SCENARIOS, T123_SCENARIO_IDS } from "./claude-canary-scenarios/t123.js";
 import { acquireCanaryLock } from "./lib/claude-canary-lock.js";
@@ -631,8 +632,17 @@ export async function startHost(
 						),
 				}
 			: gate;
+	// A mutation that rewrites an event on its way out (AGEN-122): the break lives with the ticket's scenario.
+	const eventMutation = T122_EVENT_MUTATIONS[mutation ?? ""];
+	const reportingGate = eventMutation
+		? {
+				...takeoverGate,
+				reportEvents: (sessionId: string, events: Any[]) =>
+					gate.reportEvents(sessionId, events.map(eventMutation)),
+			}
+		: takeoverGate;
 	const claudeTakeover = createClaudeTakeover({
-		gate: takeoverGate as typeof gate,
+		gate: reportingGate as typeof gate,
 		hostName,
 		trustedRoots: [run.root],
 		forkRecord,

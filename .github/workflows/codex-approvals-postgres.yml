@@ -45,6 +45,10 @@ on:
       - "src/server/services/session-owner-admin.ts"
       - "src/server/services/session-detail*"
       - "src/server/services/session-dto.ts"
+      - "src/server/services/ai/classifier*" # AGEN-122
+      - "src/server/services/ai/session-summary/**" # AGEN-122
+      - "src/server/services/session-summary-service.ts" # AGEN-122
+      - "src/server/services/fork-call-row*" # AGEN-122
       - ".github/workflows/codex-approvals-postgres.yml"
 
 concurrency:
@@ -110,6 +114,12 @@ jobs:
           src/server/services/session-resume-lifecycle.test.ts
           src/server/services/managed-turn-state.test.ts
           src/server/services/session-detail-fork.test.ts
+          src/server/services/fork-call-row.test.ts
+          src/server/services/managed-session-state.test.ts
+          src/server/services/ai/classifier.test.ts
+          src/server/services/ai/session-summary/evidence-loader.test.ts
+          src/server/services/ai/session-summary/ledger.test.ts
+          src/server/services/session-summary-plans.test.ts
 
       - name: Claude turn guard and Stop (Postgres backend; a skipped test fails the job)
         env:

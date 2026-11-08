@@ -13,7 +13,15 @@ const ROOT = join(import.meta.dir, "..");
 const WORKFLOW = ".github/workflows/codex-approvals-postgres.yml";
 
 /** Suites that must run on Postgres. Append-only, each entry commented with its ticket (`// AGEN-1xx`). */
-export const EXPECTED_SUITES: readonly string[] = [];
+export const EXPECTED_SUITES: readonly string[] = [
+	// AGEN-122: the fork call row's whitelist, and the two readers whose SQL gains a JSON branch.
+	"src/server/services/fork-call-row.test.ts",
+	"src/server/services/managed-session-state.test.ts",
+	"src/server/services/ai/classifier.test.ts",
+	"src/server/services/ai/session-summary/evidence-loader.test.ts",
+	"src/server/services/ai/session-summary/ledger.test.ts",
+	"src/server/services/session-summary-plans.test.ts",
+];
 
 /** Every path-like token of every `run:` block (folded `>-`, literal `|` or one line). */
 export function runListTokens(workflow: string): string[] {
