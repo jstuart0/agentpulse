@@ -10,7 +10,8 @@
  * so the 64 KiB transport cut of the result can never change it (F56).
  */
 import { realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { MCP_TOOL_PREFIX } from "../../shared/claude-fork-copy.js";
 
 export type DetailVerdict = "send" | "withhold";
@@ -45,6 +46,8 @@ export type ToolCallRecord = {
 	detailResult: string | null;
 	/** The result's size before that cut, so a truncation is known. */
 	detailResultBytes: number;
+	/** The control action of the turn the call belongs to; null until the stream knows it. */
+	turnActionId: string | null;
 	/** The subagent that made the call, or null for the fork's own. */
 	agentId: string | null;
 	parentToolUseId: string | null;
@@ -74,6 +77,7 @@ export function newToolCallRecord(
 		detailPaths: {},
 		detailResult: null,
 		detailResultBytes: 0,
+		turnActionId: null,
 		agentId: null,
 		parentToolUseId: null,
 		detailVerdict: "withhold",
@@ -152,6 +156,23 @@ async function resolveThroughExisting(
 	throw new Error("path too deep");
 }
 
+/**
+ * The ways a command or an input can name a rule's path: absolute, relative to the working directory, and
+ * under the home directory as `~/` or `$HOME`. A route the text doesn't name (a variable of another name,
+ * a glob) is the stated residual.
+ */
+function namingsOfRule(rulePath: string, dir: string): string[] {
+	const forms = [rulePath];
+	const rel = relative(dir, rulePath);
+	if (rel !== "" && !isAbsolute(rel)) forms.push(rel);
+	const home = homedir();
+	if (home && rulePath.startsWith(`${home}/`)) {
+		const tail = rulePath.slice(home.length);
+		forms.push(`~${tail}`, `$HOME${tail}`, `\${HOME}${tail}`);
+	}
+	return forms;
+}
+
 const PATH_TOOLS: Record<string, "file_path" | "notebook_path"> = {
 	Read: "file_path",
 	Write: "file_path",
@@ -186,7 +207,7 @@ export function createDetailJudge(deps: DetailJudgeDeps): DetailJudge {
 				if (typeof text !== "string") return "withhold";
 				for (const rulePath of scope.paths) {
 					if (rulePath === dir || rulePath.startsWith(`${dir}/`)) return "withhold";
-					if (text.includes(rulePath)) return "withhold";
+					if (namingsOfRule(rulePath, dir).some((form) => text.includes(form))) return "withhold";
 				}
 				return "send";
 			}

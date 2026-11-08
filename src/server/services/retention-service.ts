@@ -90,6 +90,7 @@ import {
 import { withTransaction } from "../db/with-transaction.js";
 import { summaryLeaseSeconds } from "./ai/session-summary/service-limits.js";
 import { deleteClosedApprovals } from "./codex-approvals.js";
+import { pruneForkToolCalls } from "./fork-tool-detail.js";
 import { deleteRevokedDevices } from "./mobile-devices-service.js";
 import { toDbTimestamp } from "./util/db-time.js";
 
@@ -140,6 +141,8 @@ export interface RetentionRunResult {
 	receiptsDeleted: number;
 	/** Closed Codex approval rows (AGEN-87) deleted by this pass; 0 when skipped or disabled. Their audit is never touched. */
 	approvalsDeleted: number;
+	/** Fork tool-call detail (AGEN-123) deleted by this pass. Pruned whether or not event retention is on. */
+	forkToolCallsDeleted: number;
 	batches: number;
 	retentionDays: number;
 	/** true when the setting was unset/0/invalid — the pass did nothing. */
@@ -482,6 +485,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 			summariesDeleted: 0,
 			receiptsDeleted: 0,
 			approvalsDeleted: 0,
+			forkToolCallsDeleted: 0,
 			batches: 0,
 			retentionDays: 0,
 			disabled: false,
@@ -505,6 +509,11 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 			return 0;
 		});
 		const days = await readRetentionDays();
+		// Also before the disabled return: detail is kept 7 days (sooner when event retention is shorter).
+		const forkToolCallsDeleted = await pruneForkToolCalls(now, days).catch((err) => {
+			console.error("[retention] fork tool detail prune failed:", err);
+			return 0;
+		});
 		if (days <= 0) {
 			lastRun = {
 				startedAt: now.toISOString(),
@@ -514,6 +523,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 				summariesDeleted: 0,
 				receiptsDeleted,
 				approvalsDeleted: 0,
+				forkToolCallsDeleted,
 				batches: 0,
 				retentionDays: 0,
 				disabled: true,
@@ -572,6 +582,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 			summariesDeleted,
 			receiptsDeleted,
 			approvalsDeleted,
+			forkToolCallsDeleted,
 			batches,
 			retentionDays: days,
 			disabled: false,

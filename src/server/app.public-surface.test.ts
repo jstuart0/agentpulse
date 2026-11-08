@@ -265,6 +265,10 @@ const PUBLIC_NO_CRED_EXPECT: Record<string, { status: number; error?: string }> 
 		status: 401,
 		error: "Missing supervisor credential",
 	},
+	"POST /api/v1/supervisors/:id/managed-sessions/:sessionId/tool-calls": {
+		status: 401,
+		error: "Missing supervisor credential",
+	},
 	"POST /api/v1/supervisors/:id/approvals/sync": {
 		status: 401,
 		error: "Missing supervisor credential",

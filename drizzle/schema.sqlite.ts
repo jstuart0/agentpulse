@@ -13,6 +13,7 @@
 export { sessionsSqlite as sessions } from "../src/server/db/schema/core/sessions";
 export { eventsSqlite as events } from "../src/server/db/schema/core/events";
 export { managedDeliveryReceiptsSqlite as managedDeliveryReceipts } from "../src/server/db/schema/core/managed-delivery-receipts";
+export { forkToolCallsSqlite as forkToolCalls } from "../src/server/db/schema/core/fork-tool-calls";
 export {
 	codexApprovalsSqlite as codexApprovals,
 	codexApprovalAuditSqlite as codexApprovalAudit,

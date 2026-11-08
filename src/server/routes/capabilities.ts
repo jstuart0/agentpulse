@@ -7,6 +7,7 @@ import { requireOperatorScope, resolveEffectiveRole } from "../auth/route-scope-
 import { config } from "../config.js";
 import { isAiActive, isAiBuildEnabled, isVectorSearchActive } from "../services/ai/feature.js";
 import { getDefaultProvider } from "../services/ai/providers-service.js";
+import { forkToolDetailAvailable } from "../services/fork-tool-detail.js";
 import { getMode } from "../services/instance-mode.js";
 import { type PushAvailability, pushAvailability } from "../services/push/push-runtime.js";
 
@@ -173,6 +174,15 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		proof: { kind: "route", method: "POST", path: "/devices/:id/test" },
 		value: true,
 		isAvailable: (snapshot) => snapshot.push.available,
+	},
+	// AGEN-123
+	{
+		// A signed-in owner or admin can open what each tool call of a continued Claude session ran. Advertised
+		// only while the secrets key that encrypts the detail is set; the routes are mounted either way.
+		name: "forkToolDetail",
+		proof: { kind: "route", method: "GET", path: "/sessions/:sessionId/tool-calls" },
+		value: true,
+		isAvailable: () => forkToolDetailAvailable(),
 	},
 ];
 

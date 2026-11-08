@@ -1,5 +1,9 @@
 import { type ReactNode, type RefObject, forwardRef } from "react";
-import type { SessionEvent } from "../../../shared/types.js";
+import { TURN_UNASKED_PREFIX } from "../../../shared/claude-fork-copy.js";
+import type { ForkToolCallDto } from "../../../shared/fork-tool-calls.js";
+import type { Session, SessionEvent } from "../../../shared/types.js";
+import { useForkToolCalls } from "../../hooks/useForkToolCalls.js";
+import { useOwnershipUi } from "../../hooks/useOwnershipUi.js";
 import {
 	eventDisplayTime,
 	lateArrival,
@@ -7,6 +11,12 @@ import {
 	lateRunStarts,
 	lateSuffix,
 } from "../../lib/event-time.js";
+import { isFork } from "../../lib/fork-session.js";
+import { ownerLabel } from "../../lib/owner-label.js";
+import { toolDetailAccess } from "../../lib/session-action-access.js";
+import { useUserStore } from "../../stores/user-store.js";
+import { useUsersStore } from "../../stores/users-store.js";
+import { CallDetails, type DetailContext, TurnDetails } from "./ForkRowDetails.js";
 import {
 	AssistantBubble,
 	PromptBubble,
@@ -19,6 +29,7 @@ import {
 	eventRowTone,
 } from "./TimelineView.js";
 import { ToolCallBlock } from "./ToolCallBlock.js";
+import { callRowToolUseId, turnCallIds, turnEndedAtMs } from "./fork-detail-availability.js";
 
 interface ActivityTimelineProps {
 	visibleEvents: SessionEvent[];
@@ -26,6 +37,47 @@ interface ActivityTimelineProps {
 	onScroll: () => void;
 	endRef: RefObject<HTMLDivElement | null>;
 	loadingContext?: boolean;
+	/**
+	 * A continued Claude session and every event of it (the visible ones are a subset): lets a viewer allowed
+	 * to read tool detail open what a call ran. Absent, no row has a Details control.
+	 */
+	session?: Session | null;
+	allEvents?: readonly SessionEvent[];
+}
+
+/** What the rows below this need to add a Details control, or null when this viewer gets none. */
+function useForkDetail(
+	session: Session | null | undefined,
+	allEvents: readonly SessionEvent[],
+): ForkDetail | null {
+	const ui = useOwnershipUi();
+	const userId = useUserStore((s) => s.userId);
+	const effectiveRole = useUserStore((s) => s.effectiveRole);
+	const directory = useUsersStore((s) => s.byId);
+	const access = session ? toolDetailAccess(ui, session, { userId, effectiveRole }) : "denied";
+	const enabled =
+		!!session && session.agentType === "claude_code" && isFork(session) && access !== "denied";
+	const stored = useForkToolCalls(
+		session?.sessionId ?? null,
+		enabled,
+		session?.isWorking === true,
+		allEvents.at(-1)?.id ?? 0,
+	);
+	if (!enabled || !session || stored.unavailable) return null;
+	const owner = session.ownerUserId ?? null;
+	const context: DetailContext = {
+		sessionId: session.sessionId,
+		access,
+		ownerName: owner === null ? null : ownerLabel(directory[owner], owner, { selfId: userId }),
+	};
+	return { context, calls: stored.calls, allEvents, working: session.isWorking === true };
+}
+
+export interface ForkDetail {
+	context: DetailContext;
+	calls: ReadonlyMap<string, ForkToolCallDto>;
+	allEvents: readonly SessionEvent[];
+	working: boolean;
 }
 
 /**
@@ -36,7 +88,8 @@ interface ActivityTimelineProps {
  * parent only supplies the event list and the scroll handler.
  */
 export const ActivityTimeline = forwardRef<HTMLDivElement, ActivityTimelineProps>(
-	({ visibleEvents, mode, onScroll, endRef, loadingContext }, containerRef) => {
+	({ visibleEvents, mode, onScroll, endRef, loadingContext, session, allEvents }, containerRef) => {
+		const forkDetail = useForkDetail(session, allEvents ?? visibleEvents);
 		return (
 			<div ref={containerRef} onScroll={onScroll} className="h-full overflow-auto p-3 md:p-6">
 				{loadingContext ? (
@@ -50,7 +103,7 @@ export const ActivityTimeline = forwardRef<HTMLDivElement, ActivityTimelineProps
 					) : mode === "terminal" ? (
 						visibleEvents.map((event) => stampedItem(event, renderTerminalEvent(event)))
 					) : (
-						renderBubbles(visibleEvents, mode)
+						renderBubbles(visibleEvents, mode, forkDetail)
 					)}
 					<div ref={endRef} />
 				</div>
@@ -117,14 +170,63 @@ function renderTerminalEvent(event: SessionEvent) {
  * Every late row carries a quiet marker and the two times in words; the "arrived … late" note goes on the
  * first row of each late run, judged over the rows on screen.
  */
-function renderBubbles(visibleEvents: SessionEvent[], mode: TimelineMode) {
+function renderBubbles(
+	visibleEvents: SessionEvent[],
+	mode: TimelineMode,
+	forkDetail: ForkDetail | null,
+) {
 	const starts = lateRunStarts(visibleEvents);
+	const positions = forkDetail ? new Map(forkDetail.allEvents.map((e, i) => [e.id, i])) : null;
 	return visibleEvents.map((event, index) => {
 		const minutes = lateArrival(event);
 		const detail = lateDetail(event) ?? undefined;
 		const note = minutes !== null && starts.has(index) ? lateSuffix(minutes) : undefined;
-		return stampedItem(event, renderBubbleEvent(event, mode, note, detail, minutes !== null));
+		const row = renderBubbleEvent(event, mode, note, detail, minutes !== null);
+		const extra = row && forkDetail && positions ? rowDetails(event, forkDetail, positions) : null;
+		return stampedItem(
+			event,
+			extra ? (
+				<>
+					{row}
+					{extra}
+				</>
+			) : (
+				row
+			),
+		);
 	});
+}
+
+/** The Details control under a call's row, or "Show what ran" under a turn's unasked line; null for any other row. */
+export function rowDetails(
+	event: SessionEvent,
+	detail: ForkDetail,
+	positions: ReadonlyMap<number, number>,
+) {
+	const index = positions.get(event.id);
+	if (index === undefined) return null;
+	const toolUseId = callRowToolUseId(event);
+	if (toolUseId !== null) {
+		const record = detail.calls.get(toolUseId);
+		if (!record) return null;
+		const endedAt = turnEndedAtMs(detail.allEvents, index, detail.working);
+		return <CallDetails context={detail.context} record={record} turnEndedAt={endedAt} />;
+	}
+	if (event.eventType === "HeadlessStatus" && event.content?.startsWith(TURN_UNASKED_PREFIX)) {
+		const records = turnCallIds(detail.allEvents, index)
+			.map((id) => detail.calls.get(id))
+			.filter((record) => record !== undefined && record.outcome === "unasked");
+		if (records.length === 0) return null;
+		const endedAt = turnEndedAtMs(detail.allEvents, index, detail.working);
+		return (
+			<TurnDetails
+				context={detail.context}
+				records={records as NonNullable<(typeof records)[number]>[]}
+				turnEndedAt={endedAt}
+			/>
+		);
+	}
+	return null;
 }
 
 function renderBubbleEvent(

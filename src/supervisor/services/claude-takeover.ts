@@ -84,6 +84,8 @@ export interface ClaudeTakeoverDeps {
 	/** A fixed, empty, private directory the probes and the `agents` calls run in; never S's. */
 	probeCwd: string;
 	tracker: Pick<CodexApprovalTracker, "attachClaude">;
+	/** Whether the server offers a feature (from register and every heartbeat). Absent: none, so no call detail is sent. */
+	serverHas?: (feature: string) => boolean;
 	log?: (line: string) => void;
 	/** Test seams. Each defaults to the real thing. */
 	resolve?: typeof resolveClaude;
@@ -270,7 +272,11 @@ export function createClaudeTakeover(deps: ClaudeTakeoverDeps): ClaudeTakeover {
 		reservedSlot?: () => void;
 	}): Promise<ClaudeStreamRuntime> {
 		const approvals = approvalFor(input.sessionId, input.spawnDir, input.mode, input.verdict);
-		const observer = forkTurnObserver(input.sessionId);
+		const observer = forkTurnObserver(input.sessionId, {
+			send: (sessionId, body) => gate.reportToolCalls(sessionId, body),
+			serverHas: deps.serverHas,
+			log,
+		});
 		try {
 			return await start({
 				sessionId: input.sessionId,

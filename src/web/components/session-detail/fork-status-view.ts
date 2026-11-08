@@ -21,6 +21,12 @@ export const FORK_CLAUDE_MD_NOT_LOADED = "Not loaded in this session.";
 
 /** Why Tools and Noisy are off on a continued session: its tool calls are short lines, not events with details. */
 export const FORK_TOOLS_REASON = "This session records tool activity as short lines.";
+/** The same for a viewer who may open what a line ran (the owner, an admin, or anyone in solo). */
+export const FORK_TOOLS_REASON_WITH_DETAIL = `${FORK_TOOLS_REASON} Open a line to see what it ran.`;
+
+export function forkToolsReason(canReadDetail: boolean): string {
+	return canReadDetail ? FORK_TOOLS_REASON_WITH_DETAIL : FORK_TOOLS_REASON;
+}
 export const FORK_SOURCE_DELETED = "Continued from a session that was deleted.";
 
 export type ForkLink =

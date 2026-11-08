@@ -290,7 +290,6 @@ describe("the dialog: one text for both modes, committing to neither", () => {
 			"subagents",
 			"slash commands",
 			"saving memories",
-			"Tools show in the timeline by name and outcome, with no details.",
 		]) {
 			expect(out, item).toContain(item);
 		}
@@ -1560,7 +1559,7 @@ describe("copy structure for the fork options (AGEN-119..123 Track 0)", () => {
 
 	test("with no option the 'Not in this session' sentence is word for word what it was", () => {
 		expect(notInSessionLine()).toBe(
-			"your project's CLAUDE.md, hooks and MCP servers, your own MCP servers, subagents, slash commands and saving memories. Tools show in the timeline by name and outcome, with no details.",
+			"your project's CLAUDE.md, hooks and MCP servers, your own MCP servers, subagents, slash commands and saving memories.",
 		);
 		expect(notInSessionLine({})).toBe(notInSessionLine());
 		expect(notInSessionLine({ mcp: false, subagents: false })).toBe(notInSessionLine());
@@ -1573,16 +1572,29 @@ describe("copy structure for the fork options (AGEN-119..123 Track 0)", () => {
 		expect(notInSessionLine({ mcp: true })).toContain("subagents");
 		expect(notInSessionLine({ subagents: true })).not.toContain("subagents");
 		expect(notInSessionLine({ mcp: true, subagents: true })).toBe(
-			"your project's CLAUDE.md, hooks and MCP servers, slash commands and saving memories. Tools show in the timeline by name and outcome, with no details.",
+			"your project's CLAUDE.md, hooks and MCP servers, slash commands and saving memories.",
 		);
 		// The project's own MCP servers stay out whatever is chosen.
 		expect(notInSessionLine({ mcp: true, subagents: true })).toContain("hooks and MCP servers");
 	});
 
-	test("the tool-detail paragraph has no words until AGEN-123 and then is its own paragraph; no option controls yet", () => {
-		expect(toolDetailLine("solo", null)).toBeNull();
-		expect(toolDetailLine("team", "Ana")).toBeNull();
-		expect(claudeDialogLines(base).paragraphs.some((p) => p.label === "Tool details:")).toBe(false);
+	test("the 'Not in this session' line says only what is absent; what tool detail there is has its own paragraph", () => {
+		expect(notInSessionLine()).not.toMatch(/details?|timeline/i);
+		expect(toolDetailLine("solo", null)).toBe("You can open what each tool call ran, for 7 days.");
+		expect(toolDetailLine("team", "you")).toBe(
+			"You and admins can open what each tool call ran, for 7 days, when signed in. Others see only the tool's name and outcome.",
+		);
+		expect(toolDetailLine("team", "Ana")).toMatch(/^Ana and admins can open /);
+		expect(toolDetailLine("team", null)).toBe(
+			"Admins can open what each tool call ran, for 7 days, when signed in. Others see only the tool's name and outcome.",
+		);
+		const solo = claudeDialogLines(base).paragraphs.find((p) => p.label === "Tool details:");
+		expect(solo?.text).toBe(toolDetailLine("solo", null) as string);
+		const team = claudeDialogLines({ ...base, ownerName: "you" }).paragraphs.find(
+			(p) => p.label === "Tool details:",
+		);
+		expect(team?.text).toBe(toolDetailLine("team", "you") as string);
+		// No option control exists yet.
 		expect(FORK_OPTION_CONTROLS).toEqual([]);
 		expect(FORK_OPTIONS_LEGEND).toBe("Options for this session (off by default)");
 		expect(FORK_OPTIONS_CLOSING).toBe(

@@ -25,6 +25,12 @@ export const EXPECTED_SUITES: readonly string[] = [
 	"src/server/services/control-actions-claude-interrupt.test.ts",
 	"src/server/services/codex-approvals-turn-fence.test.ts",
 	"src/server/routes/sessions-interrupt.test.ts",
+	// AGEN-123
+	"src/server/services/fork-tool-detail.test.ts",
+	"src/server/routes/fork-tool-calls.test.ts",
+	"src/server/routes/fork-tool-calls-leak.test.ts",
+	"src/server/services/retention-service.test.ts",
+	"src/server/db/fork-tool-calls-migration.test.ts",
 ];
 
 /** Every path-like token of every `run:` block (folded `>-`, literal `|` or one line). */

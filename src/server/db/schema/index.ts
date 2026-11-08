@@ -42,6 +42,7 @@ export const managedDeliveryReceipts =
 export const codexApprovals = active.codexApprovals as typeof sqliteSchema.codexApprovals;
 export const codexApprovalAudit =
 	active.codexApprovalAudit as typeof sqliteSchema.codexApprovalAudit;
+export const forkToolCalls = active.forkToolCalls as typeof sqliteSchema.forkToolCalls;
 // biome-ignore format: dialect-resolved re-exports keep one line each
 export const users = active.users as typeof sqliteSchema.users;
 // biome-ignore format: dialect-resolved re-exports keep one line each

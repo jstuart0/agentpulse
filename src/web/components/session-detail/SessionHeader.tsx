@@ -9,7 +9,11 @@ import { useOwnershipUi } from "../../hooks/useOwnershipUi.js";
 import { useSummaryAvailability } from "../../hooks/useSummaryAvailable.js";
 import { isFork } from "../../lib/fork-session.js";
 import type { OwnerChipModel } from "../../lib/owner-chip.js";
-import { RENAME_BLOCKED_REASON, sessionActionAccess } from "../../lib/session-action-access.js";
+import {
+	RENAME_BLOCKED_REASON,
+	canReadToolDetail,
+	sessionActionAccess,
+} from "../../lib/session-action-access.js";
 import { sessionHostLabel } from "../../lib/session-host.js";
 import type { WorkspaceTabId } from "../../lib/session-summary-core.js";
 import { formatDuration } from "../../lib/utils.js";
@@ -27,7 +31,7 @@ import { FilterToggle, ModeButton, ScrollJumpControls } from "./SharedControls.j
 import type { TimelineMode } from "./TimelineView.js";
 import { WorkspaceTabBar, activityTabWorking } from "./WorkspaceTabBar.js";
 import { buildExportMarkdown } from "./export-markdown.js";
-import { FORK_TOOLS_REASON } from "./fork-status-view.js";
+import { forkToolsReason } from "./fork-status-view.js";
 import { controlBlockedReason } from "./host-control-view.js";
 import { launchLinkLabel } from "./session-takeover-view.js";
 import { STOP_NOT_OWNER_REASON, canStopSession, stopControlLabel } from "./stop-view.js";
@@ -133,7 +137,11 @@ export function SessionHeader(props: SessionHeaderProps) {
 	const canStop = canStopSession(session);
 	// A continued session records tool activity as short lines only, so there is nothing for these to reveal.
 	const forkSession = session.agentType === "claude_code" && isFork(session);
-	const toolsOffReason = forkSession ? FORK_TOOLS_REASON : null;
+	const toolsOffReason = forkSession
+		? forkToolsReason(
+				canReadToolDetail(ownership, session, { userId: viewerUserId, effectiveRole }),
+			)
+		: null;
 	const hostLabel = sessionHostLabel(session);
 	const stopBlockedReason = canStop
 		? !mayStop

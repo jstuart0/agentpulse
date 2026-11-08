@@ -619,25 +619,52 @@ export async function startHost(
 			},
 		});
 	}
+	// ignore-exclude (AGEN-123): the gate tells the fork's detail judge there are no rules.
+	// detail-in-row (AGEN-123): the host puts the Read's output into the turn's 'ran without asking' row.
 	// add-input: a wrapper on the report path puts the tool inputs Claude asked about into a stored row.
 	const takeoverGate =
-		mutation === "add-input"
+		mutation === "ignore-exclude"
 			? {
 					...gate,
-					reportEvents: (sessionId: string, events: Any[]) =>
-						gate.reportEvents(
-							sessionId,
-							events.map((event, index) =>
-								index === 0 && current
-									? {
-											...event,
-											content: `${event.content ?? ""} ${JSON.stringify([...current.inputs.values()])}`,
-										}
-									: event,
-							),
-						),
+					excludeScope: () => ({ state: "none" as const }),
+					excludesPath: () => false,
 				}
-			: gate;
+			: mutation === "detail-in-row"
+				? {
+						...gate,
+						reportEvents: (sessionId: string, events: Any[]) =>
+							gate.reportEvents(
+								sessionId,
+								events.map((event) =>
+									event.rawPayload?.kind === "turn_unasked"
+										? {
+												...event,
+												rawPayload: {
+													...event.rawPayload,
+													leaked: (current as Any)?.leakToken ?? "",
+												},
+											}
+										: event,
+								),
+							),
+					}
+				: mutation === "add-input"
+					? {
+							...gate,
+							reportEvents: (sessionId: string, events: Any[]) =>
+								gate.reportEvents(
+									sessionId,
+									events.map((event, index) =>
+										index === 0 && current
+											? {
+													...event,
+													content: `${event.content ?? ""} ${JSON.stringify([...current.inputs.values()])}`,
+												}
+											: event,
+									),
+								),
+						}
+					: gate;
 	// A mutation that rewrites an event on its way out (AGEN-122): the break lives with the ticket's scenario.
 	const eventMutation = T122_EVENT_MUTATIONS[mutation ?? ""];
 	const reportingGate = eventMutation
@@ -655,6 +682,7 @@ export async function startHost(
 		env,
 		probeCwd: probe,
 		tracker: approvals.approvals,
+		serverHas: serverFeatures.has,
 		log: (line) => console.log(`[host] ${line}`),
 		...takeoverExtras,
 	});
@@ -2892,6 +2920,8 @@ export async function runClaudeCanary(options: ClaudeCanaryOptions): Promise<num
 	process.env.AGENTPULSE_SKIP = "1";
 	process.env.AGENTPULSE_SUPERVISOR_DRY_RUN = "false";
 	process.env.SQLITE_PATH = join(root, "server.db");
+	// The key owner-only tool detail is encrypted with (AGEN-123): a throwaway one, so the feature is on and no real key is read.
+	process.env.AGENTPULSE_SECRETS_KEY ??= crypto.randomUUID();
 	process.env.DATA_DIR = root;
 	process.env.HOME = join(root, "home");
 	mkdirSync(join(root, "home", ".agentpulse"), { recursive: true });

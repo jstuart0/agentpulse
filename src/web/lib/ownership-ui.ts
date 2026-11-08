@@ -98,6 +98,8 @@ export function viewerIsAdmin(viewer: OwnershipViewer): boolean {
 export {
 	NOTES_BLOCKED_REASON,
 	RENAME_BLOCKED_REASON,
+	canReadToolDetail,
 	sessionActionAccess,
+	toolDetailAccess,
 } from "./session-action-access.js";
-export type { SessionActionAccess } from "./session-action-access.js";
+export type { SessionActionAccess, ToolDetailAccess } from "./session-action-access.js";

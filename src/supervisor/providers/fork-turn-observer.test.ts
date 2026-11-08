@@ -5,6 +5,9 @@
  * real Claude is started.
  */
 import { afterEach, describe, expect, test } from "bun:test";
+import { join } from "node:path";
+import { FORK_TOOL_DETAIL, FORK_TOOL_DETAIL_LIMITS } from "../../shared/fork-tool-calls.js";
+import type { ForkToolCallsReportBody } from "../../shared/fork-tool-calls.js";
 import { turnsOf } from "../test-utils/claude-fixture-replay.js";
 import {
 	AWAIT,
@@ -20,11 +23,13 @@ import {
 import { readClaudeFixture } from "./__fixtures__/claude-frames.js";
 import type { FakeConfig } from "./__fixtures__/fake-claude-stream.js";
 import { _resetClaudeStreamForTest, disposeAllClaudeStreamRuntimes } from "./claude-stream.js";
-import type { ToolCallRecord } from "./fork-tool-record.js";
+import { type ToolCallRecord, createDetailJudge, newToolCallRecord } from "./fork-tool-record.js";
 import {
 	type ForkTurnObserver,
 	type ObservedTurn,
 	forkTurnObserver,
+	splitIntoBodies,
+	toolCallReport,
 } from "./fork-turn-observer.js";
 
 const harnesses: Harness[] = [];
@@ -285,5 +290,278 @@ describe("a result that arrives after an interrupt was asked for", () => {
 		await sent.done;
 		await until(() => w.resulted.length === 2, "the held call");
 		expect(w.resulted.map((c) => c.toolUseId)).toEqual(["early", "late"]);
+	});
+});
+
+describe("the observer sends call detail (AGEN-123)", () => {
+	const SESSION = "33333333-3333-4333-8333-333333333333";
+
+	function resultedCall(over: Partial<ToolCallRecord> = {}): ToolCallRecord {
+		return newToolCallRecord({
+			toolUseId: `toolu_${Math.random().toString(36).slice(2, 10)}`,
+			name: "Bash",
+			detailInput: { command: "echo hi" },
+			detailResult: "hi",
+			detailResultBytes: 2,
+			resulted: true,
+			turnActionId: "act-1",
+			detailVerdict: "send",
+			...over,
+		});
+	}
+
+	function rig(over: { offered?: boolean; debounceMs?: number; failWith?: Error } = {}) {
+		const bodies: ForkToolCallsReportBody[] = [];
+		const lines: string[] = [];
+		const stamps: number[] = [];
+		const observer = forkTurnObserver(SESSION, {
+			send: async (_id, body) => {
+				if (over.failWith) throw over.failWith;
+				bodies.push(body);
+				stamps.push(Date.now());
+			},
+			serverHas: (feature) => (over.offered ?? true) && feature === FORK_TOOL_DETAIL,
+			log: (line) => void lines.push(line),
+			debounceMs: over.debounceMs ?? 20,
+		});
+		return { observer, bodies, lines, stamps };
+	}
+
+	test("a call whose verdict is send goes after the debounce, before its turn has ended; withhold sends nothing", async () => {
+		const { observer, bodies } = rig();
+		const sent = resultedCall();
+		const withheld = resultedCall({
+			detailVerdict: "withhold",
+			detailInput: { file_path: "/secret/x" },
+		});
+		observer.onCallResulted(sent);
+		observer.onCallResulted(withheld);
+		expect(bodies).toHaveLength(0);
+		await Bun.sleep(80);
+		expect(bodies).toHaveLength(1);
+		expect(bodies[0]?.calls.map((c) => c.toolUseId)).toEqual([sent.toolUseId]);
+		expect(JSON.stringify(bodies)).not.toContain("/secret/x");
+		expect(bodies[0]?.calls[0]).toMatchObject({
+			tool: "Bash",
+			outcome: "unasked",
+			turnActionId: "act-1",
+			fromSubagent: false,
+			outputTruncated: false,
+		});
+	});
+
+	test("the default debounce is a second: a call is posted well inside 2 s of its result", () => {
+		expect(FORK_TOOL_DETAIL_LIMITS.debounceMs).toBe(1000);
+		expect(FORK_TOOL_DETAIL_LIMITS.debounceMs).toBeLessThan(2000);
+	});
+
+	test("a server that doesn't offer the feature gets nothing, at a call or at the turn's end", async () => {
+		const { observer, bodies } = rig({ offered: false });
+		observer.onCallResulted(resultedCall());
+		observer.onTurnFinished({ actionId: "act-1", ended: "result", calls: [resultedCall()] });
+		await Bun.sleep(60);
+		expect(bodies).toEqual([]);
+	});
+
+	test("a bare observer (no gate given) observes nothing", () => {
+		const bare = forkTurnObserver(SESSION);
+		bare.onCallResulted(resultedCall());
+		bare.onTurnFinished({ actionId: "a", ended: "result", calls: [resultedCall()] });
+	});
+
+	test("the turn's end sends what never resulted at once: no_result, or stopped when a person stopped the turn", async () => {
+		const { observer, bodies } = rig({ debounceMs: 60_000 });
+		const cut = resultedCall({ resulted: false, detailResult: null, detailResultBytes: 0 });
+		observer.onTurnFinished({ actionId: "act-1", ended: "interrupted", calls: [cut] });
+		await Bun.sleep(30);
+		expect(bodies).toHaveLength(1);
+		expect(bodies[0]?.calls[0]).toMatchObject({ outcome: "stopped", output: null });
+		const crashed = rig({ debounceMs: 60_000 });
+		crashed.observer.onTurnFinished({ actionId: "a", ended: "fatal", calls: [cut] });
+		await Bun.sleep(30);
+		expect(crashed.bodies[0]?.calls[0]?.outcome).toBe("no_result");
+	});
+
+	test("a tool name outside the six reports as nothing; an MCP tool reports as mcp, never by name", () => {
+		expect(toolCallReport(resultedCall({ name: "Agent" }), null)).toBeNull();
+		expect(toolCallReport(resultedCall({ name: "mcp__secret-server__dump" }), null)?.tool).toBe(
+			"mcp",
+		);
+		expect(
+			JSON.stringify(toolCallReport(resultedCall({ name: "mcp__secret-server__dump" }), null)),
+		).not.toContain("secret-server");
+	});
+
+	test("a cut result says so; a subagent's call says so", () => {
+		const report = toolCallReport(
+			resultedCall({
+				detailResultBytes: 70_000,
+				detailResult: "x".repeat(65_536),
+				agentId: "sub-1",
+			}),
+			null,
+		);
+		expect(report?.outputTruncated).toBe(true);
+		expect(report?.fromSubagent).toBe(true);
+	});
+
+	test("bodies stay under 240 KiB: 12 calls of 100 KiB give at least 5 bodies, none over the limit, none lost", async () => {
+		const calls = Array.from({ length: 12 }, (_, i) =>
+			resultedCall({
+				toolUseId: `toolu_big${i}`,
+				detailInput: { command: "y".repeat(40_000) },
+				detailResult: "z".repeat(60_000),
+				detailResultBytes: 60_000,
+			}),
+		);
+		const { observer, bodies } = rig({ debounceMs: 60_000 });
+		observer.onTurnFinished({ actionId: "a", ended: "result", calls });
+		await Bun.sleep(60);
+		expect(bodies.length).toBeGreaterThanOrEqual(5);
+		for (const body of bodies) {
+			expect(Buffer.byteLength(JSON.stringify(body))).toBeLessThan(
+				FORK_TOOL_DETAIL_LIMITS.batchBytes,
+			);
+		}
+		expect(
+			bodies
+				.flatMap((b) => b.calls)
+				.map((c) => c.toolUseId)
+				.sort(),
+		).toEqual(calls.map((c) => c.toolUseId).sort());
+	});
+
+	test("a queue that reaches 240 KiB is sent without waiting for the debounce", async () => {
+		const { observer, bodies } = rig({ debounceMs: 60_000 });
+		for (let i = 0; i < 5; i++) {
+			observer.onCallResulted(
+				resultedCall({ detailResult: "r".repeat(60_000), detailResultBytes: 60_000 }),
+			);
+		}
+		await Bun.sleep(40);
+		expect(bodies.length).toBeGreaterThanOrEqual(1);
+	});
+
+	test("one call too large for any body is dropped and counted; the others still go", () => {
+		const big = toolCallReport(
+			resultedCall({ detailResult: "\u0000".repeat(60_000), detailResultBytes: 60_000 }),
+			null,
+		);
+		const small = toolCallReport(resultedCall(), null);
+		const { bodies, dropped } = splitIntoBodies(
+			[big, small, small].filter((r) => r !== null),
+			40_000,
+		);
+		expect(dropped).toBe(1);
+		expect(bodies.flat()).toHaveLength(2);
+	});
+
+	test("a failing send is counted in a line that names no input and no output, never thrown, and the next body goes", async () => {
+		const { observer, lines } = rig({
+			failWith: new Error("network down SENTINEL-IN-ERROR"),
+			debounceMs: 5,
+		});
+		observer.onCallResulted(
+			resultedCall({ detailInput: { command: "echo SECRET-COMMAND" }, detailResult: "SECRET-OUT" }),
+		);
+		await Bun.sleep(60);
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toMatch(/1 tool call\(s\)/);
+		expect(lines.join("\n")).not.toMatch(/SECRET|SENTINEL/);
+	});
+
+	test("a throwing send never escapes into the stream", async () => {
+		const observer = forkTurnObserver(SESSION, {
+			send: () => {
+				throw new Error("sync throw");
+			},
+			serverHas: () => true,
+			debounceMs: 5,
+		});
+		observer.onCallResulted(resultedCall());
+		observer.onTurnFinished({ actionId: "a", ended: "result", calls: [] });
+		await Bun.sleep(40);
+	});
+});
+
+describe("the verdict comes from the intact input, never from what is sent (C-H3)", () => {
+	const work = "/work/project";
+	const rulePath = "/work/secret-area";
+	const judge = createDetailJudge({
+		cwd: work,
+		excludesPath: (p) => p === rulePath || p.startsWith(`${rulePath}/`),
+		excludeScope: () => ({ state: "ok", paths: [rulePath] }),
+		realpath: async (p) => p,
+	});
+
+	test("a Write whose 200 KiB input names an excluded file_path after byte 16 KiB is withheld, and nothing is sent", async () => {
+		const input = { content: "c".repeat(200 * 1024), file_path: `${rulePath}/key.txt` };
+		expect(JSON.stringify(input).indexOf("file_path")).toBeGreaterThan(16 * 1024);
+		const verdict = await judge("Write", input);
+		expect(verdict).toBe("withhold");
+		const bodies: ForkToolCallsReportBody[] = [];
+		const observer = forkTurnObserver("s", {
+			send: async (_id, body) => void bodies.push(body),
+			serverHas: () => true,
+			debounceMs: 5,
+		});
+		observer.onCallResulted(
+			newToolCallRecord({
+				toolUseId: "toolu_w",
+				name: "Write",
+				detailInput: input,
+				resulted: true,
+				detailVerdict: verdict,
+			}),
+		);
+		await Bun.sleep(30);
+		expect(bodies).toEqual([]);
+	});
+
+	test("a Bash whose 100 KiB command names a rule path past the cut, in any of its spellings, is withheld", async () => {
+		const pad = "echo a; ".repeat(13_000);
+		expect(pad.length).toBeGreaterThan(100 * 1024);
+		for (const naming of [`${rulePath}/k`, "../secret-area/k"]) {
+			expect(await judge("Bash", { command: `${pad}cat ${naming}` }), naming).toBe("withhold");
+		}
+		expect(await judge("Bash", { command: pad })).toBe("send");
+	});
+
+	test("a rule under the home directory is also named by ~ and $HOME", async () => {
+		const { homedir } = await import("node:os");
+		const homeRule = join(homedir(), ".secrets-area");
+		const homeJudge = createDetailJudge({
+			cwd: work,
+			excludesPath: () => false,
+			excludeScope: () => ({ state: "ok", paths: [homeRule] }),
+			realpath: async (p) => p,
+		});
+		for (const naming of [
+			`${homeRule}/k`,
+			"~/.secrets-area/k",
+			"$HOME/.secrets-area/k",
+			"${HOME}/.secrets-area/k",
+		]) {
+			expect(await homeJudge("Bash", { command: `cat ${naming}` }), naming).toBe("withhold");
+		}
+		expect(await homeJudge("Bash", { command: "cat ~/other/k" })).toBe("send");
+	});
+
+	test("an input that isn't an object, or a path that isn't a string, is withheld", async () => {
+		expect(await judge("Write", "just text")).toBe("withhold");
+		expect(await judge("Read", { file_path: 42 })).toBe("withhold");
+		expect(await judge("Bash", null)).toBe("withhold");
+	});
+
+	test("a symlink into an excluded path is withheld through its resolved path", async () => {
+		const linked = createDetailJudge({
+			cwd: work,
+			excludesPath: (p) => p === rulePath || p.startsWith(`${rulePath}/`),
+			excludeScope: () => ({ state: "ok", paths: [rulePath] }),
+			realpath: async (p) =>
+				p.startsWith(`${work}/link`) ? p.replace(`${work}/link`, rulePath) : p,
+		});
+		expect(await linked("Read", { file_path: `${work}/link/key.txt` })).toBe("withhold");
+		expect(await linked("Read", { file_path: `${work}/plain.txt` })).toBe("send");
 	});
 });

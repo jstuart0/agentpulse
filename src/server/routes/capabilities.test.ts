@@ -153,10 +153,26 @@ describe("GET /capabilities", () => {
 				claudeApprovals: true,
 				claudeTakeover: true,
 				claudeStopTurn: true,
+				forkToolDetail: true,
 			});
 			expect(body.pushEvents).toEqual(["ask_reply"]);
 			expect(Object.keys(body.ai).sort()).toEqual(["active", "build", "provider", "vectorSearch"]);
 			expect("labs" in body).toBe(false);
+		}
+	});
+
+	test("forkToolDetail is advertised only while the secrets key that encrypts the detail is set", async () => {
+		const { config } = await import("../config.js");
+		const saved = config.secretsKey;
+		try {
+			config.secretsKey = "";
+			const off = (await (await get(respondKey)).json()) as Record<string, any>;
+			expect("forkToolDetail" in off.features).toBe(false);
+			config.secretsKey = "a-test-secrets-key-for-capabilities";
+			const on = (await (await get(respondKey)).json()) as Record<string, any>;
+			expect(on.features.forkToolDetail).toBe(true);
+		} finally {
+			config.secretsKey = saved;
 		}
 	});
 

@@ -27,6 +27,7 @@ export {
 	codexApprovalsPg as codexApprovals,
 	codexApprovalAuditPg as codexApprovalAudit,
 } from "./core/codex-approvals.js";
+export { forkToolCallsPg as forkToolCalls } from "./core/fork-tool-calls.js";
 export { usersPg as users } from "./core/users.js";
 export { authSessionsPg as authSessions } from "./core/auth-sessions.js";
 export { apiKeysPg as apiKeys } from "./core/api-keys.js";

@@ -15,6 +15,7 @@
 export { sessionsPg as sessions } from "../src/server/db/schema/core/sessions";
 export { eventsPg as events } from "../src/server/db/schema/core/events";
 export { managedDeliveryReceiptsPg as managedDeliveryReceipts } from "../src/server/db/schema/core/managed-delivery-receipts";
+export { forkToolCallsPg as forkToolCalls } from "../src/server/db/schema/core/fork-tool-calls";
 export {
 	codexApprovalsPg as codexApprovals,
 	codexApprovalAuditPg as codexApprovalAudit,

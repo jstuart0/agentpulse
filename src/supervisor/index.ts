@@ -357,6 +357,7 @@ async function main() {
 		env: process.env,
 		probeCwd: join(home, ".agentpulse", "claude-probe"),
 		tracker: approvalsWiring.approvals,
+		serverHas: serverFeatures.has,
 	});
 	const resumeSession = createSessionResumer({
 		gate,

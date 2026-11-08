@@ -182,14 +182,17 @@ describe("migration 0020 files", () => {
 describe("migration 0021 (AGEN-117): the control-history index, one name on both paths", () => {
 	const FILE = "0021_control_actions_session_index.sql";
 	for (const dialect of ["sqlite", "postgres"] as const) {
-		test(`${dialect}: the journal entry is newest, its file creates the legacy init's index and is safe to repeat`, () => {
+		test(`${dialect}: the journal entry is later than every earlier one, its file creates the legacy init's index and is safe to repeat`, () => {
 			const journal = JSON.parse(
 				readFileSync(join(MIGRATIONS_ROOT, dialect, "meta/_journal.json"), "utf8"),
 			) as { entries: Array<{ idx: number; when: number; tag: string }> };
 			const entry = journal.entries.find((e) => e.tag === FILE.replace(".sql", ""));
 			expect(entry?.idx).toBe(21);
 			const entryWhen = entry?.when ?? Number.NEGATIVE_INFINITY;
-			expect(Math.max(...journal.entries.map((e) => e.when))).toBe(entryWhen);
+			// A later migration (0022 and on) is newer still; what matters is that nothing before it is.
+			expect(
+				Math.max(...journal.entries.filter((e) => e.idx < 21).map((e) => e.when)),
+			).toBeLessThan(entryWhen);
 			const sql = readFileSync(join(MIGRATIONS_ROOT, dialect, FILE), "utf8");
 			expect(sql).toMatch(
 				/CREATE INDEX IF NOT EXISTS [`"]idx_control_actions_session[`"] ON [`"]control_actions[`"]/,

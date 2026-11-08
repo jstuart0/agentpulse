@@ -60,6 +60,7 @@ export type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem };
 export type AiProviderKind = ProviderKind;
 export type AiWatcherPolicy = WatcherPolicy;
 export type { AskMessageRole, DecisionKind, HitlReplyKind } from "../../shared/types.js";
+import type { ForkToolCallDto, ForkToolCallList } from "../../shared/fork-tool-calls.js";
 import type { ForkOptionsRequest } from "../../shared/session-resume.js";
 import {
 	RELOAD_PROBE_TIMEOUT_MS,
@@ -1710,4 +1711,30 @@ export interface AiProposal {
 	hitlExpiresAt: string | null;
 	createdAt: string;
 	updatedAt: string;
+}
+
+// ---- Tool detail of a continued session (AGEN-123) ----
+// Signed-in owner or admin only; there is no MCP tool for it. Kept apart from `api` so only the pieces that
+// read it import it.
+
+/** The session's stored calls, newest first, without their text (presence and outcome only); one `getForkToolCall` per call opened. */
+export function listForkToolCalls(sessionId: string): Promise<ForkToolCallList> {
+	return request<ForkToolCallList>(
+		`/sessions/${encodeURIComponent(sessionId)}/tool-calls?view=index`,
+		undefined,
+		{ background: true },
+	);
+}
+
+/** One stored call with its input and output. 404 when it was never stored or has aged out. */
+export async function getForkToolCall(
+	sessionId: string,
+	toolUseId: string,
+): Promise<ForkToolCallDto> {
+	const answer = await request<{ v: 1; call: ForkToolCallDto }>(
+		`/sessions/${encodeURIComponent(sessionId)}/tool-calls/${encodeURIComponent(toolUseId)}`,
+		undefined,
+		{ background: true },
+	);
+	return answer.call;
 }

@@ -11,6 +11,7 @@ import postgres from "postgres";
 import { config } from "../config.js";
 import { refreshSearchIndexStatus } from "../services/search/search-index-status.js";
 import { CODEX_APPROVAL_TRIGGERS_SQLITE } from "./codex-approvals-ddl.js";
+import { FORK_TOOL_CALLS_DDL_SQLITE } from "./fork-tool-calls-ddl.js";
 import {
 	EVENTS_FTS_DDL,
 	EVENT_TEXT_COALESCE_SELECT,
@@ -1104,6 +1105,8 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		)`,
 		"CREATE UNIQUE INDEX IF NOT EXISTS uq_managed_delivery_receipts_session_key ON managed_delivery_receipts(session_id, receipt_key)",
 		"CREATE INDEX IF NOT EXISTS idx_managed_delivery_receipts_created_at ON managed_delivery_receipts(created_at)",
+		// Migration 0022 (AGEN-123): the owner-only record of what each fork tool call ran.
+		...FORK_TOOL_CALLS_DDL_SQLITE,
 		// Migration 0020 (AGEN-87): Codex approvals and their append-only audit. The
 		// approvals table is born with its cascade FK, so it is not in
 		// rebuildSessionChildFks. Same columns, index names and column order as the

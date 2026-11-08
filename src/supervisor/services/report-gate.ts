@@ -64,6 +64,7 @@ import {
 	MAX_CWD_LENGTH,
 	evaluateExclusion,
 } from "../../shared/exclude-rules.js";
+import type { ForkToolCallsReportBody } from "../../shared/fork-tool-calls.js";
 import {
 	DELIVERY_ID_HEADER,
 	REPLAY_HEADER,
@@ -295,6 +296,16 @@ export interface ReportGate {
 		sessionId: string,
 		body: CodexApprovalReportRequest,
 	): Promise<ApprovalReportResult>;
+	/**
+	 * Reports what a fork's tool calls ran (AGEN-123), only for a session the rules don't cover. Live only: it
+	 * is never queued and never a replay, because detail for a turn that is long over is worth less than the
+	 * disk it would sit on, and a lost send only costs the "Details" control on one row. Throws what the
+	 * server's refusal or the network threw; a network failure also latches the gate offline.
+	 */
+	reportToolCalls(
+		sessionId: string,
+		body: ForkToolCallsReportBody,
+	): Promise<{ outcome: "sent" | "excluded" | "blocked" }>;
 	/**
 	 * The host's approvals poll. Entries about a session a rule covers (or whose rules can't be trusted) are
 	 * left out; with nothing left, nothing is sent. Never queued; a 10 s limit.
@@ -1361,6 +1372,13 @@ export function createReportGate(deps: ReportGateDeps): ReportGate {
 			);
 			if (!response) throw unreadableApprovalAnswer();
 			return { outcome: "sent", response };
+		},
+
+		async reportToolCalls(sessionId, body) {
+			const verdict = decide(sessionId);
+			if (verdict !== "send") return { outcome: verdict === "excluded" ? "excluded" : "blocked" };
+			await sendApproval(`/managed-sessions/${sessionId}/tool-calls`, JSON.stringify(body));
+			return { outcome: "sent" };
 		},
 
 		async syncApprovals(entries) {

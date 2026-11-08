@@ -873,6 +873,7 @@ export class ClaudeStreamRuntime {
 			name,
 			detailInput: block.input,
 			detailPaths: detailPathsOf(block.input),
+			turnActionId: turn.actionId,
 			agentId: subagent && typeof message.agent_id === "string" ? message.agent_id : null,
 			parentToolUseId:
 				typeof message.parent_tool_use_id === "string" ? message.parent_tool_use_id : null,

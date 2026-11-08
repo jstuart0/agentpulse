@@ -1023,6 +1023,8 @@ export function SessionDetailPage() {
 							mode={mode}
 							onScroll={handleTimelineScroll}
 							loadingContext={reveal.loadingContext}
+							session={session}
+							allEvents={allEvents}
 						/>
 					</>
 				) : workspaceTab === "notes" ? (

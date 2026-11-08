@@ -103,7 +103,6 @@ const NOT_IN_PROJECT_FILES = "your project's CLAUDE.md, hooks and MCP servers";
 const NOT_IN_OWN_MCP = "your own MCP servers";
 const NOT_IN_SUBAGENTS = "subagents";
 const NOT_IN_REST = ["slash commands", "saving memories"];
-const NOT_IN_TOOLS_TAIL = "Tools show in the timeline by name and outcome, with no details.";
 
 /** "a, b and c": the same joining the sentence always used. */
 function listOf(items: readonly string[]): string {
@@ -119,15 +118,25 @@ export function notInSessionLine(requested: ForkOptionsRequest = {}): string {
 		...(requested.subagents === true ? [] : [NOT_IN_SUBAGENTS]),
 		...NOT_IN_REST,
 	];
-	return `${listOf(items)}. ${NOT_IN_TOOLS_TAIL}`;
+	return `${listOf(items)}.`;
 }
 
 /**
- * The paragraph about who can open what each tool call ran (AGEN-123 writes the words). Null until then, so
- * the dialog shows no such paragraph.
+ * The paragraph about who can open what each tool call ran (AGEN-123): the stored input and output, kept for
+ * 7 days, readable only by a signed-in person who may. `ownerLine` is how the owner reads in the dialog
+ * ("you", a name); null in team mode means the session has no owner, which is an admin's.
  */
-export function toolDetailLine(_mode: "solo" | "team", _ownerLine: string | null): string | null {
-	return null;
+export function toolDetailLine(audience: "solo" | "team", ownerLine: string | null): string | null {
+	switch (audience) {
+		case "solo":
+			return "You can open what each tool call ran, for 7 days.";
+		case "team": {
+			const who = ownerLine
+				? `${ownerLine.charAt(0).toUpperCase()}${ownerLine.slice(1)} and admins`
+				: "Admins";
+			return `${who} can open what each tool call ran, for 7 days, when signed in. Others see only the tool's name and outcome.`;
+		}
+	}
 }
 
 export interface ClaudeDialogInput {

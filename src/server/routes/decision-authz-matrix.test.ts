@@ -1284,6 +1284,15 @@ describe("coverage", () => {
 			file: "routes/codex-approvals.test.ts",
 			marker: "viewer.canAccept is what the POST would do",
 		},
+		// AGEN-123: tool detail is a signed-in owner's or admin's; its grid (owner, admin, member, unowned, every key scope) is in its own suite.
+		"GET /sessions/:sessionId/tool-calls": {
+			file: "routes/fork-tool-calls.test.ts",
+			marker: "every key scope is refused, an admin-owned and an ownerless manage key included",
+		},
+		"GET /sessions/:sessionId/tool-calls/:toolUseId": {
+			file: "routes/fork-tool-calls.test.ts",
+			marker: "every key scope is refused, an admin-owned and an ownerless manage key included",
+		},
 	};
 
 	test("every route in OWNER_CHECKED_ROUTES is either an entry of the matrix or named as covered by another suite", () => {

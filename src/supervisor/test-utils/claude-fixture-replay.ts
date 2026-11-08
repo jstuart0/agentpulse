@@ -64,9 +64,12 @@ export async function replayFixture(
 	options: {
 		dir?: string;
 		extra?: Partial<ClaudeStreamOptions>;
+		/** Rewrites the recorded lines before they are scripted (a test planting a sentinel in every input and result). */
+		transform?: (lines: RecordedLine[]) => RecordedLine[];
 	} = {},
 ): Promise<ReplayResult | null> {
-	const turns = turnsOf(readClaudeFixture(name, options.dir ?? CLAUDE_FIXTURE_DIR));
+	const recorded = readClaudeFixture(name, options.dir ?? CLAUDE_FIXTURE_DIR);
+	const turns = turnsOf(options.transform ? options.transform(recorded) : recorded);
 	if (turns.length === 0) return null;
 	const h = makeHarness({ turns });
 	const rt = await h.start(options.extra);

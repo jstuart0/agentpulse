@@ -415,6 +415,26 @@ export function mayAnswerApproval(
 }
 
 /**
+ * May this actor read what a fork's tool calls ran (AGEN-123, F21)? The pure rule; the caller has already
+ * required a signed-in person (an API key of any scope is refused `human_required` before this runs).
+ *  - Solo: allowed.
+ *  - Team: a host credential (role `none`) never; an admin always; a missing session, nobody else; an
+ *    unowned session is an admin's alone (unlike an accept's decline, there is nothing safe about reading
+ *    it); an owned session its owner.
+ */
+export function mayReadToolDetail(
+	actor: Actor,
+	mode: InstanceModeName,
+	session: { ownerUserId: string | null } | null,
+): boolean {
+	if (mode === "solo") return true;
+	if (actor.role === "none") return false;
+	if (actor.role === "admin") return true;
+	if (session === null || session.ownerUserId === null) return false;
+	return actor.userId !== null && actor.userId === session.ownerUserId;
+}
+
+/**
  * Throws `NotOwnerError` unless the actor may answer an approval on this
  * session (see `mayAnswerApproval`). Reads the session's owner; call it before
  * the approval row is read, so a refusal says nothing about the row.
