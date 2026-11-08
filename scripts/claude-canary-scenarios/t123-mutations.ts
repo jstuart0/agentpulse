@@ -15,7 +15,7 @@ export const T123_MUTATIONS: Record<string, Mutation> = {
 	"detail-in-row": {
 		scenario: "tool-detail",
 		layers: [
-			"detail-in-row: the host puts the file's contents (the Read's output) in the text of the turn's 'ran without asking' row. It goes in content because AGEN-122's server whitelist strips any extra rawPayload key (a `leaked` key there survives by design, held by managed-session-state.test.ts); content is a field the whitelist keeps, so only the owner-only detail rule and the leak scan stand in the way",
+			"detail-in-row: the host reports one extra ManagedWarning event whose content is the file's contents (the Read's output). Retargeted after AGEN-122's server rebuilds a fork's call and turn rows from fixed words (a leak in those rows' content or rawPayload would survive by design, held by the unit tests); a ManagedWarning keeps the sender's content, so only the leak scan stands in the way",
 		],
 		expectation: "the file's contents are in no stored row",
 	},

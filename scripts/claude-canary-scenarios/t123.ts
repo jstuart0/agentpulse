@@ -36,6 +36,9 @@ export const T123_SCENARIOS: Record<(typeof T123_SCENARIO_IDS)[number], Scenario
 	async "tool-detail"(run, rec, judge) {
 		const host = await startHost(run, "tool-detail", "login");
 		const out: Record<string, unknown> = {};
+		// A mutation re-runs this scenario in the same home, and turn B leaves its rule there: turn A of the next
+		// run would have its Bash command withheld (found by this canary as an instrumentInvalid).
+		rmSync(join(host.home, ".agentpulse", "exclude"), { force: true });
 		try {
 			const s = makeSource(run, host, rec.sentinel, "Reply with just: ready");
 			if (!judge.instrument("S was made under the throwaway config", s.id, s.why)) return out;
@@ -109,7 +112,14 @@ export const T123_SCENARIOS: Record<(typeof T123_SCENARIO_IDS)[number], Scenario
 					? calls
 					: undefined;
 			}).catch(() => null);
-			if (!judge.instrument("the host sent detail to a server that stores it", landed)) return out;
+			if (
+				!judge.instrument(
+					"the host sent detail to a server that stores it",
+					landed,
+					landed ? undefined : (((await index()).body?.calls ?? []) as Any[]).map((c) => c.tool),
+				)
+			)
+				return out;
 			const calls = landed as Any[];
 			const readCall = calls.find((c) => c.tool === "Read");
 			const bashCall = calls.find((c) => c.tool === "Bash");

@@ -17,9 +17,9 @@ export const T119_MUTATIONS: Record<string, Mutation> = {
 		scenario: "stop-turn-pending",
 		layers: [
 			"no-turn-fence: the interrupt is inserted straight into control_actions (no enqueue, so no fence closes the turn's cards)",
-			"no-turn-fence: it names no target prompt, so the issue and answer predicates cannot find it either (and the host never fences or interrupts)",
+			"no-turn-fence: it names no target prompt and the host never sees it. Since review M5 the answer predicate refuses an accept while any interrupt of the session is queued or running, whatever turn it names, so the accept is still refused turn_interrupted (defense in depth). What only the fence does is close the card, so the expectation is the closing: it stays pending without it",
 		],
-		expectation: "the accept after the interrupt is refused turn_interrupted",
+		expectation: "the card closed turn_stopped and was never delivered",
 	},
 	"flag-decides": {
 		scenario: "stop-turn-race",

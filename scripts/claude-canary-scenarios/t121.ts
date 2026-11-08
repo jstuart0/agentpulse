@@ -579,11 +579,14 @@ export const T121_SCENARIOS: Record<(typeof T121_SCENARIO_IDS)[number], Scenario
 				"no approval card is still pending",
 				(await approvalRows(run, n)).every((r: Any) => r.status !== "pending"),
 			);
-			judge.claim(
-				"the private --mcp-config copy is removed",
-				!existsSync(join(host.home, ".agentpulse", "claude-fork-mcp")) ||
-					readdirSafe(join(host.home, ".agentpulse", "claude-fork-mcp")).length === 0,
+			// The runtime's cleanup runs when it sees the process exit and may await, so the copy goes a moment
+			// after the last pid does (found by this canary: a check made at the instant of "gone" failed 2 runs in 6).
+			const copyDir = join(host.home, ".agentpulse", "claude-fork-mcp");
+			const copyGone = () => !existsSync(copyDir) || readdirSafe(copyDir).length === 0;
+			await until("the private --mcp-config copy is removed", 10_000, () => copyGone()).catch(
+				() => {},
 			);
+			judge.claim("the private --mcp-config copy is removed", copyGone());
 		} finally {
 			await world.done();
 		}

@@ -55,13 +55,16 @@ type StreamProto = Record<string, (...args: Any[]) => Any>;
 async function patchRuntime(patch: (proto: StreamProto) => void): Promise<() => void> {
 	const { ClaudeStreamRuntime } = await import("../../src/supervisor/providers/claude-stream.js");
 	const proto = ClaudeStreamRuntime.prototype as unknown as StreamProto;
-	const originals = { ...proto };
+	// Class methods are non-enumerable, so a spread copies none of them and a restore built on it puts nothing back
+	// (found by this canary: a patched interruptTurn leaked into the next mutation's scenario, which then read as
+	// instrumentInvalid). The descriptors are what to save.
+	const originals = Object.getOwnPropertyDescriptors(proto);
 	patch(proto);
 	return () => {
-		for (const key of Object.keys(proto)) {
+		for (const key of Object.getOwnPropertyNames(proto)) {
 			if (!(key in originals)) delete proto[key];
 		}
-		Object.assign(proto, originals);
+		Object.defineProperties(proto, originals);
 	};
 }
 
