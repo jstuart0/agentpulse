@@ -81,6 +81,31 @@ describe("tools/sessions.ts list_sessions — observed enum (OBSERVED_AGENT_TYPE
 	});
 });
 
+// AGEN-141: "opencode" is observed only, like copilot_cli.
+describe("opencode (AGEN-141)", () => {
+	test("list_sessions accepts agent_type:opencode", async () => {
+		const ctx = newContext(fakeClient({ getSessions: async () => ({ sessions: [], total: 0 }) }));
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "list_sessions",
+			arguments: { agent_type: "opencode" },
+		});
+		expect(result.isError).toBeFalsy();
+	});
+
+	test("create_template rejects agent_type:opencode — LAUNCHABLE_AGENT_TYPE_ENUM never gains it", async () => {
+		const ctx = newContext(fakeClient({}));
+		registerTemplateMutationTools(ctx, { hasObserve: false, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "create_template",
+			arguments: { ...baseTemplateSnakeCase, agent_type: "opencode" },
+		});
+		expect(result.isError).toBeTruthy();
+	});
+});
+
 describe("tools/templates.ts create_template — launchable enum (LAUNCHABLE_AGENT_TYPE_ENUM)", () => {
 	test("agent_type:claude_code is legal today; Phase 6 keeps rejecting copilot_cli here", async () => {
 		const ctx = newContext(

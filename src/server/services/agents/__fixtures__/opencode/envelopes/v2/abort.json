@@ -1,0 +1,31 @@
+{
+	"line": "v2",
+	"name": "abort",
+	"envelopes": [
+		{
+			"session_id": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+			"hook_event_name": "tool.before",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-abort",
+			"data": {
+				"tool": "shell",
+				"tool_use_id": "call_stub_slow_1",
+				"input": { "command": "sleep 4; echo slow-done" }
+			}
+		},
+		{
+			"session_id": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+			"hook_event_name": "session.step.failed",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-abort",
+			"data": { "error": { "name": "aborted" } }
+		},
+		{
+			"session_id": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+			"hook_event_name": "session.execution.interrupted",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-abort",
+			"data": {}
+		}
+	]
+}

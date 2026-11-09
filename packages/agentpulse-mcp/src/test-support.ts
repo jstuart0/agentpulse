@@ -19,7 +19,7 @@ export const FAKE_STATS: DashboardStats = {
 	activeSessions: 3,
 	totalSessionsToday: 7,
 	totalToolUsesToday: 42,
-	byAgentType: { claude_code: 2, codex_cli: 1, copilot_cli: 0 },
+	byAgentType: { claude_code: 2, codex_cli: 1, copilot_cli: 0, opencode: 0 },
 	completedCount: 5,
 	archivedCount: 1,
 };

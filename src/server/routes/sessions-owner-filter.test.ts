@@ -516,7 +516,7 @@ describe("GET /sessions/stats?owner=", () => {
 			archivedCount: 1,
 			tabCounts: { active: 4, completed: 1, archived: 1 },
 			totalToolUsesToday: 17,
-			byAgentType: { claude_code: 1, codex_cli: 1, copilot_cli: 0 },
+			byAgentType: { claude_code: 1, codex_cli: 1, copilot_cli: 0, opencode: 0 },
 			truncated: false,
 			operational: { waiting: 1, working: 1, idle: 1, error: 1 },
 			// ended today: the completed row and the archived one; the failed one
@@ -542,7 +542,7 @@ describe("GET /sessions/stats?owner=", () => {
 			archivedCount: 2,
 			tabCounts: { active: 7, completed: 3, archived: 2 },
 			totalToolUsesToday: 17 + 11 + 13 + 17 + 19 + 1,
-			byAgentType: { claude_code: 4, codex_cli: 1, copilot_cli: 0 },
+			byAgentType: { claude_code: 4, codex_cli: 1, copilot_cli: 0, opencode: 0 },
 			truncated: false,
 			operational: { waiting: 1, working: 4, idle: 1, error: 1 },
 			completedToday: 5,

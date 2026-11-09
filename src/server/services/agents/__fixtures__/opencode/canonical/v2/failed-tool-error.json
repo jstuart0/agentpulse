@@ -1,0 +1,33 @@
+{
+	"line": "v2",
+	"name": "failed-tool-error",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+				"hook_event_name": "PreToolUse",
+				"cwd": "/scratch/proj/v2-failed-tool-error",
+				"tool_name": "read",
+				"tool_input": { "path": "/scratch/proj/v2-failed-tool-error/missing.txt" },
+				"tool_use_id": "call_stub_read_1",
+				"provider_event_name": "tool.before",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PreToolUse", "tool_use_id": "call_stub_read_1" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+				"hook_event_name": "PostToolUseFailure",
+				"cwd": "/scratch/proj/v2-failed-tool-error",
+				"tool_name": "read",
+				"tool_input": { "path": "/scratch/proj/v2-failed-tool-error/missing.txt" },
+				"tool_use_id": "call_stub_read_1",
+				"error_message": "Tool.Error",
+				"provider_event_name": "tool.after",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PostToolUseFailure", "tool_use_id": "call_stub_read_1" }
+		}
+	]
+}

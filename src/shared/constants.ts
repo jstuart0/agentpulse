@@ -54,7 +54,7 @@ export const SEMANTIC_STATUSES = [
 // search backend's sessionStatus filter (clarity-slice-h-archive-status-removal).
 export const SESSION_STATUSES = ["active", "idle", "completed", "failed", "archived"] as const;
 
-export const AGENT_TYPES = ["claude_code", "codex_cli", "copilot_cli"] as const;
+export const AGENT_TYPES = ["claude_code", "codex_cli", "copilot_cli", "opencode"] as const;
 
 // Agent types AgentPulse can actively start a process for. Everything in
 // AGENT_TYPES that isn't here is observed-only (D5): it can post hook
@@ -66,6 +66,14 @@ export const LAUNCHABLE_AGENT_TYPES = ["claude_code", "codex_cli"] as const;
 
 export function isLaunchable(agentType: string): agentType is LaunchableAgentType {
 	return (LAUNCHABLE_AGENT_TYPES as readonly string[]).includes(agentType);
+}
+
+/** True for an agent type AgentPulse observes but can't launch or steer (Copilot CLI, OpenCode). */
+export function isObservedOnly(agentType: string): boolean {
+	return (
+		Object.hasOwn(AGENT_METADATA, agentType) &&
+		AGENT_METADATA[agentType as AgentType].observeOnlyHint !== null
+	);
 }
 
 // Status colors for the dashboard
@@ -129,6 +137,17 @@ export const AGENT_METADATA: Record<AgentType, AgentMetadata> = {
 		dotClass: "bg-fuchsia-400/70",
 		instructionsFile: "AGENTS.md",
 		observeOnlyHint: "Observed only — AgentPulse can't launch or steer Copilot sessions.",
+		hasNameSource: false,
+	},
+	// AGEN-141: OpenCode (1.x and 2.x) is observe-only. The value is "opencode"
+	// rather than "opencode_cli" because OpenCode is a TUI, a daemon and an app.
+	opencode: {
+		label: "OpenCode",
+		shortLabel: "OpenCode",
+		badgeClass: "bg-sky-500/8 text-sky-400/90 border-sky-500/15",
+		dotClass: "bg-sky-400/70",
+		instructionsFile: "AGENTS.md",
+		observeOnlyHint: "Observed only — AgentPulse can't launch or steer OpenCode sessions.",
 		hasNameSource: false,
 	},
 };

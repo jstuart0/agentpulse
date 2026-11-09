@@ -1,0 +1,31 @@
+{
+	"line": "v2",
+	"name": "shell-tool",
+	"envelopes": [
+		{
+			"session_id": "ses_e409ad1f6ffegI64qT1DgzijzJ",
+			"hook_event_name": "tool.before",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-shell-tool",
+			"data": {
+				"tool": "shell",
+				"tool_use_id": "call_stub_ok_1",
+				"input": { "command": "printf ok" }
+			}
+		},
+		{
+			"session_id": "ses_e409ad1f6ffegI64qT1DgzijzJ",
+			"hook_event_name": "tool.after",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-shell-tool",
+			"data": {
+				"tool": "shell",
+				"tool_use_id": "call_stub_ok_1",
+				"input": { "command": "printf ok" },
+				"status": "completed",
+				"exit_code": 0,
+				"output": "ok"
+			}
+		}
+	]
+}

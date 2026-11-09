@@ -1,0 +1,117 @@
+{
+	"line": "v1",
+	"name": "child-permission",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_parent000000000000000000001",
+				"hook_event_name": "SessionStart",
+				"cwd": "/scratch/proj/v1-child-perm",
+				"provider_event_name": "session.created",
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
+			},
+			"semantic": {
+				"event": "SessionStart"
+			}
+		},
+		{
+			"expected": {
+				"session_id": "ses_parent000000000000000000001",
+				"hook_event_name": "SubagentStart",
+				"agent_id": "ses_child0000000000000000000001",
+				"parent_session_id": "ses_parent000000000000000000001",
+				"cwd": "/scratch/proj/v1-child-perm",
+				"provider_event_name": "session.created",
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
+			},
+			"semantic": {
+				"event": "SubagentStart",
+				"agentId": "ses_child0000000000000000000001"
+			}
+		},
+		{
+			"expected": {
+				"session_id": "ses_parent000000000000000000001",
+				"hook_event_name": "PreToolUse",
+				"agent_id": "ses_child0000000000000000000001",
+				"parent_session_id": "ses_parent000000000000000000001",
+				"cwd": "/scratch/proj/v1-child-perm",
+				"tool_name": "write",
+				"tool_input": {
+					"filePath": "/scratch/proj/v1-child-perm/perm.txt"
+				},
+				"tool_use_id": "ses_child0000000000000000000001:call_stub_perm_1#2",
+				"provider_event_name": "tool.execute.before",
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
+			},
+			"semantic": {
+				"event": "PreToolUse",
+				"tool_use_id": "ses_child0000000000000000000001:call_stub_perm_1#2",
+				"agentId": "ses_child0000000000000000000001"
+			}
+		},
+		{
+			"expected": {
+				"session_id": "ses_parent000000000000000000001",
+				"hook_event_name": "PermissionRequest",
+				"agent_id": "ses_child0000000000000000000001",
+				"parent_session_id": "ses_parent000000000000000000001",
+				"cwd": "/scratch/proj/v1-child-perm",
+				"tool_name": "edit",
+				"tool_input": {
+					"patterns": ["perm.txt"]
+				},
+				"tool_use_id": "ses_child0000000000000000000001:call_stub_perm_1#2",
+				"provider_event_name": "permission.asked",
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
+			},
+			"semantic": {
+				"event": "PermissionRequest",
+				"tool_use_id": "ses_child0000000000000000000001:call_stub_perm_1#2",
+				"agentId": "ses_child0000000000000000000001"
+			}
+		},
+		{
+			"expected": {
+				"session_id": "ses_parent000000000000000000001",
+				"hook_event_name": "PostToolUse",
+				"agent_id": "ses_child0000000000000000000001",
+				"parent_session_id": "ses_parent000000000000000000001",
+				"cwd": "/scratch/proj/v1-child-perm",
+				"tool_name": "write",
+				"tool_input": {
+					"filePath": "/scratch/proj/v1-child-perm/perm.txt"
+				},
+				"tool_use_id": "ses_child0000000000000000000001:call_stub_perm_1#2",
+				"tool_response": "Wrote file successfully.",
+				"provider_event_name": "tool.execute.after",
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
+			},
+			"semantic": {
+				"event": "PostToolUse",
+				"tool_use_id": "ses_child0000000000000000000001:call_stub_perm_1#2",
+				"agentId": "ses_child0000000000000000000001"
+			}
+		}
+	]
+}

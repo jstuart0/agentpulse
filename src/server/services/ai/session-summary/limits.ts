@@ -93,7 +93,9 @@ export const EDIT_TOOLS: readonly string[] = [
 ];
 export const SHELL_TOOLS: readonly string[] = ["bash", "shell", "exec_command"];
 
-/** Agents whose hooks include a failure event: for them a PostToolUse row is evidence of success. */
+/** Agents whose hooks include a failure event: for them a PostToolUse row is evidence of success.
+ * OpenCode is deliberately absent (AGEN-141): a 1.x shell call the user aborts ends `completed` with no exit
+ * code, so its PostToolUse proves nothing; its rows read an exit code or a PostToolUseFailure instead. */
 export const FAILURE_EVENT_AGENTS: readonly string[] = ["claude_code", "copilot_cli"];
 
 /**

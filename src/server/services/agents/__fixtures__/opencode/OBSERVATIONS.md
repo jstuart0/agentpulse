@@ -42,3 +42,11 @@ Result is `pass`, `stop` or `branch-<X>`. Tokens are the machine-readable outcom
 - Beyond that, those three homes can't be compared whole: the user's own Claude, Codex and supervisor write to them while a run is going (measured: files change within 15 s with no canary running). Their churn is reported as a count, not judged.
 - The unset-XDG default (`~/.config` on macOS) was not run: the sandbox refuses an unset XDG variable. XDG_CONFIG_HOME is honoured and nothing was created under the sandbox HOME.
 - A TUI session, Linux and Windows were not measured.
+
+## Phase 1 decisions taken from these gates
+
+- **G3 and `FAILURE_EVENT_AGENTS`: not added.** Every failed call has a signal on its own (1.x: a thrown tool ends its part `error` and never fires `tool.execute.after`, so the plugin sends the failure from the part; a non-zero exit is `metadata.exit`; 2.x: `tool.after` `status: "error"` or the result's `exit`). The canonicalizer turns each into `PostToolUseFailure`. But a 1.x shell call the user aborts fires `after` with `exit: null` and ends `completed` (capture `v1/abort.json`), so a `PostToolUse` is not proof of success and the summary reads OpenCode rows by exit code instead (`ledger.test.ts`, "opencode (AGEN-141)").
+- **G10: no turn id.** The envelope has no `turn_id`; order rests on the plugin's per-session send chain. D21 (a late `PreToolUse` after `Stop`) therefore doesn't apply to OpenCode.
+- **G13: distinct abort.** 1.x: `session.error` named `MessageAbortedError` is an `Interrupt` (a child's is an error row). 2.x: `session.execution.interrupted` is the `Interrupt` (the forwarded set grows from 7 to 8 names, plus 2 permission names, so 10 on 2.x); the `session.step.failed` that precedes it (`error.type: "aborted"`) is dropped. 1.x still sends `session.idle` after the abort, which is a `Stop`; the plugin may drop that one in phase 2.
+- **G8: 2.x permission events are forwarded** (`permission.asked`, `permission.replied`), the call id is `data.source.id`.
+- **G4, G5, G12, G7:** as the plan's branches say (shared `globalThis`; a running 2.x service doesn't see `AGENTPULSE_SKIP`; `replied` carries no call id and is linked by `requestID`; every 1.x bus event has an `evt_` id). Phase 1 only fixes the wire shape for them.

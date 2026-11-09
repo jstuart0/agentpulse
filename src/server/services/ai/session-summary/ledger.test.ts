@@ -1114,6 +1114,23 @@ describe("P3-9 a result is ok or FAILED only when the evidence says so", () => {
 		expect(ledger.ids.get("E3")?.result).toBe("failed");
 		expect(ledger.counts.failedCommands).toBe(2);
 	});
+	test("opencode (AGEN-141): a PostToolUse is not proof of success; an exit code or a failure row decides", () => {
+		const ledger = build(
+			[
+				bash(1, "ls", { response: "a\nb\n" }),
+				bash(2, "ls", { response: JSON.stringify({ output: "x", exit_code: 0 }) }),
+				bash(3, "ls", { response: JSON.stringify({ output: "x", exit_code: 3 }) }),
+				bash(4, "ls", { eventType: "PostToolUseFailure" }),
+				bash(5, "ls"),
+			],
+			{ agentType: "opencode" },
+		);
+		expect(bodyOf(lineFor(ledger, 1))).toMatch(/`ls` -> completed$/);
+		expect(bodyOf(lineFor(ledger, 2))).toMatch(/`ls` -> ok$/);
+		expect(bodyOf(lineFor(ledger, 3))).toMatch(/`ls` -> FAILED/);
+		expect(bodyOf(lineFor(ledger, 4))).toMatch(/`ls` -> FAILED$/);
+		expect(bodyOf(lineFor(ledger, 5))).toMatch(/`ls` -> completed$/);
+	});
 	test("an unknown agent type is treated as having no failure event", () => {
 		const ledger = build([bash(1, "ls")], { agentType: null });
 		expect(bodyOf(ledger.text.replace(/^\S+ \S+ /, ""))).toMatch(/-> completed$/);

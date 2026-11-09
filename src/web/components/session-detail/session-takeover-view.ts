@@ -290,6 +290,11 @@ export function bottomSlot(
 	return session.managedSession ? "composer" : "takeover";
 }
 
+/** Only Codex is taken over and only Claude Code is continued; observed-only agents (Copilot CLI, OpenCode) offer neither. */
+export function canOfferTakeover(agentType: string): boolean {
+	return agentType === "codex_cli" || agentType === "claude_code";
+}
+
 /** The standing status hint ("Managed Codex", a pending pill) waits while a takeover works, so no state is said twice. */
 export function showsStatusHint(attempt: TakeoverAttempt): boolean {
 	return !(attempt.state === "in_flight" && attempt.kind === "takeover");

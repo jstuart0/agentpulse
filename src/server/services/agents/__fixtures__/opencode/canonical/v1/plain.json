@@ -1,0 +1,39 @@
+{
+	"line": "v1",
+	"name": "plain",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+				"hook_event_name": "SessionStart",
+				"cwd": "/scratch/proj/v1-plain",
+				"provider_event_name": "session.created",
+				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+			},
+			"semantic": { "event": "SessionStart" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+				"hook_event_name": "UserPromptSubmit",
+				"cwd": "/scratch/proj/v1-plain",
+				"model": "stub/stub-model",
+				"prompt": "\"PLAIN hello\"",
+				"provider_event_name": "chat.message",
+				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+			},
+			"semantic": { "event": "UserPromptSubmit" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+				"hook_event_name": "Stop",
+				"cwd": "/scratch/proj/v1-plain",
+				"last_assistant_message": "STUB-PLAIN reply",
+				"provider_event_name": "session.idle",
+				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+			},
+			"semantic": { "event": "Stop" }
+		}
+	]
+}

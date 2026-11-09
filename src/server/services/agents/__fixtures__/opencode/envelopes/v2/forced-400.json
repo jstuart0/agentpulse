@@ -1,0 +1,27 @@
+{
+	"line": "v2",
+	"name": "forced-400",
+	"envelopes": [
+		{
+			"session_id": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+			"hook_event_name": "session.inbox.enqueued",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-forced-400",
+			"data": { "text": "FAILTURN go" }
+		},
+		{
+			"session_id": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+			"hook_event_name": "session.step.failed",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-forced-400",
+			"data": { "error": { "name": "provider.invalid-request", "status": 400 } }
+		},
+		{
+			"session_id": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+			"hook_event_name": "session.execution.failed",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-forced-400",
+			"data": { "error": { "name": "provider.invalid-request", "status": 400 } }
+		}
+	]
+}

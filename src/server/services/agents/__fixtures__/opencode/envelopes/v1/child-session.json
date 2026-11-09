@@ -1,0 +1,113 @@
+{
+	"line": "v1",
+	"name": "child-session",
+	"envelopes": [
+		{
+			"session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
+			"hook_event_name": "session.created",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-child-session",
+			"data": {}
+		},
+		{
+			"session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
+			"hook_event_name": "chat.message",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-child-session",
+			"model": "stub/stub-model",
+			"data": { "text": "\"SUBTASK go\"" }
+		},
+		{
+			"session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
+			"hook_event_name": "tool.execute.before",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-child-session",
+			"data": {
+				"tool": "task",
+				"tool_use_id": "call_stub_task_1",
+				"input": {
+					"description": "child job",
+					"prompt": "CHILDWORK SHELLOK",
+					"subagent_type": "general"
+				}
+			}
+		},
+		{
+			"session_id": "ses_e409b1d18ffeWjzFzszlIdpkVh",
+			"parent_session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
+			"hook_event_name": "session.created",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-child-session",
+			"data": {}
+		},
+		{
+			"session_id": "ses_e409b1d18ffeWjzFzszlIdpkVh",
+			"parent_session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
+			"hook_event_name": "chat.message",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-child-session",
+			"data": { "text": "CHILDWORK SHELLOK" }
+		},
+		{
+			"session_id": "ses_e409b1d18ffeWjzFzszlIdpkVh",
+			"parent_session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
+			"hook_event_name": "tool.execute.before",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-child-session",
+			"data": {
+				"tool": "bash",
+				"tool_use_id": "call_stub_ok_1",
+				"input": { "command": "printf ok", "description": "canary" }
+			}
+		},
+		{
+			"session_id": "ses_e409b1d18ffeWjzFzszlIdpkVh",
+			"parent_session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
+			"hook_event_name": "tool.execute.after",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-child-session",
+			"data": {
+				"tool": "bash",
+				"tool_use_id": "call_stub_ok_1",
+				"input": { "command": "printf ok", "description": "canary" },
+				"status": "completed",
+				"exit_code": 0,
+				"output": "ok"
+			}
+		},
+		{
+			"session_id": "ses_e409b1d18ffeWjzFzszlIdpkVh",
+			"parent_session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
+			"hook_event_name": "session.idle",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-child-session",
+			"last_assistant_message": "STUB-DONE after tool",
+			"data": {}
+		},
+		{
+			"session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
+			"hook_event_name": "tool.execute.after",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-child-session",
+			"data": {
+				"tool": "task",
+				"tool_use_id": "call_stub_task_1",
+				"input": {
+					"description": "child job",
+					"prompt": "CHILDWORK SHELLOK",
+					"subagent_type": "general"
+				},
+				"status": "completed",
+				"output": "STUB-DONE after tool"
+			}
+		},
+		{
+			"session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
+			"hook_event_name": "session.idle",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-child-session",
+			"last_assistant_message": "STUB-DONE after tool",
+			"data": {}
+		}
+	]
+}

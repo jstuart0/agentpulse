@@ -269,6 +269,71 @@ export const COPILOT_EVENT_TO_HOOK_EVENT: Record<CopilotEvent, HookEventType> = 
 	errorOccurred: "ErrorOccurred",
 };
 
+// OpenCode (AGEN-141) reports through a plugin per line that forwards
+// OpenCode's own event names in an envelope (src/shared/opencode-wire.ts);
+// the server maps them, so a change in OpenCode is fixed by a server deploy,
+// not a reinstall. These are the names the plugins forward, dotted and
+// lowercase (distinct from Claude/Codex PascalCase and Copilot camelCase).
+// 1.x names are bus events (session.*, permission.*) and plugin hooks
+// (chat.message, tool.execute.*); 2.x names are bus events plus the
+// tool.before/tool.after hooks. Measured on 1.19.5 and 2.2.6
+// (src/server/services/agents/__fixtures__/opencode/OBSERVATIONS.md).
+export type OpenCodeV1Event =
+	| "session.created"
+	| "chat.message"
+	| "tool.execute.before"
+	| "tool.execute.after"
+	| "permission.asked"
+	| "permission.replied"
+	| "session.error"
+	| "session.idle";
+
+export type OpenCodeV2Event =
+	| "session.created"
+	| "session.inbox.enqueued"
+	| "tool.before"
+	| "tool.after"
+	| "permission.asked"
+	| "permission.replied"
+	| "session.step.failed"
+	| "session.execution.succeeded"
+	| "session.execution.failed"
+	| "session.execution.interrupted";
+
+// The canonical HookEventType each forwarded name maps to by default. Some
+// are refined by the envelope's data in the canonicalizer: tool.*after is
+// PostToolUseFailure when the call failed; permission.replied is
+// PermissionDenied for a reject and nothing for any other reply; V1
+// session.error is Interrupt for MessageAbortedError (G13); a child session's
+// start/end events are SubagentStart/SubagentStop on the parent.
+export const OPENCODE_EVENT_TO_HOOK_EVENT: {
+	1: Record<OpenCodeV1Event, HookEventType>;
+	2: Record<OpenCodeV2Event, HookEventType>;
+} = {
+	1: {
+		"session.created": "SessionStart",
+		"chat.message": "UserPromptSubmit",
+		"tool.execute.before": "PreToolUse",
+		"tool.execute.after": "PostToolUse",
+		"permission.asked": "PermissionRequest",
+		"permission.replied": "PermissionDenied",
+		"session.error": "ErrorOccurred",
+		"session.idle": "Stop",
+	},
+	2: {
+		"session.created": "SessionStart",
+		"session.inbox.enqueued": "UserPromptSubmit",
+		"tool.before": "PreToolUse",
+		"tool.after": "PostToolUse",
+		"permission.asked": "PermissionRequest",
+		"permission.replied": "PermissionDenied",
+		"session.step.failed": "ErrorOccurred",
+		"session.execution.succeeded": "Stop",
+		"session.execution.failed": "Stop",
+		"session.execution.interrupted": "Interrupt",
+	},
+};
+
 // Synthetic events produced by AgentPulse's own tooling (not by a CLI hook),
 // delivered through the same POST /api/v1/hooks ingestion path. Kept out of
 // the ClaudeCodeEvent/CodexEvent/CopilotEvent unions on purpose: those lists
@@ -348,7 +413,18 @@ export interface HookEventPayload {
 	// never splice raw into a log line, prompt, or shell command.
 	provider_event_name?: string;
 	// Copilot errorOccurred / postToolUseFailure: the agent's error text.
+	// OpenCode: only "<error name>" or "<error name> (HTTP <code>)", built by
+	// the canonicalizer; OpenCode's own message text never reaches the server.
 	error_message?: string;
+
+	// OpenCode: the root session a child (subagent) session belongs to.
+	// UNTRUSTED sender data like every field here; the canonicalizer has
+	// already validated it as an id (1-128 of [A-Za-z0-9_-]).
+	parent_session_id?: string;
+	// OpenCode: which plugin line and wire protocol produced the event, and
+	// the OpenCode version it reported. Display and debugging only; no
+	// decision may read it. Built by the canonicalizer, never copied from the body.
+	opencode?: { line: 1 | 2; protocol: 1; version?: string };
 }
 
 // Semantic status update from CLAUDE.md snippet

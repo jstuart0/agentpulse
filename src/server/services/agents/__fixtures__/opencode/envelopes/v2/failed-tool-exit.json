@@ -1,0 +1,31 @@
+{
+	"line": "v2",
+	"name": "failed-tool-exit",
+	"envelopes": [
+		{
+			"session_id": "ses_e409aa3f3ffeko0hp1Lku6zCYO",
+			"hook_event_name": "tool.before",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-failed-tool-exit",
+			"data": {
+				"tool": "shell",
+				"tool_use_id": "call_stub_fail_1",
+				"input": { "command": "exit 3" }
+			}
+		},
+		{
+			"session_id": "ses_e409aa3f3ffeko0hp1Lku6zCYO",
+			"hook_event_name": "tool.after",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-failed-tool-exit",
+			"data": {
+				"tool": "shell",
+				"tool_use_id": "call_stub_fail_1",
+				"input": { "command": "exit 3" },
+				"status": "completed",
+				"exit_code": 3,
+				"output": "(no output)"
+			}
+		}
+	]
+}

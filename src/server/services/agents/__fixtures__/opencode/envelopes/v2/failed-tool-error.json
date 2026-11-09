@@ -1,0 +1,30 @@
+{
+	"line": "v2",
+	"name": "failed-tool-error",
+	"envelopes": [
+		{
+			"session_id": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+			"hook_event_name": "tool.before",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-failed-tool-error",
+			"data": {
+				"tool": "read",
+				"tool_use_id": "call_stub_read_1",
+				"input": { "path": "/scratch/proj/v2-failed-tool-error/missing.txt" }
+			}
+		},
+		{
+			"session_id": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+			"hook_event_name": "tool.after",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-failed-tool-error",
+			"data": {
+				"tool": "read",
+				"tool_use_id": "call_stub_read_1",
+				"input": { "path": "/scratch/proj/v2-failed-tool-error/missing.txt" },
+				"status": "error",
+				"error": { "name": "Tool.Error" }
+			}
+		}
+	]
+}

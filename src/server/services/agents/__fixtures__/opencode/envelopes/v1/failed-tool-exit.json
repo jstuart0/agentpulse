@@ -1,0 +1,31 @@
+{
+	"line": "v1",
+	"name": "failed-tool-exit",
+	"envelopes": [
+		{
+			"session_id": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+			"hook_event_name": "tool.execute.before",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-failed-tool-exit",
+			"data": {
+				"tool": "bash",
+				"tool_use_id": "call_stub_fail_1",
+				"input": { "command": "exit 3", "description": "canary" }
+			}
+		},
+		{
+			"session_id": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+			"hook_event_name": "tool.execute.after",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-failed-tool-exit",
+			"data": {
+				"tool": "bash",
+				"tool_use_id": "call_stub_fail_1",
+				"input": { "command": "exit 3", "description": "canary" },
+				"status": "completed",
+				"exit_code": 3,
+				"output": "(no output)"
+			}
+		}
+	]
+}

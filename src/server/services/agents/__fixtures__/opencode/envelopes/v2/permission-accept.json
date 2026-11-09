@@ -1,0 +1,53 @@
+{
+	"line": "v2",
+	"name": "permission-accept",
+	"envelopes": [
+		{
+			"session_id": "ses_e409991b7ffeGR5JG6fOri4pYa",
+			"hook_event_name": "tool.before",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-perm",
+			"data": {
+				"tool": "write",
+				"tool_use_id": "call_stub_perm_1",
+				"input": { "path": "/scratch/proj/v2-perm/perm.txt", "content": "perm\n" }
+			}
+		},
+		{
+			"session_id": "ses_e409991b7ffeGR5JG6fOri4pYa",
+			"hook_event_name": "permission.asked",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-perm",
+			"data": {
+				"request_id": "per_1bf667fda001Jk80hJKgCZIlBS",
+				"tool_use_id": "call_stub_perm_1",
+				"permission": "edit",
+				"patterns": ["perm.txt"]
+			}
+		},
+		{
+			"session_id": "ses_e409991b7ffeGR5JG6fOri4pYa",
+			"hook_event_name": "permission.replied",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-perm",
+			"data": {
+				"request_id": "per_1bf667fda001Jk80hJKgCZIlBS",
+				"tool_use_id": "call_stub_perm_1",
+				"reply": "once"
+			}
+		},
+		{
+			"session_id": "ses_e409991b7ffeGR5JG6fOri4pYa",
+			"hook_event_name": "tool.after",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-perm",
+			"data": {
+				"tool": "write",
+				"tool_use_id": "call_stub_perm_1",
+				"input": { "path": "/scratch/proj/v2-perm/perm.txt", "content": "perm\n" },
+				"status": "completed",
+				"output": "Created file successfully: perm.txt"
+			}
+		}
+	]
+}

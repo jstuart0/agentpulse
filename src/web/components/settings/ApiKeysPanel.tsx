@@ -201,8 +201,8 @@ export function ApiKeysPanel({ apiKeys, status, setApiKeys, reloadKeys }: ApiKey
 				API Keys
 			</h2>
 			<p className="text-xs text-muted-foreground mb-4">
-				API keys authenticate hook events from Claude Code, Codex CLI, and Copilot CLI, and the
-				relay that forwards them from other machines.
+				API keys authenticate hook events from Claude Code, Codex CLI, Copilot CLI, and OpenCode,
+				and the relay that forwards them from other machines.
 			</p>
 			{intro.intro && <p className="-mt-2 mb-4 text-xs text-hint">{intro.intro}</p>}
 

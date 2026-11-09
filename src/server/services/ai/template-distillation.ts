@@ -7,7 +7,8 @@ import { SESSION_COLUMNS_SANS_OWNERSHIP } from "../../db/session-columns.js";
 import { getProjectByCwd } from "../projects/projects-service.js";
 import { normalizeCwd } from "../projects/resolver.js";
 
-const AGENT_TYPE_SUBSTITUTED_NOTE = "agent_type_substituted: copilot_cli is observe-only";
+const agentTypeSubstitutedNote = (agentType: string) =>
+	`agent_type_substituted: ${agentType} is observe-only`;
 
 /**
  * Template distillation service. Consumes a successful session's
@@ -103,7 +104,7 @@ export async function distillTemplate(input: DistillInput): Promise<TemplateDraf
 	// D5 Pattern A': a template row's own agentType is already launchable by
 	// construction (validateTemplateInput enforced it at save time). The
 	// session's agentType is observed-only data and may not be — an
-	// observe-only session (e.g. copilot_cli) falls back to the project's
+	// observe-only session (copilot_cli, opencode) falls back to the project's
 	// default agent, or codex_cli when there's no project, with a
 	// provenance note so the substitution is never silent.
 	let agentType: SessionTemplateInput["agentType"];
@@ -117,7 +118,7 @@ export async function distillTemplate(input: DistillInput): Promise<TemplateDraf
 			project?.defaultAgentType && isLaunchable(project.defaultAgentType)
 				? project.defaultAgentType
 				: "codex_cli";
-		notes.push(AGENT_TYPE_SUBSTITUTED_NOTE);
+		notes.push(agentTypeSubstitutedNote(session.agentType));
 	}
 
 	const draft: SessionTemplateInput = {

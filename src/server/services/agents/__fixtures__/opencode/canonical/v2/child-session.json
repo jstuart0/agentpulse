@@ -1,0 +1,128 @@
+{
+	"line": "v2",
+	"name": "child-session",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"hook_event_name": "UserPromptSubmit",
+				"cwd": "/scratch/proj/v2-child-session",
+				"prompt": "SUBTASK go",
+				"provider_event_name": "session.inbox.enqueued",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "UserPromptSubmit" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"hook_event_name": "PreToolUse",
+				"cwd": "/scratch/proj/v2-child-session",
+				"tool_name": "subagent",
+				"tool_input": {
+					"agent": "general",
+					"description": "child job",
+					"prompt": "CHILDWORK SHELLOK"
+				},
+				"tool_use_id": "call_stub_sub_1",
+				"provider_event_name": "tool.before",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PreToolUse", "tool_use_id": "call_stub_sub_1" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"hook_event_name": "SubagentStart",
+				"agent_id": "ses_e409a7602ffeFctdrNv0LDEI4k",
+				"parent_session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"cwd": "/scratch/proj/v2-child-session",
+				"provider_event_name": "session.created",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "SubagentStart", "agentId": "ses_e409a7602ffeFctdrNv0LDEI4k" }
+		},
+		{ "expected": { "session_id": "", "hook_event_name": "" }, "semantic": { "event": "drop" } },
+		{
+			"expected": {
+				"session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"hook_event_name": "PreToolUse",
+				"agent_id": "ses_e409a7602ffeFctdrNv0LDEI4k",
+				"parent_session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"cwd": "/scratch/proj/v2-child-session",
+				"tool_name": "shell",
+				"tool_input": { "command": "printf ok" },
+				"tool_use_id": "ses_e409a7602ffeFctdrNv0LDEI4k:call_stub_ok_1",
+				"provider_event_name": "tool.before",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": {
+				"event": "PreToolUse",
+				"tool_use_id": "ses_e409a7602ffeFctdrNv0LDEI4k:call_stub_ok_1",
+				"agentId": "ses_e409a7602ffeFctdrNv0LDEI4k"
+			}
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"hook_event_name": "PostToolUse",
+				"agent_id": "ses_e409a7602ffeFctdrNv0LDEI4k",
+				"parent_session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"cwd": "/scratch/proj/v2-child-session",
+				"tool_name": "shell",
+				"tool_input": { "command": "printf ok" },
+				"tool_use_id": "ses_e409a7602ffeFctdrNv0LDEI4k:call_stub_ok_1",
+				"tool_response": { "output": "ok", "exit_code": 0 },
+				"provider_event_name": "tool.after",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": {
+				"event": "PostToolUse",
+				"tool_use_id": "ses_e409a7602ffeFctdrNv0LDEI4k:call_stub_ok_1",
+				"agentId": "ses_e409a7602ffeFctdrNv0LDEI4k"
+			}
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"hook_event_name": "SubagentStop",
+				"agent_id": "ses_e409a7602ffeFctdrNv0LDEI4k",
+				"parent_session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"cwd": "/scratch/proj/v2-child-session",
+				"last_assistant_message": "STUB-DONE after tool",
+				"provider_event_name": "session.execution.succeeded",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "SubagentStop", "agentId": "ses_e409a7602ffeFctdrNv0LDEI4k" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"hook_event_name": "PostToolUse",
+				"cwd": "/scratch/proj/v2-child-session",
+				"tool_name": "subagent",
+				"tool_input": {
+					"agent": "general",
+					"description": "child job",
+					"prompt": "CHILDWORK SHELLOK"
+				},
+				"tool_use_id": "call_stub_sub_1",
+				"tool_response": "STUB-DONE after tool",
+				"provider_event_name": "tool.after",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PostToolUse", "tool_use_id": "call_stub_sub_1" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"hook_event_name": "Stop",
+				"cwd": "/scratch/proj/v2-child-session",
+				"last_assistant_message": "STUB-DONE after tool",
+				"provider_event_name": "session.execution.succeeded",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "Stop" }
+		}
+	]
+}

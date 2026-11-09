@@ -1,0 +1,69 @@
+{
+	"line": "v1",
+	"name": "permission-accept",
+	"envelopes": [
+		{
+			"session_id": "ses_e409a268effe1H6n49ViXfJ0oa",
+			"hook_event_name": "tool.execute.before",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-perm",
+			"data": {
+				"tool": "write",
+				"tool_use_id": "call_stub_perm_1",
+				"input": {
+					"filePath": "/scratch/proj/v1-perm/perm.txt",
+					"path": "/scratch/proj/v1-perm/perm.txt",
+					"content": "perm\n"
+				}
+			}
+		},
+		{
+			"session_id": "ses_e409a268effe1H6n49ViXfJ0oa",
+			"hook_event_name": "permission.asked",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-perm",
+			"data": {
+				"request_id": "per_1bf65e9e0001aJ00VUCQNGho5c",
+				"tool_use_id": "call_stub_perm_1",
+				"permission": "edit",
+				"patterns": ["scratch/proj/v1-perm/perm.txt"]
+			}
+		},
+		{
+			"session_id": "ses_e409a268effe1H6n49ViXfJ0oa",
+			"hook_event_name": "permission.replied",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-perm",
+			"data": {
+				"request_id": "per_1bf65e9e0001aJ00VUCQNGho5c",
+				"tool_use_id": "call_stub_perm_1",
+				"reply": "once"
+			}
+		},
+		{
+			"session_id": "ses_e409a268effe1H6n49ViXfJ0oa",
+			"hook_event_name": "tool.execute.after",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-perm",
+			"data": {
+				"tool": "write",
+				"tool_use_id": "call_stub_perm_1",
+				"input": {
+					"filePath": "/scratch/proj/v1-perm/perm.txt",
+					"path": "/scratch/proj/v1-perm/perm.txt",
+					"content": "perm\n"
+				},
+				"status": "completed",
+				"output": "Wrote file successfully."
+			}
+		},
+		{
+			"session_id": "ses_e409a268effe1H6n49ViXfJ0oa",
+			"hook_event_name": "session.idle",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-perm",
+			"last_assistant_message": "STUB-DONE after tool",
+			"data": {}
+		}
+	]
+}

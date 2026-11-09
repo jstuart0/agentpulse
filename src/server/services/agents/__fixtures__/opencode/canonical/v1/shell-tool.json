@@ -1,0 +1,66 @@
+{
+	"line": "v1",
+	"name": "shell-tool",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_e409b54daffeeg8BXRz7WOao2x",
+				"hook_event_name": "SessionStart",
+				"cwd": "/scratch/proj/v1-shell-tool",
+				"provider_event_name": "session.created",
+				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+			},
+			"semantic": { "event": "SessionStart" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409b54daffeeg8BXRz7WOao2x",
+				"hook_event_name": "UserPromptSubmit",
+				"cwd": "/scratch/proj/v1-shell-tool",
+				"model": "stub/stub-model",
+				"prompt": "\"SHELLOK run it\"",
+				"provider_event_name": "chat.message",
+				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+			},
+			"semantic": { "event": "UserPromptSubmit" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409b54daffeeg8BXRz7WOao2x",
+				"hook_event_name": "PreToolUse",
+				"cwd": "/scratch/proj/v1-shell-tool",
+				"tool_name": "bash",
+				"tool_input": { "command": "printf ok", "description": "canary" },
+				"tool_use_id": "call_stub_ok_1",
+				"provider_event_name": "tool.execute.before",
+				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+			},
+			"semantic": { "event": "PreToolUse", "tool_use_id": "call_stub_ok_1" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409b54daffeeg8BXRz7WOao2x",
+				"hook_event_name": "PostToolUse",
+				"cwd": "/scratch/proj/v1-shell-tool",
+				"tool_name": "bash",
+				"tool_input": { "command": "printf ok", "description": "canary" },
+				"tool_use_id": "call_stub_ok_1",
+				"tool_response": { "output": "ok", "exit_code": 0 },
+				"provider_event_name": "tool.execute.after",
+				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+			},
+			"semantic": { "event": "PostToolUse", "tool_use_id": "call_stub_ok_1" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409b54daffeeg8BXRz7WOao2x",
+				"hook_event_name": "Stop",
+				"cwd": "/scratch/proj/v1-shell-tool",
+				"last_assistant_message": "STUB-DONE after tool",
+				"provider_event_name": "session.idle",
+				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+			},
+			"semantic": { "event": "Stop" }
+		}
+	]
+}

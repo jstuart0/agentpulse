@@ -14,7 +14,13 @@ import { z } from "zod";
 // agent type that can post hook events and appear on the dashboard;
 // LAUNCHABLE covers only what AgentPulse can actively start a process for.
 // Phase 6: "copilot_cli" is observe-only (D5/F23) — added to OBSERVED only.
-export const OBSERVED_AGENT_TYPE_ENUM = z.enum(["claude_code", "codex_cli", "copilot_cli"]);
+// AGEN-141: "opencode" is observe-only too.
+export const OBSERVED_AGENT_TYPE_ENUM = z.enum([
+	"claude_code",
+	"codex_cli",
+	"copilot_cli",
+	"opencode",
+]);
 export const LAUNCHABLE_AGENT_TYPE_ENUM = z.enum(["claude_code", "codex_cli"]);
 export const SESSION_STATUS_ENUM = z.enum(["active", "idle", "completed", "failed", "archived"]);
 

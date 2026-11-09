@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { type ReadSite, checkAgentTypeParity } from "./check-agent-type-parity.js";
 import {
 	extractConstTuple,
 	extractUnion,
@@ -52,5 +55,51 @@ describe("check-agent-type-parity extraction helpers — synthetic content", () 
 	test("isSubsetOf detects a launchable value missing from the observed set", () => {
 		expect(isSubsetOf(["claude_code", "codex_cli"], ["claude_code", "codex_cli"])).toBe(true);
 		expect(isSubsetOf(["claude_code", "copilot_cli"], ["claude_code", "codex_cli"])).toBe(false);
+	});
+});
+
+// AGEN-141: "opencode" is an observed, non-launchable type that has to appear at every
+// site. These run the guard's own check over the real files, then over a copy with the
+// MCP edit reverted (a positive control first, so a failure below means the guard saw it).
+describe("check-agent-type-parity — opencode (AGEN-141)", () => {
+	const ROOT = new URL("..", import.meta.url).pathname;
+	const real: ReadSite = (rel) => readFileSync(join(ROOT, rel), "utf8");
+	const without =
+		(rel: string, edit: (text: string) => string): ReadSite =>
+		(requested) =>
+			requested === rel ? edit(real(requested)) : real(requested);
+
+	test("the real tree passes and opencode is observed, not launchable", () => {
+		const result = checkAgentTypeParity(real);
+		expect(result.errors).toEqual([]);
+		expect(result.observed).toContain("opencode");
+		expect(result.launchable).not.toContain("opencode");
+		expect(result.sites.length).toBe(6);
+	});
+
+	test("opencode missing from the MCP zod enum fails", () => {
+		const result = checkAgentTypeParity(
+			without("packages/agentpulse-mcp/src/enums.ts", (t) => t.replace(/\s*"opencode",/, "")),
+		);
+		expect(result.errors.some((e) => e.includes("OBSERVED_AGENT_TYPE_ENUM"))).toBe(true);
+	});
+
+	test("opencode missing from the MCP AgentType union fails", () => {
+		const result = checkAgentTypeParity(
+			without("packages/agentpulse-mcp/src/types.ts", (t) => t.replace(' | "opencode";', ";")),
+		);
+		expect(result.errors.some((e) => e.includes("types.ts AgentType"))).toBe(true);
+	});
+
+	test("opencode added to the launchable list fails the subset check", () => {
+		const result = checkAgentTypeParity(
+			without("src/shared/constants.ts", (t) =>
+				t.replace(
+					'LAUNCHABLE_AGENT_TYPES = ["claude_code", "codex_cli"]',
+					'LAUNCHABLE_AGENT_TYPES = ["claude_code", "codex_cli", "opencode"]',
+				),
+			),
+		);
+		expect(result.errors.length).toBeGreaterThan(0);
 	});
 });
