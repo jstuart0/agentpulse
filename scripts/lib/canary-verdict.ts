@@ -47,9 +47,18 @@ export interface JudgedResult {
 	notRun?: string;
 }
 
+export interface ClassifyOptions {
+	/**
+	 * Under a break, a precondition that does not hold makes the run `mutationInvalid` whether or not the named
+	 * expectation failed: a break that was never exercised proves nothing (the OpenCode canary's rule, plan step 31).
+	 */
+	preconditionsFirst?: boolean;
+}
+
 export function classifyScenarioWith(
 	result: JudgedResult,
 	targetsOf: (mutation: string) => readonly MutationTarget[],
+	options: ClassifyOptions = {},
 ): Verdict {
 	if (result.notRun) return "notRun";
 	const { expectations } = result;
@@ -62,6 +71,12 @@ export function classifyScenarioWith(
 	if (!target) return "mutationInvalid";
 	const named = expectations.find((e) => e.name === target.expectation);
 	if (!named || named.ok === null) return "mutationInvalid";
+	if (
+		options.preconditionsFirst &&
+		expectations.some((e) => e.kind === "precondition" && e !== named && failed(e))
+	) {
+		return "mutationInvalid";
+	}
 	if (named.ok === true) return "mutationSurvived";
 	// The named expectation failed. Every precondition must hold, or the failure can't be attributed.
 	const brokenPrecondition = expectations.some(

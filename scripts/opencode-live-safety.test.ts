@@ -40,6 +40,7 @@ import {
 	startedPids,
 } from "./lib/opencode-canary-spawn.js";
 import { diffTrees, snapshotTree } from "./lib/opencode-canary-watch.js";
+import { ownOpenCodePidsAny } from "./lib/opencode-own-pids.js";
 import { namesEnvValue } from "./lib/own-pids.js";
 
 let scratch: string;
@@ -407,5 +408,12 @@ describe("the source scan", () => {
 		expect(mine.length).toBeGreaterThanOrEqual(5);
 		const findings = scanCanarySource(mine).filter((f) => f.rule !== "refused-subcommand");
 		expect(findings).toEqual([]);
+	});
+});
+
+describe("one scan for many data directories", () => {
+	test("no directory selects nothing, and a directory no process names selects nothing", () => {
+		expect(ownOpenCodePidsAny([])).toEqual([]);
+		expect(ownOpenCodePidsAny(["/nonexistent/ap-no-such-run/xdg-data"])).toEqual([]);
 	});
 });

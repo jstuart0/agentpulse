@@ -44,7 +44,7 @@ const commOf = (pid: number): string =>
 let portCursor = 24_500 + Math.floor(Math.random() * 2000);
 const nextPort = () => ++portCursor;
 
-interface Server {
+export interface Server {
 	line: OpenCodeLine;
 	place: Place;
 	child: OpenCodeChild;
@@ -99,18 +99,22 @@ async function stopServer(server: Server): Promise<void> {
 	await server.child.exited;
 }
 
+/** A request to the served OpenCode that gives up (a hung server must not hang the canary). */
+const ask = (url: string, init?: RequestInit) =>
+	fetch(url, { ...init, signal: AbortSignal.timeout(20_000) });
+
 const q = (dir: string) => `directory=${encodeURIComponent(dir)}`;
 
-async function createSession(s: Server, dir: string): Promise<string> {
+export async function createSession(s: Server, dir: string): Promise<string> {
 	if (s.line === "v1") {
-		const r = await fetch(`${s.base}/session?${q(dir)}`, {
+		const r = await ask(`${s.base}/session?${q(dir)}`, {
 			method: "POST",
 			headers: s.headers,
 			body: "{}",
 		});
 		return ((await r.json()) as J).id as string;
 	}
-	const r = await fetch(`${s.base}/api/session`, {
+	const r = await ask(`${s.base}/api/session`, {
 		method: "POST",
 		headers: s.headers,
 		body: JSON.stringify({ location: { directory: dir } }),
@@ -118,15 +122,15 @@ async function createSession(s: Server, dir: string): Promise<string> {
 	return ((await r.json()) as J).data.id as string;
 }
 
-async function prompt(s: Server, id: string, dir: string, text: string): Promise<void> {
+export async function prompt(s: Server, id: string, dir: string, text: string): Promise<void> {
 	if (s.line === "v1") {
-		await fetch(`${s.base}/session/${id}/prompt_async?${q(dir)}`, {
+		await ask(`${s.base}/session/${id}/prompt_async?${q(dir)}`, {
 			method: "POST",
 			headers: s.headers,
 			body: JSON.stringify({ parts: [{ type: "text", text }] }),
 		});
 	} else {
-		await fetch(`${s.base}/api/session/${id}/prompt`, {
+		await ask(`${s.base}/api/session/${id}/prompt`, {
 			method: "POST",
 			headers: s.headers,
 			body: JSON.stringify({ text }),
@@ -134,27 +138,27 @@ async function prompt(s: Server, id: string, dir: string, text: string): Promise
 	}
 }
 
-async function pendingPermissions(s: Server, id: string, dir: string): Promise<J[]> {
+export async function pendingPermissions(s: Server, id: string, dir: string): Promise<J[]> {
 	const url =
 		s.line === "v1" ? `${s.base}/permission?${q(dir)}` : `${s.base}/api/session/${id}/permission`;
-	const body = (await (await fetch(url, { headers: s.headers })).json()) as J;
+	const body = (await (await ask(url, { headers: s.headers })).json()) as J;
 	return (s.line === "v1" ? body : body.data) ?? [];
 }
 
-async function replyPermission(
+export async function replyPermission(
 	s: Server,
 	id: string,
 	dir: string,
 	requestID: string,
 ): Promise<void> {
 	if (s.line === "v1") {
-		await fetch(`${s.base}/permission/${requestID}/reply?${q(dir)}`, {
+		await ask(`${s.base}/permission/${requestID}/reply?${q(dir)}`, {
 			method: "POST",
 			headers: s.headers,
 			body: JSON.stringify({ reply: "once" }),
 		});
 	} else {
-		await fetch(`${s.base}/api/session/${id}/permission/${requestID}/reply`, {
+		await ask(`${s.base}/api/session/${id}/permission/${requestID}/reply`, {
 			method: "POST",
 			headers: s.headers,
 			body: JSON.stringify({ decision: "once" }),
@@ -162,12 +166,12 @@ async function replyPermission(
 	}
 }
 
-async function interrupt(s: Server, id: string, dir: string): Promise<void> {
+export async function interrupt(s: Server, id: string, dir: string): Promise<void> {
 	const url =
 		s.line === "v1"
 			? `${s.base}/session/${id}/abort?${q(dir)}`
 			: `${s.base}/api/session/${id}/interrupt`;
-	await fetch(url, { method: "POST", headers: s.headers });
+	await ask(url, { method: "POST", headers: s.headers });
 }
 
 const endsTurn = (line: OpenCodeLine, e: J, id: string): boolean =>

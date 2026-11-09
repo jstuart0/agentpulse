@@ -57,6 +57,37 @@ describe("the canary stub rules", () => {
 		expect(ask(V1_TOOLS, "SHELLOK", "tool")?.text).toBe("STUB-DONE after tool");
 	});
 
+	test("a world with a gate factory holds the last answer (a model's latency); one without does not", () => {
+		const gate = { arrived: Promise.resolve(), release: () => {} };
+		let made = 0;
+		const slow: RuleWorld = {
+			...world,
+			finalDelayMs: 5,
+			gateFactory: () => {
+				made++;
+				return gate;
+			},
+		};
+		const answer = canaryRules(slow)(
+			{
+				messages: [
+					{ role: "user", content: "PLAIN" },
+					{ role: "tool", content: "ok" },
+				],
+				tools: V1_TOOLS,
+			},
+			{} as never,
+		);
+		expect(answer?.gate).toBe(gate);
+		expect(made).toBe(1);
+		expect(ask(V1_TOOLS, "SHELLOK", "tool")?.gate).toBeUndefined();
+		// A title request and a tool call are never held.
+		expect(
+			canaryRules(slow)({ messages: [{ role: "user", content: "x" }], tools: [] }, {} as never)
+				?.gate,
+		).toBeUndefined();
+	});
+
 	test("FAILTURN is an HTTP 400", () => {
 		expect(ask(V1_TOOLS, "FAILTURN")?.status).toBe(400);
 	});

@@ -108,6 +108,7 @@ export function makeWorld(
 	mkdirSync(join(root, "proj"), { recursive: true });
 	const rule: RuleWorld = { scratchRoot: root, projectDir: join(root, "proj", "default") };
 	const stub = startLlmStubServer({ rules: (body, record) => canaryRules(rule)(body, record) });
+	rule.gateFactory = () => stub.createGate();
 	return {
 		root,
 		bins,
@@ -134,6 +135,8 @@ export interface Place {
 	pluginsDir: string;
 	probeLog: string;
 }
+
+const labelCount = new Map<string, number>();
 
 const PROBE_SOURCES: Record<OpenCodeLine, string> = {
 	v1: join(import.meta.dir, "probes", "probe-v1.js"),
@@ -166,7 +169,13 @@ export function makePlace(
 	label: string,
 	options: PlaceOptions = {},
 ): Place {
-	const sandbox = makeSandbox(world.root, `${line}-${label}`);
+	// A scenario run again (a break, a second line of the same table) must not find the last run's state.
+	const used = (labelCount.get(`${line}-${label}`) ?? 0) + 1;
+	labelCount.set(`${line}-${label}`, used);
+	const sandbox = makeSandbox(
+		world.root,
+		used === 1 ? `${line}-${label}` : `${line}-${label}-${used}`,
+	);
 	const configDir = options.configDirOverride ?? join(sandbox.paths.XDG_CONFIG_HOME, "opencode");
 	const pluginsDir = join(configDir, "plugins");
 	mkdirSync(pluginsDir, { recursive: true });

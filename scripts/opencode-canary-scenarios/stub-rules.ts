@@ -6,10 +6,17 @@
  * or path of the person's; `stub-rules.test.ts` pins that for every keyword on both lines.
  */
 import { isAbsolute, join } from "node:path";
-import type { ScriptedAnswer, StubRule } from "../../src/server/test-utils/llm-stub-server.js";
+import type {
+	ScriptedAnswer,
+	StubGate,
+	StubRule,
+} from "../../src/server/test-utils/llm-stub-server.js";
 import { inside } from "../lib/throwaway-home.js";
 
 export interface RuleWorld {
+	/** Makes a gate on the stub; with `finalDelayMs` it holds the model's last answer, as a real model's latency would. */
+	gateFactory?: () => StubGate;
+	finalDelayMs?: number;
 	scratchRoot: string;
 	/** The project directory the session runs in (inside scratch). */
 	projectDir: string;
@@ -89,6 +96,17 @@ function call(
 	return { text: "", toolCalls: [{ id, name, arguments: args }], usage: { input: 10, output: 5 } };
 }
 
+/** A final answer, held for `finalDelayMs` when the world asks for it (the plugin's queue gets a real model's time to drain). */
+function finalAnswer(world: RuleWorld, text: string): ScriptedAnswer {
+	const answer: ScriptedAnswer = { text, stop: "stop", usage: { input: 10, output: 5 } };
+	if (world.gateFactory && world.finalDelayMs) {
+		const gate = world.gateFactory();
+		setTimeout(() => gate.release(), world.finalDelayMs).unref?.();
+		answer.gate = gate;
+	}
+	return answer;
+}
+
 /** The rules for one world. `STUB-DONE` follows any tool result; a request with no tools is a title request. */
 export function canaryRules(world: RuleWorld): StubRule {
 	const outFile = join(world.projectDir, "out.txt");
@@ -99,7 +117,7 @@ export function canaryRules(world: RuleWorld): StubRule {
 		const names = toolNamesOf(body);
 		const text = lastUserText(messages);
 		if (messages.at(-1)?.role === "tool") {
-			return { text: "STUB-DONE after tool", stop: "stop", usage: { input: 10, output: 5 } };
+			return finalAnswer(world, "STUB-DONE after tool");
 		}
 		if (names.length === 0) return { text: "Stub title", stop: "stop" };
 		if (text.includes("FAILTURN")) {
@@ -163,6 +181,6 @@ export function canaryRules(world: RuleWorld): StubRule {
 				);
 			}
 		}
-		return { text: "STUB-PLAIN reply", stop: "stop", usage: { input: 10, output: 5 } };
+		return finalAnswer(world, "STUB-PLAIN reply");
 	};
 }

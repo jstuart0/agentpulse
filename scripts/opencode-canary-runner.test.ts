@@ -10,6 +10,8 @@ import {
 import { MUTATION_TARGETS } from "./lib/opencode-canary-mutations.ts";
 import { PRODUCT_SCENARIOS, toolDurationsMs } from "./opencode-canary-scenarios/product.ts";
 
+const SCENARIO_SOURCES = ["product.ts", "product-more.ts", "product-serve.ts", "product-kit.ts"];
+
 const ok = (name: string, kind: Expectation["kind"] = "claim"): Expectation => ({
 	name,
 	kind,
@@ -80,15 +82,96 @@ describe("verdicts", () => {
 	});
 
 	test("every break targets a scenario that exists, and an expectation name the scenario writes", async () => {
-		const source = await Bun.file(
-			new URL("./opencode-canary-scenarios/product.ts", import.meta.url),
-		).text();
+		const source = (
+			await Promise.all(
+				SCENARIO_SOURCES.map((f) =>
+					Bun.file(new URL(`./opencode-canary-scenarios/${f}`, import.meta.url)).text(),
+				),
+			)
+		).join("\n");
 		for (const list of Object.values(MUTATION_TARGETS)) {
 			for (const t of list) {
 				expect(PRODUCT_SCENARIOS[t.scenario], t.scenario).toBeDefined();
 				expect(source.includes(`"${t.expectation}"`), t.expectation).toBe(true);
 			}
 		}
+	});
+});
+
+describe("the step-31 table and its breaks", () => {
+	test("population: every scenario of the table is registered, on a floor of 17", () => {
+		const table = [
+			"plain",
+			"tool",
+			"tool-fail",
+			"turn-fail",
+			"subagent",
+			"permission",
+			"multi-project",
+			"serve",
+			"exclude",
+			"skip",
+			"relay",
+			"stall",
+			"pure",
+			"final-stop",
+			"cross-line",
+			"v1-cold-skip",
+			"v1-warm-install",
+		];
+		expect(Object.keys(PRODUCT_SCENARIOS).sort()).toEqual([...table].sort());
+		expect(Object.keys(PRODUCT_SCENARIOS).length).toBeGreaterThanOrEqual(17);
+	});
+
+	test("a failed precondition is exit 5 for every break, whichever expectation also failed", () => {
+		expect(Object.keys(MUTATION_TARGETS).length).toBe(10);
+		for (const [mutation, list] of Object.entries(MUTATION_TARGETS)) {
+			for (const t of list) {
+				const broken = result(t.scenario, mutation, [
+					bad("a fact the claim stands on", "precondition"),
+					bad(t.expectation),
+				]);
+				const verdict = classifyScenarioWith(broken, targets);
+				expect(verdict, mutation).toBe("mutationInvalid");
+				expect(exitCodeFor([verdict]), mutation).toBe(EXIT.mutationInvalid);
+				const caught = classifyScenarioWith(
+					result(t.scenario, mutation, [ok("a fact", "precondition"), bad(t.expectation)]),
+					targets,
+				);
+				expect(caught, mutation).toBe("mutationCaught");
+				const survived = classifyScenarioWith(
+					result(t.scenario, mutation, [ok("a fact", "precondition"), ok(t.expectation)]),
+					targets,
+				);
+				expect(exitCodeFor([survived]), mutation).toBe(EXIT.mutationSurvived);
+			}
+		}
+	});
+
+	test("with preconditionsFirst, a break whose precondition did not hold is invalid even when the named expectation passed", () => {
+		for (const [mutation, list] of Object.entries(MUTATION_TARGETS)) {
+			for (const t of list) {
+				const survivedWithBrokenFact = result(t.scenario, mutation, [
+					bad("a fact the break needs", "precondition"),
+					ok(t.expectation),
+				]);
+				expect(classifyScenarioWith(survivedWithBrokenFact, targets), mutation).toBe(
+					"mutationSurvived",
+				);
+				const strict = classifyScenarioWith(survivedWithBrokenFact, targets, {
+					preconditionsFirst: true,
+				});
+				expect(strict, mutation).toBe("mutationInvalid");
+				expect(exitCodeFor([strict]), mutation).toBe(EXIT.mutationInvalid);
+			}
+		}
+	});
+
+	test("an instrument expectation that fails under a break is exit 3, not a catch", () => {
+		const t = MUTATION_TARGETS["no-gate"]?.[0];
+		const r = result(t?.scenario ?? "", "no-gate", [bad("opencode exited 0", "instrument")]);
+		expect(classifyScenarioWith(r, targets)).toBe("instrumentInvalid");
+		expect(exitCodeFor(["instrumentInvalid"])).toBe(EXIT.instrumentInvalid);
 	});
 });
 

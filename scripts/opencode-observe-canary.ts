@@ -39,7 +39,7 @@ import {
 	opencodeLaunchdLabels,
 	snapshotRealState,
 } from "./lib/opencode-canary-watch.js";
-import { ownOpenCodePids } from "./lib/opencode-own-pids.js";
+import { ownOpenCodePidsAny } from "./lib/opencode-own-pids.js";
 import { installOpenCodeGuard } from "./opencode-canary-guard.js";
 import type { Rec } from "./opencode-canary-scenarios/analyze.js";
 import {
@@ -55,6 +55,7 @@ interface Options {
 	measure: boolean;
 	product: boolean;
 	mutate: string[];
+	mutationsOnly: boolean;
 	overhead: number;
 	v1Bin?: string;
 	v2Bin?: string;
@@ -71,6 +72,7 @@ function parseArgs(argv: string[]): Options {
 		measure: false,
 		product: false,
 		mutate: [],
+		mutationsOnly: false,
 		overhead: 0,
 		keepAlive: [],
 	};
@@ -84,6 +86,7 @@ function parseArgs(argv: string[]): Options {
 		if (arg === "--measure") options.measure = true;
 		else if (arg === "--product") options.product = true;
 		else if (arg === "--mutate") options.mutate = next().split(",");
+		else if (arg === "--mutations-only") options.mutationsOnly = true;
 		else if (arg === "--overhead") options.overhead = Number(next());
 		else if (arg === "--v1-bin") options.v1Bin = next();
 		else if (arg === "--v2-bin") options.v2Bin = next();
@@ -129,8 +132,12 @@ async function main(): Promise<number> {
 	}
 	if (options.measure === options.product || !options.v1Bin || !options.v2Bin || !options.work) {
 		console.error(
-			"usage: (--measure | --product) --v1-bin <path> --v2-bin <path> --work <dir> [--only ids] [--result file]\n  --product also takes [--v1-warm <dir>] [--mutate await-post,throw-in-tool-hook] [--overhead <pairs>]",
+			"usage: (--measure | --product) --v1-bin <path> --v2-bin <path> --work <dir> [--only ids] [--result file]\n  --product also takes --v1-warm <dir> [--mutate <name,name|all>] [--mutations-only] [--overhead <pairs>]",
 		);
+		return EXIT.usage;
+	}
+	if (options.product && !options.v1Warm) {
+		console.error("--product needs --v1-warm <dir>: the 1.x places must start with the plugin SDK");
 		return EXIT.usage;
 	}
 	mkdirSync(options.work, { recursive: true });
@@ -157,6 +164,8 @@ async function main(): Promise<number> {
 	}
 
 	const world = makeWorld(root, bins, options.v1Warm ? resolve(options.v1Warm) : undefined);
+	// A product run gives the model a real one's latency before its last answer, so the plugin's queue can drain.
+	if (options.product) world.rule.finalDelayMs = 500;
 	guard.onCleanup(() => stopWorld(world));
 
 	// The network watch: every second, the sockets of this run's own pids must all be loopback.
@@ -164,7 +173,7 @@ async function main(): Promise<number> {
 	const dataHomes = new Set<string>();
 	const sampler = setInterval(() => {
 		const pids = new Set<number>(startedPids);
-		for (const home of dataHomes) for (const pid of ownOpenCodePids(home)) pids.add(pid);
+		for (const pid of ownOpenCodePidsAny([...dataHomes])) pids.add(pid);
 		for (const line of nonLoopbackPeers([...pids])) violations.push(line);
 	}, 1000);
 	sampler.unref();
@@ -201,6 +210,7 @@ async function main(): Promise<number> {
 				world,
 				...(options.only ? { only: options.only } : {}),
 				mutate: options.mutate,
+				mutationsOnly: options.mutationsOnly,
 				overhead: options.overhead,
 				noteDataHome: (dir) => {
 					dataHomes.add(dir);
@@ -242,7 +252,7 @@ async function main(): Promise<number> {
 	const newLabels = labelsAfter.filter((l) => !labelsBefore.includes(l));
 	const bootout = newLabels.length ? bootoutOwnLabels(newLabels, root) : [];
 	const launchdDiff = diffLabels(launchdBefore, launchdServiceLabels());
-	const strayPids = [...dataHomes].flatMap((h) => ownOpenCodePids(h));
+	const strayPids = ownOpenCodePidsAny([...dataHomes]);
 	const keepAliveReport = Object.fromEntries(keepAlive.map((pid) => [pid, alive(pid)]));
 
 	const record = {
@@ -263,7 +273,9 @@ async function main(): Promise<number> {
 	const { MUTATION_TARGETS } = await import("./lib/opencode-canary-mutations.js");
 	const verdicts = productResults.map((r) => ({
 		scenario: `${r.scenario}.${r.line}${r.mutation ? `+${r.mutation}` : ""}`,
-		verdict: classifyScenarioWith(r, (m) => MUTATION_TARGETS[m] ?? []),
+		verdict: classifyScenarioWith(r, (m) => MUTATION_TARGETS[m] ?? [], {
+			preconditionsFirst: true,
+		}),
 		failed: r.expectations.filter((e) => e.ok === false).map((e) => e.name),
 	}));
 	for (const v of verdicts)

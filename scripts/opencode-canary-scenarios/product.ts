@@ -1,239 +1,60 @@
 /**
- * The product scenarios of the OpenCode live canary (AGEN-141, plan step 20): the real plugins, loaded the way an
- * installer lays them out, inside a real OpenCode 1.x and 2.x, posting to an in-process server that records every
- * raw POST (with a random 0-50 ms delay so arrival order isn't luck) and forwards each to the real ingest routes.
- * Everything runs through `lib/opencode-canary-spawn.ts`; the model is the stub.
+ * The product scenarios of the OpenCode live canary (AGEN-141, plan steps 20 and 31), core set: `plain`, `tool`,
+ * `stall`, `exclude`, `cross-line`, plus the runner. The kit (server, installer, helpers) is `product-kit.ts`;
+ * the rest of the table is `product-more.ts`. Mutations patch the installed plugin (or the scratch copy of
+ * `setup-hooks.sh`) and each names the one expectation that must then fail.
  */
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { buildBashExcludeScript } from "../../src/shared/hook-command.ts";
-import { buildOpenCodePluginFiles } from "../../src/shared/opencode-plugin.ts";
 import { parseOpenCodeEnvelope } from "../../src/shared/opencode-wire.ts";
 import type { Expectation } from "../lib/canary-verdict.ts";
-import { type Line, applyMutation } from "../lib/opencode-canary-mutations.ts";
-import { makePlace, projectDir, runTurn } from "./world.ts";
-import type { Place, World } from "./world.ts";
+import { type Line, MUTATION_LINES } from "../lib/opencode-canary-mutations.ts";
+import {
+	NOISE,
+	type ProductCtx,
+	type ProductResult,
+	type ProductScenario,
+	bodiesOf,
+	expect,
+	median,
+	overheadScenario,
+	patchInstalled,
+	ready,
+	repointInstalled,
+	result,
+	runSetup,
+	startProductServer,
+	toolDurationsMs,
+	turn,
+	writeRules,
+} from "./product-kit.ts";
+import { MORE_SCENARIOS } from "./product-more.ts";
+import { makePlace, projectDir } from "./world.ts";
+import type { World } from "./world.ts";
 
-export interface ProductPost {
-	t: number;
-	headers: Record<string, string>;
-	body: Record<string, any>;
-}
+export { toolDurationsMs } from "./product-kit.ts";
+export type { ProductResult } from "./product-kit.ts";
 
-export interface ProductServer {
-	origin: string;
-	posts: ProductPost[];
-	delayMs: { fixed: number | null };
-	rows(): Promise<{ sessions: Array<Record<string, any>>; events: Array<Record<string, any>> }>;
-	reset(): Promise<void>;
-	stop(): void;
-}
+/**
+ * The plugin's exit flush may spend 300 ms on a stalled endpoint (EXIT_BUDGET_MS in the plugin) and starts curl,
+ * so a stalled run costs the budget plus the process start. The plan's "+ 300 ms" has no room for the second part
+ * (measured 312 to 335 ms over, three times in a row); 100 ms of slack separates that from a hook that waits
+ * (await-post adds the POST's 2 s timeout).
+ */
+const EXIT_BUDGET_MS = 300;
+const SPAWN_SLACK_MS = 100;
 
-/** The in-process server: records, delays, and forwards each POST to the real hook route with a test database. */
-export async function startProductServer(): Promise<ProductServer> {
-	process.env.AP_CANARY_PRODUCT = "1";
-	await import("../../src/server/services/ai/__test_db.js");
-	const { Hono } = await import("hono");
-	const { config } = await import("../../src/server/config.js");
-	const { getDb, initializeDatabase } = await import("../../src/server/db/client.js");
-	const { events, sessions } = await import("../../src/server/db/schema/index.js");
-	const { ingest, getInFlightCount } = await import("../../src/server/routes/ingest.js");
-	await initializeDatabase();
-	config.disableAuth = true;
-	const app = new Hono().route("/api/v1", ingest);
-	const posts: ProductPost[] = [];
-	const delayMs = { fixed: null as number | null };
-	const server = Bun.serve({
-		hostname: "127.0.0.1",
-		port: 0,
-		async fetch(req) {
-			const raw = await req.text();
-			const headers: Record<string, string> = {};
-			req.headers.forEach((v, k) => {
-				headers[k] = v;
-			});
-			let body: Record<string, any> = {};
-			try {
-				body = JSON.parse(raw);
-			} catch {}
-			posts.push({ t: Date.now(), headers, body });
-			await new Promise((r) => setTimeout(r, delayMs.fixed ?? Math.random() * 50));
-			await app.request("/api/v1/hooks", {
-				method: "POST",
-				headers: {
-					"content-type": "application/json",
-					"x-agent-type": "opencode",
-					...(headers["x-agentpulse-delivery-id"]
-						? { "x-agentpulse-delivery-id": headers["x-agentpulse-delivery-id"] }
-						: {}),
-				},
-				body: raw,
-			});
-			for (let i = 0; i < 200 && getInFlightCount() > 0; i++)
-				await new Promise((r) => setTimeout(r, 5));
-			return Response.json({ ok: true });
-		},
-	});
-	return {
-		origin: `http://127.0.0.1:${server.port}`,
-		posts,
-		delayMs,
-		async rows() {
-			return {
-				sessions: await getDb().select().from(sessions),
-				events: await getDb().select().from(events),
-			};
-		},
-		async reset() {
-			posts.length = 0;
-			await getDb().delete(events).execute();
-			await getDb().delete(sessions).execute();
-		},
-		stop: () => void server.stop(true),
-	};
-}
-
-export interface ProductCtx {
-	world: World;
-	server: ProductServer;
-	mutation: string | null;
-	noteDataHome: (dir: string) => void;
-}
-
-export interface ProductResult {
-	scenario: string;
-	line: Line;
-	mutation: string | null;
-	expectations: Expectation[];
-	notRun?: string;
-	detail?: unknown;
-}
-
-const NOISE = /\b(ERROR|WARN)\b|agentpulse|plugin/i;
-
-function expect(
-	list: Expectation[],
-	name: string,
-	kind: Expectation["kind"],
-	ok: boolean,
-	detail?: unknown,
-) {
-	list.push({ name, kind, ok, ...(detail === undefined ? {} : { detail }) });
-}
-
-/** Lays the plugins out the way the installer does (G9b: 1.x flat, 2.x a directory with index.js) and applies a break. */
-export function installProductPlugins(
-	place: Place,
-	origin: string,
-	options: { mutation?: string | null; lines?: Line[] } = {},
-): void {
-	const files = buildOpenCodePluginFiles({ baseUrl: origin, direct: false });
-	for (const file of files) {
-		const line: Line = file.name.includes("-1") ? "v1" : "v2";
-		if (options.lines && !options.lines.includes(line)) continue;
-		const text =
-			options.mutation && line === place.line
-				? applyMutation(options.mutation, line, file.text)
-				: file.text;
-		const target = join(place.pluginsDir, file.name);
-		mkdirSync(join(target, ".."), { recursive: true });
-		writeFileSync(target, text);
-	}
-}
-
-function writeRules(place: Place, rules: string[]): void {
-	const home = place.sandbox.paths.HOME;
-	const dir = join(home, ".agentpulse");
-	mkdirSync(dir, { recursive: true });
-	chmodSync(dir, 0o700);
-	writeFileSync(join(dir, "exclude"), `${rules.join("\n")}\n`, { mode: 0o600 });
-	chmodSync(join(dir, "exclude"), 0o600);
-	writeFileSync(join(dir, "exclude-check.sh"), buildBashExcludeScript(), { mode: 0o500 });
-}
-
-/** One body per delivery id: the exit flush may send an in-flight item a second time, and the server keeps one. */
-const bodiesOf = (s: ProductServer) => {
-	const seen = new Set<string>();
-	const out: Array<Record<string, any>> = [];
-	for (const p of s.posts) {
-		const id = p.headers["x-agentpulse-delivery-id"] ?? JSON.stringify(p.body);
-		if (seen.has(id)) continue;
-		seen.add(id);
-		out.push(p.body);
-	}
-	return out;
-};
-
-/** The recorded duration of each tool call in `opencode run --format json` output (OpenCode's own start and end). */
-export function toolDurationsMs(stdout: string): number[] {
-	const out: number[] = [];
-	for (const text of stdout.split("\n")) {
-		if (!text.startsWith("{")) continue;
-		try {
-			const e = JSON.parse(text) as {
-				type?: string;
-				part?: { state?: { time?: { start?: number; end?: number } } };
-			};
-			const t = e.part?.state?.time;
-			if (e.type === "tool_use" && t && typeof t.start === "number" && typeof t.end === "number") {
-				out.push(t.end - t.start);
-			}
-		} catch {}
-	}
-	return out;
-}
-
-export async function turn(
-	ctx: ProductCtx,
-	place: Place,
-	name: string,
-	prompt: string,
-	extra: { extraEnv?: Record<string, string>; json?: boolean } = {},
-) {
-	const cwd = projectDir(ctx.world, name);
-	ctx.noteDataHome(place.sandbox.paths.XDG_DATA_HOME);
-	const r = await runTurn(ctx.world, place, {
-		cwd,
-		timeoutMs: 90_000,
-		...(extra.json ? { args: ["run", "--format", "json", prompt] } : { prompt }),
-		...(extra.extraEnv ? { extraEnv: extra.extraEnv } : {}),
-	});
-	// The plugin's chain may still be sending when OpenCode exits; give it the 2 s a POST may take.
-	await new Promise((res) => setTimeout(res, 600));
-	return { r, cwd };
-}
-
-export type ProductScenario = (ctx: ProductCtx, line: Line) => Promise<ProductResult>;
-
-const result = (
-	scenario: string,
-	line: Line,
-	ctx: ProductCtx,
-	expectations: Expectation[],
-	detail?: unknown,
-): ProductResult => ({
-	scenario,
-	line,
-	mutation: ctx.mutation,
-	expectations,
-	...(detail === undefined ? {} : { detail }),
-});
-
-const ready = (ctx: ProductCtx, line: Line, label: string) => {
-	const place = makePlace(ctx.world, line, label, { probe: false });
-	installProductPlugins(place, ctx.server.origin, { mutation: ctx.mutation });
-	return place;
-};
-
-export const PRODUCT_SCENARIOS: Record<string, ProductScenario> = {
+export const CORE_SCENARIOS: Record<string, ProductScenario> = {
 	plain: async (ctx, line) => {
 		await ctx.server.reset();
-		const place = ready(ctx, line, "plain");
-		const { r } = await turn(ctx, place, "plain", "PLAIN hello");
+		const place = await ready(ctx, line, "plain");
+		const { r, cwd: cwdOfPlain } = await turn(ctx, place, "plain", "PLAIN hello");
 		const ex: Expectation[] = [];
 		expect(ex, "opencode exited 0 without timing out", "instrument", r.code === 0 && !r.timedOut, {
 			code: r.code,
+		});
+		expect(ex, "the real installer wrote the plugins", "instrument", place.setup.code === 0, {
+			setup: place.setup.out.slice(0, 300),
 		});
 		const bodies = bodiesOf(ctx.server);
 		expect(ex, "the plugin posted", "precondition", bodies.length >= 2, { n: bodies.length });
@@ -242,12 +63,19 @@ export const PRODUCT_SCENARIOS: Record<string, ProductScenario> = {
 			"every body passes the wire parser",
 			"claim",
 			bodies.every((b) => parseOpenCodeEnvelope(b) !== null),
+			{
+				bad: bodies
+					.filter((b) => parseOpenCodeEnvelope(b) === null)
+					.slice(0, 2)
+					.map((b) => JSON.stringify(b).slice(0, 400)),
+			},
 		);
 		expect(
 			ex,
 			"the prompt was posted once",
 			"claim",
-			bodies.filter((b) => /chat.message|inbox/.test(b.hook_event_name)).length === 1,
+			bodies.filter((b) => /^(chat\.message|session\.inbox\.enqueued)$/.test(b.hook_event_name))
+				.length === 1,
 		);
 		const end = bodies.filter((b) => /session.idle|execution.succeeded/.test(b.hook_event_name));
 		expect(
@@ -264,6 +92,13 @@ export const PRODUCT_SCENARIOS: Record<string, ProductScenario> = {
 			"claim",
 			rows.sessions.length === 1 && rows.sessions[0]?.agentType === "opencode",
 		);
+		expect(
+			ex,
+			"the session row carries the project directory and the reporting host",
+			"claim",
+			rows.sessions[0]?.cwd === cwdOfPlain && Boolean(rows.sessions[0]?.reportedHost),
+			{ cwd: rows.sessions[0]?.cwd, host: rows.sessions[0]?.reportedHost },
+		);
 		expect(ex, "the terminal shows nothing from the plugin", "claim", !NOISE.test(r.stderr), {
 			stderr: r.stderr.slice(0, 200),
 		});
@@ -272,7 +107,7 @@ export const PRODUCT_SCENARIOS: Record<string, ProductScenario> = {
 
 	tool: async (ctx, line) => {
 		await ctx.server.reset();
-		const place = ready(ctx, line, "tool");
+		const place = await ready(ctx, line, "tool");
 		const { r } = await turn(ctx, place, "tool", "SHELLOK run it");
 		const ex: Expectation[] = [];
 		expect(ex, "opencode exited 0 without timing out", "instrument", r.code === 0 && !r.timedOut, {
@@ -309,110 +144,141 @@ export const PRODUCT_SCENARIOS: Record<string, ProductScenario> = {
 
 	stall: async (ctx, line) => {
 		await ctx.server.reset();
-		ctx.server.delayMs.fixed = 300;
+		const ex: Expectation[] = [];
+		const hang = Bun.listen({
+			hostname: "127.0.0.1",
+			port: 0,
+			socket: { open() {}, data() {}, close() {} },
+		});
 		try {
-			const place = ready(ctx, line, "stall");
-			const { r } = await turn(ctx, place, "stall", "SHELLOK run it", { json: true });
-			const ex: Expectation[] = [];
+			const base = makePlace(ctx.world, line, "stall-base", { probe: false });
+			const withPlugin = makePlace(ctx.world, line, "stall-plugin", { probe: false });
+			const setup = await runSetup(ctx, withPlugin);
+			await ctx.server.reset();
+			// The installer's reachability probe needs an answer, so it ran against the real server; the plugin's
+			// base URL is then pointed at the endpoint that never answers.
+			repointInstalled(withPlugin, ctx.server.origin, `http://127.0.0.1:${hang.port}`);
+			if (ctx.mutation) patchInstalled(withPlugin, line, ctx.mutation);
+			expect(ex, "the real installer wrote the plugins", "instrument", setup.code === 0, {
+				setup: setup.out.slice(0, 300),
+			});
+			// Interleaved (baseline, stalled, baseline, ...) so a change in the machine's load hits both arms.
+			const baselineWall: number[] = [];
+			const baselineTool: number[] = [];
+			const wall: number[] = [];
+			const tool: number[] = [];
+			let exits = 0;
+			for (let i = 0; i < 3; i++) {
+				const b = await turn(ctx, base, `stall-base-${i}`, "SHELLOK run it", { json: true });
+				baselineWall.push(b.r.ms);
+				baselineTool.push(...toolDurationsMs(b.r.stdout));
+				const s = await turn(ctx, withPlugin, `stall-run-${i}`, "SHELLOK run it", { json: true });
+				wall.push(s.r.ms);
+				tool.push(...toolDurationsMs(s.r.stdout));
+				if (s.r.code === 0 && !s.r.timedOut) exits++;
+			}
 			expect(
 				ex,
-				"opencode exited 0 without timing out",
-				"instrument",
-				r.code === 0 && !r.timedOut,
-				{ code: r.code },
-			);
-			const durations = toolDurationsMs(r.stdout);
-			expect(
-				ex,
-				"OpenCode recorded the tool call's duration",
+				"three baseline runs (no plugin) each made one tool call",
 				"precondition",
-				durations.length === 1,
-				{ durations },
+				baselineTool.length === 3,
+				{ baselineWall, baselineTool },
 			);
-			// The server holds each answer 300 ms. A hook that waited would put at least that into the call's own time.
+			expect(ex, "opencode exited 0 without timing out", "instrument", exits === 3, { exits });
+			expect(ex, "every stalled run made one tool call", "precondition", tool.length === 3, {
+				tool,
+			});
 			expect(
 				ex,
-				"the tool hook does not wait for the server",
-				"claim",
-				durations.length === 1 && (durations[0] as number) < 150,
-				{ toolMs: durations[0] },
+				"the endpoint never answered (nothing reached the real route)",
+				"precondition",
+				ctx.server.posts.length === 0,
 			);
-			return result("stall", line, ctx, ex, { toolMs: durations[0] });
+			// OpenCode's own recorded time for the call, against the same call with no plugin at all.
+			const toolMs = median(tool);
+			const toolBase = median(baselineTool);
+			expect(ex, "the tool hook does not wait for the server", "claim", toolMs <= toolBase + 150, {
+				toolMs,
+				toolBase,
+			});
+			const wallMs = median(wall);
+			const wallBase = median(baselineWall);
+			expect(
+				ex,
+				"the run's wall time is within the baseline median plus the exit budget and its spawn slack",
+				"claim",
+				wallMs <= wallBase + EXIT_BUDGET_MS + SPAWN_SLACK_MS,
+				{ wall, wallMs, baselineWall, wallBase, limit: EXIT_BUDGET_MS + SPAWN_SLACK_MS },
+			);
+			return result("stall", line, ctx, ex, { wallMs, wallBase, toolMs, toolBase });
 		} finally {
-			ctx.server.delayMs.fixed = null;
+			hang.stop(true);
 		}
 	},
 
-	"multi-project": async (ctx, line) => {
-		await ctx.server.reset();
-		const place = ready(ctx, line, "multi");
-		const a = await turn(ctx, place, "multi-a", "PLAIN hello");
-		const b = await turn(ctx, place, "multi-b", "PLAIN hello");
-		const ex: Expectation[] = [];
-		expect(ex, "both runs exited 0", "instrument", a.r.code === 0 && b.r.code === 0);
-		const dirs = new Set(bodiesOf(ctx.server).map((x) => x.cwd));
-		expect(
-			ex,
-			"each project's session posted with its own directory",
-			"claim",
-			dirs.size === 2 && dirs.has(a.cwd) && dirs.has(b.cwd),
-			{ dirs: [...dirs] },
-		);
-		const rows = await ctx.server.rows();
-		expect(ex, "two sessions are stored", "claim", rows.sessions.length === 2);
-		// excluded A / included B
-		await ctx.server.reset();
-		const place2 = ready(ctx, line, "multi-x");
-		const ca = projectDir(ctx.world, "multi-excluded");
-		writeRules(place2, [ca]);
-		await turn(ctx, place2, "multi-excluded", "PLAIN hello");
-		const sentForA = ctx.server.posts.length;
-		await turn(ctx, place2, "multi-included", "PLAIN hello");
-		expect(
-			ex,
-			"an excluded project sends nothing and the included one does",
-			"claim",
-			sentForA === 0 && ctx.server.posts.length >= 2,
-			{ sentForA, total: ctx.server.posts.length },
-		);
-		return result("multi-project", line, ctx, ex);
-	},
-
 	exclude: async (ctx, line) => {
-		await ctx.server.reset();
 		const ex: Expectation[] = [];
-		const place = ready(ctx, line, "exclude");
+		const place = await ready(ctx, line, "exclude");
 		const dir = projectDir(ctx.world, "exclude-dir");
+		const rulesFile = join(place.sandbox.paths.HOME, ".agentpulse", "exclude");
+		await ctx.server.reset();
 		writeRules(place, [dir]);
+		const st = statSync(rulesFile);
+		expect(
+			ex,
+			"the rules file is present and trusted (mode 0600, ours)",
+			"precondition",
+			(st.mode & 0o777) === 0o600 && st.uid === process.getuid?.(),
+		);
 		const first = await turn(ctx, place, "exclude-dir", "SHELLOK run it");
-		expect(ex, "opencode exited 0", "instrument", first.r.code === 0);
+		expect(ex, "opencode exited 0", "instrument", first.r.code === 0 && !first.r.timedOut);
 		expect(ex, "an excluded directory sends nothing", "claim", ctx.server.posts.length === 0, {
 			n: ctx.server.posts.length,
 		});
-		const place2 = ready(ctx, line, "skip");
-		await turn(ctx, place2, "skip-dir", "SHELLOK run it", { extraEnv: { AGENTPULSE_SKIP: "1" } });
-		expect(ex, "AGENTPULSE_SKIP=1 sends nothing", "claim", ctx.server.posts.length === 0, {
-			n: ctx.server.posts.length,
-		});
-		const place3 = ready(ctx, line, "control");
-		await turn(ctx, place3, "control-dir", "SHELLOK run it");
+		// The same rules, but a file the plugin may not trust: it sends nothing anywhere.
+		await ctx.server.reset();
+		chmodSync(rulesFile, 0o666);
+		await turn(ctx, place, "exclude-other", "SHELLOK run it");
 		expect(
 			ex,
-			"the same run with neither is sent (control)",
+			"invalid rules (a world-writable file) send nothing",
+			"claim",
+			ctx.server.posts.length === 0,
+			{ n: ctx.server.posts.length },
+		);
+		// Rules removed: rows resume.
+		await ctx.server.reset();
+		rmSync(rulesFile, { force: true });
+		await turn(ctx, place, "exclude-dir", "SHELLOK run it");
+		expect(
+			ex,
+			"with the rules removed the same directory is sent (control)",
 			"precondition",
 			ctx.server.posts.length >= 3,
+			{ n: ctx.server.posts.length },
+		);
+		expect(
+			ex,
+			"the sent rows are stored",
+			"claim",
+			(await ctx.server.rows()).sessions.length === 1,
 		);
 		return result("exclude", line, ctx, ex);
 	},
 
 	"cross-line": async (ctx, line) => {
 		await ctx.server.reset();
-		const place = makePlace(ctx.world, line, "cross", { probe: false });
-		installProductPlugins(place, ctx.server.origin, { mutation: ctx.mutation });
+		const place = await ready(ctx, line, "cross", { warm: true });
 		const { r } = await turn(ctx, place, "cross", "SHELLOK run it");
 		const ex: Expectation[] = [];
 		expect(ex, "opencode exited 0", "instrument", r.code === 0 && !r.timedOut, { code: r.code });
-		expect(ex, "both plugins are installed, the other line's one included", "precondition", true);
+		const present = (f: string) => existsSync(join(place.pluginsDir, f));
+		expect(
+			ex,
+			"both plugin files are installed, the other line's one included",
+			"precondition",
+			present("agentpulse-opencode-1.js") && present(join("agentpulse-opencode-2", "index.js")),
+		);
 		const lines = new Set(bodiesOf(ctx.server).map((b) => b.opencode?.line));
 		expect(
 			ex,
@@ -428,79 +294,66 @@ export const PRODUCT_SCENARIOS: Record<string, ProductScenario> = {
 			!/\b(ERROR|WARN)\b/.test(`${r.stdout}\n${r.stderr}`),
 			{ out: `${r.stdout}${r.stderr}`.slice(0, 300) },
 		);
-		return result("cross-line", line, ctx, ex);
+		return result("cross-line", line, ctx, ex, {
+			otherFileMessage: `${r.stdout}${r.stderr}`.slice(0, 300) || "(none)",
+		});
 	},
 };
 
-export const tmpRoot = () => mkdtempSync(join(tmpdir(), "ap-oc-canary-"));
-
-const OVERHEAD_LIMIT_MS = 25;
-const percentile = (xs: number[], q: number) => {
-	const sorted = [...xs].sort((a, b) => a - b);
-	return sorted[
-		Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))
-	] as number;
+export const PRODUCT_SCENARIOS: Record<string, ProductScenario> = {
+	...CORE_SCENARIOS,
+	...MORE_SCENARIOS,
 };
 
-/**
- * The plugin's cost to a tool call: OpenCode's own recorded start-to-end of the same stub shell call, plugin vs
- * no plugin, paired and interleaved (A B A B ...). Passes when the p95 of the paired differences is at most 25 ms.
- * When the no-plugin runs' own spread (p95 - p5) is over 25 ms the instrument can't resolve it: instrumentInvalid.
- */
-export async function overheadScenario(
-	ctx: ProductCtx,
+/** No scenario takes longer; a hung one is an invalid instrument for that line, not the end of the run. */
+const SCENARIO_LIMIT_MS = 480_000;
+
+const lineOf = (mutation: string): Line[] => MUTATION_LINES[mutation] ?? ["v1", "v2"];
+
+/** A scenario that throws is an invalid instrument for that line, not the end of the run. */
+async function safely(
+	scenario: string,
 	line: Line,
-	pairs: number,
+	ctx: ProductCtx,
+	fn: ProductScenario,
 ): Promise<ProductResult> {
-	await ctx.server.reset();
-	const withPlugin = ready(ctx, line, "ovh-with");
-	const without = makePlace(ctx.world, line, "ovh-without", { probe: false });
-	const diffs: number[] = [];
-	const base: number[] = [];
-	const ex: Expectation[] = [];
-	for (let i = 0; i < pairs; i++) {
-		const a = await turn(ctx, withPlugin, `ovh-a-${i}`, "SHELLOK run it", { json: true });
-		const b = await turn(ctx, without, `ovh-b-${i}`, "SHELLOK run it", { json: true });
-		const da = toolDurationsMs(a.r.stdout);
-		const db = toolDurationsMs(b.r.stdout);
-		if (da.length === 1 && db.length === 1) {
-			diffs.push((da[0] as number) - (db[0] as number));
-			base.push(db[0] as number);
-		}
+	const t0 = Date.now();
+	try {
+		const r = await Promise.race([
+			fn(ctx, line),
+			new Promise<never>((_, reject) => {
+				const timer = setTimeout(
+					() =>
+						reject(new Error(`${scenario} on ${line} did not finish in ${SCENARIO_LIMIT_MS} ms`)),
+					SCENARIO_LIMIT_MS,
+				);
+				timer.unref();
+			}),
+		]);
+		return { ...r, detail: { ...(r.detail as object | undefined), ms: Date.now() - t0 } };
+	} catch (error) {
+		return {
+			scenario,
+			line,
+			mutation: ctx.mutation,
+			expectations: [
+				{
+					name: "the scenario ran to its end",
+					kind: "instrument",
+					ok: false,
+					detail: String((error as Error)?.stack ?? error).slice(0, 600),
+				},
+			],
+		};
 	}
-	expect(
-		ex,
-		"every pair gave one tool duration on both arms",
-		"instrument",
-		diffs.length === pairs,
-		{ pairs, got: diffs.length },
-	);
-	const spread = base.length
-		? percentile(base, 0.95) - percentile(base, 0.05)
-		: Number.POSITIVE_INFINITY;
-	expect(
-		ex,
-		`the no-plugin runs' own spread is at most ${OVERHEAD_LIMIT_MS} ms`,
-		"instrument",
-		spread <= OVERHEAD_LIMIT_MS,
-		{ spreadMs: spread },
-	);
-	const p95 = diffs.length ? percentile(diffs, 0.95) : Number.NaN;
-	expect(
-		ex,
-		`the p95 of the paired differences is at most ${OVERHEAD_LIMIT_MS} ms`,
-		"claim",
-		p95 <= OVERHEAD_LIMIT_MS,
-		{ p95Ms: p95, median: diffs.length ? percentile(diffs, 0.5) : null },
-	);
-	return result("overhead", line, ctx, ex, { diffs, base });
 }
 
-/** Runs the unmutated scenarios, then each requested break against the scenario it names, on both lines. */
+/** Runs the unmutated scenarios, then each requested break against the scenario it names, on the lines it applies to. */
 export async function runProductScenarios(options: {
 	world: World;
 	only?: string[];
 	mutate: string[];
+	mutationsOnly?: boolean;
 	overhead?: number;
 	noteDataHome: (dir: string) => void;
 	onProgress?: (line: string) => void;
@@ -509,49 +362,42 @@ export async function runProductScenarios(options: {
 	const server = await startProductServer();
 	const out: ProductResult[] = [];
 	const lines: Line[] = ["v1", "v2"];
+	const base = (mutation: string | null): ProductCtx => ({
+		world: options.world,
+		server,
+		mutation,
+		noteDataHome: options.noteDataHome,
+	});
 	try {
 		const ids = options.only ?? Object.keys(PRODUCT_SCENARIOS);
-		if (options.overhead && options.overhead > 0) {
-			for (const line of lines) {
-				options.onProgress?.(`[product] overhead ${line} (${options.overhead} pairs)`);
-				out.push(
-					await overheadScenario(
-						{ world: options.world, server, mutation: null, noteDataHome: options.noteDataHome },
-						line,
-						options.overhead,
-					),
-				);
-			}
-		}
 		const mutations = options.mutate.includes("all")
 			? Object.keys(MUTATION_TARGETS)
 			: options.mutate;
-		for (const id of ids) {
-			const scenario = PRODUCT_SCENARIOS[id];
-			if (!scenario) throw new Error(`no product scenario ${id}`);
+		if (options.overhead && options.overhead > 0) {
 			for (const line of lines) {
-				options.onProgress?.(`[product] ${id} ${line}`);
-				out.push(
-					await scenario(
-						{ world: options.world, server, mutation: null, noteDataHome: options.noteDataHome },
-						line,
-					),
-				);
+				options.onProgress?.(`[product] overhead ${line} (${options.overhead} pairs)`);
+				out.push(await overheadScenario(base(null), line, options.overhead));
+			}
+		}
+		if (!options.mutationsOnly) {
+			for (const id of ids) {
+				const scenario = PRODUCT_SCENARIOS[id];
+				if (!scenario) throw new Error(`no product scenario ${id}`);
+				for (const line of lines) {
+					options.onProgress?.(`[product] ${id} ${line}`);
+					out.push(await safely(id, line, base(null), scenario));
+				}
 			}
 		}
 		for (const mutation of mutations) {
 			for (const target of MUTATION_TARGETS[mutation] ?? []) {
+				if (options.only && !options.only.includes(target.scenario)) continue;
 				const scenario = PRODUCT_SCENARIOS[target.scenario];
 				if (!scenario)
 					throw new Error(`mutation ${mutation} names unknown scenario ${target.scenario}`);
-				for (const line of lines) {
+				for (const line of lineOf(mutation)) {
 					options.onProgress?.(`[product] ${target.scenario} ${line} (break: ${mutation})`);
-					out.push(
-						await scenario(
-							{ world: options.world, server, mutation, noteDataHome: options.noteDataHome },
-							line,
-						),
-					);
+					out.push(await safely(target.scenario, line, base(mutation), scenario));
 				}
 			}
 		}
