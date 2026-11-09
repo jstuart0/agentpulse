@@ -53,6 +53,7 @@ on:
       - "src/server/services/ai/session-summary/**" # AGEN-122
       - "src/server/services/session-summary-service.ts" # AGEN-122
       - "src/server/services/fork-call-row*" # AGEN-122
+      - "src/server/services/ai/hitl-decision*" # AGEN-140
       # AGEN-123: the owner-only tool detail
       - "src/server/services/fork-tool-detail*"
       - "src/server/routes/fork-tool-calls*"
@@ -132,6 +133,7 @@ jobs:
           src/server/routes/fork-tool-calls.test.ts
           src/server/routes/fork-tool-calls-leak.test.ts
           src/server/services/retention-service.test.ts
+          src/server/services/ai/hitl-decision-races.test.ts
 
       - name: Claude turn guard and Stop (Postgres backend; a skipped test fails the job)
         env:
