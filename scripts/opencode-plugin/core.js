@@ -17,6 +17,7 @@ const AP_CONFIG = { baseUrl: "@@AP_OPENCODE_BASE_URL@@", direct: "@@AP_OPENCODE_
 // @@AP_GENERATED BEGIN
 // @@AP_GENERATED END
 
+// @@AP_TEST_SEAM BEGIN
 const AP_TEST =
 	process.env.AP_TEST_SEAM === "1" ? globalThis[Symbol.for("agentpulse.opencode.seam")] : undefined;
 const apEnv = () => (AP_TEST && AP_TEST.env) || process.env;
@@ -25,6 +26,15 @@ const apGetuid = () => (AP_TEST && "getuid" in AP_TEST ? AP_TEST.getuid : proces
 const apNow = () => (AP_TEST && AP_TEST.now ? AP_TEST.now() : Date.now());
 const apArgv = () => (AP_TEST && AP_TEST.argv) || process.argv;
 const apFetch = () => (AP_TEST && AP_TEST.fetch) || globalThis.fetch;
+// @@AP_TEST_SEAM ELSE
+const AP_TEST = undefined;
+const apEnv = () => process.env;
+const apPlatform = () => process.platform;
+const apGetuid = () => process.getuid;
+const apNow = () => Date.now();
+const apArgv = () => process.argv;
+const apFetch = () => globalThis.fetch;
+// @@AP_TEST_SEAM END
 
 const STRING_CAP = 65536;
 const BODY_CAP = 262144;
@@ -45,6 +55,8 @@ const HOLD_MS = 2000;
 const RULES_MAX_BYTES = 1048576;
 const INPUT_DEPTH = 12;
 const INPUT_NODES = 20000;
+// Under BODY_CAP, so a bounded input still fits in one envelope.
+const INPUT_BYTES = 245760;
 const TRUNCATED = "\n[truncated by the AgentPulse plugin]";
 const ID_RE = /^[A-Za-z0-9_-]+$/;
 const ERR_RE = /^[A-Za-z0-9_.-]+$/;
@@ -155,10 +167,18 @@ function capString(value) {
 
 function capValue(value, depth, budget) {
 	budget.nodes += 1;
-	if (budget.nodes > INPUT_NODES || depth > INPUT_DEPTH) return "[omitted]";
+	if (budget.nodes > INPUT_NODES || depth > INPUT_DEPTH || budget.bytes >= INPUT_BYTES)
+		return "[omitted]";
 	if (value === null || typeof value === "boolean") return value;
 	if (typeof value === "number") return Number.isFinite(value) ? value : null;
-	if (typeof value === "string") return capString(value);
+	if (typeof value === "string") {
+		let capped = capString(value);
+		const room = INPUT_BYTES - budget.bytes;
+		if (room <= TRUNCATED.length) return "[omitted]";
+		if (capped.length > room) capped = capped.slice(0, room - TRUNCATED.length) + TRUNCATED;
+		budget.bytes += capped.length;
+		return capped;
+	}
 	if (Array.isArray(value)) {
 		const out = [];
 		for (let i = 0; i < value.length; i++) out.push(capValue(value[i], depth + 1, budget));
@@ -169,6 +189,7 @@ function capValue(value, depth, budget) {
 		const keys = Object.keys(value);
 		for (let i = 0; i < keys.length; i++) {
 			if (keys[i] === "__proto__") continue;
+			budget.bytes += keys[i].length;
 			out[keys[i]] = capValue(value[keys[i]], depth + 1, budget);
 		}
 		return out;
@@ -178,7 +199,7 @@ function capValue(value, depth, budget) {
 
 function capInput(value) {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
-	return capValue(value, 0, { nodes: 0 });
+	return capValue(value, 0, { nodes: 0, bytes: 0 });
 }
 
 function errorName(raw) {
@@ -403,8 +424,10 @@ async function deliver(rec, st, item) {
 		}
 	}
 	st.lastVerdict = true;
-	for (let i = 0; i < item.dirs.length; i++)
-		lruTouch(rec.verdicts, String(item.dirs[i]), apNow(), 256);
+	for (let i = 0; i < item.dirs.length; i++) {
+		const dir = item.dirs[i];
+		if (typeof dir === "string" && dir !== "") lruTouch(rec.verdicts, dir, apNow(), 256);
+	}
 	if (item.evt !== undefined && seenBefore(rec, item.evt)) {
 		rec.counters.droppedSeen += 1;
 		return;
@@ -581,9 +604,38 @@ function exitAuthArgs() {
 	}
 }
 
+/** True when a rules file or marker of any kind exists (a dangling link, or a path that can't be read, counts). Synchronous. */
+function rulesOrMarkerPresentSync() {
+	const home = homeDir();
+	if (!home) return true;
+	const d = path.join(home, AP_AGENTPULSE_DIR);
+	for (const name of [AP_RULES_FILE, AP_MARKER_FILE]) {
+		try {
+			fs.lstatSync(path.join(d, name));
+			return true;
+		} catch (e) {
+			if (!e || e.code !== "ENOENT") return true;
+		}
+	}
+	return false;
+}
+
+/** True when anything could still forbid a send: the skip variable, or the rules state above. */
+function exitStateForbids() {
+	return apIsSkip(apEnv().AGENTPULSE_SKIP) || rulesOrMarkerPresentSync();
+}
+
+/** A directory the process judged "send" within the gate's time-to-live. */
+function freshVerdict(rec, dir) {
+	if (typeof dir !== "string" || dir === "") return false;
+	const at = rec.verdicts.get(dir);
+	return typeof at === "number" && apNow() - at < GATE_TTL_MS;
+}
+
 function flushAtExit(rec) {
 	try {
 		if (!oneShot()) return;
+		if (exitStateForbids()) return;
 		const deadline = Date.now() + EXIT_BUDGET_MS;
 		const auth = exitAuthArgs();
 		if (auth === null) return;
@@ -592,7 +644,7 @@ function flushAtExit(rec) {
 			for (const item of st.q) {
 				const left = deadline - Date.now();
 				if (left <= 0) return;
-				if (!item.dirs.every((d) => rec.verdicts.has(String(d)))) break;
+				if (!item.dirs.every((d) => freshVerdict(rec, d))) break;
 				if (item.evt !== undefined && seenBefore(rec, item.evt)) continue;
 				const args = [
 					"-q",

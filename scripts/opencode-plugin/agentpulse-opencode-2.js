@@ -32,7 +32,9 @@ export default {
 		function emit(sid, name, data, opts) {
 			const root = rootOf(rec, sid);
 			const info = sessionInfo(rec, sid) || {};
-			const own = info.dir || myDir;
+			// A claimed session lives in this instance's directory. One nobody claimed, seen by several instances, has no safe owner: judged as unknown, it is dropped when rules exist.
+			const own =
+				info.dir || (rec.claims.get(sid) === myDir || rec.instances <= 1 ? myDir : undefined);
 			const env = envelopeBase(
 				2,
 				info.version || appVersion,
@@ -196,7 +198,9 @@ export default {
 			const claimant = rec.claims.get(sid);
 			if (claimant !== undefined) return claimant === myDir;
 			const known = (sessionInfo(rec, sid) || {}).dir;
-			return known === undefined || known === myDir;
+			// Nobody claimed it and no directory is known: with rules in force, no instance may take it for its own.
+			if (known === undefined) return !rulesOrMarkerPresentSync();
+			return known === myDir;
 		}
 
 		function toolBefore(event) {

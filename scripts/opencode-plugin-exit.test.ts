@@ -5,7 +5,14 @@
  * collector in another process (a synchronous curl would block one in this process).
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { rig } from "./lib/opencode-plugin-common-tests.ts";
 import {
@@ -144,6 +151,111 @@ for (const line of ["v1", "v2"] as const) {
 			const before = remote.read().length;
 			flush();
 			expect(remote.read().length).toBe(before);
+		});
+
+		describe("M1: the exit flush re-checks the exclude state and the age of a verdict", () => {
+			async function queued(argv = RUN) {
+				const s = await setup(line, argv);
+				s.remote.hang(true);
+				s.r.drv.before(SID, "call_late", "bash", { a: 1 });
+				await new Promise((res) => setTimeout(res, 30));
+				s.remote.hang(false);
+				const sentAtExit = () => {
+					const before = s.remote.read().length;
+					s.flush();
+					return s.remote
+						.read()
+						.slice(before)
+						.filter((x) => String(x.body?.hook_event_name).endsWith("before")).length;
+				};
+				return { ...s, sentAtExit };
+			}
+			const r_child = (q: {
+				r: {
+					drv: {
+						created: (s: string, d: string, p?: string) => void;
+						before: (...a: any[]) => unknown;
+						flush: () => Promise<void>;
+					};
+					dir: string;
+				};
+			}) => {
+				q.r.drv.created("ses_childnoroot000000001", q.r.dir, "ses_rootunknown00000001");
+				q.r.drv.before("ses_childnoroot000000001", "call_c", "bash", { a: 1 });
+			};
+			const agentpulseDir = (home: string) => {
+				const d = join(home, ".agentpulse");
+				mkdirSync(d, { recursive: true });
+				return d;
+			};
+
+			test("positive control: with no rules, the queued item is sent at exit", async () => {
+				const q = await queued();
+				expect(q.sentAtExit()).toBeGreaterThanOrEqual(1);
+			});
+
+			test("a rules file created after the verdict stops the flush", async () => {
+				const q = await queued();
+				writeFileSync(join(agentpulseDir(q.r.home), "exclude"), "/somewhere\n");
+				expect(q.sentAtExit()).toBe(0);
+			});
+
+			test("an exclude.invalid marker, even a dangling link, stops the flush", async () => {
+				const q = await queued();
+				symlinkSync("/nonexistent-target", join(agentpulseDir(q.r.home), "exclude.invalid"));
+				expect(q.sentAtExit()).toBe(0);
+			});
+
+			test("AGENTPULSE_SKIP set after the verdict stops the flush", async () => {
+				const q = await queued();
+				(q.r.seam.env as Record<string, string>).AGENTPULSE_SKIP = "1";
+				expect(q.sentAtExit()).toBe(0);
+			});
+
+			test("a verdict older than the gate's time-to-live is not enough", async () => {
+				const q = await queued();
+				const start = Date.now();
+				q.r.seam.now = () => start + 61_000;
+				expect(q.sentAtExit()).toBe(0);
+			});
+
+			test("an item with no known directory never rides on another item's verdict", async () => {
+				const q = await queued();
+				const rec = recordOf(line);
+				// A child whose root session is unknown is judged by [its own dir, undefined] and is sent (no rules yet).
+				r_child(q);
+				await settle(line);
+				expect([...rec.verdicts.keys()]).not.toContain("undefined");
+				expect(rec.counters.posts).toBeGreaterThan(1);
+				const sid = "ses_nodir0000000000000001";
+				rec.sessions.set(sid, {
+					q: [
+						{
+							body: JSON.stringify({ session_id: sid, hook_event_name: "tool.before" }),
+							size: 30,
+							dirs: [undefined],
+							key: "k",
+							sid,
+							name: "tool.before",
+						},
+					],
+					bytes: 30,
+					running: false,
+					dead: false,
+					calls: new Map(),
+					roles: new Map(),
+					texts: new Map(),
+					perms: new Map(),
+				});
+				const before = q.remote.read().length;
+				q.flush();
+				expect(
+					q.remote
+						.read()
+						.slice(before)
+						.filter((x) => x.body?.session_id === sid).length,
+				).toBe(0);
+			});
 		});
 
 		test("direct mode: no key file sends without Authorization, a trusted one passes the file to curl, an untrusted one sends nothing", async () => {

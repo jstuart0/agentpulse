@@ -17,7 +17,8 @@ export const AgentPulse = async (ctx) => {
 	function emit(sid, name, data, opts) {
 		const root = rootOf(rec, sid);
 		const info = sessionInfo(rec, sid) || {};
-		const own = info.dir || ctxDir;
+		// With several instances in one process, a session of unknown directory has no safe owner: judged as unknown, it is dropped when rules exist.
+		const own = info.dir || (rec.instances <= 1 ? ctxDir : undefined);
 		const env = envelopeBase(
 			1,
 			info.version || lastVersion,

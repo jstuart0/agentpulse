@@ -511,6 +511,53 @@ export function defineCommonPluginTests(line: Line) {
 		});
 	});
 
+	describe(`${line} plugin: bounded input and no live test seam`, () => {
+		test("L4 a tool input of many large strings is bounded to one envelope under the cap, not dropped", async () => {
+			const r = await rig(line);
+			r.drv.created(SID, r.dir);
+			const input: Record<string, string> = {};
+			for (let i = 0; i < 10; i++) input[`k${i}`] = `${i}`.repeat(60000);
+			r.drv.before(SID, "call_big", "bash", input);
+			await r.drv.flush();
+			await settle(line);
+			const sent = r.received.find((x) => x.body.hook_event_name.endsWith("before"));
+			expect(sent).toBeDefined();
+			expect(sent?.raw.length).toBeLessThan(262144);
+			const values = Object.values((sent?.body.data?.input ?? {}) as Record<string, string>);
+			expect(values.length).toBe(10);
+			expect(values.some((v) => v === "[omitted]" || v.length < 60000)).toBe(true);
+			expect(values.reduce((n, v) => n + v.length, 0)).toBeLessThanOrEqual(245760 + 64);
+		});
+
+		test("L2 the installed text ignores the test seam: with AP_TEST_SEAM=1 and a seam object set, it still uses the real fetch", async () => {
+			const { buildOpenCodePluginFiles } = await import("../../src/shared/opencode-plugin.ts");
+			expect(process.env.AP_TEST_SEAM).toBe("1");
+			const prod = buildOpenCodePluginFiles({ baseUrl: "http://127.0.0.1:1", direct: false }).find(
+				(f) => f.name.includes(line === "v1" ? "opencode-1" : "opencode-2"),
+			)?.text as string;
+			expect(prod).not.toContain("AP_TEST_SEAM");
+			expect(prod).not.toContain("agentpulse.opencode.seam");
+			let spied = 0;
+			const c = (await import("./opencode-plugin-kit.ts")).startCollector();
+			const r = await rig(line, {
+				url: c.url,
+				seam: {
+					fetch: (() => {
+						spied += 1;
+						return Promise.resolve(new Response("{}"));
+					}) as never,
+				},
+				mutate: () => prod.split("http://127.0.0.1:1").join(c.url),
+			});
+			r.drv.created(SID, r.dir);
+			await r.drv.flush();
+			await settle(line);
+			expect(spied).toBe(0);
+			expect(c.received.length).toBeGreaterThan(0);
+			c.stop();
+		});
+	});
+
 	describe(`${line} plugin: the filled text`, () => {
 		test("17k the source imports only node: specifiers", async () => {
 			const { OPENCODE_PLUGIN_TEMPLATES } = await import("../../src/shared/opencode-plugin.ts");

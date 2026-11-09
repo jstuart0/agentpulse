@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
 	type EmbedInputs,
 	SITE_MARKERS,
+	buildPlugin,
 	checkOpenCodePluginEmbed,
 	sourceRuleViolations,
 } from "./lib/opencode-plugin-embed.ts";
@@ -20,6 +21,37 @@ const inputs = (): EmbedInputs => ({
 	setupHooksSh: read("scripts/setup-hooks.sh"),
 	installLocalPs1: read("scripts/install-local.ps1"),
 	setupRelaySh: read("scripts/setup-relay.sh"),
+});
+
+describe("L2 the test seam never ships", () => {
+	test("the generated module and both installers carry no seam text", () => {
+		for (const text of [
+			read("src/shared/opencode-plugin-text.generated.ts"),
+			read("scripts/setup-hooks.sh"),
+			read("scripts/install-local.ps1"),
+		]) {
+			expect(text).not.toContain("AP_TEST_SEAM");
+			expect(text).not.toContain("agentpulse.opencode.seam");
+		}
+	});
+
+	test("a core that lost its seam markers fails the check", () => {
+		const i = inputs();
+		const errors = checkOpenCodePluginEmbed({
+			...i,
+			sources: { ...i.sources, core: i.sources.core.replace("// @@AP_TEST_SEAM ELSE\n", "") },
+		});
+		expect(errors.some((e) => e.includes("AP_TEST_SEAM"))).toBe(true);
+	});
+
+	test("the seam variant keeps the seam and the installed variant drops it, with one hash", () => {
+		const i = inputs();
+		const plain = buildPlugin(i.sources, "v1");
+		const seam = buildPlugin(i.sources, "v1", { seam: true });
+		expect(plain.text).not.toContain("AP_TEST_SEAM");
+		expect(seam.text).toContain("AP_TEST_SEAM");
+		expect(seam.hash).toBe(plain.hash);
+	});
 });
 
 describe("check:opencode-plugin-embed", () => {

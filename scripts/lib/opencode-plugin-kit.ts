@@ -8,7 +8,18 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OPENCODE_PLUGIN_HASHES } from "../../src/shared/opencode-plugin-text.generated.ts";
-import { OPENCODE_PLUGIN_TEMPLATES } from "../../src/shared/opencode-plugin.ts";
+import { buildPlugin } from "./opencode-plugin-embed.ts";
+
+const PLUGIN_SOURCES = {
+	core: readFileSync(join(import.meta.dir, "../opencode-plugin/core.js"), "utf8"),
+	v1: readFileSync(join(import.meta.dir, "../opencode-plugin/agentpulse-opencode-1.js"), "utf8"),
+	v2: readFileSync(join(import.meta.dir, "../opencode-plugin/agentpulse-opencode-2.js"), "utf8"),
+};
+/** The plugin text with the test seam kept in: what the tests load. The installers never carry it. */
+const SEAM_TEMPLATES = {
+	v1: buildPlugin(PLUGIN_SOURCES, "v1", { seam: true }).text,
+	v2: buildPlugin(PLUGIN_SOURCES, "v2", { seam: true }).text,
+};
 
 export const FIXTURES = join(
 	import.meta.dir,
@@ -54,7 +65,7 @@ export function fillTemplate(
 	direct = false,
 	mutate?: (t: string) => string,
 ): string {
-	const base = OPENCODE_PLUGIN_TEMPLATES[line]
+	const base = SEAM_TEMPLATES[line]
 		.split("@@AP_OPENCODE_BASE_URL@@")
 		.join(baseUrl)
 		.split("@@AP_OPENCODE_DIRECT@@")

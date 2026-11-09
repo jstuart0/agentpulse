@@ -212,6 +212,37 @@ describe("v2 plugin: only 2.x", () => {
 				for (const i of all) i.cleanup();
 			});
 
+			test("M2 a session of unknown directory seen by several instances is dropped when rules exist, not sent under a sibling's directory", async () => {
+				const c = startCollector();
+				const home = scratchDir("home");
+				const [a, b] = [scratchDir("pa"), scratchDir("pb")];
+				mkdirSync(join(home, ".agentpulse"), { mode: 0o700, recursive: true });
+				chmodSync(join(home, ".agentpulse"), 0o700);
+				writeFileSync(join(home, ".agentpulse", "exclude"), `${a}\n`, { mode: 0o600 });
+				writeFileSync(join(home, ".agentpulse", "exclude-check.sh"), buildBashExcludeScript(), {
+					mode: 0o500,
+				});
+				const all = await instances([a, b], home, c.url);
+				const sid = "ses_unknowndir000000001";
+				// No session.created seen, no directory on the event: the session is A's, but B's instance cannot know.
+				fanOut(all, {
+					id: nextEvt(),
+					type: "session.inbox.enqueued",
+					data: { sessionID: sid, item: { type: "user", payload: { text: "secret from A" } } },
+				});
+				all[1]?.fake.hooks.get("execute.before")?.({
+					tool: "bash",
+					sessionID: sid,
+					id: "call_u",
+					input: { cmd: "secret" },
+				});
+				await new Promise((r) => setTimeout(r, shared ? 150 : 2400));
+				await drain(all);
+				expect(c.received.filter((x) => x.body.session_id === sid).length).toBe(0);
+				c.stop();
+				for (const i of all) i.cleanup();
+			});
+
 			test("an unclaimed session (created missed, no directory on the event) is posted once or dropped, never by every instance", async () => {
 				const c = startCollector();
 				const dirs = [scratchDir("pa"), scratchDir("pb"), scratchDir("pc")];

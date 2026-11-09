@@ -98,12 +98,44 @@ function headerLine(hash: string): string {
 	return `// agentpulse-opencode-plugin ${hash}`;
 }
 
-/** Fills the generated block and prepends the header; the hash covers everything but the header and the hash itself. */
-export function buildPlugin(sources: PluginSources, line: PluginLine): BuiltPlugin {
+export const SEAM_BEGIN = "// @@AP_TEST_SEAM BEGIN";
+export const SEAM_ELSE = "// @@AP_TEST_SEAM ELSE";
+export const SEAM_END = "// @@AP_TEST_SEAM END";
+
+/** The core with its test-seam section resolved: the seam variant for the test kit, the plain one for every installed copy. */
+export function selectSeam(core: string, seam: boolean): string {
+	const lines = core.split("\n");
+	const b = lines.indexOf(SEAM_BEGIN);
+	const e = lines.indexOf(SEAM_ELSE);
+	const x = lines.indexOf(SEAM_END);
+	if (
+		b === -1 ||
+		!(b < e && e < x) ||
+		lines.lastIndexOf(SEAM_BEGIN) !== b ||
+		lines.lastIndexOf(SEAM_ELSE) !== e ||
+		lines.lastIndexOf(SEAM_END) !== x
+	) {
+		throw new Error("core.js must hold exactly one @@AP_TEST_SEAM BEGIN/ELSE/END triple, in order");
+	}
+	const kept = seam ? lines.slice(b + 1, e) : lines.slice(e + 1, x);
+	return [...lines.slice(0, b), ...kept, ...lines.slice(x + 1)].join("\n");
+}
+
+/**
+ * Fills the generated block and prepends the header; the hash covers everything but the header and the hash
+ * itself, and is the same for the seam variant (tests only), which is never embedded.
+ */
+export function buildPlugin(
+	sources: PluginSources,
+	line: PluginLine,
+	options: { seam?: boolean } = {},
+): BuiltPlugin {
 	const lineSource = line === "v1" ? sources.v1 : sources.v2;
-	const withPlaceholder = `${replaceBlock(sources.core, generatedBlockBody(BUILD_PLACEHOLDER))}${lineSource}`;
+	const plainCore = selectSeam(sources.core, false);
+	const withPlaceholder = `${replaceBlock(plainCore, generatedBlockBody(BUILD_PLACEHOLDER))}${lineSource}`;
 	const hash = createHash("sha256").update(withPlaceholder).digest("hex").slice(0, 14);
-	const body = `${replaceBlock(sources.core, generatedBlockBody(hash))}${lineSource}`;
+	const core = options.seam ? selectSeam(sources.core, true) : plainCore;
+	const body = `${replaceBlock(core, generatedBlockBody(hash))}${lineSource}`;
 	return { text: `${headerLine(hash)}\n${body}`, hash };
 }
 
@@ -239,6 +271,9 @@ export function checkOpenCodePluginEmbed(input: EmbedInputs): string[] {
 	}
 	for (const line of ["v1", "v2"] as const) {
 		errors.push(...sourceRuleViolations(built[line].text, `the ${line} plugin text`));
+		if (/AP_TEST_SEAM|agentpulse\.opencode\.seam|@@AP_TEST_SEAM/.test(built[line].text)) {
+			errors.push(`the ${line} plugin text carries the test seam`);
+		}
 		if (!built[line].text.includes("@@AP_OPENCODE_BASE_URL@@")) {
 			errors.push(`the ${line} plugin text has lost its AP_CONFIG hole`);
 		}

@@ -59,7 +59,10 @@
 			"linter": {
 				"rules": {
 					"style": { "useTemplate": "off" },
-					"complexity": { "useOptionalChain": "off" }
+					"complexity": { "useOptionalChain": "off" },
+					// core.js holds the test-seam section twice, as alternatives (@@AP_TEST_SEAM BEGIN/ELSE/END);
+					// the embed keeps exactly one of them.
+					"suspicious": { "noRedeclare": "off" }
 				}
 			}
 		}

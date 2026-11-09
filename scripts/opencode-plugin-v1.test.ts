@@ -1,8 +1,12 @@
 /** AGEN-141 plan step 17 for OpenCode 1.x: the shared cases, then what only 1.x does. */
 import { describe, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { buildBashExcludeScript } from "../src/shared/hook-command.ts";
 import { SID, defineCommonPluginTests, names, rig } from "./lib/opencode-plugin-common-tests.ts";
 import {
 	loadPluginModule,
+	makeDriver,
 	readCapture,
 	replayCapture,
 	resetRecord,
@@ -27,6 +31,27 @@ const partTool = (sid: string, callID: string, tool: string, state: Record<strin
 	);
 
 describe("v1 plugin: only 1.x", () => {
+	test("M2 a session of unknown directory seen by a second instance is dropped when rules exist", async () => {
+		const first = await rig("v1");
+		mkdirSync(join(first.home, ".agentpulse"), { mode: 0o700, recursive: true });
+		chmodSync(join(first.home, ".agentpulse"), 0o700);
+		writeFileSync(join(first.home, ".agentpulse", "exclude"), `${first.dir}\n`, { mode: 0o600 });
+		writeFileSync(join(first.home, ".agentpulse", "exclude-check.sh"), buildBashExcludeScript(), {
+			mode: 0o500,
+		});
+		// Same process, second project: it shares the record, so there are two instances.
+		const other = scratchDir("project-b");
+		const plugin = await loadPluginModule("v1", first.url, first.seam);
+		const second = await makeDriver("v1", plugin, other);
+		second.prompt("ses_unknown000000000000001", "secret from the excluded project");
+		await second.flush();
+		await settle("v1");
+		expect(
+			first.received.filter((x) => x.body.session_id === "ses_unknown000000000000001"),
+		).toEqual([]);
+		second.cleanup();
+	});
+
 	test("abort: session.error MessageAbortedError is sent, and the session.idle that follows (twice) is not", async () => {
 		const r = await rig("v1");
 		r.drv.created(SID, r.dir);
