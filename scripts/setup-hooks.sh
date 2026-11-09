@@ -89,7 +89,7 @@ fi
 # @@AGENTPULSE_OPENCODE_PLUGIN_1@@ BEGIN
 ap_opencode_plugin_1_template() {
 cat <<'AP_OPENCODE_PLUGIN_1_EOF'
-// agentpulse-opencode-plugin f28559765093d2
+// agentpulse-opencode-plugin f0116446dd0baf
 import cp from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -107,7 +107,7 @@ import path from "node:path";
 const AP_CONFIG = { baseUrl: "@@AP_OPENCODE_BASE_URL@@", direct: "@@AP_OPENCODE_DIRECT@@" === "1" };
 
 // @@AP_GENERATED BEGIN
-const AP_BUILD = "f28559765093d2";
+const AP_BUILD = "f0116446dd0baf";
 const AP_SKIP_VALUES = JSON.parse("[\"1\",\"true\",\"yes\",\"on\"]");
 const AP_SEND_STATUS = 42;
 const AP_AGENTPULSE_DIR = ".agentpulse";
@@ -987,7 +987,8 @@ function judgedDirs(rec, sid, own) {
 	const dirs = [own];
 	if (root !== sid) {
 		const rootInfo = rec.info.get(root);
-		dirs.push(rootInfo ? rootInfo.dir : undefined);
+		// An instance that subscribed after the root was created never saw its directory; the instance that claimed it did.
+		dirs.push((rootInfo && rootInfo.dir) || rec.claims.get(root));
 	}
 	return dirs;
 }
@@ -1332,7 +1333,7 @@ AP_OPENCODE_PLUGIN_1_EOF
 # @@AGENTPULSE_OPENCODE_PLUGIN_2@@ BEGIN
 ap_opencode_plugin_2_template() {
 cat <<'AP_OPENCODE_PLUGIN_2_EOF'
-// agentpulse-opencode-plugin 2078077c6d538b
+// agentpulse-opencode-plugin 54d3c63d08a9d9
 import cp from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -1350,7 +1351,7 @@ import path from "node:path";
 const AP_CONFIG = { baseUrl: "@@AP_OPENCODE_BASE_URL@@", direct: "@@AP_OPENCODE_DIRECT@@" === "1" };
 
 // @@AP_GENERATED BEGIN
-const AP_BUILD = "2078077c6d538b";
+const AP_BUILD = "54d3c63d08a9d9";
 const AP_SKIP_VALUES = JSON.parse("[\"1\",\"true\",\"yes\",\"on\"]");
 const AP_SEND_STATUS = 42;
 const AP_AGENTPULSE_DIR = ".agentpulse";
@@ -2230,7 +2231,8 @@ function judgedDirs(rec, sid, own) {
 	const dirs = [own];
 	if (root !== sid) {
 		const rootInfo = rec.info.get(root);
-		dirs.push(rootInfo ? rootInfo.dir : undefined);
+		// An instance that subscribed after the root was created never saw its directory; the instance that claimed it did.
+		dirs.push((rootInfo && rootInfo.dir) || rec.claims.get(root));
 	}
 	return dirs;
 }

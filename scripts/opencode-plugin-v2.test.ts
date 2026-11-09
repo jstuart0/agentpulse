@@ -243,6 +243,53 @@ describe("v2 plugin: only 2.x", () => {
 				for (const i of all) i.cleanup();
 			});
 
+			test("a child of a session whose creation was never seen is judged by the parent's claimed directory, not dropped as unknown (canary: subagent on 2.x)", async () => {
+				const c = startCollector();
+				const home = scratchDir("home");
+				const [a, other] = [scratchDir("pa"), scratchDir("pother")];
+				mkdirSync(join(home, ".agentpulse"), { mode: 0o700, recursive: true });
+				chmodSync(join(home, ".agentpulse"), 0o700);
+				writeFileSync(join(home, ".agentpulse", "exclude"), `${other}\n`, { mode: 0o600 });
+				writeFileSync(join(home, ".agentpulse", "exclude-check.sh"), buildBashExcludeScript(), {
+					mode: 0o500,
+				});
+				const all = await instances([a], home, c.url);
+				const parent = "ses_parentunseen0000001";
+				const child = "ses_childofunseen0000001";
+				const one = all[0];
+				one?.fake.push({
+					id: nextEvt(),
+					type: "session.inbox.enqueued",
+					location: { directory: a },
+					data: { sessionID: parent, item: { type: "user", payload: { text: "go" } } },
+				});
+				one?.fake.push({
+					id: nextEvt(),
+					type: "session.created",
+					location: { directory: a },
+					data: {
+						sessionID: child,
+						parentID: parent,
+						location: { directory: a },
+						version: "2.2.6",
+					},
+				});
+				await new Promise((r) => setTimeout(r, 30));
+				one?.fake.hooks.get("execute.before")?.({
+					tool: "bash",
+					sessionID: child,
+					id: "call_child",
+					input: { cmd: "ls" },
+				});
+				await new Promise((r) => setTimeout(r, 400));
+				await drain(all);
+				const names = c.received.map((x) => `${x.body.hook_event_name}:${x.body.session_id}`);
+				expect(names).toContain(`session.created:${child}`);
+				expect(names).toContain(`tool.before:${child}`);
+				c.stop();
+				for (const i of all) i.cleanup();
+			});
+
 			test("an unclaimed session (created missed, no directory on the event) is posted once or dropped, never by every instance", async () => {
 				const c = startCollector();
 				const dirs = [scratchDir("pa"), scratchDir("pb"), scratchDir("pc")];

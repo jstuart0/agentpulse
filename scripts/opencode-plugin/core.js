@@ -894,7 +894,8 @@ function judgedDirs(rec, sid, own) {
 	const dirs = [own];
 	if (root !== sid) {
 		const rootInfo = rec.info.get(root);
-		dirs.push(rootInfo ? rootInfo.dir : undefined);
+		// An instance that subscribed after the root was created never saw its directory; the instance that claimed it did.
+		dirs.push((rootInfo && rootInfo.dir) || rec.claims.get(root));
 	}
 	return dirs;
 }
