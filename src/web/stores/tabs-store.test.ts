@@ -98,3 +98,26 @@ describe("after sign-out", () => {
 		expect(useTabsStore.getState().tabs.map((t) => t.sessionId)).toEqual(["s1"]);
 	});
 });
+
+describe("adoption count and batch close", () => {
+	test("adopt bumps `restored` each time a viewer's tabs are loaded", () => {
+		const before = useTabsStore.getState().restored;
+		useUserStore.setState({ userId: "A", loaded: true } as never);
+		expect(useTabsStore.getState().restored).toBe(before + 1);
+		useUserStore.setState({ userId: "B" } as never);
+		expect(useTabsStore.getState().restored).toBe(before + 2);
+	});
+
+	test("closeMany with no open id writes nothing and keeps the same array", () => {
+		useUserStore.setState({ userId: "A", loaded: true } as never);
+		useTabsStore.getState().open(tab("s1"));
+		const key = "agentpulse.openTabs.A";
+		const saved = files.get(key);
+		files.delete(key);
+		const tabs = useTabsStore.getState().tabs;
+		useTabsStore.getState().closeMany(["nope"]);
+		expect(files.has(key)).toBe(false);
+		expect(saved).toBeDefined();
+		expect(useTabsStore.getState().tabs).toBe(tabs);
+	});
+});

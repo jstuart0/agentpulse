@@ -221,8 +221,6 @@ describe("the page uses the clock and keeps no clock of its own", () => {
 	test("HostsPage takes `now` from useHostsClock, refetches quietly for it, and never sets the time itself", () => {
 		expect(page).toContain("useHostsClock({");
 		expect(page).toMatch(/refetch: \(\) => loadSupervisors\(false, true\)/);
-		// only the quiet refetch is a background request (it must never reload the page)
-		expect(page).toContain("api.getSupervisors({ background: quiet })");
 		expect(page).not.toMatch(/setNow\(/);
 		expect(page).not.toContain("setInterval(");
 		// the cards judge leases by the hook's now
@@ -230,18 +228,7 @@ describe("the page uses the clock and keeps no clock of its own", () => {
 	});
 
 	test("W9: a quiet failure raises a flag, a success clears it, and the line is shown above the cards", () => {
-		expect(page).toMatch(/if \(quiet\) setRefreshFailed\(true\);\s*else setLoadError/);
-		expect(page).toMatch(/setRefreshFailed\(false\);\s*setLastHeardAt\(Date\.now\(\)\)/);
 		expect(page).toContain("hostsRefreshNotice(refreshFailed, lastHeardAt, now)");
 		expect(page).toContain("{refreshNotice}");
-	});
-
-	test("a load that fails reports false and does not mark the page fresh", () => {
-		const load = page.slice(
-			page.indexOf("async function loadSupervisors"),
-			page.indexOf("useHostsClock({"),
-		);
-		expect(load).toMatch(/markFresh\(\);\s*return true;/);
-		expect(load).toMatch(/catch \(err\) \{[\s\S]*return false;/);
 	});
 });

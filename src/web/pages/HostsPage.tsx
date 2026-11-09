@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SupervisorRecord } from "../../shared/types.js";
 import { ConfirmDialog } from "../components/ConfirmDialog.js";
 import { HostExcludeNotice } from "../components/HostExcludeNotice.js";
@@ -9,6 +9,7 @@ import { useHostsClock } from "../hooks/useHostsClock.js";
 import { useNoteUnknownOwners } from "../hooks/useNoteUnknownOwners.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
 import { useSecretLifetime } from "../hooks/useSecretLifetime.js";
+import { useSupervisorList } from "../hooks/useSupervisorList.js";
 import { describeApiError } from "../lib/api-errors.js";
 import { ApiError, api } from "../lib/api.js";
 import { SECRET_LIFETIME_NOTE } from "../lib/one-time-secret.js";
@@ -44,16 +45,6 @@ function failureText(prefix: string, err: unknown): string {
 	return describeApiError(err, "") || `${prefix}: ${formatApiErrorDetail(err)}`;
 }
 
-/**
- * Builds the load-failure copy shown in place of the list — distinct from
- * the genuine "no hosts registered" empty state, which is the bug this
- * exists to fix: a failed list request used to render identically to a
- * server with zero registered hosts.
- */
-function formatLoadError(err: unknown): string {
-	return `Couldn't load hosts: ${formatApiErrorDetail(err)}`;
-}
-
 export function HostsPage() {
 	const { copy } = useCopyFeedback();
 	const ui = useOwnershipUi();
@@ -61,13 +52,6 @@ export function HostsPage() {
 	const isAdmin = useViewerIsAdmin();
 	const directory = useUsersStore((s) => s.byId);
 	const [ownerDialogHost, setOwnerDialogHost] = useState<SupervisorRecord | null>(null);
-	const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
-	const [loading, setLoading] = useState(true);
-	const [refreshing, setRefreshing] = useState(false);
-	const [loadError, setLoadError] = useState<string | null>(null);
-	/** The quiet refetch failed since the last answer taken, and when that answer was. */
-	const [refreshFailed, setRefreshFailed] = useState(false);
-	const [lastHeardAt, setLastHeardAt] = useState<number | null>(null);
 	const [enrollName, setEnrollName] = useState("");
 	const [enrollExpiresAt, setEnrollExpiresAt] = useState("");
 	const [creatingToken, setCreatingToken] = useState(false);
@@ -87,39 +71,16 @@ export function HostsPage() {
 		hostName?: string | null;
 	} | null>(null);
 
-	/** `quiet` is the background refetch while the tab is in view: no spinner, and a failure waits for the next one. True when the answer was taken. */
-	async function loadSupervisors(showInitialLoader = false, quiet = false): Promise<boolean> {
-		if (showInitialLoader) {
-			setLoading(true);
-		} else if (!quiet) {
-			setRefreshing(true);
-		}
-		try {
-			const result = (await api.getSupervisors({ background: quiet })) as {
-				supervisors: SupervisorRecord[];
-			};
-			setSupervisors(result.supervisors ?? []);
-			setLoadError(null);
-			setRefreshFailed(false);
-			setLastHeardAt(Date.now());
-			markFresh();
-			return true;
-		} catch (err) {
-			console.error("Failed to load supervisors:", err);
-			if (quiet) setRefreshFailed(true);
-			else setLoadError(formatLoadError(err));
-			return false;
-		} finally {
-			setLoading(false);
-			setRefreshing(false);
-		}
-	}
-
 	// The time the cards judge leases by moves only when the hosts are really fetched (see useHostsClock).
+	const freshRef = useRef(() => {});
+	const hosts = useSupervisorList({ onFresh: () => freshRef.current() });
+	const { supervisors, loading, refreshing, loadError, refreshFailed, lastHeardAt } = hosts;
+	const loadSupervisors = hosts.load;
 	const { now, markFresh } = useHostsClock({
 		supervisors,
 		refetch: () => loadSupervisors(false, true),
 	});
+	freshRef.current = markFresh;
 
 	useEffect(() => {
 		loadSupervisors(true);

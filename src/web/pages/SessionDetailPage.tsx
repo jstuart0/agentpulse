@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { AGENT_METADATA } from "../../shared/constants.js";
@@ -12,6 +12,7 @@ import {
 	NotesPanel,
 	SummaryField,
 } from "../components/session-detail/Panels.js";
+import { SessionGoneCard } from "../components/session-detail/SessionGoneCard.js";
 import { SessionHeader } from "../components/session-detail/SessionHeader.js";
 import { SessionOwnerDialog } from "../components/session-detail/SessionOwnerDialog.js";
 import { SessionComposerSlot } from "../components/session-detail/SessionPromptComposer.js";
@@ -59,6 +60,7 @@ import { useEventReveal } from "../hooks/useEventReveal.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
 import { useResumeAttempt } from "../hooks/useResumeAttempt.js";
 import { useSessionSummaryPage } from "../hooks/useSessionSummaryPage.js";
+import { useSessionWorkspaceLoad } from "../hooks/useSessionWorkspaceLoad.js";
 import { useStopConfirm } from "../hooks/useStopConfirm.js";
 import { useStopFollow, useStopTurnFollow } from "../hooks/useStopFollow.js";
 import { api } from "../lib/api.js";
@@ -79,6 +81,7 @@ import { sessionHostLabel } from "../lib/session-host.js";
 import type { WorkspaceTabId } from "../lib/session-summary-core.js";
 import { canAcknowledgeSession, explicitAckAccess } from "../lib/utils.js";
 import { useEventStore } from "../stores/event-store.js";
+import { handleGoneSession } from "../stores/forget-gone-sessions.js";
 import { mergeSessionIntoDetail, useSessionStore } from "../stores/session-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
 import { useUserStore } from "../stores/user-store.js";
@@ -236,25 +239,42 @@ export function SessionDetailPage() {
 		return () => watchSession(null);
 	}, [sessionId, watchSession]);
 
-	// The session the page is showing now, for a load that finishes after the person has moved on.
-	const shownSessionId = useRef(sessionId);
-	shownSessionId.current = sessionId;
+	// The sessions this page has shown, and the one (if any) the server has said is gone. Both are per session:
+	// the page stays mounted across session changes, so `gone` is read only for the session on screen.
+	const shownSessionIds = useRef(new Set<string>());
+	const [gone, setGone] = useState<{ sessionId: string; notice: boolean } | null>(null);
+	const goneHeadingRef = useRef<HTMLHeadingElement>(null);
+	const goneNotice = gone !== null && gone.sessionId === sessionId && gone.notice;
+	useEffect(() => {
+		if (goneNotice) goneHeadingRef.current?.focus();
+	}, [goneNotice]);
 
-	const loadSessionWorkspace = useCallback(async () => {
-		if (!sessionId) return;
-		try {
-			const data = await api.getSession(sessionId);
-			if (shownSessionId.current !== sessionId) return;
+	// The loader drops an answer for a session no longer shown, or older than one already applied or than
+	// a write this page made itself (see useSessionWorkspaceLoad).
+	const workspace = useSessionWorkspaceLoad(sessionId, {
+		loaded: (data) => {
+			shownSessionIds.current.add(sessionId as string);
+			setGone(null);
 			setSession(data.session as Session);
 			setEvents(data.events as SessionEvent[]);
 			setEventsLoaded(true);
 			setControlActions((data.controlActions as ControlAction[]) || []);
-		} catch (err) {
-			console.error("Failed to fetch session:", err);
-		} finally {
-			if (shownSessionId.current === sessionId) setLoading(false);
-		}
-	}, [sessionId]);
+		},
+		gone: (id) => {
+			setSession(null);
+			setEvents([]);
+			setControlActions([]);
+			const { notice } = handleGoneSession(id, shownSessionIds.current.has(id));
+			// A later poll's 404 never takes back a notice already given for this session.
+			setGone((prev) => ({
+				sessionId: id,
+				notice: notice || (prev?.sessionId === id && prev.notice),
+			}));
+		},
+		failed: (err) => console.error("Failed to fetch session:", err),
+		settled: () => setLoading(false),
+	});
+	const loadSessionWorkspace = workspace.load;
 
 	// Where a take-over or resume stands, derived from the session's control actions, so it survives a
 	// reload, a poll that lands mid-attempt and another tab. It also polls while one is in flight and
@@ -319,6 +339,7 @@ export function SessionDetailPage() {
 		setEventsLoaded(false);
 		setControlActions([]);
 		setLoading(!cached);
+		setGone(null);
 	}, [sessionId]);
 
 	// F95: apply live WebSocket session updates (renames, resets, status) as
@@ -430,6 +451,7 @@ export function SessionDetailPage() {
 			if (current && current.sessionId === sessionId) {
 				const stamped = { ...current, lastUserAcknowledgedAt: null };
 				setSession(stamped);
+				workspace.markApplied();
 				applySessionUpdate(stamped);
 			}
 			setLiveAnnouncement("Marked as unseen");
@@ -461,6 +483,7 @@ export function SessionDetailPage() {
 					if (!current || current.sessionId !== sessionId) return;
 					const stamped = { ...current, lastUserAcknowledgedAt: now };
 					setSession(stamped);
+					workspace.markApplied();
 					applySessionUpdate(stamped);
 					setLiveAnnouncement("Marked as seen");
 					toast.success("Marked as seen", {
@@ -594,48 +617,12 @@ export function SessionDetailPage() {
 
 	if (!session) {
 		return (
-			<div className="flex items-center justify-center p-6 min-h-[40vh]">
-				<div className="rounded-lg border border-border bg-card p-8 max-w-sm w-full text-center space-y-4">
-					<div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mx-auto">
-						<svg
-							aria-hidden="true"
-							className="w-6 h-6 text-muted-foreground"
-							fill="none"
-							viewBox="0 0 24 24"
-							stroke="currentColor"
-							strokeWidth={1.5}
-						>
-							<path
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
-							/>
-						</svg>
-					</div>
-					<div>
-						<h2 className="text-base font-semibold text-foreground">Session not found</h2>
-						<p className="text-xs text-muted-foreground mt-1">
-							This session may have been deleted, or the link is incorrect.
-						</p>
-					</div>
-					<div className="flex flex-col gap-2">
-						<button
-							type="button"
-							onClick={() => navigate("/")}
-							className="w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-						>
-							Back to dashboard
-						</button>
-						<button
-							type="button"
-							onClick={() => navigate("/search")}
-							className="w-full rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors"
-						>
-							Search sessions
-						</button>
-					</div>
-				</div>
-			</div>
+			<SessionGoneCard
+				deleted={goneNotice}
+				headingRef={goneHeadingRef}
+				onDashboard={() => navigate("/")}
+				onSearch={() => navigate("/search")}
+			/>
 		);
 	}
 
@@ -700,6 +687,7 @@ export function SessionDetailPage() {
 				setSession((current) =>
 					current ? { ...current, lastUserAcknowledgedAt: nextLastUserAcknowledgedAt } : current,
 				);
+				workspace.markApplied();
 				const current = sessionRef.current;
 				if (current)
 					applySessionUpdate({ ...current, lastUserAcknowledgedAt: nextLastUserAcknowledgedAt });
@@ -854,7 +842,10 @@ export function SessionDetailPage() {
 				onToggleSystem={() => setShowSystem((v) => !v)}
 				onJumpTop={jumpTimelineTop}
 				onJumpBottom={jumpTimelineBottom}
-				onRename={(name) => setSession(applyManualRename(session, name))}
+				onRename={(name) => {
+					setSession(applyManualRename(session, name));
+					workspace.markApplied();
+				}}
 				onRefresh={loadSessionWorkspace}
 				onStop={stopConfirm.request}
 				stopping={stopFollow.stopping}
@@ -1093,6 +1084,7 @@ export function SessionDetailPage() {
 						setOwnerDialogOpen(false);
 						if (updated) {
 							setSession(updated);
+							workspace.markApplied();
 							applySessionUpdate(updated);
 						}
 					}}

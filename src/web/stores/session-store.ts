@@ -54,6 +54,8 @@ interface SessionStore {
 	// add-or-update semantics live in exactly one place.
 	applySessionUpdate: (session: Session) => void;
 	removeSession: (sessionId: string) => void;
+	/** Removes every listed session in one update. */
+	removeSessions: (sessionIds: string[]) => void;
 }
 
 /**
@@ -173,6 +175,16 @@ export const useSessionStore = create<SessionStore>((set) => ({
 		set((state) =>
 			listChange(state, applySessionUpdateToList(state.sessions, session, currentListScope())),
 		),
+
+	removeSessions: (sessionIds) =>
+		set((state) => {
+			const gone = new Set(sessionIds);
+			const remaining = state.sessions.filter((s) => !gone.has(s.sessionId));
+			return listChange(
+				state,
+				remaining.length === state.sessions.length ? state.sessions : remaining,
+			);
+		}),
 
 	removeSession: (sessionId) =>
 		set((state) => {

@@ -1,3 +1,5 @@
+import { browserStorage } from "../lib/id-set-storage.js";
+import { purgeAllPromptDrafts } from "../lib/prompt-draft-keys.js";
 import { useUserStore } from "../stores/user-store.js";
 
 /**
@@ -24,6 +26,7 @@ export function useSignOut() {
 	const signOutUrl = useUserStore((s) => s.signOutUrl);
 
 	async function handleSignOut() {
+		purgeAllPromptDrafts(browserStorage());
 		if (signOutUrl?.startsWith("/api/")) {
 			// Local session: POST to the session-specific logout endpoint.
 			await fetch(signOutUrl, { method: "POST", credentials: "same-origin" }).catch(() => {});

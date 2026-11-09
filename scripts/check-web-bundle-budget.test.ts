@@ -42,19 +42,18 @@ describe("checkBudget", () => {
 
 describe("CodexApprovalCard (AGEN-87)", () => {
 	const row = BUDGETS.find((b) => b.chunk === "CodexApprovalCard");
-	const base = { index: 118_197, SessionDetailPage: 20_026 };
 
 	test("the card is a lazy chunk with a row of its own", () => {
 		expect(row).toBeDefined();
 		expect(row?.maxGzip).toBeGreaterThan(0);
 	});
 
-	test("the entry chunk grew at most 200 B over its AGEN-87 base (the two take-over api methods and one error sentence, AGEN-115); the session page's limit is the one AGEN-119..123 re-based (35,100: Stop turn, the tool-call detail panel, per-call result words and the MCP and subagent cards measured 34,782 on a base of 30,173, see the budget file)", () => {
+	test("the entry chunk and the session page are held at the limits AGEN-142 Phase 3 re-based (index 119,800: the sign-out purge measured 119,467 on 119,109, and 119,532 after the fix pass; session page 38,800 after the AGEN-142 fix pass: 38,477 measured, on 37,653 for the draft store, the composer rewrite and the restored-draft UI; see the budget file)", () => {
 		const index = BUDGETS.find((b) => b.chunk === "index");
 		const page = BUDGETS.find((b) => b.chunk === "SessionDetailPage");
-		expect(index?.measured as number).toBeLessThanOrEqual(base.index + 200);
-		expect(index?.maxGzip as number).toBeLessThanOrEqual(118_600);
-		expect(page?.maxGzip as number).toBeLessThanOrEqual(35_100);
+		expect(index?.measured as number).toBeLessThanOrEqual(119_532);
+		expect(index?.maxGzip as number).toBeLessThanOrEqual(119_800);
+		expect(page?.maxGzip as number).toBeLessThanOrEqual(38_800);
 	});
 
 	test("the take-over card is a lazy chunk with a row of its own (AGEN-115); its limit rose to 6,700 and then 6,950 for AGEN-117 P6's dialog, machine-list copy and the review's fixes, and 8,200 for AGEN-120/121's opt-in options and consent copy", () => {
