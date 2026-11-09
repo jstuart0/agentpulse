@@ -1200,6 +1200,26 @@ approval code:
 4. The pull-request workflow `.github/workflows/codex-approvals-postgres.yml` must be green for any
    change under the approval paths.
 
+### Release checklist: OpenCode observer (AGEN-141)
+
+Run this on every OpenCode release you want the plugins to support, and when you touch the plugin, its installers or the
+OpenCode event mapping. Nothing here changes the server schema or needs a manifest change; upgrade the server first, then
+re-run the installers on each machine.
+
+1. Fetch the new release, put its sha256 in `scripts/lib/opencode-canary-pins.ts` (a binary runs only when its hash is
+   pinned), and run the live canary against both lines:
+   `bun scripts/opencode-observe-canary.ts --product --v1-bin <1.x binary> --v2-bin <2.x binary> --v1-warm <dir holding the 1.x plugin SDK> --work <scratch directory>`.
+   It uses a local stub model on loopback, a throwaway home and config, and signals only processes it started or ones naming
+   its own data directory; it never touches your real OpenCode, `.agentpulse`, `.claude` or `.codex`. It must exit 0
+   (1 failure, 3 the run measured nothing: run it again). `--measure` re-runs the measurement gates (G1 to G15).
+2. `--mutate all` once more. It exits 5 by design today (`no-seen-set`, `per-instance-queue` and `no-terminal-hold` are
+   `mutationInvalid`: real OpenCode doesn't reach their precondition); any other break must be killed, else exit 4.
+3. If the event names or shapes moved, update `OpenCodeV1Event`/`OpenCodeV2Event` in `src/shared/types.ts`, the fixtures under
+   `src/server/services/agents/__fixtures__/opencode/` and `OBSERVATIONS.md`, then run `bun run embed:opencode-plugin`.
+4. Re-pin the tested range (1.19.5 and 2.2.6 today) in the README's OpenCode section and `CLAUDE.md`.
+5. OpenCode 1.x's plugin-SDK wait (about 70 s offline at each start) is what the installers' gate avoids; re-measure it
+   (`--measure --only g9b`) when 1.x changes how it fetches the SDK.
+
 ## Upgrading to migration 0022 (SQLite and Postgres): owner-only tool detail for continued sessions
 
 Migration `0022_fork_tool_calls` adds the table `fork_tool_calls` (AGEN-123): what each tool call of a continued
