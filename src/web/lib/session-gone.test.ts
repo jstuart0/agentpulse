@@ -2,12 +2,31 @@
  * Which answers mean "the session is gone", through the real client with a stubbed fetch, and the pool
  * that asks about many tabs at once.
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { _resetIdentityRecheckForTest, useUserStore } from "../stores/user-store.js";
 import { ApiError, api } from "./api.js";
 import { checkSessions, isSessionGone } from "./session-gone.js";
 
 const realFetch = globalThis.fetch;
-afterEach(() => {
+// A 403 password_change_required makes the real client re-ask who the viewer is, and the user
+// store may then start over with a page load. Give it a window to do that in, for the whole
+// file: the re-check settles after the test that caused it, and bun has no window of its own.
+const realWindow = (globalThis as { window?: unknown }).window;
+beforeAll(() => {
+	(globalThis as { window?: unknown }).window = { location: { assign: () => {} } };
+	// Signed in, as an earlier test file can leave the store: the re-check then fails and starts
+	// over (the path CI met). Set here so the file behaves the same in any order.
+	useUserStore.setState({ authenticated: true } as never);
+});
+afterAll(() => {
+	if (realWindow === undefined) Reflect.deleteProperty(globalThis, "window");
+	else (globalThis as { window?: unknown }).window = realWindow;
+	useUserStore.setState({ authenticated: false, userId: null, loaded: false } as never);
+	_resetIdentityRecheckForTest();
+});
+afterEach(async () => {
+	// Let any re-check the answer started finish while the stubbed fetch is still in place.
+	for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 	globalThis.fetch = realFetch;
 });
 
