@@ -7,6 +7,7 @@ import { api } from "../../lib/api.js";
 import { forkSourceOf } from "../../lib/fork-session.js";
 import { sessionActionAccess } from "../../lib/session-action-access.js";
 import { sessionBindAccess } from "../../lib/session-bind-access.js";
+import { formatTimeAgo } from "../../lib/utils.js";
 import { useUserStore } from "../../stores/user-store.js";
 import { HostSentence } from "./HostSentence.js";
 import { controlBlockedReason } from "./host-control-view.js";
@@ -24,6 +25,7 @@ import {
 	type SendPhase,
 	WHAT_WAITS_SUMMARY,
 	boxState,
+	caretToEnd,
 	composerMode,
 	composerNotice,
 	composerStatus,
@@ -130,20 +132,23 @@ export function SessionPromptComposer({
 		focusedFor.current = focusToken;
 		const matchMedia = typeof window === "undefined" ? undefined : window.matchMedia;
 		focusBoxAfterSettle(textareaRef.current, matchMedia?.bind(window));
+		caretToEnd(textareaRef.current);
 	}, [boxShown, focusToken]);
 	const [resumePosting, setResumePosting] = useState(false);
 	const [resumeRefusal, setResumeRefusal] = useState<{ reason: string; startNew: boolean } | null>(
 		null,
 	);
-	const { prompt, edit, phase, posting, justSent, submit } = usePromptComposer({
-		session,
-		mode,
-		onSubmitted,
-		onSettled: () => {
-			const matchMedia = typeof window === "undefined" ? undefined : window.matchMedia;
-			focusBoxAfterSettle(textareaRef.current, matchMedia?.bind(window));
-		},
-	});
+	const { prompt, edit, discard, phase, posting, justSent, submit, sending, restoredAt } =
+		usePromptComposer({
+			session,
+			mode,
+			onSubmitted,
+			onSettled: () => {
+				const matchMedia = typeof window === "undefined" ? undefined : window.matchMedia;
+				focusBoxAfterSettle(textareaRef.current, matchMedia?.bind(window));
+				caretToEnd(textareaRef.current);
+			},
+		});
 	const [interactiveControlState, setInteractiveControlState] = useState<{
 		available: boolean;
 		reason: string | null;
@@ -213,6 +218,8 @@ export function SessionPromptComposer({
 				reason={locked.reason}
 				showDraft={hasDraft}
 				draft={prompt}
+				restoredAt={restoredAt}
+				onDiscard={sending ? undefined : discard}
 				startNew={locked.startNew}
 				resume={
 					locked.resume
@@ -261,6 +268,8 @@ export function SessionPromptComposer({
 			posting={posting}
 			justSent={justSent}
 			prompt={prompt}
+			restoredAt={restoredAt}
+			onDiscard={sending ? undefined : discard}
 			notice={
 				mode.kind === "codex" || mode.kind === "claude_taken_over" ? composerNotice(session) : null
 			}
@@ -280,12 +289,18 @@ export function LockedDraft({
 	reason,
 	showDraft,
 	draft,
+	restoredAt = null,
+	onDiscard,
 	startNew,
 	resume,
 }: {
 	reason: string;
 	showDraft: boolean;
 	draft: string;
+	/** When the draft was saved, if it was loaded from storage and not edited since. */
+	restoredAt?: number | null;
+	/** Removes the draft (with an Undo); absent while a send is in progress. */
+	onDiscard?: () => void;
 	startNew: boolean;
 	resume?: {
 		offer: ResumeOffer;
@@ -298,6 +313,7 @@ export function LockedDraft({
 }) {
 	const reasonId = useId();
 	const textareaId = useId();
+	const restoredId = useId();
 	const busy = resume !== undefined && (resume.posting || resume.offer.state === "in_flight");
 	// A failure that ends in "start a new session" leads: the "Resume it" lead above it would contradict it.
 	const retryFirst = resume?.alert?.startNew === true && resume.offer.state === "available";
@@ -368,15 +384,45 @@ export function LockedDraft({
 							id={textareaId}
 							value={draft}
 							readOnly
-							aria-describedby={reasonId}
+							aria-describedby={restoredAt === null ? reasonId : `${reasonId} ${restoredId}`}
 							className="min-h-20 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
 						/>
+						<DraftNote id={restoredId} restoredAt={restoredAt} onDiscard={onDiscard} />
 						{reason === COMPOSER_ENDED ? null : (
 							<p className="text-[11px] text-muted-foreground">{COMPOSER_KEEP_TEXT}</p>
 						)}
 					</>
 				) : null}
 			</div>
+		</div>
+	);
+}
+
+/** "Unsent draft from …" for a draft that came back from storage, and the way to throw a draft away. */
+function DraftNote({
+	id,
+	restoredAt,
+	onDiscard,
+}: {
+	id: string;
+	restoredAt: number | null;
+	onDiscard?: () => void;
+}) {
+	if (restoredAt === null && !onDiscard) return null;
+	return (
+		<div className="flex flex-wrap items-center gap-x-3 text-[11px] text-muted-foreground">
+			{restoredAt === null ? null : (
+				<span id={id}>Unsent draft from {formatTimeAgo(new Date(restoredAt).toISOString())}.</span>
+			)}
+			{onDiscard ? (
+				<button
+					type="button"
+					onClick={onDiscard}
+					className="min-h-[44px] underline underline-offset-2 hover:text-foreground md:min-h-0"
+				>
+					Discard draft
+				</button>
+			) : null}
 		</div>
 	);
 }
@@ -398,6 +444,10 @@ export interface ComposerBodyProps {
 	posting: boolean;
 	justSent: boolean;
 	prompt: string;
+	/** When the draft was saved, if it came back from storage and hasn't been edited. */
+	restoredAt?: number | null;
+	/** Throws the draft away (with an Undo). Absent while a send is in progress, and when there is nothing to discard. */
+	onDiscard?: () => void;
 	notice: string | null;
 	sideText: string | null;
 	/**
@@ -421,6 +471,8 @@ export function ComposerBody({
 	posting,
 	justSent,
 	prompt,
+	restoredAt = null,
+	onDiscard,
 	notice,
 	sideText,
 	stoppingNotice = null,
@@ -435,6 +487,7 @@ export function ComposerBody({
 	const noticeId = useId();
 	const alertId = useId();
 	const phoneHintId = useId();
+	const restoredId = useId();
 	const box = boxState(mode, phase, { posting });
 	const status = composerStatus(mode, phase, justSent);
 	const stopping = stoppingNotice !== null;
@@ -449,7 +502,13 @@ export function ComposerBody({
 	const codex = mode.kind === "codex" || mode.kind === "claude_taken_over";
 	const fork = mode.kind === "claude_taken_over";
 	const describedBy =
-		[hintId, fork ? phoneHintId : null, shownNotice ? noticeId : null, box.alert ? alertId : null]
+		[
+			hintId,
+			fork ? phoneHintId : null,
+			shownNotice ? noticeId : null,
+			restoredAt !== null ? restoredId : null,
+			box.alert ? alertId : null,
+		]
 			.filter(Boolean)
 			.join(" ") || undefined;
 
@@ -524,6 +583,11 @@ export function ComposerBody({
 						) : null}
 					</div>
 				</div>
+				<DraftNote
+					id={restoredId}
+					restoredAt={restoredAt}
+					onDiscard={prompt.trim() === "" ? undefined : onDiscard}
+				/>
 				{status ? (
 					<output className={status.srOnly ? "sr-only" : "block text-[11px] text-muted-foreground"}>
 						{status.text}

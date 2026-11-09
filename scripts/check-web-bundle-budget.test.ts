@@ -48,12 +48,12 @@ describe("CodexApprovalCard (AGEN-87)", () => {
 		expect(row?.maxGzip).toBeGreaterThan(0);
 	});
 
-	test("the entry chunk and the session page are held at the limits AGEN-142 Phase 2 re-based (index 119,400: the restored-tab check and the stores it uses measured 119,109 on 118,535; session page 35,500: the gone card measured 35,236; see the budget file)", () => {
+	test("the entry chunk and the session page are held at the limits AGEN-142 Phase 3 re-based (index 119,800: the sign-out purge measured 119,467 on 119,109; session page 38,000: the draft store, the composer rewrite and the restored-draft UI measured 37,653 on 35,236; see the budget file)", () => {
 		const index = BUDGETS.find((b) => b.chunk === "index");
 		const page = BUDGETS.find((b) => b.chunk === "SessionDetailPage");
-		expect(index?.measured as number).toBeLessThanOrEqual(119_109);
-		expect(index?.maxGzip as number).toBeLessThanOrEqual(119_400);
-		expect(page?.maxGzip as number).toBeLessThanOrEqual(35_500);
+		expect(index?.measured as number).toBeLessThanOrEqual(119_467);
+		expect(index?.maxGzip as number).toBeLessThanOrEqual(119_800);
+		expect(page?.maxGzip as number).toBeLessThanOrEqual(38_000);
 	});
 
 	test("the take-over card is a lazy chunk with a row of its own (AGEN-115); its limit rose to 6,700 and then 6,950 for AGEN-117 P6's dialog, machine-list copy and the review's fixes, and 8,200 for AGEN-120/121's opt-in options and consent copy", () => {

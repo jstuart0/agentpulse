@@ -9,6 +9,13 @@ import { act } from "react";
 import { CONTROL_TIMEOUT_ERROR } from "../../../shared/managed-messages.js";
 import type { ControlAction, Session } from "../../../shared/types.js";
 import { ApiError, api } from "../../lib/api.js";
+import { draftKey } from "../../lib/prompt-draft-keys.js";
+import {
+	SEND_ANSWER_TIMEOUT_MS,
+	__resetPromptDraftsForTests,
+	usePromptDraftStore,
+} from "../../stores/prompt-draft-store.js";
+import { useUserStore } from "../../stores/user-store.js";
 import {
 	deferred,
 	flush,
@@ -34,15 +41,19 @@ const realSetTimeout = globalThis.setTimeout;
 
 let fakeNow = 0;
 let pollDelays: number[] = [];
+let fastSendTimeout = false;
 
 beforeAll(() => installDomStubs());
 afterAll(() => removeDomStubs());
 beforeEach(() => {
 	fakeNow = 5_000_000;
+	__resetPromptDraftsForTests();
 	pollDelays = [];
+	fastSendTimeout = false;
 	Date.now = () => fakeNow;
 	// Only the poll's own 1.5 s wait is shortened (and moves the clock by what it was asked to wait).
 	globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
+		if (ms === SEND_ANSWER_TIMEOUT_MS && fastSendTimeout) return realSetTimeout(fn, 0);
 		if (ms === FOLLOW_POLL_MS) {
 			pollDelays.push(ms);
 			fakeNow += ms;
@@ -514,5 +525,248 @@ describe("leaving the page", () => {
 		expect(polls).toBe(0);
 		expect(t.calls.settled).toBe(0);
 		expect(t.calls.submitted).toBe(0);
+	});
+});
+
+describe("the draft belongs to the session and the viewer (AGEN-142)", () => {
+	const other = () => session("codex_cli", "managed");
+	const s2 = () => ({ ...other(), sessionId: "s2" }) as Session;
+	const store = () => usePromptDraftStore.getState();
+	const succeeded = () => Promise.resolve({ controlActions: [action({ status: "succeeded" })] });
+	const running = () => Promise.resolve({ controlActions: [action({ status: "running" })] });
+
+	test("(a) a switch away and back: A's text shows, and B's box is empty", async () => {
+		const a = mount();
+		await a.render();
+		await a.type("text for A");
+		await a.h.unmount();
+		const sB = s2();
+		const b = mount({
+			s: sB,
+			session: sB,
+			mode: composerMode(sB, { canPrompt: true, canResume: true }),
+		});
+		await b.render();
+		expect(b.now().prompt).toBe("");
+		await b.h.unmount();
+		const again = mount();
+		await again.render();
+		expect(again.now().prompt).toBe("text for A");
+		await again.h.unmount();
+	});
+
+	test("(b) unmount during the POST, then a fresh mount: read-only 'Sending…', a second submit sends nothing, and the 202 is followed to a cleared box", async () => {
+		const post = deferred<{ action: ControlAction }>();
+		let sends = 0;
+		client.sendSessionPrompt = () => {
+			sends += 1;
+			return post.promise;
+		};
+		client.getSessionControlActions = succeeded;
+		const first = mount();
+		await first.render();
+		await first.type("one send only");
+		await first.send();
+		await first.h.unmount();
+
+		const second = mount();
+		await second.render();
+		const v = second.now();
+		expect(v.prompt).toBe("one send only");
+		expect(v.sending).toBe(true);
+		expect(v.phase).toEqual({ step: "following" });
+		await second.send();
+		expect(sends).toBe(1);
+
+		post.resolve({ action: action() });
+		await flush(30);
+		expect(second.now().prompt).toBe("");
+		expect(second.now().phase).toEqual({ step: "idle" });
+		expect(second.now().sending).toBe(false);
+		await second.h.unmount();
+	});
+
+	test("(c) unmount during the follow, then remount: the follow resumes on the same action and the draft stays cleared", async () => {
+		client.sendSessionPrompt = async () => ({ action: action({ id: "act-77" }) });
+		const asked: string[] = [];
+		let answer = running;
+		client.getSessionControlActions = () => {
+			asked.push("poll");
+			return answer();
+		};
+		const first = mount();
+		await first.render();
+		await first.type("keep going");
+		await first.send();
+		expect(first.now().phase).toEqual({ step: "following" });
+		await first.h.unmount();
+		expect(store().sending.s1?.actionId).toBe("act-77");
+
+		answer = () =>
+			Promise.resolve({ controlActions: [action({ id: "act-77", status: "succeeded" })] });
+		const second = mount();
+		await second.render();
+		await flush(30);
+		expect(asked.length).toBeGreaterThan(2); // the remounted box kept watching the same action
+		expect(second.now().prompt).toBe("");
+		expect(second.now().phase).toEqual({ step: "idle" });
+		expect(store().drafts.s1).toBeUndefined();
+		await second.h.unmount();
+	});
+
+	test("(d) a failed follow puts back the exact untrimmed text", async () => {
+		client.sendSessionPrompt = async () => ({ action: action() });
+		client.getSessionControlActions = () =>
+			Promise.resolve({
+				controlActions: [action({ status: "failed", error: "The host said no." })],
+			});
+		const t = mount();
+		await t.render();
+		await t.type("  keep my spaces\n");
+		await t.send();
+		await flush(30);
+		expect(t.now().prompt).toBe("  keep my spaces\n");
+		expect(t.now().phase).toMatchObject({ step: "failed" });
+		await t.h.unmount();
+	});
+
+	test("(e) an unknown follow restores the text to the box once, and it isn't stored", async () => {
+		client.sendSessionPrompt = async () => ({ action: action() });
+		let polls = 0;
+		client.getSessionControlActions = () => {
+			polls += 1;
+			return Promise.resolve({
+				controlActions: [action({ status: "failed", error: CONTROL_TIMEOUT_ERROR })],
+			});
+		};
+		const t = mount();
+		await t.render();
+		await t.type("maybe ran");
+		await t.send();
+		await flush(30);
+		expect(polls).toBe(1);
+		expect(t.now().prompt).toBe("maybe ran");
+		expect(t.now().phase).toEqual({ step: "unknown" });
+		expect(store().drafts.s1?.persist).toBe(false);
+		await t.h.unmount();
+	});
+
+	test("(f) a viewer change mid-send: the other viewer's draft stays empty, nothing is written under their keys, and the first viewer's stored draft isn't cleared", async () => {
+		const files = new Map<string, string>();
+		const realStorage = (globalThis as unknown as { localStorage?: unknown }).localStorage;
+		(globalThis as unknown as { localStorage: unknown }).localStorage = {
+			getItem: (k: string) => files.get(k) ?? null,
+			setItem: (k: string, v: string) => void files.set(k, v),
+			removeItem: (k: string) => void files.delete(k),
+			key: (i: number) => [...files.keys()][i] ?? null,
+			get length() {
+				return files.size;
+			},
+		};
+		try {
+			useUserStore.setState({ userId: "A", loaded: true, disableAuth: false } as never);
+			const post = deferred<{ action: ControlAction }>();
+			client.sendSessionPrompt = () => post.promise;
+			client.getSessionControlActions = succeeded;
+			const t = mount();
+			await t.render();
+			await t.type("A's prompt");
+			store().flush();
+			await t.send();
+			useUserStore.setState({ userId: "B" } as never);
+			post.resolve({ action: action() });
+			await flush(30);
+			expect(store().drafts.s1).toBeUndefined();
+			expect(store().sending.s1).toBeUndefined();
+			expect([...files.keys()].some((k) => k.includes("u:B"))).toBe(false);
+			expect(files.has(draftKey("u:A", "s1"))).toBe(true);
+			await t.h.unmount();
+		} finally {
+			useUserStore.setState({ userId: null, loaded: false } as never);
+			(globalThis as unknown as { localStorage?: unknown }).localStorage = realStorage;
+		}
+	});
+
+	test("(g) a refused POST keeps the draft and removes the marker", async () => {
+		client.sendSessionPrompt = async () => {
+			throw new ApiError(409, "x", { error: "managed_state_not_continuable" });
+		};
+		const t = mount();
+		await t.render();
+		await t.type("keep me");
+		await t.send();
+		expect(t.now().prompt).toBe("keep me");
+		expect(t.now().sending).toBe(false);
+		expect(store().sending.s1).toBeUndefined();
+		await t.h.unmount();
+	});
+
+	test("(h) Discard then a new send: Undo during the send does nothing, and the box ends empty with nothing stored", async () => {
+		const post = deferred<{ action: ControlAction }>();
+		client.sendSessionPrompt = () => post.promise;
+		client.getSessionControlActions = succeeded;
+		const t = mount();
+		await t.render();
+		await t.type("old text");
+		await act(async () => t.now().discard());
+		expect(t.now().prompt).toBe("");
+		const removed = { text: "old text", savedAt: 1, restored: false, persist: true };
+		await t.type("new text");
+		await t.send();
+		expect(t.now().sending).toBe(true);
+		expect(store().undoDiscard("s1", removed)).toBe(false);
+		await act(async () => t.now().discard()); // Discard during a send does nothing either
+		expect(t.now().prompt).toBe("new text");
+		post.resolve({ action: action() });
+		await flush(30);
+		expect(t.now().prompt).toBe("");
+		expect(store().drafts.s1).toBeUndefined();
+		await t.h.unmount();
+	});
+
+	test("(i) a POST that never answers: after the timeout the text is back, unsaved, with the may-have-run copy, and a late 202 clears only an unedited draft and follows nothing", async () => {
+		fastSendTimeout = true;
+		const post = deferred<{ action: ControlAction }>();
+		client.sendSessionPrompt = () => post.promise;
+		let polls = 0;
+		client.getSessionControlActions = () => {
+			polls += 1;
+			return succeeded();
+		};
+		const t = mount();
+		await t.render();
+		await t.type("lost answer");
+		await t.send();
+		await flush(30);
+		expect(store().sending.s1).toBeUndefined();
+		expect(t.now().prompt).toBe("lost answer");
+		expect(t.now().phase).toEqual({ step: "unknown" });
+		expect(store().drafts.s1?.persist).toBe(false);
+		const mode = t.options.mode;
+		if (!mode) throw new Error("mode");
+		expect(boxState(mode, t.now().phase, { posting: false }).alert).toBe(COMPOSER_UNKNOWN_OUTCOME);
+
+		post.resolve({ action: action() });
+		await flush(30);
+		expect(t.now().prompt).toBe(""); // not edited: the late 202 means it was sent
+		expect(polls).toBe(0);
+		await t.h.unmount();
+	});
+
+	test("(i, edited) a late 202 keeps text the person typed after the timeout", async () => {
+		fastSendTimeout = true;
+		const post = deferred<{ action: ControlAction }>();
+		client.sendSessionPrompt = () => post.promise;
+		client.getSessionControlActions = succeeded;
+		const t = mount();
+		await t.render();
+		await t.type("lost answer");
+		await t.send();
+		await flush(30);
+		await t.type("lost answer, and more");
+		post.resolve({ action: action() });
+		await flush(30);
+		expect(t.now().prompt).toBe("lost answer, and more");
+		await t.h.unmount();
 	});
 });

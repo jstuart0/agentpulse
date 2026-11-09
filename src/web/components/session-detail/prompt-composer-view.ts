@@ -50,6 +50,10 @@ export const COMPOSER_ENDED =
 export const COMPOSER_KEEP_TEXT = "Your text is still here to copy.";
 export const COMPOSER_UNKNOWN_OUTCOME =
 	"No answer from the host yet, so it may still run. Your text is back here. If Control history shows it queued or running, don't send it again yet.";
+/** The same sentences when the text could not be put back (the person typed something else meanwhile). */
+export const COMPOSER_UNKNOWN_OUTCOME_NOT_RESTORED =
+	"No answer from the host yet, so it may still run. If Control history shows it queued or running, don't send it again yet.";
+export const COMPOSER_FAILED_FALLBACK_NOT_RESTORED = "The host couldn't take the prompt.";
 export const COMPOSER_FAILED_FALLBACK =
 	"The host couldn't take the prompt. Your text is back here.";
 export const COMPOSER_BUSY =
@@ -382,7 +386,8 @@ export type SendPhase =
 	| { step: "idle" }
 	| { step: "following" }
 	| { step: "failed"; reason: string; startNew: boolean }
-	| { step: "unknown" };
+	/** `textBack: false`: the box holds something newer, so the sentence doesn't say the text is back. */
+	| { step: "unknown"; textBack?: false };
 
 export interface BoxState {
 	readOnly: boolean;
@@ -408,7 +413,9 @@ export function boxState(
 		phase.step === "failed"
 			? phase.reason
 			: phase.step === "unknown"
-				? COMPOSER_UNKNOWN_OUTCOME
+				? phase.textBack === false
+					? COMPOSER_UNKNOWN_OUTCOME_NOT_RESTORED
+					: COMPOSER_UNKNOWN_OUTCOME
 				: null;
 	return {
 		readOnly: isBlocked || following || (posting && followsAction(mode)),
@@ -544,6 +551,22 @@ export function settleFollow(
 		case "aborted":
 			return null;
 	}
+}
+
+/** The settled phase, worded for a box that did not get its text back. */
+export function withoutTextBack(phase: SendPhase): SendPhase {
+	if (phase.step === "unknown") return { step: "unknown", textBack: false };
+	if (phase.step === "failed" && phase.reason === COMPOSER_FAILED_FALLBACK) {
+		return { ...phase, reason: COMPOSER_FAILED_FALLBACK_NOT_RESTORED };
+	}
+	return phase;
+}
+
+/** Puts the caret after a restored draft, so typing continues where the person left off. */
+export function caretToEnd(
+	box: { value: string; setSelectionRange?: (a: number, b: number) => void } | null,
+): void {
+	box?.setSelectionRange?.(box.value.length, box.value.length);
 }
 
 /** On a touch screen, moving focus back to the box would raise the keyboard over the answer. */

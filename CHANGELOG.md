@@ -141,6 +141,7 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Changed
 
+- Web: unsent prompts survive switching sessions and reloads (for 7 days, cleared at sign-out, with Discard); tabs for deleted sessions close; older answers no longer overwrite newer ones on the session and Hosts pages. (AGEN-142)
 - **Auto-send is off for Codex sessions.** A watcher set to `auto` opens a request for a person on a Codex session, and a send
   that still reaches the backstop is refused as `auto_send_blocked` / `codex_needs_person`. Claude is unchanged. Re-opening it
   is AGEN-112.

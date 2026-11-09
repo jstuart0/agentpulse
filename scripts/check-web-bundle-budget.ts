@@ -46,6 +46,12 @@
  * no longer exist: the gone test, the restored-tab check mounted in the tab strip, the batch store methods, the
  * name read and the gone card) measured SessionDetailPage 35,236 (+204) and index 119,109 (+574, the check and the
  * stores it uses live in index). Limits moved to 35,500 and 119,400 (measured + about 300).
+ * AGEN-142 Phase 3 (unsent prompt drafts: the per-viewer draft store with its debounce, index, TTL and LRU, the
+ * sending marker and the follow that resumes from it, the key scheme, and the box's restored-draft line and
+ * Discard) measured SessionDetailPage 37,653 (+2,417 on 35,236; the plan expected +1.0 to 1.5 kB, the composer
+ * hook rewrite and the two views' markup took the rest) and index 119,467 (+358: the sign-out purge pulls the
+ * key scheme and the storage helper into index; the store itself stays in the page chunk). Limits moved to
+ * 38,000 and 119,800 (measured + about 350).
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -69,12 +75,12 @@ export interface Finding {
 }
 
 export const BUDGETS: Budget[] = [
-	{ chunk: "SessionDetailPage", maxGzip: 35_500, measured: 35_236 },
+	{ chunk: "SessionDetailPage", maxGzip: 38_000, measured: 37_653 },
 	{ chunk: "SessionSummaryTab", maxGzip: 12_500, measured: 11_582 },
 	{ chunk: "CodexApprovalCard", maxGzip: 15_300, measured: 15_022 },
 	{ chunk: "SessionTakeoverCard", maxGzip: 8_200, measured: 7_904 },
 	{ chunk: "DashboardPage", maxGzip: 27_200, measured: 26_341 },
-	{ chunk: "index", maxGzip: 119_400, measured: 119_109 },
+	{ chunk: "index", maxGzip: 119_800, measured: 119_467 },
 ];
 
 /** A missing chunk fails: a renamed chunk must not silently escape its budget. `scale` shrinks every limit (the self-test). */

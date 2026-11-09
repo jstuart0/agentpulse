@@ -11,9 +11,9 @@ export interface KeyValueStorage {
 
 const memory = new Map<string, Set<string>>();
 
-export function browserStorage(): KeyValueStorage | null {
+export function browserStorage(): Storage | null {
 	try {
-		return typeof window === "undefined" ? null : window.localStorage;
+		return typeof window === "undefined" ? null : (window.localStorage ?? null);
 	} catch {
 		return null;
 	}
