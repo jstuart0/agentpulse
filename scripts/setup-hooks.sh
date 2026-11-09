@@ -3338,7 +3338,7 @@ ap_require_curl_755() {
 # ap_opencode_plugin_2_template (print the plugin text with its two holes), and
 # ap_write_no_follow / ap_write_private_no_follow / ap_validate_hook_base_url.
 # It never runs `opencode`.
-# In the all-gated layout the force option is remembered in ~/.agentpulse/opencode-force; only the
+# In the all-gated layout the force option is remembered in a small file under ~/.agentpulse; only the
 # no-opencode option clears it (and it removes the plugins too). Outside that layout nothing is remembered.
 AP_OC_SDK_MARKER='node_modules/@opencode-ai/plugin/package.json'
 AP_OC_SDK_CONFIG_DEP='"@opencode-ai/plugin"'

@@ -1305,7 +1305,7 @@ async function excludeCheck(dirArg: string | undefined) {
 		}
 		if (rulesFileExists(home) && (scriptProblem(script) || (scriptPs && scriptProblem(scriptPs)))) {
 			console.log(
-				`  warning: a rules file exists but the check script is not usable, so Codex and Copilot hooks and the OpenCode plugin send NOTHING (they fail closed) until it is installed: ${SCRIPT_FIX_HINT}.`,
+				`  warning: a rules file exists but the check script is not usable, so Codex and Copilot hooks send NOTHING (they fail closed; the OpenCode row says the same of its plugin) until it is installed: ${SCRIPT_FIX_HINT}.`,
 			);
 		}
 		if (homeWarning) console.log(`  warning: ${homeWarning}`);

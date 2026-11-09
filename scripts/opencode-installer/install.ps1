@@ -2,7 +2,7 @@
 # fills the @@AP_OC_*@@ lines from src/shared/opencode-plugin.ts and writes the result between
 # the OPENCODE_INSTALL_PS1 markers of install-local.ps1. This has never been executed on Windows.
 # It never runs `opencode`.
-# In the all-gated layout -OpenCodeForce is remembered in $HOME\.agentpulse\opencode-force; only -NoOpenCode
+# In the all-gated layout -OpenCodeForce is remembered in a small file under .agentpulse; only -NoOpenCode
 # clears it (and it removes the plugins too). Outside that layout nothing is remembered.
 @@AP_OC_DATA@@
 
