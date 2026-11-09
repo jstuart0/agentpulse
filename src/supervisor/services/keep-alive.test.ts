@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { countBridgesBounded, keepAliveLine, shouldExitOnStaleHeartbeat } from "./keep-alive.js";
+import {
+	countBridgesBounded,
+	createStaleClock,
+	failureSummary,
+	keepAliveLine,
+	resumeLine,
+	shouldExitOnStaleHeartbeat,
+} from "./keep-alive.js";
 
 const T = 90_000;
 
@@ -132,5 +139,116 @@ describe("countBridgesBounded", () => {
 		);
 		fire();
 		expect(await pending).toBeNull();
+	});
+});
+
+describe("createStaleClock (watchdog across sleep)", () => {
+	const TICK = 15_000;
+	function setup() {
+		let t = 1_000_000;
+		const clock = createStaleClock({ now: () => t, tickMs: TICK });
+		return {
+			clock,
+			advance: (ms: number) => {
+				t += ms;
+			},
+		};
+	}
+	const exits = (staleMs: number) =>
+		shouldExitOnStaleHeartbeat({ staleMs, thresholdMs: T, codex: 0, headless: 0, bridges: 0 });
+
+	test("sleeping 15 minutes then waking does not exit on the first tick, and reports the resume once", () => {
+		const { clock, advance } = setup();
+		advance(TICK);
+		clock.tick();
+		advance(15 * 60_000);
+		const wake = clock.tick();
+		expect(wake.resumedAfterMs).toBe(15 * 60_000);
+		expect(exits(wake.staleMs)).toBe(false);
+		advance(TICK);
+		const next = clock.tick();
+		expect(next.resumedAfterMs).toBeNull();
+		expect(exits(next.staleMs)).toBe(false);
+	});
+
+	test("an outage while awake longer than the threshold still exits", () => {
+		const { clock, advance } = setup();
+		let last = { staleMs: 0, resumedAfterMs: null as number | null };
+		for (let i = 0; i < 7; i++) {
+			advance(TICK);
+			last = clock.tick();
+		}
+		expect(last.resumedAfterMs).toBeNull();
+		expect(last.staleMs).toBe(7 * TICK);
+		expect(exits(last.staleMs)).toBe(true);
+	});
+
+	test("after a wake, still failing for the full threshold exits", () => {
+		const { clock, advance } = setup();
+		advance(10 * 60_000);
+		clock.tick();
+		let last = { staleMs: 0, resumedAfterMs: null as number | null };
+		for (let i = 0; i < 7; i++) {
+			advance(TICK);
+			last = clock.tick();
+		}
+		expect(last.staleMs).toBe(7 * TICK);
+		expect(exits(last.staleMs)).toBe(true);
+	});
+
+	test("a heartbeat that succeeds after the wake restarts staleness from that success", () => {
+		const { clock, advance } = setup();
+		advance(10 * 60_000);
+		clock.tick();
+		advance(5_000);
+		clock.noteHeartbeatOk();
+		advance(TICK);
+		expect(clock.tick().staleMs).toBe(TICK);
+	});
+
+	test("a tick gap just under the margin is not a resume; just over is", () => {
+		const a = setup();
+		a.advance(25_000);
+		expect(a.clock.tick().resumedAfterMs).toBeNull();
+		a.advance(29_999);
+		expect(a.clock.tick().resumedAfterMs).toBeNull();
+		const b = setup();
+		b.advance(30_001);
+		expect(b.clock.tick().resumedAfterMs).toBe(30_001);
+	});
+
+	test("with a short tick the 30 s floor sets the margin", () => {
+		let t = 0;
+		const clock = createStaleClock({ now: () => t, tickMs: 10_000 });
+		t += 25_000;
+		expect(clock.tick().resumedAfterMs).toBeNull();
+		t += 30_001;
+		expect(clock.tick().resumedAfterMs).toBe(30_001);
+	});
+
+	test("held runtimes never exit, resumed or not", () => {
+		expect(
+			shouldExitOnStaleHeartbeat({
+				staleMs: 10 * T,
+				thresholdMs: T,
+				codex: 1,
+				headless: 0,
+				bridges: 0,
+			}),
+		).toBe(false);
+	});
+});
+
+describe("resume and failure lines", () => {
+	test("resumeLine matches the documented wording", () => {
+		expect(resumeLine(872_400)).toBe("resumed after 872s asleep; heartbeat grace window started");
+	});
+
+	test("failureSummary is one line of name and message for a DOMException-shaped error", () => {
+		const err = new DOMException("The operation timed out.", "TimeoutError");
+		const line = failureSummary(err);
+		expect(line).toBe("TimeoutError: The operation timed out.");
+		expect(line.includes("\n")).toBe(false);
+		expect(failureSummary("boom")).toBe("boom");
 	});
 });
