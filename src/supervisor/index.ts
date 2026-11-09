@@ -50,7 +50,10 @@ import { disposeRuntimesAndExit } from "./services/fatal-exit.js";
 import { createFinalReporter } from "./services/final-report.js";
 import {
 	countBridgesBounded,
+	createStaleClock,
+	failureSummary,
 	keepAliveLine,
+	resumeLine,
 	shouldExitOnStaleHeartbeat,
 } from "./services/keep-alive.js";
 import { parseErrorBodyField, sanitizeForLog } from "./services/log-sanitize.js";
@@ -299,48 +302,47 @@ async function main() {
 	// unreachable, which is no reason to stop the agents running here. It exits for the service manager to
 	// restart only when it holds nothing to look after (shouldExitOnStaleHeartbeat). Queued reports do not
 	// keep it alive: they are on disk and are replayed after the restart.
-	let lastHeartbeatOkAt = Date.now();
+	const watchdogTickMs = Math.max(10_000, Math.floor(registration.heartbeatIntervalMs / 2));
+	const staleClock = createStaleClock({ now: Date.now, tickMs: watchdogTickMs });
 	let staleLogged = false;
 	const watchdogStaleMs = Math.max(registration.heartbeatIntervalMs * 3, 90_000);
-	setInterval(
-		() => {
-			void (async () => {
-				const staleMs = Date.now() - lastHeartbeatOkAt;
-				if (staleMs <= watchdogStaleMs) return;
-				const codex = managedCodexRuntimeCount();
-				// A takeover fork is a Claude process of ours like a one-prompt child, and keeps the host alive the same way.
-				const headless = headlessRuntimeCount() + claudeStreamRuntimeCount();
-				// Only a stale host with no agent of its own looks at the filesystem for live terminal bridges;
-				// not knowing (an error, no answer in time) counts as "something may be running".
-				const bridges =
-					codex > 0 || headless > 0
-						? 0
-						: await countBridgesBounded(
-								() => bridgeSpool.liveBridgeCount(),
-								BRIDGE_COUNT_TIMEOUT_MS,
-							);
-				if (
-					shouldExitOnStaleHeartbeat({
-						staleMs,
-						thresholdMs: watchdogStaleMs,
-						codex,
-						headless,
-						bridges,
-					})
-				) {
-					console.error(
-						`[supervisor] watchdog: no successful heartbeat in ${Math.round(staleMs / 1000)}s — exiting for launchd/systemd restart`,
-					);
-					process.exit(1);
-				}
-				if (!staleLogged) {
-					staleLogged = true;
-					console.log(`[supervisor] ${keepAliveLine(staleMs, codex + headless + (bridges ?? 0))}`);
-				}
-			})().catch((error) => console.error("[supervisor] watchdog failed", error));
-		},
-		Math.max(10_000, Math.floor(registration.heartbeatIntervalMs / 2)),
-	).unref();
+	setInterval(() => {
+		void (async () => {
+			const { staleMs, resumedAfterMs } = staleClock.tick();
+			if (resumedAfterMs !== null) {
+				console.log(`[supervisor] ${resumeLine(resumedAfterMs)}`);
+				void sendHeartbeat();
+			}
+			if (staleMs <= watchdogStaleMs) return;
+			const codex = managedCodexRuntimeCount();
+			// A takeover fork is a Claude process of ours like a one-prompt child, and keeps the host alive the same way.
+			const headless = headlessRuntimeCount() + claudeStreamRuntimeCount();
+			// Only a stale host with no agent of its own looks at the filesystem for live terminal bridges;
+			// not knowing (an error, no answer in time) counts as "something may be running".
+			const bridges =
+				codex > 0 || headless > 0
+					? 0
+					: await countBridgesBounded(() => bridgeSpool.liveBridgeCount(), BRIDGE_COUNT_TIMEOUT_MS);
+			if (
+				shouldExitOnStaleHeartbeat({
+					staleMs,
+					thresholdMs: watchdogStaleMs,
+					codex,
+					headless,
+					bridges,
+				})
+			) {
+				console.error(
+					`[supervisor] watchdog: no successful heartbeat in ${Math.round(staleMs / 1000)}s — exiting for launchd/systemd restart`,
+				);
+				process.exit(1);
+			}
+			if (!staleLogged) {
+				staleLogged = true;
+				console.log(`[supervisor] ${keepAliveLine(staleMs, codex + headless + (bridges ?? 0))}`);
+			}
+		})().catch((error) => console.error("[supervisor] watchdog failed", error));
+	}, watchdogTickMs).unref();
 	const dispatchLaunch = createLaunchDispatcher({
 		gate,
 		bridgeSpool,
@@ -432,12 +434,12 @@ async function main() {
 					}) as Promise<{ serverFeatures?: string[] } | null>,
 			);
 			serverFeatures.set(beat?.serverFeatures);
-			lastHeartbeatOkAt = Date.now();
+			staleClock.noteHeartbeatOk();
 			staleLogged = false;
 			gate.noteServerReachable();
 			console.log("[supervisor] heartbeat ok");
 		} catch (error) {
-			console.error("[supervisor] heartbeat failed", error);
+			console.error(`[supervisor] heartbeat failed: ${failureSummary(error)}`);
 			const failure = classifyReportFailure(error);
 			if (failure === "network") {
 				gate.noteServerUnreachable();

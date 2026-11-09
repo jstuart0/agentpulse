@@ -45,3 +45,49 @@ export function shouldExitOnStaleHeartbeat(input: {
 export function keepAliveLine(staleMs: number, running: number): string {
 	return `server unreachable for ${Math.round(staleMs / 1000)}s; keeping ${running} managed sessions running; their events are queued on this host`;
 }
+
+/** A gap between two watchdog ticks this much longer than the tick interval means the process was suspended. */
+export function resumeGapMs(tickMs: number): number {
+	return Math.max(tickMs * 2, 30_000);
+}
+
+/**
+ * The watchdog's staleness clock. Wall time advances while the machine sleeps, so "now minus the last good
+ * heartbeat" after a wake reads as a long outage when the server was never the problem. A tick that arrives
+ * far later than the interval is taken as a suspend or stall: staleness is then measured from that tick
+ * (the wake), so the heartbeats get the full threshold to succeed after waking. A real outage while awake
+ * still ages normally. `now` is injected for tests.
+ */
+export function createStaleClock(input: { now: () => number; tickMs: number }) {
+	const { now, tickMs } = input;
+	let lastOkAt = now();
+	let lastTickAt = lastOkAt;
+	let resumedAt = Number.NEGATIVE_INFINITY;
+	return {
+		noteHeartbeatOk(): void {
+			lastOkAt = now();
+		},
+		/** `resumedAfterMs` is set only on the tick that detects a resume, so it is logged once per resume. */
+		tick(): { staleMs: number; resumedAfterMs: number | null } {
+			const t = now();
+			const gap = t - lastTickAt;
+			lastTickAt = t;
+			let resumedAfterMs: number | null = null;
+			if (gap > resumeGapMs(tickMs)) {
+				resumedAt = t;
+				resumedAfterMs = gap;
+			}
+			return { staleMs: t - Math.max(lastOkAt, resumedAt), resumedAfterMs };
+		},
+	};
+}
+
+export function resumeLine(asleepMs: number): string {
+	return `resumed after ${Math.round(asleepMs / 1000)}s asleep; heartbeat grace window started`;
+}
+
+/** One line for a failed request: the full DOMException/Error object is dozens of lines of log per failure. */
+export function failureSummary(error: unknown): string {
+	if (error instanceof Error) return `${error.name}: ${error.message}`;
+	return String(error);
+}

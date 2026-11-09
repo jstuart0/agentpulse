@@ -75,7 +75,7 @@ describe("when the outbox is reported", () => {
 
 describe("src/supervisor/index.ts heartbeat", () => {
 	const at = SOURCE.indexOf("/heartbeat`");
-	const call = SOURCE.slice(at, SOURCE.indexOf("lastHeartbeatOkAt = Date.now()", at));
+	const call = SOURCE.slice(at, SOURCE.indexOf("staleClock.noteHeartbeatOk()", at));
 
 	test("posts the gate's rules state through heartbeatBody, and nothing else rides along", () => {
 		expect(call).toContain('method: "POST"');
@@ -89,7 +89,8 @@ describe("src/supervisor/index.ts heartbeat", () => {
 
 	test("a failing heartbeat is still only logged: the field cannot make the supervisor exit by itself", () => {
 		const after = SOURCE.slice(at, at + 800);
-		expect(after).toContain('console.error("[supervisor] heartbeat failed", error)');
+		expect(after).toContain("[supervisor] heartbeat failed: ${failureSummary(error)}");
+		expect(after).not.toContain('"[supervisor] heartbeat failed", error');
 	});
 });
 
@@ -129,10 +130,18 @@ describe("src/supervisor/index.ts keeps the host alive and offline-aware (AGEN-8
 		expect(watchdog).toContain("BRIDGE_COUNT_TIMEOUT_MS");
 	});
 
+	test("staleness comes from the sleep-aware clock, and a resume logs once and triggers a heartbeat", () => {
+		expect(code).toContain("createStaleClock({ now: Date.now");
+		expect(code).toMatch(
+			/staleClock\.tick\(\);\s*if \(resumedAfterMs !== null\) \{\s*console\.log\(`\[supervisor\] \$\{resumeLine\(resumedAfterMs\)\}`\);\s*void sendHeartbeat\(\);/,
+		);
+		expect(code).not.toContain("Date.now() - lastHeartbeatOkAt");
+	});
+
 	test("when it stays up it says so once per stale period, and a good heartbeat starts a new period", () => {
 		expect(code).toContain("keepAliveLine(");
 		expect(code).toMatch(/if \(!staleLogged\) \{\s*staleLogged = true;/);
-		expect(code).toMatch(/lastHeartbeatOkAt = Date\.now\(\);\s*staleLogged = false;/);
+		expect(code).toMatch(/staleClock\.noteHeartbeatOk\(\);\s*staleLogged = false;/);
 	});
 
 	test("a heartbeat failure on the network marks the host offline; a credential rejection feeds the one tripwire; a success marks it reachable", () => {
