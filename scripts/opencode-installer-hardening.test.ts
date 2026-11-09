@@ -128,7 +128,10 @@ describe("L4: moveToBackups", () => {
 describe("PowerShell OpenCode step (read as text: pwsh is not available here, and it has never run on Windows)", () => {
 	const template = readFileSync(join(ROOT, "scripts/opencode-installer/install.ps1"), "utf8");
 	const embedded = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf8");
-	const install = (text: string) => text.slice(text.indexOf("function Install-ApOpenCode"));
+	const install = (text: string) => {
+		const from = text.indexOf("function Install-ApOpenCode");
+		return text.slice(from, text.indexOf("\n}\n", from) + 3);
+	};
 
 	for (const [name, text] of [
 		["template", template],
@@ -155,6 +158,7 @@ describe("PowerShell OpenCode step (read as text: pwsh is not available here, an
 				expect(tryAt).toBeGreaterThan(fn.indexOf("Test-ApOcLink -Path $p"));
 				expect(catchAt).toBeGreaterThan(fn.indexOf("Write-ApOcEntry -Plugins"));
 				expect(fn.slice(catchAt)).toContain("return $false");
+				expect(fn.slice(catchAt)).not.toContain("throw");
 			});
 			test("L4: a backup never reuses a name", () => {
 				const mover = text.slice(
