@@ -133,7 +133,6 @@ jobs:
           src/server/routes/fork-tool-calls.test.ts
           src/server/routes/fork-tool-calls-leak.test.ts
           src/server/services/retention-service.test.ts
-          src/server/services/ai/hitl-decision-races.test.ts
 
       - name: Claude turn guard and Stop (Postgres backend; a skipped test fails the job)
         env:
@@ -156,7 +155,8 @@ jobs:
             src/server/services/control-actions-claude-interrupt.test.ts \
             src/server/services/codex-approvals-turn-fence.test.ts \
             src/server/routes/sessions-interrupt.test.ts \
-            src/server/services/claude-mcp-approval-e2e.test.ts 2>&1 | tee claude-turn.log
+            src/server/services/claude-mcp-approval-e2e.test.ts \
+            src/server/services/ai/hitl-decision-races.test.ts 2>&1 | tee claude-turn.log
           if grep -Eq '^ *[1-9][0-9]* skip' claude-turn.log; then
             echo "A Claude turn guard test was skipped on Postgres." >&2
             exit 1
