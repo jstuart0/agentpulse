@@ -76,7 +76,7 @@ describe("the canary's breaks", () => {
 		}
 	}
 
-	test("no-sdk-check: the anchor occurs once in setup-hooks.sh and the scratch copy passes sh -n and bash -n", () => {
+	test("no-sdk-check: the anchor occurs once in setup-hooks.sh and the scratch copy passes bash -n", () => {
 		for (const { anchor } of SETUP_MUTATIONS["no-sdk-check"] ?? []) {
 			expect(SETUP_SH.split(anchor).length - 1, anchor).toBe(1);
 		}
@@ -85,10 +85,10 @@ describe("the canary's breaks", () => {
 		expect(broken).toContain("\tsdk=1\n");
 		const file = join(scratchDir("anchor"), "setup-hooks-mutated.sh");
 		writeFileSync(file, broken);
-		for (const shell of ["/bin/sh", "/bin/bash"]) {
-			const r = Bun.spawnSync([shell, "-n", file]);
-			expect(r.exitCode, `${shell} -n: ${r.stderr.toString()}`).toBe(0);
-		}
+		// setup-hooks.sh is a bash script (#!/usr/bin/env bash, `[[ =~ ]]`): dash, which is /bin/sh on
+		// Debian and Ubuntu, rejects it before and after the mutation alike. The mutation must keep it bash-valid.
+		const r = Bun.spawnSync(["bash", "-n", file]);
+		expect(r.exitCode, `bash -n: ${r.stderr.toString()}`).toBe(0);
 	});
 
 	test("an anchor that is missing or doubled is refused", () => {

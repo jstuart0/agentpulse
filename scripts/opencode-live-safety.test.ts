@@ -25,6 +25,7 @@ import { OPENCODE_PINS, type OpenCodePin } from "./lib/opencode-canary-pins.js";
 import {
 	NETWORK_PROFILE,
 	SANDBOX_DIR_VARS,
+	SANDBOX_EXEC,
 	assertAllowedOpenCodeArgs,
 	assertOpenCodeSandbox,
 	buildOpenCodeEnv,
@@ -239,7 +240,16 @@ describe("assertAllowedOpenCodeArgs", () => {
 	});
 });
 
+// The canary runs the child under macOS's sandbox-exec (loopback-only profile); there is no such
+// binary on Linux, so the three tests that really start a child can only run on a Mac.
+const hasSandboxExec = existsSync(SANDBOX_EXEC);
+
 describe("the spawner", () => {
+	if (!hasSandboxExec) {
+		test("sandbox-exec is not present on this machine: the spawner tests that start a child were not run", () => {
+			expect(hasSandboxExec).toBe(false);
+		});
+	}
 	const start = (label: string, args: string[], extra: Record<string, string> = {}) => {
 		mkdirSync(join(run, "proj"), { recursive: true });
 		const sandbox = makeSandbox(run, label);
@@ -267,24 +277,27 @@ describe("the spawner", () => {
 		await expect(assertPinnedBinary("relative/opencode", "v1", pins)).rejects.toThrow("absolute");
 	});
 
-	test("the child's environment is exactly the built set (set equality), and stdin is closed", async () => {
-		const { out, sandbox, options } = start("env", ["--version"]);
-		const result = await runOpenCode(options, pins);
-		expect(result.code).toBe(0);
-		expect(result.stdout.trim()).toBe("1.19.5");
-		const seen = readFileSync(`${out}.env`, "utf8")
-			.split("\n")
-			.filter((l) => /^[A-Z_]+=/.test(l))
-			.map((l) => l.split("=")[0])
-			.filter((n) => n !== "PWD" && n !== "SHLVL" && n !== "_")
-			.sort();
-		const expected = Object.keys({
-			...buildOpenCodeEnv(sandbox.paths, { extra: { PROBE_OUT: out } }),
-		}).sort();
-		expect(seen).toEqual(expected);
-		expect(readFileSync(`${out}.stdin`, "utf8").trim()).toBe("stdin-eof");
-		expect(readFileSync(`${out}.env`, "utf8")).not.toContain(person);
-	});
+	test.skipIf(!hasSandboxExec)(
+		"the child's environment is exactly the built set (set equality), and stdin is closed",
+		async () => {
+			const { out, sandbox, options } = start("env", ["--version"]);
+			const result = await runOpenCode(options, pins);
+			expect(result.code).toBe(0);
+			expect(result.stdout.trim()).toBe("1.19.5");
+			const seen = readFileSync(`${out}.env`, "utf8")
+				.split("\n")
+				.filter((l) => /^[A-Z_]+=/.test(l))
+				.map((l) => l.split("=")[0])
+				.filter((n) => n !== "PWD" && n !== "SHLVL" && n !== "_")
+				.sort();
+			const expected = Object.keys({
+				...buildOpenCodeEnv(sandbox.paths, { extra: { PROBE_OUT: out } }),
+			}).sort();
+			expect(seen).toEqual(expected);
+			expect(readFileSync(`${out}.stdin`, "utf8").trim()).toBe("stdin-eof");
+			expect(readFileSync(`${out}.env`, "utf8")).not.toContain(person);
+		},
+	);
 
 	test("a failing sandbox check stops the spawn before it happens", async () => {
 		const { out, options } = start("nosandbox", ["--version"]);
@@ -296,29 +309,35 @@ describe("the spawner", () => {
 		expect(existsSync(`${out}.args`)).toBe(false);
 	});
 
-	test("the child runs under the loopback-only network profile: loopback answers, everything else is refused", async () => {
-		expect(NETWORK_PROFILE).toContain("(deny network-outbound)");
-		expect(NETWORK_PROFILE).toContain('(allow network-outbound (remote ip "localhost:*"))');
-		expect(NETWORK_PROFILE.match(/\(allow network-outbound/g)?.length).toBe(2);
-		const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") });
-		try {
-			const { out, options } = start("net", ["run", "net"], { PROBE_PORT: String(server.port) });
-			await runOpenCode(options, pins);
-			expect(readFileSync(`${out}.loop`, "utf8")).toContain("200");
-			// rc 7: the connection was refused outright (a reachable host would give 0 or 60, a dead route 28).
-			expect(readFileSync(`${out}.ext`, "utf8").trim()).toBe("rc=7");
-		} finally {
-			server.stop(true);
-		}
-	});
+	test.skipIf(!hasSandboxExec)(
+		"the child runs under the loopback-only network profile: loopback answers, everything else is refused",
+		async () => {
+			expect(NETWORK_PROFILE).toContain("(deny network-outbound)");
+			expect(NETWORK_PROFILE).toContain('(allow network-outbound (remote ip "localhost:*"))');
+			expect(NETWORK_PROFILE.match(/\(allow network-outbound/g)?.length).toBe(2);
+			const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") });
+			try {
+				const { out, options } = start("net", ["run", "net"], { PROBE_PORT: String(server.port) });
+				await runOpenCode(options, pins);
+				expect(readFileSync(`${out}.loop`, "utf8")).toContain("200");
+				// rc 7: the connection was refused outright (a reachable host would give 0 or 60, a dead route 28).
+				expect(readFileSync(`${out}.ext`, "utf8").trim()).toBe("rc=7");
+			} finally {
+				server.stop(true);
+			}
+		},
+	);
 
-	test("the kill timer ends a child that doesn't exit, by its recorded group", async () => {
-		const { options } = start("timer", ["run", "sleep"]);
-		const result = await runOpenCode({ ...options, timeoutMs: 400 }, pins);
-		expect(result.timedOut).toBe(true);
-		expect(result.signal).toBe("SIGKILL");
-		expect(startedPids.has(result.pid)).toBe(false);
-	});
+	test.skipIf(!hasSandboxExec)(
+		"the kill timer ends a child that doesn't exit, by its recorded group",
+		async () => {
+			const { options } = start("timer", ["run", "sleep"]);
+			const result = await runOpenCode({ ...options, timeoutMs: 400 }, pins);
+			expect(result.timedOut).toBe(true);
+			expect(result.signal).toBe("SIGKILL");
+			expect(startedPids.has(result.pid)).toBe(false);
+		},
+	);
 
 	test("cleanupSandbox leaves a stranger's process alone", async () => {
 		const sandbox = makeSandbox(run, "cleanup");
