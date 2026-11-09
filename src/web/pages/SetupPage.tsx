@@ -275,14 +275,14 @@ export function SetupPage() {
 		return text;
 	};
 
-	const config =
-		agentType === "claude_code"
-			? generateClaudeConfig()
-			: agentType === "codex_cli"
-				? generateCodexConfig()
-				: agentType === "copilot_cli"
-					? generateCopilotConfig()
-					: "";
+	// One generator per agent; OpenCode has none here (its plugin files come from OpenCodePluginFiles).
+	const CONFIG_GENERATOR: Record<SetupAgentType, (() => string) | null> = {
+		claude_code: generateClaudeConfig,
+		codex_cli: generateCodexConfig,
+		copilot_cli: generateCopilotConfig,
+		opencode: null,
+	};
+	const config = CONFIG_GENERATOR[agentType]?.() ?? "";
 	const configFile = CONFIG_FILE[agentType];
 	const showStatusLine = agentType === "codex_cli";
 	const showStatusSnippet = !isObservedOnly(agentType);
