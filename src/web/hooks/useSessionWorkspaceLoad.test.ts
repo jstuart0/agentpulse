@@ -4,7 +4,7 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
-import { api } from "../lib/api.js";
+import { ApiError, api } from "../lib/api.js";
 import {
 	deferred,
 	installDomStubs,
@@ -36,11 +36,14 @@ function setup(initialId = "A") {
 		calls.push({ id, d });
 		return d.promise;
 	};
-	const log = { loaded: [] as string[], failed: 0, settled: 0 };
+	const log = { loaded: [] as string[], failed: 0, settled: 0, gone: [] as string[] };
 	const h = renderHook(
 		(p: { id: string }) => {
 			return useSessionWorkspaceLoad(p.id, {
 				loaded: (d) => log.loaded.push((d.session as { sessionId: string }).sessionId),
+				gone: (id) => {
+					log.gone.push(id);
+				},
 				failed: () => {
 					log.failed++;
 				},
@@ -164,6 +167,47 @@ describe("useSessionWorkspaceLoad", () => {
 		await w.settle(w.calls[0] as Call, "old");
 		expect(w.log.loaded).toEqual(["new"]);
 		expect(w.log.settled).toBe(2);
+		await w.h.unmount();
+	});
+
+	const notFound = () => new ApiError(404, "Session not found", { error: "Session not found" });
+
+	test("(i) a gone answer calls gone once and counts as applied", async () => {
+		const w = setup();
+		await w.h.render({ id: "A" });
+		await w.start();
+		await w.settle(w.calls[0] as Call, notFound());
+		expect(w.log.gone).toEqual(["A"]);
+		expect(w.log.failed).toBe(0);
+		expect(w.log.settled).toBe(1);
+		await w.h.unmount();
+	});
+
+	test("(j) a 404 with another body, a 403 and a 500 don't call gone", async () => {
+		const w = setup();
+		await w.h.render({ id: "A" });
+		for (const err of [
+			new ApiError(404, "x", { error: "route_not_found" }),
+			new ApiError(403, "x", { error: "password_change_required" }),
+			new ApiError(500, "x", { error: "x" }),
+		]) {
+			await w.start();
+			await w.settle(w.calls[w.calls.length - 1] as Call, err);
+		}
+		expect(w.log.gone).toEqual([]);
+		expect(w.log.failed).toBe(3);
+		await w.h.unmount();
+	});
+
+	test("(k) an older gone after a newer success is dropped", async () => {
+		const w = setup();
+		await w.h.render({ id: "A" });
+		await w.start();
+		await w.start();
+		await w.settle(w.calls[1] as Call, "re-created");
+		await w.settle(w.calls[0] as Call, notFound());
+		expect(w.log.gone).toEqual([]);
+		expect(w.log.loaded).toEqual(["re-created"]);
 		await w.h.unmount();
 	});
 });

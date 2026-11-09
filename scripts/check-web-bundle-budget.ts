@@ -41,6 +41,11 @@
  * SessionDetailPage 34,782 (+4,609 on 30,173), CodexApprovalCard 15,022 (+1,406: the mcp and agent request kinds)
  * and SessionTakeoverCard 7,904 (+1,034: the dialog's two opt-in options and their consent copy); DashboardPage
  * 26,444 and index 118,531 stay under their limits unmoved. Limits moved to 35,100, 15,300 and 8,200.
+ * AGEN-142 Phase 1 (ordered loads on the session and Hosts pages: a shared request-order chunk of 173 bytes)
+ * measured SessionDetailPage 35,032 (+250) and index 118,535 (+4); no limit moved. Phase 2 (tabs for sessions that
+ * no longer exist: the gone test, the restored-tab check mounted in the tab strip, the batch store methods, the
+ * name read and the gone card) measured SessionDetailPage 35,236 (+204) and index 119,109 (+574, the check and the
+ * stores it uses live in index). Limits moved to 35,500 and 119,400 (measured + about 300).
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -64,12 +69,12 @@ export interface Finding {
 }
 
 export const BUDGETS: Budget[] = [
-	{ chunk: "SessionDetailPage", maxGzip: 35_100, measured: 34_782 },
+	{ chunk: "SessionDetailPage", maxGzip: 35_500, measured: 35_236 },
 	{ chunk: "SessionSummaryTab", maxGzip: 12_500, measured: 11_582 },
 	{ chunk: "CodexApprovalCard", maxGzip: 15_300, measured: 15_022 },
 	{ chunk: "SessionTakeoverCard", maxGzip: 8_200, measured: 7_904 },
 	{ chunk: "DashboardPage", maxGzip: 27_200, measured: 26_341 },
-	{ chunk: "index", maxGzip: 118_600, measured: 118_384 },
+	{ chunk: "index", maxGzip: 119_400, measured: 119_109 },
 ];
 
 /** A missing chunk fails: a renamed chunk must not silently escape its budget. `scale` shrinks every limit (the self-test). */

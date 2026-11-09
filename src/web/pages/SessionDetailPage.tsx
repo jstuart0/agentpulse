@@ -80,6 +80,7 @@ import { sessionHostLabel } from "../lib/session-host.js";
 import type { WorkspaceTabId } from "../lib/session-summary-core.js";
 import { canAcknowledgeSession, explicitAckAccess } from "../lib/utils.js";
 import { useEventStore } from "../stores/event-store.js";
+import { forgetGoneSessions } from "../stores/forget-gone-sessions.js";
 import { mergeSessionIntoDetail, useSessionStore } from "../stores/session-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
 import { useUserStore } from "../stores/user-store.js";
@@ -237,14 +238,33 @@ export function SessionDetailPage() {
 		return () => watchSession(null);
 	}, [sessionId, watchSession]);
 
+	// The sessions this page has shown, and the one (if any) the server has said is gone. Both are per session:
+	// the page stays mounted across session changes, so `gone` is read only for the session on screen.
+	const shownSessionIds = useRef(new Set<string>());
+	const [gone, setGone] = useState<{ sessionId: string; notice: boolean } | null>(null);
+	const goneHeadingRef = useRef<HTMLHeadingElement>(null);
+	const goneNotice = gone !== null && gone.sessionId === sessionId && gone.notice;
+	useEffect(() => {
+		if (goneNotice) goneHeadingRef.current?.focus();
+	}, [goneNotice]);
+
 	// The loader drops an answer for a session no longer shown, or older than one already applied or than
 	// a write this page made itself (see useSessionWorkspaceLoad).
 	const workspace = useSessionWorkspaceLoad(sessionId, {
 		loaded: (data) => {
+			shownSessionIds.current.add(sessionId as string);
+			setGone(null);
 			setSession(data.session as Session);
 			setEvents(data.events as SessionEvent[]);
 			setEventsLoaded(true);
 			setControlActions((data.controlActions as ControlAction[]) || []);
+		},
+		gone: (id) => {
+			setSession(null);
+			setEvents([]);
+			setControlActions([]);
+			const { closedTabs } = forgetGoneSessions([id]);
+			setGone({ sessionId: id, notice: closedTabs > 0 || shownSessionIds.current.has(id) });
 		},
 		failed: (err) => console.error("Failed to fetch session:", err),
 		settled: () => setLoading(false),
@@ -314,6 +334,7 @@ export function SessionDetailPage() {
 		setEventsLoaded(false);
 		setControlActions([]);
 		setLoading(!cached);
+		setGone(null);
 	}, [sessionId]);
 
 	// F95: apply live WebSocket session updates (renames, resets, status) as
@@ -592,7 +613,7 @@ export function SessionDetailPage() {
 	if (!session) {
 		return (
 			<div className="flex items-center justify-center p-6 min-h-[40vh]">
-				<div className="rounded-lg border border-border bg-card p-8 max-w-sm w-full text-center space-y-4">
+				<output className="block rounded-lg border border-border bg-card p-8 max-w-sm w-full text-center space-y-4">
 					<div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mx-auto">
 						<svg
 							aria-hidden="true"
@@ -610,9 +631,17 @@ export function SessionDetailPage() {
 						</svg>
 					</div>
 					<div>
-						<h2 className="text-base font-semibold text-foreground">Session not found</h2>
+						<h2
+							ref={goneHeadingRef}
+							tabIndex={-1}
+							className="text-base font-semibold text-foreground focus:outline-none"
+						>
+							Session not found
+						</h2>
 						<p className="text-xs text-muted-foreground mt-1">
-							This session may have been deleted, or the link is incorrect.
+							{goneNotice
+								? "This session was deleted. Its tab is closed."
+								: "This session may have been deleted, or the link is incorrect."}
 						</p>
 					</div>
 					<div className="flex flex-col gap-2">
@@ -631,7 +660,7 @@ export function SessionDetailPage() {
 							Search sessions
 						</button>
 					</div>
-				</div>
+				</output>
 			</div>
 		);
 	}

@@ -453,6 +453,14 @@ export const api = {
 			`/sessions/${sessionId}`,
 		),
 
+	/** The name read: a few dozen bytes, and the same 404 as the full detail for a session that is gone. */
+	getSessionName: (sessionId: string) =>
+		request<{ session: { sessionId: string; displayName: string | null } }>(
+			`/sessions/${encodeURIComponent(sessionId)}?fields=displayName`,
+			undefined,
+			{ background: true },
+		),
+
 	getTimeline: (sessionId: string, limit = 50, offset = 0) =>
 		request<{ events: SessionEvent[] }>(
 			`/sessions/${sessionId}/timeline?limit=${limit}&offset=${offset}`,

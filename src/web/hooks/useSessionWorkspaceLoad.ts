@@ -1,12 +1,15 @@
 import { useCallback, useRef } from "react";
 import { api } from "../lib/api.js";
 import { createRequestOrder } from "../lib/request-order.js";
+import { isSessionGone } from "../lib/session-gone.js";
 
 export type SessionWorkspaceData = Awaited<ReturnType<typeof api.getSession>>;
 
 export interface SessionWorkspaceHandlers {
 	/** An answer that may be shown. */
 	loaded(data: SessionWorkspaceData): void;
+	/** The server says the session no longer exists. */
+	gone(sessionId: string): void;
 	/** A failure worth reporting (nothing newer has landed). Logs only. */
 	failed(err: unknown): void;
 	/** The first load for the shown session is over: an answer was applied, or nothing is pending. */
@@ -53,7 +56,13 @@ export function useSessionWorkspaceLoad(
 			handlersRef.current.loaded(data);
 		} catch (err) {
 			if (shownRef.current !== sessionId) return;
-			if (ticket.peek()) handlersRef.current.failed(err);
+			if (isSessionGone(err)) {
+				if (!ticket.claim()) return;
+				applied = true;
+				handlersRef.current.gone(sessionId);
+			} else if (ticket.peek()) {
+				handlersRef.current.failed(err);
+			}
 		} finally {
 			const current = epochRef.current === epoch;
 			if (current) pendingRef.current--;
