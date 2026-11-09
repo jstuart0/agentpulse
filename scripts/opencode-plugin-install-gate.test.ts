@@ -343,14 +343,16 @@ describe("step 29: the PowerShell block, statically (it has never been executed)
 
 	const pwsh = Bun.which("pwsh");
 	test.skipIf(!pwsh)("pwsh parses the script and Test-ApOcGateOpen equals the table", () => {
+		// -Command does not populate $args from trailing arguments (they become more command text),
+		// so the path goes in the command, single-quoted.
+		const scriptPath = join(ROOT, "scripts/install-local.ps1").replaceAll("'", "''");
 		const parse = Bun.spawnSync([
 			pwsh as string,
 			"-NoProfile",
 			"-Command",
-			"[void][scriptblock]::Create((Get-Content -Raw $args[0]))",
-			join(ROOT, "scripts/install-local.ps1"),
+			`[void][scriptblock]::Create((Get-Content -Raw '${scriptPath}'))`,
 		]);
-		expect(parse.exitCode).toBe(0);
+		expect(parse.exitCode, parse.stderr.toString()).toBe(0);
 		const fnText = psBlock().slice(0, psBlock().indexOf("function Test-ApOcLink"));
 		for (const input of INPUTS) {
 			const call = `Test-ApOcGateOpen -Sdk $${input.sdkPresent} -Foreign $${input.foreignPluginPresent} -Force $${input.forceFlag} -Remembered $${input.forceRemembered}`;
