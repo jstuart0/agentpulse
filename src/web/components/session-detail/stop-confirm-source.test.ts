@@ -120,10 +120,6 @@ describe("leaving the session while a stop is being confirmed", () => {
 		expect(page).toMatch(/async function performStop\(isCurrent: \(\) => boolean\)/);
 		expect(page).toMatch(/if \(!isCurrent\(\)\) return null;\s*setLiveAnnouncement\("Stopping…"\)/);
 	});
-
-	test("a load that finishes for a session no longer shown is dropped", () => {
-		expect(page).toMatch(/if \(shownSessionId\.current !== sessionId\) return;/);
-	});
 });
 
 describe("saying it once", () => {

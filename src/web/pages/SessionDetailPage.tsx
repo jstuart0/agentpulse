@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { AGENT_METADATA } from "../../shared/constants.js";
@@ -59,6 +59,7 @@ import { useEventReveal } from "../hooks/useEventReveal.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
 import { useResumeAttempt } from "../hooks/useResumeAttempt.js";
 import { useSessionSummaryPage } from "../hooks/useSessionSummaryPage.js";
+import { useSessionWorkspaceLoad } from "../hooks/useSessionWorkspaceLoad.js";
 import { useStopConfirm } from "../hooks/useStopConfirm.js";
 import { useStopFollow, useStopTurnFollow } from "../hooks/useStopFollow.js";
 import { api } from "../lib/api.js";
@@ -236,25 +237,19 @@ export function SessionDetailPage() {
 		return () => watchSession(null);
 	}, [sessionId, watchSession]);
 
-	// The session the page is showing now, for a load that finishes after the person has moved on.
-	const shownSessionId = useRef(sessionId);
-	shownSessionId.current = sessionId;
-
-	const loadSessionWorkspace = useCallback(async () => {
-		if (!sessionId) return;
-		try {
-			const data = await api.getSession(sessionId);
-			if (shownSessionId.current !== sessionId) return;
+	// The loader drops an answer for a session no longer shown, or older than one already applied or than
+	// a write this page made itself (see useSessionWorkspaceLoad).
+	const workspace = useSessionWorkspaceLoad(sessionId, {
+		loaded: (data) => {
 			setSession(data.session as Session);
 			setEvents(data.events as SessionEvent[]);
 			setEventsLoaded(true);
 			setControlActions((data.controlActions as ControlAction[]) || []);
-		} catch (err) {
-			console.error("Failed to fetch session:", err);
-		} finally {
-			if (shownSessionId.current === sessionId) setLoading(false);
-		}
-	}, [sessionId]);
+		},
+		failed: (err) => console.error("Failed to fetch session:", err),
+		settled: () => setLoading(false),
+	});
+	const loadSessionWorkspace = workspace.load;
 
 	// Where a take-over or resume stands, derived from the session's control actions, so it survives a
 	// reload, a poll that lands mid-attempt and another tab. It also polls while one is in flight and
@@ -430,6 +425,7 @@ export function SessionDetailPage() {
 			if (current && current.sessionId === sessionId) {
 				const stamped = { ...current, lastUserAcknowledgedAt: null };
 				setSession(stamped);
+				workspace.markApplied();
 				applySessionUpdate(stamped);
 			}
 			setLiveAnnouncement("Marked as unseen");
@@ -461,6 +457,7 @@ export function SessionDetailPage() {
 					if (!current || current.sessionId !== sessionId) return;
 					const stamped = { ...current, lastUserAcknowledgedAt: now };
 					setSession(stamped);
+					workspace.markApplied();
 					applySessionUpdate(stamped);
 					setLiveAnnouncement("Marked as seen");
 					toast.success("Marked as seen", {
@@ -700,6 +697,7 @@ export function SessionDetailPage() {
 				setSession((current) =>
 					current ? { ...current, lastUserAcknowledgedAt: nextLastUserAcknowledgedAt } : current,
 				);
+				workspace.markApplied();
 				const current = sessionRef.current;
 				if (current)
 					applySessionUpdate({ ...current, lastUserAcknowledgedAt: nextLastUserAcknowledgedAt });
@@ -854,7 +852,10 @@ export function SessionDetailPage() {
 				onToggleSystem={() => setShowSystem((v) => !v)}
 				onJumpTop={jumpTimelineTop}
 				onJumpBottom={jumpTimelineBottom}
-				onRename={(name) => setSession(applyManualRename(session, name))}
+				onRename={(name) => {
+					setSession(applyManualRename(session, name));
+					workspace.markApplied();
+				}}
 				onRefresh={loadSessionWorkspace}
 				onStop={stopConfirm.request}
 				stopping={stopFollow.stopping}
@@ -1093,6 +1094,7 @@ export function SessionDetailPage() {
 						setOwnerDialogOpen(false);
 						if (updated) {
 							setSession(updated);
+							workspace.markApplied();
 							applySessionUpdate(updated);
 						}
 					}}
