@@ -41,6 +41,7 @@ import {
 import {
 	type ContinuedArrival,
 	bottomSlot,
+	canOfferTakeover,
 	continuedArrivalAnnouncement,
 	continuedNavigation,
 	isTakenOver,
@@ -1119,7 +1120,7 @@ export function SessionDetailPage() {
 							/>
 						);
 					case "takeover":
-						return session.agentType === "codex_cli" || session.agentType === "claude_code" ? (
+						return canOfferTakeover(session.agentType) ? (
 							<Suspense fallback={null}>
 								<SessionTakeoverCard
 									key={session.sessionId}

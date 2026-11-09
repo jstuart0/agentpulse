@@ -1,0 +1,301 @@
+{
+	"line": "v2",
+	"version": "2.2.6",
+	"scenario": "runs",
+	"prompt": "FAILTURN go",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "l19xbq",
+			"counter": 1,
+			"ctxKeys": [
+				"app",
+				"location",
+				"options",
+				"agent",
+				"aisdk",
+				"command",
+				"credential",
+				"event",
+				"experimental",
+				"generate",
+				"model",
+				"provider",
+				"integration",
+				"mcp",
+				"permission",
+				"plugin",
+				"reference",
+				"rpc",
+				"skill",
+				"storage",
+				"tool",
+				"vcs",
+				"websearch",
+				"worktree",
+				"session",
+				"shell"
+			],
+			"location": {
+				"directory": "/scratch/proj/v2-forced-400",
+				"project": {
+					"id": "a054a3113a231995f45ab52055f3dd69f0b6e97e",
+					"directory": "/scratch/proj/v2-forced-400",
+					"canonical": "/scratch/proj/v2-forced-400"
+				}
+			},
+			"app": {
+				"name": "cli",
+				"version": "2.2.6",
+				"channel": "latest"
+			},
+			"skip": null,
+			"argv": ["bun", "/$bunfs/root/opencode", "serve", "--stdio", "--port", "0"],
+			"cwd": "/scratch/proj/v2-forced-400"
+		},
+		{
+			"kind": "event",
+			"t": 54,
+			"tag": "A",
+			"instance": "l19xbq",
+			"directory": "/scratch/proj/v2-forced-400",
+			"event": {
+				"id": "evt_1bf65a3000015NET74HKjALkJ9",
+				"created": 1794212471552,
+				"type": "session.inbox.enqueued",
+				"durable": {
+					"aggregateID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"seq": 1,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-forced-400"
+				},
+				"data": {
+					"sessionID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"inboxID": "msg_1bf65a2ce001NvjO4IOGUu2QyL",
+					"item": {
+						"type": "user",
+						"payload": {
+							"text": "FAILTURN go",
+							"files": []
+						},
+						"delivery": "steer"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 66,
+			"tag": "A",
+			"instance": "l19xbq",
+			"directory": "/scratch/proj/v2-forced-400",
+			"event": {
+				"id": "evt_1bf65a303001o8ZWKUpM8eApdR",
+				"created": 1794212471555,
+				"type": "session.execution.started",
+				"durable": {
+					"aggregateID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"seq": 2,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409a5e2dffeDMjWcYhzWx1ACt"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 68,
+			"tag": "A",
+			"instance": "l19xbq",
+			"directory": "/scratch/proj/v2-forced-400",
+			"event": {
+				"id": "evt_1bf65a30a0014nt5FYboZzb3Pg",
+				"created": 1794212471562,
+				"type": "session.inbox.delivered",
+				"durable": {
+					"aggregateID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"seq": 4,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-forced-400"
+				},
+				"data": {
+					"sessionID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"inboxID": "msg_1bf65a2ce001NvjO4IOGUu2QyL"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1562,
+			"tag": "A",
+			"instance": "l19xbq",
+			"directory": "/scratch/proj/v2-forced-400",
+			"event": {
+				"id": "evt_1bf65a8e1001JI6EXZdwOCvwLg",
+				"created": 1794212473057,
+				"type": "session.step.started",
+				"durable": {
+					"aggregateID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"seq": 5,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-forced-400"
+				},
+				"data": {
+					"sessionID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"assistantMessageID": "msg_1bf65a3130014OML8b35SS9407",
+					"agent": "build",
+					"model": {
+						"id": "stub-model",
+						"providerID": "stub"
+					},
+					"started": 1794212471574
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1562,
+			"tag": "A",
+			"instance": "l19xbq",
+			"directory": "/scratch/proj/v2-forced-400",
+			"event": {
+				"id": "evt_1bf65a8e3001SG5vi76U9urmTM",
+				"created": 1794212473059,
+				"type": "session.step.failed",
+				"durable": {
+					"aggregateID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"seq": 6,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-forced-400"
+				},
+				"data": {
+					"sessionID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"assistantMessageID": "msg_1bf65a3130014OML8b35SS9407",
+					"error": {
+						"type": "provider.invalid-request",
+						"message": "stub forced failure",
+						"status": 400,
+						"response": {
+							"body": "{\"error\":{\"message\":\"stub forced failure\",\"type\":\"invalid_request_error\"}}"
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1562,
+			"tag": "A",
+			"instance": "l19xbq",
+			"directory": "/scratch/proj/v2-forced-400",
+			"event": {
+				"id": "evt_1bf65a8e5001wjS97GpGFUSeNr",
+				"created": 1794212473061,
+				"type": "session.execution.failed",
+				"durable": {
+					"aggregateID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"seq": 7,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"error": {
+						"type": "provider.invalid-request",
+						"message": "stub forced failure",
+						"status": 400,
+						"response": {
+							"body": "{\"error\":{\"message\":\"stub forced failure\",\"type\":\"invalid_request_error\"}}"
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1568,
+			"tag": "A",
+			"instance": "l19xbq",
+			"directory": "/scratch/proj/v2-forced-400",
+			"event": {
+				"id": "evt_1bf65a8eb001EC55DT2vFdo8ft",
+				"created": 1794212473067,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"cost": 0,
+					"tokens": {
+						"input": 0,
+						"output": 0,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1568,
+			"tag": "A",
+			"instance": "l19xbq",
+			"directory": "/scratch/proj/v2-forced-400",
+			"event": {
+				"id": "evt_1bf65a8ec001V9p6g9xG5tQJp6",
+				"created": 1794212473068,
+				"type": "session.renamed",
+				"durable": {
+					"aggregateID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"seq": 9,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-forced-400"
+				},
+				"data": {
+					"sessionID": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+					"title": "Stub title"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1589,
+			"tag": "A",
+			"instance": "l19xbq",
+			"directory": "/scratch/proj/v2-forced-400",
+			"event": {
+				"id": "evt_1bf65a8f40018JabgX4r3jAO4Y",
+				"created": 1794212473076,
+				"type": "location.shutdown",
+				"location": {
+					"directory": "/scratch/proj/v2-forced-400"
+				},
+				"data": {}
+			}
+		},
+		{
+			"kind": "cleanup",
+			"t": 1590,
+			"tag": "A",
+			"instance": "l19xbq"
+		},
+		{
+			"kind": "process.exit",
+			"t": 1610,
+			"tag": "A"
+		}
+	]
+}

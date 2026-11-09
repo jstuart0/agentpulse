@@ -1,0 +1,39 @@
+{
+	"line": "v2",
+	"name": "write-tool",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+				"hook_event_name": "PreToolUse",
+				"cwd": "/scratch/proj/v2-write-tool",
+				"tool_name": "write",
+				"tool_input": {
+					"path": "/scratch/proj/v2-write-tool/out.txt",
+					"content": "hello from stub\n"
+				},
+				"tool_use_id": "call_stub_write_1",
+				"provider_event_name": "tool.before",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PreToolUse", "tool_use_id": "call_stub_write_1" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+				"hook_event_name": "PostToolUse",
+				"cwd": "/scratch/proj/v2-write-tool",
+				"tool_name": "write",
+				"tool_input": {
+					"path": "/scratch/proj/v2-write-tool/out.txt",
+					"content": "hello from stub\n"
+				},
+				"tool_use_id": "call_stub_write_1",
+				"tool_response": "Created file successfully: out.txt",
+				"provider_event_name": "tool.after",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PostToolUse", "tool_use_id": "call_stub_write_1" }
+		}
+	]
+}

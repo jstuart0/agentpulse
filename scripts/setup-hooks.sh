@@ -25,6 +25,10 @@ WITH_STATUSLINE="0"
 # Set when Codex hooks were really (re)written, so the closing line can ask the
 # user to approve them again.
 CODEX_HOOKS_WRITTEN="0"
+# OpenCode (AGEN-141): set up whenever it is found; --no-opencode removes our plugins,
+# --opencode-force writes the 1.x plugin where OpenCode 1.x has no plugin SDK yet.
+OPENCODE_FORCE="0"
+NO_OPENCODE="0"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -35,6 +39,8 @@ while [[ $# -gt 0 ]]; do
     --scope) SCOPE="$2"; shift 2 ;;
     --no-auth-check) NO_AUTH_CHECK="1"; shift ;;
     --statusline) WITH_STATUSLINE="1"; shift ;;
+    --opencode-force) OPENCODE_FORCE="1"; shift ;;
+    --no-opencode) NO_OPENCODE="1"; shift ;;
     -h|--help)
       echo "AgentPulse Hook Setup"
       echo ""
@@ -44,13 +50,16 @@ while [[ $# -gt 0 ]]; do
       echo "  --url    AgentPulse server URL (e.g. https://your-server.com)"
       echo "  --key    API key (starts with ap_). Prefer \$AGENTPULSE_KEY instead:"
       echo "           --key is briefly visible in \`ps\` during a curl|bash install."
-      echo "  --agent  Agent type: claude_code (default), codex_cli, or copilot_cli"
+      echo "  --agent  Agent type: claude_code (default), codex_cli, copilot_cli, or opencode"
       echo "  --scope  Scope: global (default) or project"
       echo "  --no-auth-check  Skip the auth/me probe — for installing"
       echo "                   against a server that isn't reachable yet or that"
       echo "                   runs with auth disabled but can't be probed."
       echo "  --statusline  Also install the Claude Code statusline (claude_code only;"
       echo "                off by default, never replaces an existing statusLine)"
+      echo "  --no-opencode     Remove the OpenCode plugins (OpenCode is set up whenever it is found)"
+      echo "  --opencode-force  Write OpenCode 1.x's plugin even where its plugin SDK isn't"
+      echo "                    downloaded yet; run it while online (see the message it prints)"
       echo "  -h       Show this help"
       exit 0
       ;;
@@ -74,6 +83,2552 @@ fi
 # scripts/hook-command-parity.test.ts) — this exact block also appears
 # verbatim in scripts/setup-relay.sh and the /setup.sh template served by
 # src/server/routes/setup.ts. Do not hand-edit one copy without the others.
+
+# The OpenCode plugin texts (AGEN-141), with their @@AP_OPENCODE_*@@ holes, written by
+# `bun run embed:opencode-plugin`. Do not edit between the markers.
+# @@AGENTPULSE_OPENCODE_PLUGIN_1@@ BEGIN
+ap_opencode_plugin_1_template() {
+cat <<'AP_OPENCODE_PLUGIN_1_EOF'
+// agentpulse-opencode-plugin 5aee272898f11e
+import cp from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+// Shared core of the AgentPulse plugins for OpenCode 1.x and 2.x (AGEN-141).
+// The installers write one self-contained file per line: this core followed by
+// the line's own hooks. The plugin only observes. A hook filters and enqueues
+// and returns at once; it never awaits a request, never throws and never
+// changes what OpenCode passed it. Sending, the exclude check and the
+// credential read happen later, off the hook path, in a per-session chain.
+
+const AP_CONFIG = { baseUrl: "@@AP_OPENCODE_BASE_URL@@", direct: "@@AP_OPENCODE_DIRECT@@" === "1" };
+
+// @@AP_GENERATED BEGIN
+const AP_BUILD = "5aee272898f11e";
+const AP_SKIP_VALUES = JSON.parse("[\"1\",\"true\",\"yes\",\"on\"]");
+const AP_SEND_STATUS = 42;
+const AP_AGENTPULSE_DIR = ".agentpulse";
+const AP_RULES_FILE = "exclude";
+const AP_MARKER_FILE = "exclude.invalid";
+const AP_SCRIPT_FILE = "exclude-check.sh";
+const AP_AUTH_HEADER_FILE = "hook-auth-header";
+const AP_DELIVERY_HEADER = "X-AgentPulse-Delivery-Id";
+const AP_HOST_HEADER = "X-AgentPulse-Host";
+const AP_KNOWN_ERROR_NAMES = JSON.parse("[\"Error\",\"APIError\",\"Tool.Error\",\"MessageAbortedError\",\"aborted\",\"provider.invalid-request\"]");
+const AP_GATE_PIECE = "w=\u0024(printf ' \\t\\r\\n.'); w=\u0024{w%.}; x=\u0024{AGENTPULSE_SKIP:-}; y=\u0024{x%%[!\"\u0024w\"]*}; x=\u0024{x#\"\u0024y\"}; y=\u0024{x##*[!\"\u0024w\"]}; x=\u0024{x%\"\u0024y\"}; case \u0024x in 1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) exit 0 ;; esac; d=\u0024HOME/.agentpulse; g=0; if [ -n \"\u0024HOME\" ] && [ ! -e \"\u0024d/exclude\" ] && [ ! -L \"\u0024d/exclude\" ] && [ ! -e \"\u0024d/exclude.invalid\" ] && [ ! -L \"\u0024d/exclude.invalid\" ]; then if [ -d \"\u0024d\" ] && [ -x \"\u0024d\" ]; then g=1; elif [ ! -e \"\u0024d\" ] && [ ! -L \"\u0024d\" ] && [ -d \"\u0024HOME\" ] && [ -x \"\u0024HOME\" ]; then g=1; fi; fi; if [ \"\u0024g\" != 1 ]; then l=\u0024(LC_ALL=C LS_BLOCK_SIZE=1 BLOCK_SIZE=1 BLOCKSIZE=1 ls -ldn \"\u0024d/\" \"\u0024d/exclude-check.sh\" 2>/dev/null) || exit 0; u=\u0024(id -u 2>/dev/null); ap_f() { y=\u0024{x%%[!\" \"]*}; x=\u0024{x#\"\u0024y\"}; y=\u0024{x%%\" \"*}; x=\u0024{x#\"\u0024y\"}; }; ap_v() { x=\u00241; ap_f; k=\u0024{y%[@+.]}; ap_f; ap_f; [ -n \"\u0024y\" ] && [ \"\u0024y\" = \"\u0024u\" ] && case \u0024k in \u00242[-r][-w][-xsS][-r]-[-xsS][-r]-[-xtT]) ;; *) false ;; esac; }; n=\u0024{w#???}; ap_v \"\u0024{l%%\"\u0024n\"*}\" d && ap_v \"\u0024{l#*\"\u0024n\"}\" - && { /bin/sh \"\u0024d/exclude-check.sh\"; [ \u0024? = 42 ]; } || exit 0; fi; ";
+// @@AP_GENERATED END
+
+const AP_TEST = undefined;
+const apEnv = () => process.env;
+const apPlatform = () => process.platform;
+const apGetuid = () => process.getuid;
+const apNow = () => Date.now();
+const apArgv = () => process.argv;
+const apFetch = () => globalThis.fetch;
+
+const STRING_CAP = 65536;
+const BODY_CAP = 262144;
+const SESSION_ITEMS = 500;
+const SESSION_BYTES = 1048576;
+const PROCESS_ITEMS = 2000;
+const PROCESS_BYTES = 8388608;
+const SESSION_LIMIT = 1024;
+const SEEN_LIMIT = 4096;
+const CALL_LIMIT = 512;
+const MAP_LIMIT = 256;
+const SEND_LIMIT = 4;
+const GATE_LIMIT = 2;
+const POST_TIMEOUT_MS = 2000;
+const GATE_TIMEOUT_MS = 2000;
+const GATE_TTL_MS = 60000;
+const HOLD_MS = 2000;
+const RULES_MAX_BYTES = 1048576;
+const INPUT_DEPTH = 12;
+const INPUT_NODES = 20000;
+// Under BODY_CAP, so a bounded input still fits in one envelope.
+const INPUT_BYTES = 245760;
+const TRUNCATED = "\n[truncated by the AgentPulse plugin]";
+const ID_RE = /^[A-Za-z0-9_-]+$/;
+const ERR_RE = /^[A-Za-z0-9_.-]+$/;
+const AUTH_LINE_RE = /^Authorization: Bearer ap_[A-Za-z0-9_-]+$/;
+
+function apIsSkip(value) {
+	if (typeof value !== "string") return false;
+	const t = value.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "").toLowerCase();
+	return t !== "" && AP_SKIP_VALUES.indexOf(t) !== -1;
+}
+
+// ---- process-wide record ----------------------------------------------------
+
+function newRecord(replaced) {
+	return {
+		version: 1,
+		build: AP_BUILD,
+		instances: 0,
+		sessions: new Map(),
+		info: new Map(),
+		seen: new Map(),
+		claims: new Map(),
+		queuedItems: 0,
+		queuedBytes: 0,
+		inflight: 0,
+		sendWaiters: [],
+		gateActive: 0,
+		gateWaiters: [],
+		gateCache: new Map(),
+		gateInflight: new Map(),
+		verdicts: new Map(),
+		exitHooked: false,
+		hostHeader: undefined,
+		counters: {
+			posts: 0,
+			failedPosts: 0,
+			droppedOverflow: 0,
+			droppedDir: 0,
+			droppedClaim: 0,
+			droppedSeen: 0,
+			evicted: 0,
+			swallowed: 0,
+			replaced: replaced || 0,
+			gateSpawns: 0,
+			gateTimeouts: 0,
+		},
+	};
+}
+
+function validRecord(r) {
+	return (
+		r !== null &&
+		typeof r === "object" &&
+		r.version === 1 &&
+		r.build === AP_BUILD &&
+		r.sessions instanceof Map &&
+		r.info instanceof Map &&
+		r.seen instanceof Map &&
+		r.claims instanceof Map &&
+		r.gateCache instanceof Map &&
+		r.gateInflight instanceof Map &&
+		r.verdicts instanceof Map &&
+		Array.isArray(r.sendWaiters) &&
+		Array.isArray(r.gateWaiters) &&
+		r.counters !== null &&
+		typeof r.counters === "object"
+	);
+}
+
+function getRecord() {
+	const key = Symbol.for("agentpulse.opencode." + AP_BUILD);
+	const found = globalThis[key];
+	if (validRecord(found)) return found;
+	const fresh = newRecord(found === undefined ? 0 : 1);
+	globalThis[key] = fresh;
+	return fresh;
+}
+
+function swallow(rec) {
+	try {
+		rec.counters.swallowed += 1;
+	} catch {
+		// nothing to report to
+	}
+}
+
+function lruTouch(map, key, value, limit) {
+	map.delete(key);
+	map.set(key, value);
+	while (map.size > limit) {
+		const oldest = map.keys().next().value;
+		map.delete(oldest);
+	}
+}
+
+// ---- values the wire accepts -------------------------------------------------
+
+function apIdOf(value) {
+	return typeof value === "string" && value.length > 0 && value.length <= 128 && ID_RE.test(value)
+		? value
+		: null;
+}
+
+function capString(value) {
+	if (value.length <= STRING_CAP) return value;
+	return value.slice(0, STRING_CAP - TRUNCATED.length) + TRUNCATED;
+}
+
+function capValue(value, depth, budget) {
+	budget.nodes += 1;
+	if (budget.nodes > INPUT_NODES || depth > INPUT_DEPTH || budget.bytes >= INPUT_BYTES)
+		return "[omitted]";
+	if (value === null || typeof value === "boolean") return value;
+	if (typeof value === "number") return Number.isFinite(value) ? value : null;
+	if (typeof value === "string") {
+		let capped = capString(value);
+		const room = INPUT_BYTES - budget.bytes;
+		if (room <= TRUNCATED.length) return "[omitted]";
+		if (capped.length > room) capped = capped.slice(0, room - TRUNCATED.length) + TRUNCATED;
+		budget.bytes += capped.length;
+		return capped;
+	}
+	if (Array.isArray(value)) {
+		const out = [];
+		for (let i = 0; i < value.length; i++) out.push(capValue(value[i], depth + 1, budget));
+		return out;
+	}
+	if (typeof value === "object") {
+		const out = {};
+		const keys = Object.keys(value);
+		for (let i = 0; i < keys.length; i++) {
+			if (keys[i] === "__proto__") continue;
+			budget.bytes += keys[i].length;
+			out[keys[i]] = capValue(value[keys[i]], depth + 1, budget);
+		}
+		return out;
+	}
+	return "[unsupported]";
+}
+
+function capInput(value) {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
+	return capValue(value, 0, { nodes: 0, bytes: 0 });
+}
+
+function errorName(raw) {
+	return typeof raw === "string" &&
+		raw.length <= 64 &&
+		ERR_RE.test(raw) &&
+		AP_KNOWN_ERROR_NAMES.indexOf(raw) !== -1
+		? raw
+		: "Error";
+}
+
+function wireError(name, status) {
+	const out = { name: errorName(name) };
+	if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599)
+		out.status = status;
+	return out;
+}
+
+/** A call id as the plugin may send it: plain text, and never the server's reserved approval: prefix. */
+function callIdOf(value) {
+	const id = plainText(value, 150);
+	return id !== undefined && id.toLowerCase().indexOf("approval:") !== 0 ? id : undefined;
+}
+
+function plainText(value, max) {
+	return typeof value === "string" &&
+		value.length > 0 &&
+		value.length <= max &&
+		!/\p{Cc}/u.test(value)
+		? value
+		: undefined;
+}
+
+// ---- sessions, children and call numbering -----------------------------------
+
+function sessionInfo(rec, sid) {
+	return rec.info.get(sid);
+}
+
+function rememberSession(rec, sid, parent, dir, version) {
+	const prev = rec.info.get(sid) || {};
+	lruTouch(
+		rec.info,
+		sid,
+		{
+			parent: parent || prev.parent,
+			dir: dir || prev.dir,
+			version: version || prev.version,
+		},
+		SESSION_LIMIT * 4,
+	);
+}
+
+function rootOf(rec, sid) {
+	let cur = sid;
+	for (let i = 0; i < 8; i++) {
+		const info = rec.info.get(cur);
+		if (!info || !info.parent || info.parent === cur) return cur;
+		cur = info.parent;
+	}
+	return cur;
+}
+
+function stateOf(rec, root) {
+	let st = rec.sessions.get(root);
+	if (st) {
+		rec.sessions.delete(root);
+		rec.sessions.set(root, st);
+		return st;
+	}
+	st = {
+		root: root,
+		q: [],
+		bytes: 0,
+		running: false,
+		dead: false,
+		calls: new Map(),
+		roles: new Map(),
+		texts: new Map(),
+		perms: new Map(),
+		lastVerdict: undefined,
+		skipIdle: false,
+		hold: [],
+	};
+	rec.sessions.set(root, st);
+	while (rec.sessions.size > SESSION_LIMIT) {
+		const oldestKey = rec.sessions.keys().next().value;
+		const old = rec.sessions.get(oldestKey);
+		rec.sessions.delete(oldestKey);
+		if (old) {
+			old.dead = true;
+			rec.queuedItems -= old.q.length;
+			rec.queuedBytes -= old.bytes;
+			rec.counters.droppedOverflow += old.q.length;
+			rec.counters.evicted += 1;
+			old.q = [];
+			old.bytes = 0;
+		}
+	}
+	return st;
+}
+
+/** The first event of a call assigns its number; a callID seen again after its terminal event is a new call. */
+function callEntry(st, callID, starts) {
+	let entry = st.calls.get(callID);
+	if (!entry) {
+		entry = { n: 1, closed: false, partStatus: undefined, pending: undefined, timer: undefined };
+	} else if (starts && entry.closed) {
+		entry = {
+			n: entry.n + 1,
+			closed: false,
+			partStatus: undefined,
+			pending: undefined,
+			timer: undefined,
+		};
+	}
+	lruTouch(st.calls, callID, entry, CALL_LIMIT);
+	return entry;
+}
+
+function toolUseId(callID, entry) {
+	return entry.n === 1 ? callID : callID + "#" + entry.n;
+}
+
+// ---- queue --------------------------------------------------------------------
+
+// An event id is "claimed" (1) while its POST is in flight and "delivered" (2) once the server answered. A claim stops a
+// second plugin instance in this process from sending the same event; only a delivery stops the exit flush, so an
+// event whose POST never finished is still sent at exit (the server dedupes by delivery id).
+const SEEN_CLAIMED = 1;
+const SEEN_DELIVERED = 2;
+
+function claimEvent(rec, evt) {
+	if (rec.seen.has(evt)) return true;
+	lruTouch(rec.seen, evt, SEEN_CLAIMED, SEEN_LIMIT);
+	return false;
+}
+
+function deliveredEvent(rec, evt) {
+	return rec.seen.get(evt) === SEEN_DELIVERED;
+}
+
+function dropOldest(rec, st) {
+	const old = st.q.shift();
+	if (!old) return;
+	st.bytes -= old.size;
+	rec.queuedItems -= 1;
+	rec.queuedBytes -= old.size;
+	rec.counters.droppedOverflow += 1;
+}
+
+/** Serialize now, queue, and start the chain. Never throws, never awaits. */
+function enqueue(rec, st, envelope, meta) {
+	try {
+		const body = JSON.stringify(envelope);
+		const size = Buffer.byteLength(body);
+		if (size > BODY_CAP) {
+			rec.counters.droppedOverflow += 1;
+			return;
+		}
+		const item = {
+			body: body,
+			size: size,
+			dirs: meta.dirs,
+			evt: meta.evt,
+			key: meta.key,
+			sid: envelope.session_id,
+			name: envelope.hook_event_name,
+		};
+		st.q.push(item);
+		st.bytes += size;
+		rec.queuedItems += 1;
+		rec.queuedBytes += size;
+		while (st.q.length > SESSION_ITEMS || st.bytes > SESSION_BYTES) dropOldest(rec, st);
+		while (rec.queuedItems > PROCESS_ITEMS || rec.queuedBytes > PROCESS_BYTES) {
+			let victim;
+			for (const s of rec.sessions.values()) {
+				if (s.q.length > 0) {
+					victim = s;
+					break;
+				}
+			}
+			if (!victim) break;
+			dropOldest(rec, victim);
+		}
+		kick(rec, st);
+	} catch {
+		swallow(rec);
+	}
+}
+
+function kick(rec, st) {
+	if (st.running || st.dead) return;
+	st.running = true;
+	queueMicrotask(() => {
+		drain(rec, st).catch(() => {
+			swallow(rec);
+		});
+	});
+}
+
+async function drain(rec, st) {
+	try {
+		while (st.q.length > 0 && !st.dead) {
+			// The item stays at the head while it is judged and sent, so a process that exits meanwhile can still flush it.
+			const item = st.q[0];
+			try {
+				await deliver(rec, st, item);
+			} catch {
+				swallow(rec);
+			}
+			if (st.q[0] === item) {
+				st.q.shift();
+				st.bytes -= item.size;
+				rec.queuedItems -= 1;
+				rec.queuedBytes -= item.size;
+			}
+		}
+	} finally {
+		st.running = false;
+		if (st.q.length > 0 && !st.dead) kick(rec, st);
+	}
+}
+
+async function deliver(rec, st, item) {
+	for (let i = 0; i < item.dirs.length; i++) {
+		const send = await judge(rec, item.dirs[i]);
+		if (!send) {
+			st.lastVerdict = false;
+			rec.counters.droppedDir += 1;
+			return;
+		}
+	}
+	st.lastVerdict = true;
+	for (let i = 0; i < item.dirs.length; i++) {
+		const dir = item.dirs[i];
+		if (typeof dir === "string" && dir !== "") lruTouch(rec.verdicts, dir, apNow(), 256);
+	}
+	if (item.evt !== undefined && claimEvent(rec, item.evt)) {
+		rec.counters.droppedSeen += 1;
+		return;
+	}
+	let delivered = false;
+	try {
+		await acquireSend(rec);
+		try {
+			delivered = await post(rec, item);
+		} finally {
+			releaseSend(rec);
+		}
+	} finally {
+		if (item.evt !== undefined) {
+			if (delivered) lruTouch(rec.seen, item.evt, SEEN_DELIVERED, SEEN_LIMIT);
+			else rec.seen.delete(item.evt);
+		}
+	}
+}
+
+function acquireSend(rec) {
+	if (rec.inflight < SEND_LIMIT) {
+		rec.inflight += 1;
+		return Promise.resolve();
+	}
+	return new Promise((resolve) => {
+		rec.sendWaiters.push(resolve);
+	});
+}
+
+function releaseSend(rec) {
+	const next = rec.sendWaiters.shift();
+	if (next) next();
+	else rec.inflight -= 1;
+}
+
+// ---- sending ------------------------------------------------------------------
+
+function homeDir() {
+	const env = apEnv();
+	const home = apPlatform() === "win32" ? env.USERPROFILE : env.HOME;
+	return typeof home === "string" && home !== "" ? home : undefined;
+}
+
+async function readAuthHeader() {
+	// undefined: send without Authorization. null: send nothing. string: the header value.
+	const home = homeDir();
+	if (!home) return null;
+	const file = path.join(home, AP_AGENTPULSE_DIR, AP_AUTH_HEADER_FILE);
+	let handle;
+	try {
+		if (apPlatform() === "win32") {
+			const l = await fsp.lstat(file);
+			if (!l.isFile() || l.isSymbolicLink()) return null;
+			handle = await fsp.open(file, "r");
+		} else {
+			handle = await fsp.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+		}
+		const st = await handle.stat();
+		if (!st.isFile()) return null;
+		if (apPlatform() !== "win32") {
+			const getuid = apGetuid();
+			if (typeof getuid === "function" && st.uid !== getuid.call(process)) return null;
+			if ((st.mode & 0o022) !== 0) return null;
+		}
+		if (st.size === 0) return undefined;
+		if (st.size > 4096) return null;
+		const text = (await handle.readFile({ encoding: "utf8" })).replace(/\r?\n$/, "");
+		if (text === "") return undefined;
+		if (!AUTH_LINE_RE.test(text)) return null;
+		return text.slice("Authorization: ".length);
+	} catch (e) {
+		return e && e.code === "ENOENT" ? undefined : null;
+	} finally {
+		if (handle) await handle.close().catch(() => {});
+	}
+}
+
+function hostHeaderValue(rec) {
+	if (rec.hostHeader !== undefined) return rec.hostHeader;
+	let value = "";
+	try {
+		const cleaned = os
+			.hostname()
+			.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/gu, "")
+			.replace(/[\s\p{Zs}]+/gu, " ")
+			.trim();
+		const capped = Array.from(cleaned).slice(0, 128).join("").trim();
+		value = capped === "" ? "" : encodeURIComponent(capped);
+	} catch {
+		value = "";
+	}
+	rec.hostHeader = value;
+	return value;
+}
+
+function deliveryId(item) {
+	const basis = item.key !== undefined ? item.key : item.evt !== undefined ? item.evt : item.body;
+	return crypto
+		.createHash("sha256")
+		.update(AP_CONFIG.baseUrl + "|" + item.sid + "|" + basis)
+		.digest("hex")
+		.slice(0, 32);
+}
+
+async function post(rec, item) {
+	const headers = {
+		"Content-Type": "application/json",
+		"X-Agent-Type": "opencode",
+		[AP_DELIVERY_HEADER]: deliveryId(item),
+	};
+	if (AP_CONFIG.direct) {
+		const auth = await readAuthHeader();
+		if (auth === null) return false;
+		if (auth !== undefined) headers.Authorization = auth;
+		const host = hostHeaderValue(rec);
+		if (host !== "") headers[AP_HOST_HEADER] = host;
+	}
+	const url = AP_CONFIG.baseUrl + "/api/v1/hooks?event=" + encodeURIComponent(item.name);
+	try {
+		const res = await apFetch()(url, {
+			method: "POST",
+			headers: headers,
+			body: item.body,
+			redirect: "error",
+			signal: AbortSignal.timeout(POST_TIMEOUT_MS),
+		});
+		rec.counters.posts += 1;
+		if (res && res.body && typeof res.body.cancel === "function")
+			await res.body.cancel().catch(() => {});
+		return true;
+	} catch {
+		rec.counters.failedPosts += 1;
+		return false;
+	}
+}
+
+// ---- the exit flush ------------------------------------------------------------
+// A one-shot "opencode run" exits right after the turn ends, and a POST the chain has not started by then is
+// lost. At exit the plugin sends what is still queued with a synchronous curl, within a fixed budget, and only
+// for a directory it already judged "send" in this process (no gate runs at exit). Nothing secret or
+// user-authored is in argv: the body goes on stdin and the credential is read by curl from the key file.
+
+const EXIT_BUDGET_MS = 300;
+const CURL = "/usr/bin/curl";
+
+/** "opencode run" on 1.x, and on 2.x the private "serve --stdio" server that run starts. A long-lived service is neither. */
+function oneShot() {
+	const argv = apArgv();
+	return argv[2] === "run" || (argv[2] === "serve" && argv.indexOf("--stdio") !== -1);
+}
+
+function exitAuthArgs() {
+	// [] : no credential header. null : send nothing. [..] : curl arguments.
+	if (!AP_CONFIG.direct) return [];
+	const home = homeDir();
+	if (!home) return null;
+	const file = path.join(home, AP_AGENTPULSE_DIR, AP_AUTH_HEADER_FILE);
+	let fd;
+	try {
+		fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+		const st = fs.fstatSync(fd);
+		if (!st.isFile()) return null;
+		if (apPlatform() !== "win32") {
+			const getuid = apGetuid();
+			if (typeof getuid === "function" && st.uid !== getuid.call(process)) return null;
+			if ((st.mode & 0o022) !== 0) return null;
+		}
+		if (st.size === 0) return [];
+		if (st.size > 4096) return null;
+		const text = fs.readFileSync(fd, "utf8").replace(/\r?\n$/, "");
+		if (text === "") return [];
+		return AUTH_LINE_RE.test(text) ? ["-H", "@" + file] : null;
+	} catch (e) {
+		return e && e.code === "ENOENT" ? [] : null;
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				// nothing to do
+			}
+		}
+	}
+}
+
+/** True when a rules file or marker of any kind exists (a dangling link, or a path that can't be read, counts). Synchronous. */
+function rulesOrMarkerPresentSync() {
+	const home = homeDir();
+	if (!home) return true;
+	const d = path.join(home, AP_AGENTPULSE_DIR);
+	for (const name of [AP_RULES_FILE, AP_MARKER_FILE]) {
+		try {
+			fs.lstatSync(path.join(d, name));
+			return true;
+		} catch (e) {
+			if (!e || e.code !== "ENOENT") return true;
+		}
+	}
+	return false;
+}
+
+/** True when anything could still forbid a send: the skip variable, or the rules state above. */
+function exitStateForbids() {
+	return apIsSkip(apEnv().AGENTPULSE_SKIP) || rulesOrMarkerPresentSync();
+}
+
+/** A directory the process judged "send" within the gate's time-to-live. */
+function freshVerdict(rec, dir) {
+	if (typeof dir !== "string" || dir === "") return false;
+	const at = rec.verdicts.get(dir);
+	return typeof at === "number" && apNow() - at < GATE_TTL_MS;
+}
+
+function flushAtExit(rec) {
+	try {
+		if (!oneShot()) return;
+		if (exitStateForbids()) return;
+		const deadline = Date.now() + EXIT_BUDGET_MS;
+		const auth = exitAuthArgs();
+		if (auth === null) return;
+		const curl = (AP_TEST && AP_TEST.curl) || CURL;
+		const sentNow = new Set();
+		for (const st of rec.sessions.values()) {
+			for (const item of st.q) {
+				const left = deadline - Date.now();
+				if (left <= 0) return;
+				if (!item.dirs.every((d) => freshVerdict(rec, d))) break;
+				if (item.evt !== undefined) {
+					if (deliveredEvent(rec, item.evt) || sentNow.has(item.evt)) continue;
+					sentNow.add(item.evt);
+				}
+				const args = [
+					"-q",
+					"-sS",
+					"--max-time",
+					String(Math.max(0.05, left / 1000)),
+					"-o",
+					"/dev/null",
+					"-X",
+					"POST",
+					"--data-binary",
+					"@-",
+					"-H",
+					"Content-Type: application/json",
+					"-H",
+					"X-Agent-Type: opencode",
+					"-H",
+					AP_DELIVERY_HEADER + ": " + deliveryId(item),
+					...auth,
+				];
+				if (AP_CONFIG.direct) {
+					const host = hostHeaderValue(rec);
+					if (host !== "") args.push("-H", AP_HOST_HEADER + ": " + host);
+				}
+				args.push(AP_CONFIG.baseUrl + "/api/v1/hooks?event=" + encodeURIComponent(item.name));
+				cp.spawnSync(curl, args, {
+					input: item.body,
+					env: { PATH: "/usr/bin:/bin" },
+					stdio: ["pipe", "ignore", "ignore"],
+					timeout: left,
+				});
+			}
+		}
+	} catch {
+		// the process is exiting
+	}
+}
+
+function hookExit(rec) {
+	if (rec.exitHooked) return;
+	rec.exitHooked = true;
+	if (AP_TEST) AP_TEST.exitFlush = () => flushAtExit(rec);
+	process.on("exit", () => flushAtExit(rec));
+}
+
+// ---- the exclude check --------------------------------------------------------
+
+async function exists(p) {
+	try {
+		await fsp.stat(p);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function isLink(p) {
+	try {
+		return (await fsp.lstat(p)).isSymbolicLink();
+	} catch {
+		return false;
+	}
+}
+
+async function searchable(p) {
+	try {
+		const st = await fsp.stat(p);
+		if (!st.isDirectory()) return false;
+		await fsp.access(p, fs.constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** The exact predicate of the shell gate's step b: nothing to evaluate, send. */
+async function noRulesFastPath(home) {
+	const d = path.join(home, AP_AGENTPULSE_DIR);
+	const rules = path.join(d, AP_RULES_FILE);
+	const marker = path.join(d, AP_MARKER_FILE);
+	if (
+		(await exists(rules)) ||
+		(await isLink(rules)) ||
+		(await exists(marker)) ||
+		(await isLink(marker))
+	)
+		return false;
+	if (await searchable(d)) return true;
+	return !(await exists(d)) && !(await isLink(d)) && (await searchable(home));
+}
+
+async function fileIdentity(p) {
+	try {
+		const st = await fsp.lstat(p);
+		return st.mode + ":" + st.uid + ":" + st.ino + ":" + st.size;
+	} catch {
+		return "-";
+	}
+}
+
+async function fileDigest(p) {
+	try {
+		const st = await fsp.stat(p);
+		if (!st.isFile()) return "-";
+		if (st.size > RULES_MAX_BYTES) return "big";
+		return crypto
+			.createHash("sha256")
+			.update(await fsp.readFile(p))
+			.digest("hex");
+	} catch {
+		return "-";
+	}
+}
+
+async function judge(rec, dir) {
+	if (apIsSkip(apEnv().AGENTPULSE_SKIP)) return false;
+	const home = homeDir();
+	if (!home) return false;
+	if (apPlatform() === "win32") {
+		const d = path.join(home, AP_AGENTPULSE_DIR);
+		const present =
+			(await isLink(path.join(d, AP_RULES_FILE))) || (await exists(path.join(d, AP_RULES_FILE)));
+		const marked =
+			(await isLink(path.join(d, AP_MARKER_FILE))) || (await exists(path.join(d, AP_MARKER_FILE)));
+		return !present && !marked;
+	}
+	if (await noRulesFastPath(home)) return true;
+	if (typeof dir !== "string" || dir === "") return false;
+	const d = path.join(home, AP_AGENTPULSE_DIR);
+	const rulesPath = path.join(d, AP_RULES_FILE);
+	let real;
+	try {
+		real = await fsp.realpath(dir);
+	} catch {
+		return false;
+	}
+	const rulesDigest = await fileDigest(rulesPath);
+	if (rulesDigest === "big") return false;
+	const scriptPath = path.join(d, AP_SCRIPT_FILE);
+	const key = [
+		real,
+		rulesDigest,
+		await fileIdentity(rulesPath),
+		await fileIdentity(path.join(d, AP_MARKER_FILE)),
+		await fileIdentity(scriptPath),
+		await fileDigest(scriptPath),
+		await fileIdentity(d),
+	].join("|");
+	const hit = rec.gateCache.get(key);
+	if (hit && apNow() - hit.at < GATE_TTL_MS) return hit.send;
+	const running = rec.gateInflight.get(key);
+	if (running) return running;
+	const promise = runGate(rec, home, real, key).finally(() => {
+		rec.gateInflight.delete(key);
+	});
+	rec.gateInflight.set(key, promise);
+	return promise;
+}
+
+function acquireGate(rec) {
+	if (rec.gateActive < GATE_LIMIT) {
+		rec.gateActive += 1;
+		return Promise.resolve();
+	}
+	return new Promise((resolve) => {
+		rec.gateWaiters.push(resolve);
+	});
+}
+
+function releaseGate(rec) {
+	const next = rec.gateWaiters.shift();
+	if (next) next();
+	else rec.gateActive -= 1;
+}
+
+async function runGate(rec, home, dir, key) {
+	await acquireGate(rec);
+	try {
+		const env = { HOME: home, PATH: "/usr/bin:/bin" };
+		const skip = apEnv().AGENTPULSE_SKIP;
+		if (typeof skip === "string") env.AGENTPULSE_SKIP = skip;
+		const verdict = await new Promise((resolve) => {
+			let child;
+			let done = false;
+			const handle = {};
+			const finish = (value) => {
+				if (done) return;
+				done = true;
+				clearTimeout(handle.timer);
+				resolve(value);
+			};
+			try {
+				rec.counters.gateSpawns += 1;
+				child = cp.spawn("/bin/sh", ["-c", AP_GATE_PIECE + "exit " + AP_SEND_STATUS], {
+					cwd: dir,
+					env: env,
+					stdio: "ignore",
+					detached: true,
+				});
+			} catch {
+				finish({ send: false, cache: false });
+				return;
+			}
+			handle.timer = setTimeout(() => {
+				rec.counters.gateTimeouts += 1;
+				try {
+					process.kill(-child.pid, "SIGKILL");
+				} catch {
+					try {
+						child.kill("SIGKILL");
+					} catch {
+						// already gone
+					}
+				}
+				finish({ send: false, cache: false });
+			}, GATE_TIMEOUT_MS);
+			if (typeof handle.timer.unref === "function") handle.timer.unref();
+			child.on("error", () => {
+				finish({ send: false, cache: false });
+			});
+			child.on("exit", (code) => {
+				finish({ send: code === AP_SEND_STATUS, cache: typeof code === "number" });
+			});
+		});
+		if (verdict.cache) lruTouch(rec.gateCache, key, { at: apNow(), send: verdict.send }, 256);
+		return verdict.send;
+	} finally {
+		releaseGate(rec);
+	}
+}
+
+// ---- helpers shared by both lines ---------------------------------------------
+
+function envelopeBase(line, version, sid, parent, cwd) {
+	const info = { line: line, protocol: 1 };
+	if (typeof version === "string" && version !== "")
+		info.version = version.length <= 64 ? version : undefined;
+	const env = { session_id: sid, hook_event_name: "", opencode: info };
+	if (cwd) env.cwd = cwd;
+	if (parent) env.parent_session_id = parent;
+	return env;
+}
+
+/** The directories an item is judged by: its own and, for a child, the root session's. */
+function judgedDirs(rec, sid, own) {
+	const root = rootOf(rec, sid);
+	const dirs = [own];
+	if (root !== sid) {
+		const rootInfo = rec.info.get(root);
+		// An instance that subscribed after the root was created never saw its directory; the instance that claimed it did.
+		dirs.push((rootInfo && rootInfo.dir) || rec.claims.get(root));
+	}
+	return dirs;
+}
+
+function rememberRole(st, id, role) {
+	lruTouch(st.roles, id, role, MAP_LIMIT);
+}
+
+function rememberText(st, id, messageID, sid, text) {
+	lruTouch(st.texts, id, { messageID: messageID, sid: sid, text: text }, MAP_LIMIT);
+}
+
+/** The newest assistant text part of one session, when the plugin knows the message is the assistant's. */
+function lastAssistantText(st, sid) {
+	let found;
+	for (const entry of st.texts.values()) {
+		if (entry.sid === sid && st.roles.get(entry.messageID) === "assistant" && entry.text !== "")
+			found = entry.text;
+	}
+	return found === undefined ? undefined : capString(found);
+}
+// ---- OpenCode 1.x ---------------------------------------------------------------
+
+const V1_EXIT_WAIT_MS = 2000;
+
+// The event names this plugin forwards. scripts/check-hook-event-parity.ts holds this list to OpenCodeV1Event
+// in src/shared/types.ts, and emit() sends nothing that isn't on it.
+const AP_FORWARDED = [
+	"session.created",
+	"chat.message",
+	"tool.execute.before",
+	"tool.execute.after",
+	"permission.asked",
+	"permission.replied",
+	"session.error",
+	"session.idle",
+];
+
+export const AgentPulse = async (ctx) => {
+	let rec;
+	try {
+		rec = getRecord();
+		rec.instances += 1;
+		hookExit(rec);
+	} catch {
+		return {};
+	}
+	const ctxDir = plainText(ctx && ctx.directory, 4096);
+	let lastVersion;
+
+	function emit(sid, name, data, opts) {
+		if (AP_FORWARDED.indexOf(name) === -1) return;
+		const root = rootOf(rec, sid);
+		const info = sessionInfo(rec, sid) || {};
+		// With several instances in one process, a session of unknown directory has no safe owner: judged as unknown, it is dropped when rules exist.
+		const own = info.dir || (rec.instances <= 1 ? ctxDir : undefined);
+		const env = envelopeBase(
+			1,
+			info.version || lastVersion,
+			sid,
+			root !== sid ? root : undefined,
+			own,
+		);
+		env.hook_event_name = name;
+		env.data = data;
+		if (opts && opts.model) env.model = opts.model;
+		if (opts && opts.last) env.last_assistant_message = opts.last;
+		enqueue(rec, stateOf(rec, root), env, {
+			dirs: judgedDirs(rec, sid, own),
+			evt: opts && opts.evt,
+			key: opts && opts.key,
+		});
+	}
+
+	function isChild(sid) {
+		const info = sessionInfo(rec, sid);
+		return !!(info && info.parent);
+	}
+
+	function finishCall(sid, callID, entry, status) {
+		const pending = entry.pending;
+		if (!pending || entry.closed) return;
+		clearTimeout(entry.timer);
+		entry.pending = undefined;
+		entry.closed = true;
+		if (status === "error") {
+			pending.status = "error";
+			pending.error = wireError("Error");
+			pending.output = undefined;
+			pending.exit_code = undefined;
+		}
+		emit(sid, "tool.execute.after", pending, { key: pending.tool_use_id + "|after" });
+	}
+
+	function flushPending(sid) {
+		const st = stateOf(rec, rootOf(rec, sid));
+		for (const [callID, entry] of st.calls) {
+			if (entry.pending && entry.sid === sid) finishCall(sid, callID, entry, entry.partStatus);
+		}
+	}
+
+	function onToolPart(sid, part) {
+		const callID = callIdOf(part.callID);
+		const status = part.state && part.state.status;
+		if (!callID || (status !== "completed" && status !== "error")) return;
+		const st = stateOf(rec, rootOf(rec, sid));
+		const entry = callEntry(st, callID, false);
+		if (entry.closed) return;
+		if (entry.pending) {
+			finishCall(sid, callID, entry, status);
+			return;
+		}
+		if (status === "completed") {
+			entry.partStatus = "completed";
+			return;
+		}
+		// A tool that threw never fires tool.execute.after: the part is the only signal.
+		entry.closed = true;
+		const tool = plainText(part.tool, 128);
+		if (!tool) return;
+		emit(
+			sid,
+			"tool.execute.after",
+			{
+				tool: tool,
+				tool_use_id: toolUseId(callID, entry),
+				input: capInput(part.state.input),
+				status: "error",
+				error: wireError("Error"),
+			},
+			{ key: toolUseId(callID, entry) + "|after" },
+		);
+	}
+
+	function onEvent(ev) {
+		const p = (ev && ev.properties) || {};
+		const evt = typeof ev.id === "string" ? ev.id : undefined;
+		switch (ev.type) {
+			case "session.created": {
+				const info = p.info || {};
+				const sid = apIdOf(info.id || p.sessionID);
+				if (!sid) return;
+				const version = plainText(info.version, 64);
+				if (version) lastVersion = version;
+				rememberSession(rec, sid, apIdOf(info.parentID), plainText(info.directory, 4096), version);
+				emit(sid, "session.created", {}, { evt: evt });
+				return;
+			}
+			case "message.updated": {
+				const info = p.info || {};
+				const sid = apIdOf(info.sessionID || p.sessionID);
+				if (!sid || typeof info.id !== "string" || typeof info.role !== "string") return;
+				rememberRole(stateOf(rec, rootOf(rec, sid)), info.id, info.role);
+				return;
+			}
+			case "message.part.updated": {
+				const part = p.part;
+				const sid = apIdOf(p.sessionID || (part && part.sessionID));
+				if (!sid || !part || typeof part !== "object") return;
+				const st = stateOf(rec, rootOf(rec, sid));
+				if (
+					part.type === "text" &&
+					typeof part.text === "string" &&
+					!part.synthetic &&
+					!part.ignored
+				) {
+					if (
+						st.lastVerdict !== false &&
+						typeof part.messageID === "string" &&
+						typeof part.id === "string"
+					) {
+						rememberText(st, part.id, part.messageID, sid, capString(part.text));
+					}
+				} else if (part.type === "tool") {
+					onToolPart(sid, part);
+				}
+				return;
+			}
+			case "permission.asked": {
+				const sid = apIdOf(p.sessionID);
+				const per = plainText(p.id, 200);
+				if (!sid || !per) return;
+				const st = stateOf(rec, rootOf(rec, sid));
+				const callID = callIdOf(p.tool && p.tool.callID);
+				const tuid = callID ? toolUseId(callID, callEntry(st, callID, true)) : "perm:" + per;
+				lruTouch(st.perms, per, tuid, MAP_LIMIT);
+				const patterns = Array.isArray(p.patterns)
+					? p.patterns.filter((x) => typeof x === "string" && x.length <= 1024).slice(0, 32)
+					: undefined;
+				const data = {
+					request_id: per,
+					tool_use_id: tuid,
+					permission: plainText(p.permission, 128) || "unknown",
+				};
+				if (patterns) data.patterns = patterns;
+				emit(sid, "permission.asked", data, { evt: evt });
+				return;
+			}
+			case "permission.replied": {
+				const sid = apIdOf(p.sessionID);
+				const per = plainText(p.requestID, 200);
+				if (!sid || !per) return;
+				const st = stateOf(rec, rootOf(rec, sid));
+				const tuid = st.perms.get(per) || "perm:" + per;
+				const reply =
+					typeof p.reply === "string" && /^[a-z_-]{1,32}$/.test(p.reply) ? p.reply : "unknown";
+				emit(
+					sid,
+					"permission.replied",
+					{ request_id: per, tool_use_id: tuid, reply: reply },
+					{ evt: evt },
+				);
+				return;
+			}
+			case "session.error": {
+				const sid = apIdOf(p.sessionID);
+				if (!sid) return;
+				const error = p.error || {};
+				emit(
+					sid,
+					"session.error",
+					{ error: wireError(error.name, error.data && error.data.statusCode) },
+					{ evt: evt },
+				);
+				// A user abort is followed by session.idle; that is not a finished turn.
+				if (error.name === "MessageAbortedError" && !isChild(sid)) {
+					stateOf(rec, rootOf(rec, sid)).skipIdle = true;
+				}
+				return;
+			}
+			case "session.idle": {
+				const sid = apIdOf(p.sessionID);
+				if (!sid) return;
+				const st = stateOf(rec, rootOf(rec, sid));
+				flushPending(sid);
+				const last = isChild(sid) ? undefined : lastAssistantText(st, sid);
+				for (const [id, entry] of st.texts) if (entry.sid === sid) st.texts.delete(id);
+				// 1.x sends session.idle (twice, measured) after an abort. The abort is already an
+				// Interrupt; a Stop would make the session read WAITING. The next prompt ends this.
+				if (!isChild(sid) && st.skipIdle) return;
+				emit(sid, "session.idle", {}, { evt: evt, last: last });
+				return;
+			}
+			default:
+		}
+	}
+
+	return {
+		event: (input) => {
+			try {
+				const ev = input && input.event;
+				if (ev && typeof ev.type === "string") onEvent(ev);
+			} catch {
+				swallow(rec);
+			}
+		},
+		"chat.message": (input, output) => {
+			try {
+				const sid = apIdOf(input && input.sessionID);
+				if (!sid || isChild(sid)) return;
+				const st = stateOf(rec, rootOf(rec, sid));
+				st.skipIdle = false;
+				const parts = output && Array.isArray(output.parts) ? output.parts : [];
+				const text = parts
+					.filter(
+						(x) =>
+							x && x.type === "text" && typeof x.text === "string" && !x.synthetic && !x.ignored,
+					)
+					.map((x) => x.text)
+					.join("\n");
+				if (text === "") return;
+				const m = output.message && output.message.model;
+				const model =
+					m && typeof m.providerID === "string" && typeof m.modelID === "string"
+						? plainText(m.providerID + "/" + m.modelID, 256)
+						: undefined;
+				emit(sid, "chat.message", { text: capString(text) }, { model: model });
+			} catch {
+				swallow(rec);
+			}
+		},
+		"tool.execute.before": (input, output) => {
+			try {
+				const sid = apIdOf(input && input.sessionID);
+				const callID = callIdOf(input && input.callID);
+				const tool = plainText(input && input.tool, 128);
+				if (!sid || !callID || !tool) return;
+				const entry = callEntry(stateOf(rec, rootOf(rec, sid)), callID, true);
+				const tuid = toolUseId(callID, entry);
+				emit(
+					sid,
+					"tool.execute.before",
+					{ tool: tool, tool_use_id: tuid, input: capInput(output && output.args) },
+					{ key: tuid + "|before" },
+				);
+			} catch {
+				swallow(rec);
+			}
+		},
+		"tool.execute.after": (input, output) => {
+			try {
+				const sid = apIdOf(input && input.sessionID);
+				const callID = callIdOf(input && input.callID);
+				const tool = plainText(input && input.tool, 128);
+				if (!sid || !callID || !tool) return;
+				const st = stateOf(rec, rootOf(rec, sid));
+				const entry = callEntry(st, callID, false);
+				if (entry.closed) return;
+				const data = {
+					tool: tool,
+					tool_use_id: toolUseId(callID, entry),
+					input: capInput(input.args),
+					status: "completed",
+				};
+				const exit = output && output.metadata && output.metadata.exit;
+				if (typeof exit === "number" && Number.isInteger(exit)) data.exit_code = exit;
+				if (output && typeof output.output === "string") data.output = capString(output.output);
+				entry.sid = sid;
+				entry.pending = data;
+				if (entry.partStatus === "completed") {
+					finishCall(sid, callID, entry, "completed");
+					return;
+				}
+				entry.timer = setTimeout(() => {
+					try {
+						finishCall(sid, callID, entry, entry.partStatus);
+					} catch {
+						swallow(rec);
+					}
+				}, V1_EXIT_WAIT_MS);
+				if (typeof entry.timer.unref === "function") entry.timer.unref();
+			} catch {
+				swallow(rec);
+			}
+		},
+	};
+};
+
+AP_OPENCODE_PLUGIN_1_EOF
+}
+# @@AGENTPULSE_OPENCODE_PLUGIN_1@@ END
+# @@AGENTPULSE_OPENCODE_PLUGIN_2@@ BEGIN
+ap_opencode_plugin_2_template() {
+cat <<'AP_OPENCODE_PLUGIN_2_EOF'
+// agentpulse-opencode-plugin dba966b1d1ad22
+import cp from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+// Shared core of the AgentPulse plugins for OpenCode 1.x and 2.x (AGEN-141).
+// The installers write one self-contained file per line: this core followed by
+// the line's own hooks. The plugin only observes. A hook filters and enqueues
+// and returns at once; it never awaits a request, never throws and never
+// changes what OpenCode passed it. Sending, the exclude check and the
+// credential read happen later, off the hook path, in a per-session chain.
+
+const AP_CONFIG = { baseUrl: "@@AP_OPENCODE_BASE_URL@@", direct: "@@AP_OPENCODE_DIRECT@@" === "1" };
+
+// @@AP_GENERATED BEGIN
+const AP_BUILD = "dba966b1d1ad22";
+const AP_SKIP_VALUES = JSON.parse("[\"1\",\"true\",\"yes\",\"on\"]");
+const AP_SEND_STATUS = 42;
+const AP_AGENTPULSE_DIR = ".agentpulse";
+const AP_RULES_FILE = "exclude";
+const AP_MARKER_FILE = "exclude.invalid";
+const AP_SCRIPT_FILE = "exclude-check.sh";
+const AP_AUTH_HEADER_FILE = "hook-auth-header";
+const AP_DELIVERY_HEADER = "X-AgentPulse-Delivery-Id";
+const AP_HOST_HEADER = "X-AgentPulse-Host";
+const AP_KNOWN_ERROR_NAMES = JSON.parse("[\"Error\",\"APIError\",\"Tool.Error\",\"MessageAbortedError\",\"aborted\",\"provider.invalid-request\"]");
+const AP_GATE_PIECE = "w=\u0024(printf ' \\t\\r\\n.'); w=\u0024{w%.}; x=\u0024{AGENTPULSE_SKIP:-}; y=\u0024{x%%[!\"\u0024w\"]*}; x=\u0024{x#\"\u0024y\"}; y=\u0024{x##*[!\"\u0024w\"]}; x=\u0024{x%\"\u0024y\"}; case \u0024x in 1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) exit 0 ;; esac; d=\u0024HOME/.agentpulse; g=0; if [ -n \"\u0024HOME\" ] && [ ! -e \"\u0024d/exclude\" ] && [ ! -L \"\u0024d/exclude\" ] && [ ! -e \"\u0024d/exclude.invalid\" ] && [ ! -L \"\u0024d/exclude.invalid\" ]; then if [ -d \"\u0024d\" ] && [ -x \"\u0024d\" ]; then g=1; elif [ ! -e \"\u0024d\" ] && [ ! -L \"\u0024d\" ] && [ -d \"\u0024HOME\" ] && [ -x \"\u0024HOME\" ]; then g=1; fi; fi; if [ \"\u0024g\" != 1 ]; then l=\u0024(LC_ALL=C LS_BLOCK_SIZE=1 BLOCK_SIZE=1 BLOCKSIZE=1 ls -ldn \"\u0024d/\" \"\u0024d/exclude-check.sh\" 2>/dev/null) || exit 0; u=\u0024(id -u 2>/dev/null); ap_f() { y=\u0024{x%%[!\" \"]*}; x=\u0024{x#\"\u0024y\"}; y=\u0024{x%%\" \"*}; x=\u0024{x#\"\u0024y\"}; }; ap_v() { x=\u00241; ap_f; k=\u0024{y%[@+.]}; ap_f; ap_f; [ -n \"\u0024y\" ] && [ \"\u0024y\" = \"\u0024u\" ] && case \u0024k in \u00242[-r][-w][-xsS][-r]-[-xsS][-r]-[-xtT]) ;; *) false ;; esac; }; n=\u0024{w#???}; ap_v \"\u0024{l%%\"\u0024n\"*}\" d && ap_v \"\u0024{l#*\"\u0024n\"}\" - && { /bin/sh \"\u0024d/exclude-check.sh\"; [ \u0024? = 42 ]; } || exit 0; fi; ";
+// @@AP_GENERATED END
+
+const AP_TEST = undefined;
+const apEnv = () => process.env;
+const apPlatform = () => process.platform;
+const apGetuid = () => process.getuid;
+const apNow = () => Date.now();
+const apArgv = () => process.argv;
+const apFetch = () => globalThis.fetch;
+
+const STRING_CAP = 65536;
+const BODY_CAP = 262144;
+const SESSION_ITEMS = 500;
+const SESSION_BYTES = 1048576;
+const PROCESS_ITEMS = 2000;
+const PROCESS_BYTES = 8388608;
+const SESSION_LIMIT = 1024;
+const SEEN_LIMIT = 4096;
+const CALL_LIMIT = 512;
+const MAP_LIMIT = 256;
+const SEND_LIMIT = 4;
+const GATE_LIMIT = 2;
+const POST_TIMEOUT_MS = 2000;
+const GATE_TIMEOUT_MS = 2000;
+const GATE_TTL_MS = 60000;
+const HOLD_MS = 2000;
+const RULES_MAX_BYTES = 1048576;
+const INPUT_DEPTH = 12;
+const INPUT_NODES = 20000;
+// Under BODY_CAP, so a bounded input still fits in one envelope.
+const INPUT_BYTES = 245760;
+const TRUNCATED = "\n[truncated by the AgentPulse plugin]";
+const ID_RE = /^[A-Za-z0-9_-]+$/;
+const ERR_RE = /^[A-Za-z0-9_.-]+$/;
+const AUTH_LINE_RE = /^Authorization: Bearer ap_[A-Za-z0-9_-]+$/;
+
+function apIsSkip(value) {
+	if (typeof value !== "string") return false;
+	const t = value.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "").toLowerCase();
+	return t !== "" && AP_SKIP_VALUES.indexOf(t) !== -1;
+}
+
+// ---- process-wide record ----------------------------------------------------
+
+function newRecord(replaced) {
+	return {
+		version: 1,
+		build: AP_BUILD,
+		instances: 0,
+		sessions: new Map(),
+		info: new Map(),
+		seen: new Map(),
+		claims: new Map(),
+		queuedItems: 0,
+		queuedBytes: 0,
+		inflight: 0,
+		sendWaiters: [],
+		gateActive: 0,
+		gateWaiters: [],
+		gateCache: new Map(),
+		gateInflight: new Map(),
+		verdicts: new Map(),
+		exitHooked: false,
+		hostHeader: undefined,
+		counters: {
+			posts: 0,
+			failedPosts: 0,
+			droppedOverflow: 0,
+			droppedDir: 0,
+			droppedClaim: 0,
+			droppedSeen: 0,
+			evicted: 0,
+			swallowed: 0,
+			replaced: replaced || 0,
+			gateSpawns: 0,
+			gateTimeouts: 0,
+		},
+	};
+}
+
+function validRecord(r) {
+	return (
+		r !== null &&
+		typeof r === "object" &&
+		r.version === 1 &&
+		r.build === AP_BUILD &&
+		r.sessions instanceof Map &&
+		r.info instanceof Map &&
+		r.seen instanceof Map &&
+		r.claims instanceof Map &&
+		r.gateCache instanceof Map &&
+		r.gateInflight instanceof Map &&
+		r.verdicts instanceof Map &&
+		Array.isArray(r.sendWaiters) &&
+		Array.isArray(r.gateWaiters) &&
+		r.counters !== null &&
+		typeof r.counters === "object"
+	);
+}
+
+function getRecord() {
+	const key = Symbol.for("agentpulse.opencode." + AP_BUILD);
+	const found = globalThis[key];
+	if (validRecord(found)) return found;
+	const fresh = newRecord(found === undefined ? 0 : 1);
+	globalThis[key] = fresh;
+	return fresh;
+}
+
+function swallow(rec) {
+	try {
+		rec.counters.swallowed += 1;
+	} catch {
+		// nothing to report to
+	}
+}
+
+function lruTouch(map, key, value, limit) {
+	map.delete(key);
+	map.set(key, value);
+	while (map.size > limit) {
+		const oldest = map.keys().next().value;
+		map.delete(oldest);
+	}
+}
+
+// ---- values the wire accepts -------------------------------------------------
+
+function apIdOf(value) {
+	return typeof value === "string" && value.length > 0 && value.length <= 128 && ID_RE.test(value)
+		? value
+		: null;
+}
+
+function capString(value) {
+	if (value.length <= STRING_CAP) return value;
+	return value.slice(0, STRING_CAP - TRUNCATED.length) + TRUNCATED;
+}
+
+function capValue(value, depth, budget) {
+	budget.nodes += 1;
+	if (budget.nodes > INPUT_NODES || depth > INPUT_DEPTH || budget.bytes >= INPUT_BYTES)
+		return "[omitted]";
+	if (value === null || typeof value === "boolean") return value;
+	if (typeof value === "number") return Number.isFinite(value) ? value : null;
+	if (typeof value === "string") {
+		let capped = capString(value);
+		const room = INPUT_BYTES - budget.bytes;
+		if (room <= TRUNCATED.length) return "[omitted]";
+		if (capped.length > room) capped = capped.slice(0, room - TRUNCATED.length) + TRUNCATED;
+		budget.bytes += capped.length;
+		return capped;
+	}
+	if (Array.isArray(value)) {
+		const out = [];
+		for (let i = 0; i < value.length; i++) out.push(capValue(value[i], depth + 1, budget));
+		return out;
+	}
+	if (typeof value === "object") {
+		const out = {};
+		const keys = Object.keys(value);
+		for (let i = 0; i < keys.length; i++) {
+			if (keys[i] === "__proto__") continue;
+			budget.bytes += keys[i].length;
+			out[keys[i]] = capValue(value[keys[i]], depth + 1, budget);
+		}
+		return out;
+	}
+	return "[unsupported]";
+}
+
+function capInput(value) {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
+	return capValue(value, 0, { nodes: 0, bytes: 0 });
+}
+
+function errorName(raw) {
+	return typeof raw === "string" &&
+		raw.length <= 64 &&
+		ERR_RE.test(raw) &&
+		AP_KNOWN_ERROR_NAMES.indexOf(raw) !== -1
+		? raw
+		: "Error";
+}
+
+function wireError(name, status) {
+	const out = { name: errorName(name) };
+	if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599)
+		out.status = status;
+	return out;
+}
+
+/** A call id as the plugin may send it: plain text, and never the server's reserved approval: prefix. */
+function callIdOf(value) {
+	const id = plainText(value, 150);
+	return id !== undefined && id.toLowerCase().indexOf("approval:") !== 0 ? id : undefined;
+}
+
+function plainText(value, max) {
+	return typeof value === "string" &&
+		value.length > 0 &&
+		value.length <= max &&
+		!/\p{Cc}/u.test(value)
+		? value
+		: undefined;
+}
+
+// ---- sessions, children and call numbering -----------------------------------
+
+function sessionInfo(rec, sid) {
+	return rec.info.get(sid);
+}
+
+function rememberSession(rec, sid, parent, dir, version) {
+	const prev = rec.info.get(sid) || {};
+	lruTouch(
+		rec.info,
+		sid,
+		{
+			parent: parent || prev.parent,
+			dir: dir || prev.dir,
+			version: version || prev.version,
+		},
+		SESSION_LIMIT * 4,
+	);
+}
+
+function rootOf(rec, sid) {
+	let cur = sid;
+	for (let i = 0; i < 8; i++) {
+		const info = rec.info.get(cur);
+		if (!info || !info.parent || info.parent === cur) return cur;
+		cur = info.parent;
+	}
+	return cur;
+}
+
+function stateOf(rec, root) {
+	let st = rec.sessions.get(root);
+	if (st) {
+		rec.sessions.delete(root);
+		rec.sessions.set(root, st);
+		return st;
+	}
+	st = {
+		root: root,
+		q: [],
+		bytes: 0,
+		running: false,
+		dead: false,
+		calls: new Map(),
+		roles: new Map(),
+		texts: new Map(),
+		perms: new Map(),
+		lastVerdict: undefined,
+		skipIdle: false,
+		hold: [],
+	};
+	rec.sessions.set(root, st);
+	while (rec.sessions.size > SESSION_LIMIT) {
+		const oldestKey = rec.sessions.keys().next().value;
+		const old = rec.sessions.get(oldestKey);
+		rec.sessions.delete(oldestKey);
+		if (old) {
+			old.dead = true;
+			rec.queuedItems -= old.q.length;
+			rec.queuedBytes -= old.bytes;
+			rec.counters.droppedOverflow += old.q.length;
+			rec.counters.evicted += 1;
+			old.q = [];
+			old.bytes = 0;
+		}
+	}
+	return st;
+}
+
+/** The first event of a call assigns its number; a callID seen again after its terminal event is a new call. */
+function callEntry(st, callID, starts) {
+	let entry = st.calls.get(callID);
+	if (!entry) {
+		entry = { n: 1, closed: false, partStatus: undefined, pending: undefined, timer: undefined };
+	} else if (starts && entry.closed) {
+		entry = {
+			n: entry.n + 1,
+			closed: false,
+			partStatus: undefined,
+			pending: undefined,
+			timer: undefined,
+		};
+	}
+	lruTouch(st.calls, callID, entry, CALL_LIMIT);
+	return entry;
+}
+
+function toolUseId(callID, entry) {
+	return entry.n === 1 ? callID : callID + "#" + entry.n;
+}
+
+// ---- queue --------------------------------------------------------------------
+
+// An event id is "claimed" (1) while its POST is in flight and "delivered" (2) once the server answered. A claim stops a
+// second plugin instance in this process from sending the same event; only a delivery stops the exit flush, so an
+// event whose POST never finished is still sent at exit (the server dedupes by delivery id).
+const SEEN_CLAIMED = 1;
+const SEEN_DELIVERED = 2;
+
+function claimEvent(rec, evt) {
+	if (rec.seen.has(evt)) return true;
+	lruTouch(rec.seen, evt, SEEN_CLAIMED, SEEN_LIMIT);
+	return false;
+}
+
+function deliveredEvent(rec, evt) {
+	return rec.seen.get(evt) === SEEN_DELIVERED;
+}
+
+function dropOldest(rec, st) {
+	const old = st.q.shift();
+	if (!old) return;
+	st.bytes -= old.size;
+	rec.queuedItems -= 1;
+	rec.queuedBytes -= old.size;
+	rec.counters.droppedOverflow += 1;
+}
+
+/** Serialize now, queue, and start the chain. Never throws, never awaits. */
+function enqueue(rec, st, envelope, meta) {
+	try {
+		const body = JSON.stringify(envelope);
+		const size = Buffer.byteLength(body);
+		if (size > BODY_CAP) {
+			rec.counters.droppedOverflow += 1;
+			return;
+		}
+		const item = {
+			body: body,
+			size: size,
+			dirs: meta.dirs,
+			evt: meta.evt,
+			key: meta.key,
+			sid: envelope.session_id,
+			name: envelope.hook_event_name,
+		};
+		st.q.push(item);
+		st.bytes += size;
+		rec.queuedItems += 1;
+		rec.queuedBytes += size;
+		while (st.q.length > SESSION_ITEMS || st.bytes > SESSION_BYTES) dropOldest(rec, st);
+		while (rec.queuedItems > PROCESS_ITEMS || rec.queuedBytes > PROCESS_BYTES) {
+			let victim;
+			for (const s of rec.sessions.values()) {
+				if (s.q.length > 0) {
+					victim = s;
+					break;
+				}
+			}
+			if (!victim) break;
+			dropOldest(rec, victim);
+		}
+		kick(rec, st);
+	} catch {
+		swallow(rec);
+	}
+}
+
+function kick(rec, st) {
+	if (st.running || st.dead) return;
+	st.running = true;
+	queueMicrotask(() => {
+		drain(rec, st).catch(() => {
+			swallow(rec);
+		});
+	});
+}
+
+async function drain(rec, st) {
+	try {
+		while (st.q.length > 0 && !st.dead) {
+			// The item stays at the head while it is judged and sent, so a process that exits meanwhile can still flush it.
+			const item = st.q[0];
+			try {
+				await deliver(rec, st, item);
+			} catch {
+				swallow(rec);
+			}
+			if (st.q[0] === item) {
+				st.q.shift();
+				st.bytes -= item.size;
+				rec.queuedItems -= 1;
+				rec.queuedBytes -= item.size;
+			}
+		}
+	} finally {
+		st.running = false;
+		if (st.q.length > 0 && !st.dead) kick(rec, st);
+	}
+}
+
+async function deliver(rec, st, item) {
+	for (let i = 0; i < item.dirs.length; i++) {
+		const send = await judge(rec, item.dirs[i]);
+		if (!send) {
+			st.lastVerdict = false;
+			rec.counters.droppedDir += 1;
+			return;
+		}
+	}
+	st.lastVerdict = true;
+	for (let i = 0; i < item.dirs.length; i++) {
+		const dir = item.dirs[i];
+		if (typeof dir === "string" && dir !== "") lruTouch(rec.verdicts, dir, apNow(), 256);
+	}
+	if (item.evt !== undefined && claimEvent(rec, item.evt)) {
+		rec.counters.droppedSeen += 1;
+		return;
+	}
+	let delivered = false;
+	try {
+		await acquireSend(rec);
+		try {
+			delivered = await post(rec, item);
+		} finally {
+			releaseSend(rec);
+		}
+	} finally {
+		if (item.evt !== undefined) {
+			if (delivered) lruTouch(rec.seen, item.evt, SEEN_DELIVERED, SEEN_LIMIT);
+			else rec.seen.delete(item.evt);
+		}
+	}
+}
+
+function acquireSend(rec) {
+	if (rec.inflight < SEND_LIMIT) {
+		rec.inflight += 1;
+		return Promise.resolve();
+	}
+	return new Promise((resolve) => {
+		rec.sendWaiters.push(resolve);
+	});
+}
+
+function releaseSend(rec) {
+	const next = rec.sendWaiters.shift();
+	if (next) next();
+	else rec.inflight -= 1;
+}
+
+// ---- sending ------------------------------------------------------------------
+
+function homeDir() {
+	const env = apEnv();
+	const home = apPlatform() === "win32" ? env.USERPROFILE : env.HOME;
+	return typeof home === "string" && home !== "" ? home : undefined;
+}
+
+async function readAuthHeader() {
+	// undefined: send without Authorization. null: send nothing. string: the header value.
+	const home = homeDir();
+	if (!home) return null;
+	const file = path.join(home, AP_AGENTPULSE_DIR, AP_AUTH_HEADER_FILE);
+	let handle;
+	try {
+		if (apPlatform() === "win32") {
+			const l = await fsp.lstat(file);
+			if (!l.isFile() || l.isSymbolicLink()) return null;
+			handle = await fsp.open(file, "r");
+		} else {
+			handle = await fsp.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+		}
+		const st = await handle.stat();
+		if (!st.isFile()) return null;
+		if (apPlatform() !== "win32") {
+			const getuid = apGetuid();
+			if (typeof getuid === "function" && st.uid !== getuid.call(process)) return null;
+			if ((st.mode & 0o022) !== 0) return null;
+		}
+		if (st.size === 0) return undefined;
+		if (st.size > 4096) return null;
+		const text = (await handle.readFile({ encoding: "utf8" })).replace(/\r?\n$/, "");
+		if (text === "") return undefined;
+		if (!AUTH_LINE_RE.test(text)) return null;
+		return text.slice("Authorization: ".length);
+	} catch (e) {
+		return e && e.code === "ENOENT" ? undefined : null;
+	} finally {
+		if (handle) await handle.close().catch(() => {});
+	}
+}
+
+function hostHeaderValue(rec) {
+	if (rec.hostHeader !== undefined) return rec.hostHeader;
+	let value = "";
+	try {
+		const cleaned = os
+			.hostname()
+			.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/gu, "")
+			.replace(/[\s\p{Zs}]+/gu, " ")
+			.trim();
+		const capped = Array.from(cleaned).slice(0, 128).join("").trim();
+		value = capped === "" ? "" : encodeURIComponent(capped);
+	} catch {
+		value = "";
+	}
+	rec.hostHeader = value;
+	return value;
+}
+
+function deliveryId(item) {
+	const basis = item.key !== undefined ? item.key : item.evt !== undefined ? item.evt : item.body;
+	return crypto
+		.createHash("sha256")
+		.update(AP_CONFIG.baseUrl + "|" + item.sid + "|" + basis)
+		.digest("hex")
+		.slice(0, 32);
+}
+
+async function post(rec, item) {
+	const headers = {
+		"Content-Type": "application/json",
+		"X-Agent-Type": "opencode",
+		[AP_DELIVERY_HEADER]: deliveryId(item),
+	};
+	if (AP_CONFIG.direct) {
+		const auth = await readAuthHeader();
+		if (auth === null) return false;
+		if (auth !== undefined) headers.Authorization = auth;
+		const host = hostHeaderValue(rec);
+		if (host !== "") headers[AP_HOST_HEADER] = host;
+	}
+	const url = AP_CONFIG.baseUrl + "/api/v1/hooks?event=" + encodeURIComponent(item.name);
+	try {
+		const res = await apFetch()(url, {
+			method: "POST",
+			headers: headers,
+			body: item.body,
+			redirect: "error",
+			signal: AbortSignal.timeout(POST_TIMEOUT_MS),
+		});
+		rec.counters.posts += 1;
+		if (res && res.body && typeof res.body.cancel === "function")
+			await res.body.cancel().catch(() => {});
+		return true;
+	} catch {
+		rec.counters.failedPosts += 1;
+		return false;
+	}
+}
+
+// ---- the exit flush ------------------------------------------------------------
+// A one-shot "opencode run" exits right after the turn ends, and a POST the chain has not started by then is
+// lost. At exit the plugin sends what is still queued with a synchronous curl, within a fixed budget, and only
+// for a directory it already judged "send" in this process (no gate runs at exit). Nothing secret or
+// user-authored is in argv: the body goes on stdin and the credential is read by curl from the key file.
+
+const EXIT_BUDGET_MS = 300;
+const CURL = "/usr/bin/curl";
+
+/** "opencode run" on 1.x, and on 2.x the private "serve --stdio" server that run starts. A long-lived service is neither. */
+function oneShot() {
+	const argv = apArgv();
+	return argv[2] === "run" || (argv[2] === "serve" && argv.indexOf("--stdio") !== -1);
+}
+
+function exitAuthArgs() {
+	// [] : no credential header. null : send nothing. [..] : curl arguments.
+	if (!AP_CONFIG.direct) return [];
+	const home = homeDir();
+	if (!home) return null;
+	const file = path.join(home, AP_AGENTPULSE_DIR, AP_AUTH_HEADER_FILE);
+	let fd;
+	try {
+		fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+		const st = fs.fstatSync(fd);
+		if (!st.isFile()) return null;
+		if (apPlatform() !== "win32") {
+			const getuid = apGetuid();
+			if (typeof getuid === "function" && st.uid !== getuid.call(process)) return null;
+			if ((st.mode & 0o022) !== 0) return null;
+		}
+		if (st.size === 0) return [];
+		if (st.size > 4096) return null;
+		const text = fs.readFileSync(fd, "utf8").replace(/\r?\n$/, "");
+		if (text === "") return [];
+		return AUTH_LINE_RE.test(text) ? ["-H", "@" + file] : null;
+	} catch (e) {
+		return e && e.code === "ENOENT" ? [] : null;
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				// nothing to do
+			}
+		}
+	}
+}
+
+/** True when a rules file or marker of any kind exists (a dangling link, or a path that can't be read, counts). Synchronous. */
+function rulesOrMarkerPresentSync() {
+	const home = homeDir();
+	if (!home) return true;
+	const d = path.join(home, AP_AGENTPULSE_DIR);
+	for (const name of [AP_RULES_FILE, AP_MARKER_FILE]) {
+		try {
+			fs.lstatSync(path.join(d, name));
+			return true;
+		} catch (e) {
+			if (!e || e.code !== "ENOENT") return true;
+		}
+	}
+	return false;
+}
+
+/** True when anything could still forbid a send: the skip variable, or the rules state above. */
+function exitStateForbids() {
+	return apIsSkip(apEnv().AGENTPULSE_SKIP) || rulesOrMarkerPresentSync();
+}
+
+/** A directory the process judged "send" within the gate's time-to-live. */
+function freshVerdict(rec, dir) {
+	if (typeof dir !== "string" || dir === "") return false;
+	const at = rec.verdicts.get(dir);
+	return typeof at === "number" && apNow() - at < GATE_TTL_MS;
+}
+
+function flushAtExit(rec) {
+	try {
+		if (!oneShot()) return;
+		if (exitStateForbids()) return;
+		const deadline = Date.now() + EXIT_BUDGET_MS;
+		const auth = exitAuthArgs();
+		if (auth === null) return;
+		const curl = (AP_TEST && AP_TEST.curl) || CURL;
+		const sentNow = new Set();
+		for (const st of rec.sessions.values()) {
+			for (const item of st.q) {
+				const left = deadline - Date.now();
+				if (left <= 0) return;
+				if (!item.dirs.every((d) => freshVerdict(rec, d))) break;
+				if (item.evt !== undefined) {
+					if (deliveredEvent(rec, item.evt) || sentNow.has(item.evt)) continue;
+					sentNow.add(item.evt);
+				}
+				const args = [
+					"-q",
+					"-sS",
+					"--max-time",
+					String(Math.max(0.05, left / 1000)),
+					"-o",
+					"/dev/null",
+					"-X",
+					"POST",
+					"--data-binary",
+					"@-",
+					"-H",
+					"Content-Type: application/json",
+					"-H",
+					"X-Agent-Type: opencode",
+					"-H",
+					AP_DELIVERY_HEADER + ": " + deliveryId(item),
+					...auth,
+				];
+				if (AP_CONFIG.direct) {
+					const host = hostHeaderValue(rec);
+					if (host !== "") args.push("-H", AP_HOST_HEADER + ": " + host);
+				}
+				args.push(AP_CONFIG.baseUrl + "/api/v1/hooks?event=" + encodeURIComponent(item.name));
+				cp.spawnSync(curl, args, {
+					input: item.body,
+					env: { PATH: "/usr/bin:/bin" },
+					stdio: ["pipe", "ignore", "ignore"],
+					timeout: left,
+				});
+			}
+		}
+	} catch {
+		// the process is exiting
+	}
+}
+
+function hookExit(rec) {
+	if (rec.exitHooked) return;
+	rec.exitHooked = true;
+	if (AP_TEST) AP_TEST.exitFlush = () => flushAtExit(rec);
+	process.on("exit", () => flushAtExit(rec));
+}
+
+// ---- the exclude check --------------------------------------------------------
+
+async function exists(p) {
+	try {
+		await fsp.stat(p);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function isLink(p) {
+	try {
+		return (await fsp.lstat(p)).isSymbolicLink();
+	} catch {
+		return false;
+	}
+}
+
+async function searchable(p) {
+	try {
+		const st = await fsp.stat(p);
+		if (!st.isDirectory()) return false;
+		await fsp.access(p, fs.constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** The exact predicate of the shell gate's step b: nothing to evaluate, send. */
+async function noRulesFastPath(home) {
+	const d = path.join(home, AP_AGENTPULSE_DIR);
+	const rules = path.join(d, AP_RULES_FILE);
+	const marker = path.join(d, AP_MARKER_FILE);
+	if (
+		(await exists(rules)) ||
+		(await isLink(rules)) ||
+		(await exists(marker)) ||
+		(await isLink(marker))
+	)
+		return false;
+	if (await searchable(d)) return true;
+	return !(await exists(d)) && !(await isLink(d)) && (await searchable(home));
+}
+
+async function fileIdentity(p) {
+	try {
+		const st = await fsp.lstat(p);
+		return st.mode + ":" + st.uid + ":" + st.ino + ":" + st.size;
+	} catch {
+		return "-";
+	}
+}
+
+async function fileDigest(p) {
+	try {
+		const st = await fsp.stat(p);
+		if (!st.isFile()) return "-";
+		if (st.size > RULES_MAX_BYTES) return "big";
+		return crypto
+			.createHash("sha256")
+			.update(await fsp.readFile(p))
+			.digest("hex");
+	} catch {
+		return "-";
+	}
+}
+
+async function judge(rec, dir) {
+	if (apIsSkip(apEnv().AGENTPULSE_SKIP)) return false;
+	const home = homeDir();
+	if (!home) return false;
+	if (apPlatform() === "win32") {
+		const d = path.join(home, AP_AGENTPULSE_DIR);
+		const present =
+			(await isLink(path.join(d, AP_RULES_FILE))) || (await exists(path.join(d, AP_RULES_FILE)));
+		const marked =
+			(await isLink(path.join(d, AP_MARKER_FILE))) || (await exists(path.join(d, AP_MARKER_FILE)));
+		return !present && !marked;
+	}
+	if (await noRulesFastPath(home)) return true;
+	if (typeof dir !== "string" || dir === "") return false;
+	const d = path.join(home, AP_AGENTPULSE_DIR);
+	const rulesPath = path.join(d, AP_RULES_FILE);
+	let real;
+	try {
+		real = await fsp.realpath(dir);
+	} catch {
+		return false;
+	}
+	const rulesDigest = await fileDigest(rulesPath);
+	if (rulesDigest === "big") return false;
+	const scriptPath = path.join(d, AP_SCRIPT_FILE);
+	const key = [
+		real,
+		rulesDigest,
+		await fileIdentity(rulesPath),
+		await fileIdentity(path.join(d, AP_MARKER_FILE)),
+		await fileIdentity(scriptPath),
+		await fileDigest(scriptPath),
+		await fileIdentity(d),
+	].join("|");
+	const hit = rec.gateCache.get(key);
+	if (hit && apNow() - hit.at < GATE_TTL_MS) return hit.send;
+	const running = rec.gateInflight.get(key);
+	if (running) return running;
+	const promise = runGate(rec, home, real, key).finally(() => {
+		rec.gateInflight.delete(key);
+	});
+	rec.gateInflight.set(key, promise);
+	return promise;
+}
+
+function acquireGate(rec) {
+	if (rec.gateActive < GATE_LIMIT) {
+		rec.gateActive += 1;
+		return Promise.resolve();
+	}
+	return new Promise((resolve) => {
+		rec.gateWaiters.push(resolve);
+	});
+}
+
+function releaseGate(rec) {
+	const next = rec.gateWaiters.shift();
+	if (next) next();
+	else rec.gateActive -= 1;
+}
+
+async function runGate(rec, home, dir, key) {
+	await acquireGate(rec);
+	try {
+		const env = { HOME: home, PATH: "/usr/bin:/bin" };
+		const skip = apEnv().AGENTPULSE_SKIP;
+		if (typeof skip === "string") env.AGENTPULSE_SKIP = skip;
+		const verdict = await new Promise((resolve) => {
+			let child;
+			let done = false;
+			const handle = {};
+			const finish = (value) => {
+				if (done) return;
+				done = true;
+				clearTimeout(handle.timer);
+				resolve(value);
+			};
+			try {
+				rec.counters.gateSpawns += 1;
+				child = cp.spawn("/bin/sh", ["-c", AP_GATE_PIECE + "exit " + AP_SEND_STATUS], {
+					cwd: dir,
+					env: env,
+					stdio: "ignore",
+					detached: true,
+				});
+			} catch {
+				finish({ send: false, cache: false });
+				return;
+			}
+			handle.timer = setTimeout(() => {
+				rec.counters.gateTimeouts += 1;
+				try {
+					process.kill(-child.pid, "SIGKILL");
+				} catch {
+					try {
+						child.kill("SIGKILL");
+					} catch {
+						// already gone
+					}
+				}
+				finish({ send: false, cache: false });
+			}, GATE_TIMEOUT_MS);
+			if (typeof handle.timer.unref === "function") handle.timer.unref();
+			child.on("error", () => {
+				finish({ send: false, cache: false });
+			});
+			child.on("exit", (code) => {
+				finish({ send: code === AP_SEND_STATUS, cache: typeof code === "number" });
+			});
+		});
+		if (verdict.cache) lruTouch(rec.gateCache, key, { at: apNow(), send: verdict.send }, 256);
+		return verdict.send;
+	} finally {
+		releaseGate(rec);
+	}
+}
+
+// ---- helpers shared by both lines ---------------------------------------------
+
+function envelopeBase(line, version, sid, parent, cwd) {
+	const info = { line: line, protocol: 1 };
+	if (typeof version === "string" && version !== "")
+		info.version = version.length <= 64 ? version : undefined;
+	const env = { session_id: sid, hook_event_name: "", opencode: info };
+	if (cwd) env.cwd = cwd;
+	if (parent) env.parent_session_id = parent;
+	return env;
+}
+
+/** The directories an item is judged by: its own and, for a child, the root session's. */
+function judgedDirs(rec, sid, own) {
+	const root = rootOf(rec, sid);
+	const dirs = [own];
+	if (root !== sid) {
+		const rootInfo = rec.info.get(root);
+		// An instance that subscribed after the root was created never saw its directory; the instance that claimed it did.
+		dirs.push((rootInfo && rootInfo.dir) || rec.claims.get(root));
+	}
+	return dirs;
+}
+
+function rememberRole(st, id, role) {
+	lruTouch(st.roles, id, role, MAP_LIMIT);
+}
+
+function rememberText(st, id, messageID, sid, text) {
+	lruTouch(st.texts, id, { messageID: messageID, sid: sid, text: text }, MAP_LIMIT);
+}
+
+/** The newest assistant text part of one session, when the plugin knows the message is the assistant's. */
+function lastAssistantText(st, sid) {
+	let found;
+	for (const entry of st.texts.values()) {
+		if (entry.sid === sid && st.roles.get(entry.messageID) === "assistant" && entry.text !== "")
+			found = entry.text;
+	}
+	return found === undefined ? undefined : capString(found);
+}
+// ---- OpenCode 2.x ---------------------------------------------------------------
+
+const V2_CLAIM_LIMIT = 4096;
+
+// The event names this plugin forwards. scripts/check-hook-event-parity.ts holds this list to OpenCodeV2Event
+// in src/shared/types.ts, and emit() sends nothing that isn't on it.
+const AP_FORWARDED = [
+	"session.created",
+	"session.inbox.enqueued",
+	"tool.before",
+	"tool.after",
+	"permission.asked",
+	"permission.replied",
+	"session.step.failed",
+	"session.execution.succeeded",
+	"session.execution.failed",
+	"session.execution.interrupted",
+];
+
+export default {
+	id: "agentpulse",
+	async setup(ctx) {
+		const noop = () => {};
+		let rec;
+		try {
+			// The reduced ctx that OpenCode 1.x hands a 2.x-style file has none of these.
+			if (
+				!ctx ||
+				!ctx.event ||
+				typeof ctx.event.subscribe !== "function" ||
+				!ctx.tool ||
+				typeof ctx.tool.hook !== "function" ||
+				!ctx.location
+			) {
+				return noop;
+			}
+			rec = getRecord();
+		} catch {
+			return noop;
+		}
+		const myDir = plainText(ctx.location.directory, 4096);
+		if (!myDir) return noop;
+		const appVersion = plainText(ctx.app && ctx.app.version, 64);
+		rec.instances += 1;
+		hookExit(rec);
+
+		function emit(sid, name, data, opts) {
+			if (AP_FORWARDED.indexOf(name) === -1) return;
+			const root = rootOf(rec, sid);
+			const info = sessionInfo(rec, sid) || {};
+			// A claimed session lives in this instance's directory. One nobody claimed, seen by several instances, has no safe owner: judged as unknown, it is dropped when rules exist.
+			const own =
+				info.dir || (rec.claims.get(sid) === myDir || rec.instances <= 1 ? myDir : undefined);
+			const env = envelopeBase(
+				2,
+				info.version || appVersion,
+				sid,
+				root !== sid ? root : undefined,
+				own,
+			);
+			env.hook_event_name = name;
+			env.data = data;
+			if (opts && opts.last) env.last_assistant_message = opts.last;
+			enqueue(rec, stateOf(rec, root), env, {
+				dirs: judgedDirs(rec, sid, own),
+				evt: opts && opts.evt,
+				key: opts && opts.key,
+			});
+		}
+
+		function isChild(sid) {
+			const info = sessionInfo(rec, sid);
+			return !!(info && info.parent);
+		}
+
+		/** "yes", "no", or "unknown" (no claim and no directory to claim by). */
+		function mine(sid, evDir) {
+			const claimant = rec.claims.get(sid);
+			if (claimant !== undefined) return claimant === myDir ? "yes" : "no";
+			const dir = evDir || (sessionInfo(rec, sid) || {}).dir;
+			if (dir === undefined) return "unknown";
+			if (dir !== myDir) return "no";
+			lruTouch(rec.claims, sid, myDir, V2_CLAIM_LIMIT);
+			return "yes";
+		}
+
+		function handle(ev, run) {
+			const sid = apIdOf(ev.data && ev.data.sessionID);
+			if (!sid) return;
+			const evDir = plainText(ev.location && ev.location.directory, 4096);
+			const verdict = mine(sid, evDir);
+			if (verdict === "yes") {
+				run(sid);
+			} else if (verdict === "unknown") {
+				if (rec.instances > 1) {
+					run(sid);
+					return;
+				}
+				// Nothing says whose session this is: wait briefly for a claim, then drop it.
+				const timer = setTimeout(() => {
+					try {
+						if (mine(sid, evDir) === "yes") run(sid);
+						else rec.counters.droppedClaim += 1;
+					} catch {
+						swallow(rec);
+					}
+				}, HOLD_MS);
+				if (typeof timer.unref === "function") timer.unref();
+			}
+		}
+
+		function errorOf(error) {
+			const e = error || {};
+			return wireError(e.type || e._tag || e.name, e.status);
+		}
+
+		function onEvent(ev) {
+			const data = ev.data || {};
+			const evt = typeof ev.id === "string" ? ev.id : undefined;
+			switch (ev.type) {
+				case "session.created": {
+					const sid = apIdOf(data.sessionID);
+					if (!sid) return;
+					const dir = plainText(
+						(data.location && data.location.directory) || (ev.location && ev.location.directory),
+						4096,
+					);
+					rememberSession(rec, sid, apIdOf(data.parentID), dir, plainText(data.version, 64));
+					handle(ev, () => {
+						emit(sid, "session.created", {}, { evt: evt });
+					});
+					return;
+				}
+				case "session.inbox.enqueued":
+					handle(ev, (sid) => {
+						const item = data.item || {};
+						const text = item.type === "user" && item.payload ? item.payload.text : undefined;
+						if (isChild(sid) || typeof text !== "string" || text === "") return;
+						emit(sid, "session.inbox.enqueued", { text: capString(text) }, { evt: evt });
+					});
+					return;
+				case "session.text.ended":
+					handle(ev, (sid) => {
+						const st = stateOf(rec, rootOf(rec, sid));
+						if (st.lastVerdict === false || typeof data.text !== "string") return;
+						const msg = plainText(data.assistantMessageID, 200) || "msg";
+						rememberRole(st, msg, "assistant");
+						rememberText(st, msg + ":" + String(data.ordinal), msg, sid, capString(data.text));
+					});
+					return;
+				case "session.step.failed":
+				case "session.execution.failed":
+					handle(ev, (sid) => {
+						emit(sid, ev.type, { error: errorOf(data.error) }, { evt: evt });
+					});
+					return;
+				case "session.execution.succeeded":
+					handle(ev, (sid) => {
+						const st = stateOf(rec, rootOf(rec, sid));
+						const last = isChild(sid) ? undefined : lastAssistantText(st, sid);
+						for (const [id, entry] of st.texts) if (entry.sid === sid) st.texts.delete(id);
+						emit(sid, ev.type, {}, { evt: evt, last: last });
+					});
+					return;
+				case "session.execution.interrupted":
+					handle(ev, (sid) => {
+						emit(sid, ev.type, {}, { evt: evt });
+					});
+					return;
+				case "permission.asked":
+					handle(ev, (sid) => {
+						const per = plainText(data.id, 200);
+						if (!per) return;
+						const st = stateOf(rec, rootOf(rec, sid));
+						const callID = callIdOf(data.source && data.source.id);
+						const tuid = callID ? toolUseId(callID, callEntry(st, callID, true)) : "perm:" + per;
+						lruTouch(st.perms, per, tuid, MAP_LIMIT);
+						const out = {
+							request_id: per,
+							tool_use_id: tuid,
+							permission: plainText(data.action, 128) || "unknown",
+						};
+						if (Array.isArray(data.resources)) {
+							out.patterns = data.resources
+								.filter((x) => typeof x === "string" && x.length <= 1024)
+								.slice(0, 32);
+						}
+						emit(sid, ev.type, out, { evt: evt });
+					});
+					return;
+				case "permission.replied":
+					handle(ev, (sid) => {
+						const per = plainText(data.requestID, 200);
+						if (!per) return;
+						const st = stateOf(rec, rootOf(rec, sid));
+						const reply =
+							typeof data.reply === "string" && /^[a-z_-]{1,32}$/.test(data.reply)
+								? data.reply
+								: "unknown";
+						emit(
+							sid,
+							ev.type,
+							{ request_id: per, tool_use_id: st.perms.get(per) || "perm:" + per, reply: reply },
+							{ evt: evt },
+						);
+					});
+					return;
+				default:
+			}
+		}
+
+		/** A tool hook runs on the instance of the session's own project (measured, G15). One that reaches another project's instance is skipped. */
+		function ownTool(sid) {
+			const claimant = rec.claims.get(sid);
+			if (claimant !== undefined) return claimant === myDir;
+			const known = (sessionInfo(rec, sid) || {}).dir;
+			// Nobody claimed it and no directory is known: with rules in force, no instance may take it for its own.
+			if (known === undefined) return !rulesOrMarkerPresentSync();
+			return known === myDir;
+		}
+
+		function toolBefore(event) {
+			const sid = apIdOf(event && event.sessionID);
+			const callID = callIdOf(event && event.id);
+			const tool = plainText(event && event.tool, 128);
+			if (!sid || !callID || !tool) return;
+			if (!ownTool(sid)) return;
+			const entry = callEntry(stateOf(rec, rootOf(rec, sid)), callID, true);
+			const tuid = toolUseId(callID, entry);
+			emit(
+				sid,
+				"tool.before",
+				{ tool: tool, tool_use_id: tuid, input: capInput(event.input) },
+				{ key: tuid + "|before" },
+			);
+		}
+
+		function toolAfter(event) {
+			const sid = apIdOf(event && event.sessionID);
+			const callID = callIdOf(event && event.id);
+			const tool = plainText(event && event.tool, 128);
+			if (!sid || !callID || !tool) return;
+			if (!ownTool(sid)) return;
+			const st = stateOf(rec, rootOf(rec, sid));
+			const entry = callEntry(st, callID, false);
+			entry.closed = true;
+			const tuid = toolUseId(callID, entry);
+			const data = {
+				tool: tool,
+				tool_use_id: tuid,
+				input: capInput(event.input),
+				status: "completed",
+			};
+			if (event.status === "error") {
+				data.status = "error";
+				data.error = errorOf(event.error);
+			} else {
+				const result = event.result || {};
+				const meta = result.metadata || {};
+				const out = result.output;
+				const exit =
+					typeof meta.exit === "number"
+						? meta.exit
+						: out && typeof out === "object"
+							? out.exit
+							: undefined;
+				if (typeof exit === "number" && Number.isInteger(exit)) data.exit_code = exit;
+				let text;
+				if (out && typeof out === "object" && typeof out.output === "string") text = out.output;
+				else if (typeof out === "string") text = out;
+				else if (
+					Array.isArray(result.content) &&
+					result.content[0] &&
+					typeof result.content[0].text === "string"
+				)
+					text = result.content[0].text;
+				if (text !== undefined) data.output = capString(text);
+			}
+			emit(sid, "tool.after", data, { key: tuid + "|after" });
+		}
+
+		const ac = new AbortController();
+		void (async () => {
+			try {
+				for await (const ev of ctx.event.subscribe({ signal: ac.signal })) {
+					try {
+						if (ev && typeof ev.type === "string") onEvent(ev);
+					} catch {
+						swallow(rec);
+					}
+				}
+			} catch {
+				swallow(rec);
+			}
+		})();
+		try {
+			await ctx.tool.hook("execute.before", (event) => {
+				try {
+					toolBefore(event);
+				} catch {
+					swallow(rec);
+				}
+			});
+			await ctx.tool.hook("execute.after", (event) => {
+				try {
+					toolAfter(event);
+				} catch {
+					swallow(rec);
+				}
+			});
+		} catch {
+			swallow(rec);
+		}
+		return () => {
+			try {
+				ac.abort();
+				rec.instances -= 1;
+			} catch {
+				swallow(rec);
+			}
+		};
+	},
+};
+
+AP_OPENCODE_PLUGIN_2_EOF
+}
+# @@AGENTPULSE_OPENCODE_PLUGIN_2@@ END
 
 # F245 (High, codex r2 D38): same grammar as assertValidHookBaseUrl() in
 # src/shared/hook-command.ts — bare http(s)://host[:port] or
@@ -822,6 +3377,250 @@ ap_require_curl_755() {
 }
 # <<< agentpulse-hook-cmd
 
+# The OpenCode installer step (AGEN-141), written by `bun run embed:opencode-plugin`
+# from scripts/opencode-installer/install.sh. Do not edit between the markers.
+# >>> agentpulse-opencode-install
+# The OpenCode step of the shell installers (AGEN-141). This file is a template:
+# `bun run embed:opencode-plugin` fills the @@AP_OC_*@@ lines from
+# src/shared/opencode-plugin.ts and writes the result into setup-hooks.sh and
+# setup-relay.sh (between their markers) and into the /setup.sh template.
+# The host installer provides ap_opencode_plugin_1_template and
+# ap_opencode_plugin_2_template (print the plugin text with its two holes), and
+# ap_write_no_follow / ap_write_private_no_follow / ap_validate_hook_base_url.
+# It never runs `opencode`.
+# In the all-gated layout the force option is remembered in a small file under ~/.agentpulse; only the
+# no-opencode option clears it (and it removes the plugins too). Outside that layout nothing is remembered.
+AP_OC_SDK_MARKER='node_modules/@opencode-ai/plugin/package.json'
+AP_OC_SDK_CONFIG_DEP='"@opencode-ai/plugin"'
+AP_OC_SDK_RULE='sdk_present'
+AP_OC_SDK_CHECK='marker_only'
+AP_OC_FOREIGN_EXTS='js ts'
+AP_OC_FOREIGN_OPENS='yes'
+AP_OC_LAYOUT='v1_flat_v2_dir'
+AP_OC_REMEMBERS_FORCE=0
+AP_OC_HEADER_PREFIX='// agentpulse-opencode-plugin '
+AP_OC_ENTRIES='agentpulse-opencode-1.js|agentpulse-opencode-1.js|1|1|file
+agentpulse-opencode-2|agentpulse-opencode-2/index.js|2|0|dir'
+AP_OC_MSG_SKIP='OpenCode 1.x plugin: not installed. OpenCode 1.x downloads its plugin SDK (@opencode-ai/plugin) into <dir> only when it finds a plugin there, and while it can'\''t reach the package registry each start then waits about 70 seconds. It hasn'\''t downloaded the SDK here, so AgentPulse left its 1.x plugin out. To add it, run setup-hooks.sh --opencode-force while this machine is online: OpenCode 1.x downloads the SDK on its next start, and setup keeps the plugin from then on. If you don'\''t use OpenCode 1.x, nothing is needed.'
+AP_OC_MSG_FORCE='OpenCode 1.x will download its plugin SDK into <dir> on its next start; until it can reach the package registry, each start waits about 70 seconds.'
+AP_OC_NOTE_SERVER_FIRST='Upgrade the AgentPulse server first: an older server stores OpenCode events as ordinary Claude Code sessions.'
+AP_OC_NOTE_SERVICE_SKIP='AGENTPULSE_SKIP set in your shell is not seen by a running OpenCode 2 background service; use an exclude rule (agentpulse exclude add <dir>), or stop the service so it restarts with your environment (opencode service stop).'
+
+# ap_oc_gate_open <sdk> <foreign> <force> <remembered>, each 0 or 1: exit 0 when the gated entries are written.
+ap_oc_gate_open() {
+	[ "$3" = 1 ] && return 0
+	[ "$AP_OC_REMEMBERS_FORCE" = 1 ] && [ "$4" = 1 ] && return 0
+	[ "$AP_OC_SDK_RULE" = sdk_present ] && [ "$1" = 1 ] && return 0
+	[ "$AP_OC_FOREIGN_OPENS" = yes ] && [ "$2" = 1 ] && return 0
+	return 1
+}
+
+# ap_oc_foreign_plugin_present <plugins dir>: a plain file there that is not a dot file, not ours, and has a listed extension.
+ap_oc_foreign_plugin_present() {
+	local p="$1" f n e
+	[ -d "$p" ] || return 1
+	for f in "$p"/*; do
+		[ -f "$f" ] || continue
+		n="${f##*/}"
+		case "$n" in .*|agentpulse-opencode-1.js|agentpulse-opencode-2.js) continue ;; esac
+		for e in $AP_OC_FOREIGN_EXTS; do
+			case "$n" in ?*."$e") return 0 ;; esac
+		done
+	done
+	return 1
+}
+
+# ap_oc_fill <text> <hole> <value>: <text> with every <hole> replaced by <value>, without any pattern or "&" meaning.
+ap_oc_fill() {
+	local t="$1" h="$2" v="$3" out=""
+	while [[ "$t" == *"$h"* ]]; do
+		out="$out${t%%"$h"*}$v"
+		t="${t#*"$h"}"
+	done
+	printf '%s' "$out$t"
+}
+
+ap_oc_first_line_is_ours() {
+	local first=""
+	[ -f "$1" ] || return 1
+	IFS= read -r first < "$1" || true
+	case "$first" in "$AP_OC_HEADER_PREFIX"*) return 0 ;; esac
+	return 1
+}
+
+ap_oc_config_dir() {
+	local v
+	if [ -n "${OPENCODE_CONFIG_DIR:-}" ] && [ "${OPENCODE_CONFIG_DIR#/}" != "$OPENCODE_CONFIG_DIR" ]; then
+		v="$OPENCODE_CONFIG_DIR"
+		while [ "${v%/}" != "$v" ]; do v="${v%/}"; done
+		[ -n "$v" ] || v="/"
+		printf '%s' "$v"
+	elif [ -n "${XDG_CONFIG_HOME:-}" ] && [ "${XDG_CONFIG_HOME#/}" != "$XDG_CONFIG_HOME" ]; then
+		printf '%s' "${XDG_CONFIG_HOME%/}/opencode"
+	else
+		printf '%s' "$HOME/.config/opencode"
+	fi
+}
+
+ap_oc_data_dir() {
+	if [ -n "${XDG_DATA_HOME:-}" ] && [ "${XDG_DATA_HOME#/}" != "$XDG_DATA_HOME" ]; then
+		printf '%s' "${XDG_DATA_HOME%/}/opencode"
+	else
+		printf '%s' "$HOME/.local/share/opencode"
+	fi
+}
+
+# ap_oc_detected: OpenCode is here when `opencode` is on PATH or its config or data folder exists. Nothing is run.
+ap_oc_detected() {
+	local cfg data
+	cfg="$(ap_oc_config_dir)"
+	data="$(ap_oc_data_dir)"
+	command -v opencode >/dev/null 2>&1 || [ -e "$cfg" ] || [ -L "$cfg" ] || [ -e "$data" ]
+}
+
+ap_oc_backup() {
+	local path="$1" dir="$HOME/.agentpulse/backups/opencode" stamp to n=0
+	stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+	( umask 077 && mkdir -p "$dir" ) || return 1
+	to="$dir/$(basename -- "$path").$stamp"
+	# Never overwrite an earlier backup (and never let mv move into one that is a folder).
+	while [ -e "$to" ] || [ -L "$to" ]; do n=$((n + 1)); to="$dir/$(basename -- "$path").$stamp.$n"; done
+	mv -- "$path" "$to" || return 1
+	echo "  ✓ Moved $path to $to"
+}
+
+# ap_oc_remove_ours <plugins dir> <entry> <file> : removes the entry only when line 1 of its file is our header.
+ap_oc_remove_ours() {
+	local plugins="$1" entry="$2" file="$3" top n extra=0
+	top="$plugins/$entry"
+	if [ "$entry" = "$file" ]; then
+		if [ -f "$top" ] && [ ! -L "$top" ] && ap_oc_first_line_is_ours "$top"; then
+			rm -f -- "$top"
+			echo "  ✓ Removed OpenCode plugin $top"
+		fi
+		return 0
+	fi
+	[ -d "$top" ] && [ ! -L "$top" ] || return 0
+	ap_oc_first_line_is_ours "$top/index.js" || return 0
+	for n in "$top"/* "$top"/.[!.]* "$top"/..?*; do
+		[ -e "$n" ] || [ -L "$n" ] || continue
+		[ "${n##*/}" = "index.js" ] || extra=1
+	done
+	if [ "$extra" = 0 ]; then
+		rm -f -- "$top/index.js"
+		rmdir -- "$top"
+		echo "  ✓ Removed OpenCode plugin $top"
+	else
+		ap_oc_backup "$top"
+	fi
+}
+
+# ap_oc_write_entry <plugins dir> <entry> <file> <line 1|2> <base> <direct>: writes (or leaves unchanged) one entry.
+ap_oc_write_entry() {
+	local plugins="$1" entry="$2" file="$3" line="$4" base="$5" direct="$6" text abs top cur
+	text="$(ap_opencode_plugin_${line}_template)"
+	text="$(ap_oc_fill "$text" '@@AP_OPENCODE_BASE_URL@@' "$base")"
+	text="$(ap_oc_fill "$text" '@@AP_OPENCODE_DIRECT@@' "$direct")"
+	case "$text" in
+		"$AP_OC_HEADER_PREFIX"*) ;;
+		*) echo "  ✗ OpenCode: this copy of the installer doesn't carry the plugin text, so nothing was written. Use the installer your AgentPulse server serves." >&2; return 1 ;;
+	esac
+	# $(...) took the trailing line break off; the file ends with exactly one, as buildOpenCodePluginFiles' text does.
+	text="$text"$'\n'
+	abs="$plugins/$file"
+	top="$plugins/$entry"
+	if [ "$entry" != "$file" ] && [ -e "$top" ] && [ ! -d "$top" ]; then
+		ap_oc_backup "$top" || return 1
+	fi
+	mkdir -p -- "$(dirname -- "$abs")"
+	if [ -f "$abs" ] && [ ! -L "$abs" ]; then
+		cur="$(cat -- "$abs"; printf x)"
+		if [ "$cur" = "${text}x" ]; then
+			echo "  ✓ OpenCode plugin unchanged: $abs"
+			return 0
+		fi
+		if ! ap_oc_first_line_is_ours "$abs"; then ap_oc_backup "$abs" || return 1; fi
+	fi
+	printf '%s' "$text" | ap_write_no_follow "$abs" || return 1
+	echo "  ✓ OpenCode plugin → $abs"
+}
+
+# ap_opencode_install <base url> <direct 0|1> <force 0|1> <no-opencode 0|1>
+# Returns 1 only when it refused because something it would touch is a symlink.
+ap_opencode_install() {
+	local base="$1" direct="$2" force="$3" noop="$4"
+	local cfg plugins marker="$HOME/.agentpulse/opencode-force" sdk=0 foreign=0 remembered=0 rule=0 open=0 touched=0 from_env=0
+	local e_name e_file e_line e_gated e_kind p
+	cfg="$(ap_oc_config_dir)"
+	plugins="$cfg/plugins"
+	from_env=0
+	if [ -n "${OPENCODE_CONFIG_DIR:-}" ] && [ "${OPENCODE_CONFIG_DIR#/}" != "$OPENCODE_CONFIG_DIR" ]; then from_env=1; fi
+	if [ "$cfg" = "/" ]; then
+		echo "  ✗ OpenCode: refusing to use / as OpenCode's config folder (check OPENCODE_CONFIG_DIR). No OpenCode plugin was written or removed." >&2
+		return 1
+	fi
+	if [ "$noop" != 1 ] && ! ap_oc_detected; then
+		echo "  - OpenCode not detected (no \`opencode\` on PATH, no config or data folder); nothing written."
+		return 0
+	fi
+	if [ "$noop" != 1 ]; then
+		ap_validate_hook_base_url "$base" || return 1
+		case "$base" in *'"'*|*'\'*|*'@@'*|*$'\n'*|*$'\r'*) echo "invalid AgentPulse base URL for the OpenCode plugin" >&2; return 1 ;; esac
+	fi
+	# Links first: nothing below writes or removes anything unless none of these is a link.
+	while IFS='|' read -r e_name e_file e_line e_gated e_kind; do
+		if [ -L "$plugins/$e_name" ]; then
+			echo "  ✗ OpenCode: refusing to touch $plugins/$e_name: it is a symlink. No OpenCode plugin was written or removed." >&2
+			return 1
+		fi
+	done <<< "$AP_OC_ENTRIES"
+	for p in "$cfg" "$plugins"; do
+		if [ -L "$p" ]; then
+			echo "  ✗ OpenCode: refusing to touch $p: it is a symlink. No OpenCode plugin was written or removed." >&2
+			return 1
+		fi
+	done
+	if [ "$noop" = 1 ]; then
+		while IFS='|' read -r e_name e_file e_line e_gated e_kind; do
+				ap_oc_remove_ours "$plugins" "$e_name" "$e_file"
+		done <<< "$AP_OC_ENTRIES"
+		echo "  - OpenCode plugins removed (no-opencode)."
+		return 0
+	fi
+	# What setup looks at, read-only; links are followed on purpose.
+	if [ -f "$cfg/$AP_OC_SDK_MARKER" ]; then
+		sdk=1
+		if [ "$AP_OC_SDK_CHECK" != marker_only ]; then
+			if [ -f "$cfg/package.json" ] && grep -qF -- "$AP_OC_SDK_CONFIG_DEP" "$cfg/package.json" 2>/dev/null; then :; else sdk=0; fi
+		fi
+	fi
+	ap_oc_foreign_plugin_present "$plugins" && foreign=1
+	[ "$force" = 1 ] || force=0
+	ap_oc_gate_open "$sdk" "$foreign" 0 0 && rule=1
+	ap_oc_gate_open "$sdk" "$foreign" "$force" "$remembered" && open=1
+	while IFS='|' read -r e_name e_file e_line e_gated e_kind; do
+		[ -n "$e_name" ] || continue
+		if [ "$e_gated" = 1 ] && [ "$open" = 0 ]; then
+			ap_oc_remove_ours "$plugins" "$e_name" "$e_file"
+		else
+			ap_oc_write_entry "$plugins" "$e_name" "$e_file" "$e_line" "$base" "$direct" || return 1
+			touched=1
+		fi
+	done <<< "$AP_OC_ENTRIES"
+	if [ "$from_env" = 1 ]; then echo "  - OPENCODE_CONFIG_DIR is set; installing into $cfg/plugins."; fi
+	if [ "$open" = 0 ]; then
+		echo "  $(ap_oc_fill "$AP_OC_MSG_SKIP" '<dir>' "$cfg")"
+	elif [ "$force" = 1 ] && [ "$rule" = 0 ]; then
+		echo "  $(ap_oc_fill "$AP_OC_MSG_FORCE" '<dir>' "$cfg")"
+	fi
+	if [ "$touched" = 1 ]; then
+		echo "  $AP_OC_NOTE_SERVER_FIRST"
+		echo "  $AP_OC_NOTE_SERVICE_SKIP"
+	fi
+	return 0
+}
+# <<< agentpulse-opencode-install
+
 # --statusline: installs statusline.sh from next to this installer as
 # ~/.claude/statusline-agentpulse.sh and enables it only when settings.json
 # has no statusLine yet; someone else's is never replaced.
@@ -1111,9 +3910,42 @@ elif [[ "$AGENT_TYPE" == "copilot_cli" ]]; then
   fi
   echo "After editing ~/.agentpulse/exclude by hand, run: agentpulse exclude check"
 
+elif [[ "$AGENT_TYPE" == "opencode" ]]; then
+  # AGEN-141: OpenCode loads plugins from its config folder; nothing here runs `opencode`.
+  if [[ "$SCOPE" == "project" ]]; then
+    echo "Error: --agent opencode --scope project is not supported. AgentPulse installs OpenCode's plugins in its global config folder only." >&2
+    exit 1
+  fi
+  if [[ "$NO_OPENCODE" != "1" ]] && ! ap_oc_detected; then
+    echo "Error: OpenCode not detected (no 'opencode' on PATH, no OpenCode config or data folder). Install OpenCode first, then re-run this installer." >&2
+    exit 1
+  fi
+  echo "Configuring OpenCode plugins..."
+  if [[ "$NO_OPENCODE" != "1" ]]; then
+    if [[ -n "$AGENTPULSE_KEY" ]]; then
+      AP_AUTH_HEADER_FILE="$HOME/.agentpulse/hook-auth-header"
+      printf -v AP_AUTH_HEADER_CONTENT 'Authorization: Bearer %s\n' "${AGENTPULSE_KEY}"
+      ap_write_private_no_follow "$AP_AUTH_HEADER_FILE" "$AP_AUTH_HEADER_CONTENT" || exit 1
+    fi
+    ap_install_exclude_script
+  fi
+  ap_opencode_install "$AGENTPULSE_URL" "1" "$OPENCODE_FORCE" "$NO_OPENCODE" || exit 1
+
 else
-  echo "Error: Unknown agent type '$AGENT_TYPE'. Use 'claude_code', 'codex_cli', or 'copilot_cli'."
+  echo "Error: Unknown agent type '$AGENT_TYPE'. Use 'claude_code', 'codex_cli', 'copilot_cli', or 'opencode'."
   exit 1
+fi
+
+# OpenCode alongside the agent just configured (AGEN-141): set up when found, removed on --no-opencode.
+if [[ "$AGENT_TYPE" != "opencode" ]] && { [[ "$NO_OPENCODE" == "1" ]] || ap_oc_detected; }; then
+  if [[ "$NO_OPENCODE" != "1" ]]; then
+    if [[ -n "$AGENTPULSE_KEY" ]]; then
+      printf -v AP_AUTH_HEADER_CONTENT 'Authorization: Bearer %s\n' "${AGENTPULSE_KEY}"
+      ap_write_private_no_follow "$HOME/.agentpulse/hook-auth-header" "$AP_AUTH_HEADER_CONTENT" || exit 1
+    fi
+    ap_install_exclude_script
+  fi
+  ap_opencode_install "$AGENTPULSE_URL" "1" "$OPENCODE_FORCE" "$NO_OPENCODE" || true
 fi
 
 # ─── Environment Variable (D37/F243) ─────────────────────────────────

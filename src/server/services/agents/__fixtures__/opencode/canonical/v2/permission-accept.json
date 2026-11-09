@@ -1,0 +1,47 @@
+{
+	"line": "v2",
+	"name": "permission-accept",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_e409991b7ffeGR5JG6fOri4pYa",
+				"hook_event_name": "PreToolUse",
+				"cwd": "/scratch/proj/v2-perm",
+				"tool_name": "write",
+				"tool_input": { "path": "/scratch/proj/v2-perm/perm.txt", "content": "perm\n" },
+				"tool_use_id": "call_stub_perm_1",
+				"provider_event_name": "tool.before",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PreToolUse", "tool_use_id": "call_stub_perm_1" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409991b7ffeGR5JG6fOri4pYa",
+				"hook_event_name": "PermissionRequest",
+				"cwd": "/scratch/proj/v2-perm",
+				"tool_name": "edit",
+				"tool_input": { "patterns": ["perm.txt"] },
+				"tool_use_id": "call_stub_perm_1",
+				"provider_event_name": "permission.asked",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PermissionRequest", "tool_use_id": "call_stub_perm_1" }
+		},
+		{ "expected": { "session_id": "", "hook_event_name": "" }, "semantic": { "event": "drop" } },
+		{
+			"expected": {
+				"session_id": "ses_e409991b7ffeGR5JG6fOri4pYa",
+				"hook_event_name": "PostToolUse",
+				"cwd": "/scratch/proj/v2-perm",
+				"tool_name": "write",
+				"tool_input": { "path": "/scratch/proj/v2-perm/perm.txt", "content": "perm\n" },
+				"tool_use_id": "call_stub_perm_1",
+				"tool_response": "Created file successfully: perm.txt",
+				"provider_event_name": "tool.after",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PostToolUse", "tool_use_id": "call_stub_perm_1" }
+		}
+	]
+}

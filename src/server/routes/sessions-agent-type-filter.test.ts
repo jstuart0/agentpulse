@@ -57,6 +57,21 @@ describe("GET /sessions?agent_type=", () => {
 		expect(body.sessions.map((s) => s.sessionId)).toEqual(["s2"]);
 	});
 
+	test("opencode agent_type filters results (AGEN-141)", async () => {
+		await getDb()
+			.insert(sessions)
+			.values([
+				{ sessionId: "s1", displayName: "s1", agentType: "claude_code", status: "active" },
+				{ sessionId: "s2", displayName: "s2", agentType: "opencode", status: "active" },
+			])
+			.execute();
+
+		const res = await app.request("/api/v1/sessions?agent_type=opencode");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { sessions: Array<{ sessionId: string }> };
+		expect(body.sessions.map((s) => s.sessionId)).toEqual(["s2"]);
+	});
+
 	test("known agent_type still filters results", async () => {
 		await getDb()
 			.insert(sessions)

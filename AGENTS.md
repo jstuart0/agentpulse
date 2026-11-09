@@ -1,6 +1,6 @@
 # AGENTS.md - AgentPulse
 
-AgentPulse is the command center for AI coding agents across all your machines. It monitors, orchestrates, and manages Claude Code and Codex CLI sessions from a single dashboard with chat-style prompt history, session notes, templates, managed launches, and remote access from any device. GitHub Copilot CLI is also observed (dedicated hooks, badge, "Observed only" hint) but can't be launched or steered — see `LAUNCHABLE_AGENT_TYPES` below.
+AgentPulse is the command center for AI coding agents across all your machines. It monitors, orchestrates, and manages Claude Code and Codex CLI sessions from a single dashboard with chat-style prompt history, session notes, templates, managed launches, and remote access from any device. GitHub Copilot CLI (dedicated hooks) and OpenCode 1.x/2.x (a plugin per line, `agent_type: "opencode"`) are also observed (badge, "Observed only" hint) but can't be launched or steered — see `LAUNCHABLE_AGENT_TYPES` below.
 
 ## Tech Stack
 
@@ -86,8 +86,8 @@ telemetry-worker/ Cloudflare Worker for anonymous telemetry collection
 
 ### Event Flow
 ```
-Agent (Claude Code / Codex / Copilot CLI)
-  → HTTP hook (Claude Code) or detached command hook (Codex, Copilot) — async, never blocks agent
+Agent (Claude Code / Codex / Copilot CLI / OpenCode)
+  → HTTP hook (Claude Code), detached command hook (Codex, Copilot) or in-process plugin (OpenCode) — async, never blocks agent
   → localhost relay (if remote setup)
   → POST /api/v1/hooks
   → Event Processor (detect agent type, upsert session, store event)
@@ -129,7 +129,7 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 - `isWorking` toggles on UserPromptSubmit/PreToolUse (true) and Stop (false)
 - Timeline events are filtered **client-side** in session detail UI (not server-side)
 - Supervisor writes are ownership-checked (`session-ownership.ts`) — a supervisor acting on a session it doesn't own gets `403 { error: "session_not_owned" }`
-- Three observed agent types: `claude_code`, `codex_cli`, `copilot_cli`. `LAUNCHABLE_AGENT_TYPES` (`src/shared/constants.ts`) is `["claude_code", "codex_cli"]` — Copilot CLI is observe-only, use `isLaunchable()` to check. Hook-event lists (Claude/Codex/Copilot: 16/12/10 events) must stay in parity across setup scripts and `SetupPage.tsx`; `bun run check:hook-event-parity` and `check:agent-type-parity` (both chained into `check:architecture`) enforce it.
+- Four observed agent types: `claude_code`, `codex_cli`, `copilot_cli`, `opencode`. `LAUNCHABLE_AGENT_TYPES` (`src/shared/constants.ts`) is `["claude_code", "codex_cli"]` — Copilot CLI and OpenCode are observe-only, use `isLaunchable()` (or `isObservedOnly()`) to check. OpenCode reports through two plugins (`scripts/opencode-plugin/`: 1.x as `plugins/agentpulse-opencode-1.js`, 2.x as the folder `plugins/agentpulse-opencode-2/`) that forward OpenCode's own event names in an envelope the server maps; `AGENTPULSE_SKIP` isn't seen by a running 2.x service. Hook-event lists (Claude/Codex/Copilot/OpenCode 1.x/OpenCode 2.x: 16/12/10/8/10 events) must stay in parity across setup scripts and `SetupPage.tsx`; `bun run check:hook-event-parity` and `check:agent-type-parity` (both chained into `check:architecture`) enforce it.
 
 ## Core API Endpoints
 
@@ -185,7 +185,7 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 - `GET/POST/DELETE /api/v1/api-keys` — Manage API keys (scopes: `ingest`, `observe`, `respond`, `manage`)
 - `WS /api/v1/ws` — Real-time event stream
 
-**MCP:** `agentpulse mcp serve` exposes this API over the Model Context Protocol for external agents (Claude Code, Codex CLI). `list_sessions` accepts `agent_type: "copilot_cli"` for filtering; orchestration tools (launch/template) accept only `claude_code`/`codex_cli`. See `docs/MCP.md` for the full tool catalog and scope model.
+**MCP:** `agentpulse mcp serve` exposes this API over the Model Context Protocol for external agents (Claude Code, Codex CLI). `list_sessions` accepts `agent_type: "copilot_cli"` or `"opencode"` for filtering; orchestration tools (launch/template) accept only `claude_code`/`codex_cli`. See `docs/MCP.md` for the full tool catalog and scope model.
 
 ## Feature parity across clients
 

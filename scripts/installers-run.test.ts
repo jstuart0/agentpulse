@@ -487,6 +487,58 @@ describe("an ingest+observe key installs the relay, statusline and service", () 
 	);
 
 	test(
+		"AGEN-141: a stub opencode on PATH and its SDK present → the plugins are written through the relay (never run opencode); --opencode-force, --no-opencode and a cold folder go through the real arg loop",
+		async () => {
+			const { buildOpenCodePluginFiles } = await import("../src/shared/opencode-plugin.js");
+			const home = await newHome();
+			const port = await freePort();
+			const stubs = join(root, `opencode-stub-${relative(root, home)}`);
+			await mkdir(stubs, { recursive: true });
+			await writeFile(
+				join(stubs, "opencode"),
+				'#!/bin/sh\necho ran > "$HOME/opencode-was-run"\nexit 1\n',
+			);
+			await chmod(join(stubs, "opencode"), 0o755);
+			const cfg = join(home, ".config", "opencode");
+			const plugins = join(cfg, "plugins");
+			const args = ["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)];
+			// The served installer is the one that carries the plugin text.
+			await serveInstallerBody();
+			const served = {
+				uname: "Darwin" as const,
+				pathPrefix: stubs,
+				pipeFrom: `${authUrl}/setup-relay.sh`,
+			};
+			const want = buildOpenCodePluginFiles({ baseUrl: `http://localhost:${port}`, direct: false });
+			const names = want.map((f) => f.name);
+
+			// Cold: only the entry no 1.x counts is written, and the skip line names this installer's own spelling.
+			await mkdir(cfg, { recursive: true });
+			const cold = await runInstaller(home, args, served);
+			expect(cold.code).toBe(0);
+			expect(cold.out).toContain("| bash -s -- --opencode-force");
+			expect(await listTree(plugins)).toEqual([
+				"agentpulse-opencode-2",
+				"agentpulse-opencode-2/index.js",
+			]);
+
+			// Forced through the real arg loop: both entries, byte for byte.
+			const forced = await runInstaller(home, [...args, "--opencode-force"], served);
+			expect(forced.code).toBe(0);
+			for (const f of want) expect(await readFile(join(plugins, f.name), "utf-8")).toBe(f.text);
+			expect(forced.out).toContain("Upgrade the AgentPulse server first");
+			expect(names.length).toBe(2);
+
+			// Removed again.
+			const gone = await runInstaller(home, [...args, "--no-opencode"], served);
+			expect(gone.code).toBe(0);
+			expect(await listTree(plugins)).toEqual([]);
+			await expect(readFile(join(home, "opencode-was-run"))).rejects.toThrow();
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
 		"Linux: a systemd user unit that starts the relay with --config and no key",
 		async () => {
 			const home = await newHome();

@@ -1,0 +1,1241 @@
+{
+	"line": "v1",
+	"version": "1.19.5",
+	"scenario": "runs",
+	"prompt": "READMISSING now",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"counter": 1,
+			"ctxKeys": [
+				"client",
+				"project",
+				"worktree",
+				"directory",
+				"experimental_workspace",
+				"serverUrl",
+				"$"
+			],
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"worktree": "/",
+			"serverUrl": "http://localhost:PORT/",
+			"skip": null,
+			"argv": ["bun", "/$bunfs/root/opencode", "run", "READMISSING now"],
+			"cwd": "/scratch/proj/v1-failed-tool-error"
+		},
+		{
+			"kind": "event",
+			"t": 73,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64cf27001DzQPKFLzna6cOF",
+				"type": "session.created",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"id": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"slug": "nimble-island",
+						"version": "1.19.5",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-failed-tool-error",
+						"path": "scratch/proj/v1-failed-tool-error",
+						"title": "New session - 2026-11-09T08:20:17.318Z",
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212417318,
+							"updated": 1794212417318
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 89,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64cf39001QX36x7Fnrgffz1",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"id": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"slug": "nimble-island",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-failed-tool-error",
+						"path": "scratch/proj/v1-failed-tool-error",
+						"title": "New session - 2026-11-09T08:20:17.318Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212417318,
+							"updated": 1794212417336
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "chat.message",
+			"t": 91,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"skip": null,
+			"i": {
+				"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX"
+			},
+			"o": {
+				"message": {
+					"id": "msg_1bf64cf38001Q89qATKj58wn88",
+					"role": "user",
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"time": {
+						"created": 1794212417336
+					},
+					"agent": "build",
+					"model": {
+						"providerID": "stub",
+						"modelID": "stub-model"
+					}
+				},
+				"parts": [
+					{
+						"type": "text",
+						"text": "\"READMISSING now\"",
+						"messageID": "msg_1bf64cf38001Q89qATKj58wn88",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"id": "prt_1bf64cf3c001rtxTf3w5kMhiao"
+					}
+				]
+			}
+		},
+		{
+			"kind": "event",
+			"t": 93,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64cf3d001VY8n3GuWYRvhu9",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"id": "msg_1bf64cf38001Q89qATKj58wn88",
+						"role": "user",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"time": {
+							"created": 1794212417336
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 94,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64cf3e001gBrdY9n2ItbqSz",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"part": {
+						"type": "text",
+						"text": "\"READMISSING now\"",
+						"messageID": "msg_1bf64cf38001Q89qATKj58wn88",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"id": "prt_1bf64cf3c001rtxTf3w5kMhiao"
+					},
+					"time": 1794212417342
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 95,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64cf40001Sgb52BfuNjwavi",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"id": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"slug": "nimble-island",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-failed-tool-error",
+						"path": "scratch/proj/v1-failed-tool-error",
+						"title": "New session - 2026-11-09T08:20:17.318Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212417318,
+							"updated": 1794212417343
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 98,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64cf43001UDTk2eSuTmNErn",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 474,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d0ba001DCjJ4ERU6qjr21",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"id": "msg_1bf64d0ba001rvTvqbWFDCLWW2",
+						"parentID": "msg_1bf64cf38001Q89qATKj58wn88",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-failed-tool-error",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212417722
+						},
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 496,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d0d0001UM2GN1Asj0Z02H",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"id": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"slug": "nimble-island",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-failed-tool-error",
+						"path": "scratch/proj/v1-failed-tool-error",
+						"title": "New session - 2026-11-09T08:20:17.318Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212417318,
+							"updated": 1794212417743
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 496,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d0d1001P32VsVje0Nj5x8",
+				"type": "session.diff",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"diff": []
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 497,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d0d20014rlpjqjYVC90xf",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"role": "user",
+						"time": {
+							"created": 1794212417336
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						},
+						"id": "msg_1bf64cf38001Q89qATKj58wn88",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"summary": {
+							"diffs": []
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1130,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d34a001uFdJ9OnEyoBnMr",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1429,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d4750017ANxtohAKS1mbT",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"id": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"slug": "nimble-island",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-failed-tool-error",
+						"path": "scratch/proj/v1-failed-tool-error",
+						"title": "Stub title",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212417318,
+							"updated": 1794212417743
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1432,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d478001fNsOY3olffD4DP",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"part": {
+						"id": "prt_1bf64d478001TAN8xu4crnluMM",
+						"messageID": "msg_1bf64d0ba001rvTvqbWFDCLWW2",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"type": "step-start"
+					},
+					"time": 1794212418680
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1433,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d47900158kKuEf5Ehyruy",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"part": {
+						"id": "prt_1bf64d479001L4Fi3dFIpKyLuE",
+						"messageID": "msg_1bf64d0ba001rvTvqbWFDCLWW2",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"type": "tool",
+						"tool": "read",
+						"callID": "call_stub_read_1",
+						"state": {
+							"status": "pending",
+							"input": {},
+							"raw": ""
+						}
+					},
+					"time": 1794212418681
+				}
+			}
+		},
+		{
+			"kind": "tool.execute.before",
+			"t": 1435,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"skip": null,
+			"i": {
+				"tool": "read",
+				"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+				"callID": "call_stub_read_1"
+			},
+			"o": {
+				"args": {
+					"filePath": "/scratch/proj/v1-failed-tool-error/missing.txt",
+					"path": "/scratch/proj/v1-failed-tool-error/missing.txt"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1436,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d47d001VaxFhTVRfy9Pyx",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"part": {
+						"type": "tool",
+						"tool": "read",
+						"callID": "call_stub_read_1",
+						"state": {
+							"status": "running",
+							"input": {
+								"filePath": "/scratch/proj/v1-failed-tool-error/missing.txt",
+								"path": "/scratch/proj/v1-failed-tool-error/missing.txt"
+							},
+							"time": {
+								"start": 1794212418685
+							}
+						},
+						"id": "prt_1bf64d479001L4Fi3dFIpKyLuE",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"messageID": "msg_1bf64d0ba001rvTvqbWFDCLWW2"
+					},
+					"time": 1794212418685
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1439,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d480001NfK39uN0CAdUTQ",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"part": {
+						"type": "tool",
+						"tool": "read",
+						"callID": "call_stub_read_1",
+						"state": {
+							"status": "error",
+							"input": {
+								"filePath": "/scratch/proj/v1-failed-tool-error/missing.txt",
+								"path": "/scratch/proj/v1-failed-tool-error/missing.txt"
+							},
+							"error": "File not found: /scratch/proj/v1-failed-tool-error/missing.txt",
+							"time": {
+								"start": 1794212418685,
+								"end": 1794212418687
+							}
+						},
+						"id": "prt_1bf64d479001L4Fi3dFIpKyLuE",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"messageID": "msg_1bf64d0ba001rvTvqbWFDCLWW2"
+					},
+					"time": 1794212418688
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1441,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d481001pKEtvYMmgVs9aD",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"part": {
+						"id": "prt_1bf64d4810013fIn64zki4bZHE",
+						"reason": "tool-calls",
+						"messageID": "msg_1bf64d0ba001rvTvqbWFDCLWW2",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"type": "step-finish",
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"cost": 0
+					},
+					"time": 1794212418689
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1442,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d482001EqN9TFMgBFe6V3",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"id": "msg_1bf64d0ba001rvTvqbWFDCLWW2",
+						"parentID": "msg_1bf64cf38001Q89qATKj58wn88",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-failed-tool-error",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212417722
+						},
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"finish": "tool-calls"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1443,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d4840019ofESIkn9MSXjM",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"id": "msg_1bf64d0ba001rvTvqbWFDCLWW2",
+						"parentID": "msg_1bf64cf38001Q89qATKj58wn88",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-failed-tool-error",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212417722,
+							"completed": 1794212418692
+						},
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"finish": "tool-calls"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1443,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d484002nhqHXZ5iubRH2n",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1444,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d485001wP78dYtqukOaYK",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"id": "msg_1bf64d485001MTx1EosnMxxQV2",
+						"parentID": "msg_1bf64cf38001Q89qATKj58wn88",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-failed-tool-error",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212418693
+						},
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1448,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d488001bPDELjrm8FOozi",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"id": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"slug": "nimble-island",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-failed-tool-error",
+						"path": "scratch/proj/v1-failed-tool-error",
+						"title": "Stub title",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212417318,
+							"updated": 1794212418695
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1448,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d489001cgBrhTVn7GMn4L",
+				"type": "session.diff",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"diff": []
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1449,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d489002vzaJy6jQZzbdfQ",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"role": "user",
+						"time": {
+							"created": 1794212417336
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						},
+						"summary": {
+							"diffs": []
+						},
+						"id": "msg_1bf64cf38001Q89qATKj58wn88",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1451,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d48c001tbW5KXatUqTb3G",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1455,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d48f001YQ0DZqS2hj4cNe",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"part": {
+						"id": "prt_1bf64d48f001fauX3voQYeyplx",
+						"messageID": "msg_1bf64d485001MTx1EosnMxxQV2",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"type": "step-start"
+					},
+					"time": 1794212418703
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1456,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d490001Phu0B93KfT5Uf1",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"part": {
+						"id": "prt_1bf64d490001Taa93pz3mlRYlG",
+						"messageID": "msg_1bf64d485001MTx1EosnMxxQV2",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"type": "text",
+						"text": "",
+						"time": {
+							"start": 1794212418704
+						}
+					},
+					"time": 1794212418704
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1456,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d491001f0hTOq8B5rNwVX",
+				"type": "message.part.delta",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"messageID": "msg_1bf64d485001MTx1EosnMxxQV2",
+					"partID": "prt_1bf64d490001Taa93pz3mlRYlG",
+					"field": "text",
+					"delta": "STUB-DONE after tool"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1457,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d4910029nRpk4owyIIA6o",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"part": {
+						"id": "prt_1bf64d490001Taa93pz3mlRYlG",
+						"messageID": "msg_1bf64d485001MTx1EosnMxxQV2",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"type": "text",
+						"text": "STUB-DONE after tool",
+						"time": {
+							"start": 1794212418704,
+							"end": 1794212418705
+						}
+					},
+					"time": 1794212418705
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1458,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d492001lWc7EyHGCmT7qv",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"part": {
+						"id": "prt_1bf64d492001UsDenRb0Q67arA",
+						"reason": "stop",
+						"messageID": "msg_1bf64d485001MTx1EosnMxxQV2",
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"type": "step-finish",
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"cost": 0
+					},
+					"time": 1794212418706
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1458,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d493001vWw4wwVtuTQFqr",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"id": "msg_1bf64d485001MTx1EosnMxxQV2",
+						"parentID": "msg_1bf64cf38001Q89qATKj58wn88",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-failed-tool-error",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212418693
+						},
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"finish": "stop"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1459,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d494001efSChNPzoDRiG0",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"info": {
+						"id": "msg_1bf64d485001MTx1EosnMxxQV2",
+						"parentID": "msg_1bf64cf38001Q89qATKj58wn88",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-failed-tool-error",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212418693,
+							"completed": 1794212418708
+						},
+						"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+						"finish": "stop"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1459,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d494002Ybue2VS74UKQ6m",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1461,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d496001CQ04ZmXy4xOZpA",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX",
+					"status": {
+						"type": "idle"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1461,
+			"tag": "A",
+			"instance": "rz6y7j",
+			"directory": "/scratch/proj/v1-failed-tool-error",
+			"event": {
+				"id": "evt_1bf64d496002R6YqERNSKFRtJ3",
+				"type": "session.idle",
+				"properties": {
+					"sessionID": "ses_e409b30d9ffeYvscp7Jpmw0OjX"
+				}
+			}
+		},
+		{
+			"kind": "process.exit",
+			"t": 1471,
+			"tag": "A"
+		}
+	]
+}

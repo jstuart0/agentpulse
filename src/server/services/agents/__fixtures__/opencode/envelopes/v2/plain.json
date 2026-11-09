@@ -1,0 +1,31 @@
+{
+	"line": "v2",
+	"name": "plain",
+	"envelopes": [
+		{
+			"session_id": "ses_e409ae358ffeA525XpuAwGG4NA",
+			"hook_event_name": "session.inbox.enqueued",
+			"opencode": {
+				"line": 2,
+				"protocol": 1,
+				"version": "2.2.6"
+			},
+			"cwd": "/scratch/proj/v2-plain",
+			"data": {
+				"text": "PLAIN hello"
+			}
+		},
+		{
+			"session_id": "ses_e409ae358ffeA525XpuAwGG4NA",
+			"hook_event_name": "session.execution.succeeded",
+			"opencode": {
+				"line": 2,
+				"protocol": 1,
+				"version": "2.2.6"
+			},
+			"cwd": "/scratch/proj/v2-plain",
+			"last_assistant_message": "STUB-PLAIN reply",
+			"data": {}
+		}
+	]
+}

@@ -56,6 +56,11 @@
  * discarded. Undo" row with its focus rules, the gone card as its own component with the "Session deleted"
  * wording, the timeout and late-accept copy, the full-word draft age) measured SessionDetailPage 38,477 (+824)
  * and index 119,532 (+65). The page limit moved to 38,800 (measured + about 320); index stays at 119,800.
+ * AGEN-141 (OpenCode, observed only): the agent type's registration and copy took index to 118,528 (+144 on 118,384),
+ * so its limit moved to 119,000. The Setup page gained an OpenCode toggle and a lazy chunk, OpenCodePluginFiles, that
+ * carries both plugin texts (the only chunk that does; setup-steps.ts and the index chunk's static graph import
+ * nothing of them, held by setup-steps.test.ts). Measured SetupPage 9,774 (a new budget entry) and
+ * OpenCodePluginFiles 23,196 (the two plugin texts, which a person who never picks OpenCode never fetches).
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -85,6 +90,8 @@ export const BUDGETS: Budget[] = [
 	{ chunk: "SessionTakeoverCard", maxGzip: 8_200, measured: 7_904 },
 	{ chunk: "DashboardPage", maxGzip: 27_200, measured: 26_341 },
 	{ chunk: "index", maxGzip: 119_800, measured: 119_532 },
+	{ chunk: "SetupPage", maxGzip: 10_300, measured: 9_774 },
+	{ chunk: "OpenCodePluginFiles", maxGzip: 24_000, measured: 23_905 },
 ];
 
 /** A missing chunk fails: a renamed chunk must not silently escape its budget. `scale` shrinks every limit (the self-test). */

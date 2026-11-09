@@ -1,0 +1,819 @@
+{
+	"line": "v1",
+	"version": "1.19.5",
+	"scenario": "serve",
+	"prompt": "SLOWCALL abort me",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "36idgx",
+			"counter": 1,
+			"ctxKeys": [
+				"client",
+				"project",
+				"worktree",
+				"directory",
+				"experimental_workspace",
+				"serverUrl",
+				"$"
+			],
+			"directory": "/scratch/proj/v1-abort",
+			"worktree": "/",
+			"serverUrl": "http://127.0.0.1:PORT/",
+			"skip": null,
+			"argv": [
+				"bun",
+				"/$bunfs/root/opencode",
+				"serve",
+				"--port",
+				"25356",
+				"--hostname",
+				"127.0.0.1"
+			],
+			"cwd": "/scratch/proj/v1-abort"
+		},
+		{
+			"kind": "event",
+			"t": 7,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf661963001wVE3nBG41mwzbu",
+				"type": "session.created",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"info": {
+						"id": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"slug": "silent-knight",
+						"version": "1.19.5",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-abort",
+						"path": "scratch/proj/v1-abort",
+						"title": "New session - 2026-11-09T08:21:41.858Z",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212501858,
+							"updated": 1794212501858
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1451,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf661f080015h226nG7KzmZGa",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"info": {
+						"id": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"slug": "silent-knight",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-abort",
+						"path": "scratch/proj/v1-abort",
+						"title": "New session - 2026-11-09T08:21:41.858Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212501858,
+							"updated": 1794212503304
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "chat.message",
+			"t": 1452,
+			"tag": "A",
+			"instance": "36idgx",
+			"skip": null,
+			"i": {
+				"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr"
+			},
+			"o": {
+				"message": {
+					"id": "msg_1bf661f08001uPjpS153q1Yx5f",
+					"role": "user",
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"time": {
+						"created": 1794212503304
+					},
+					"agent": "build",
+					"model": {
+						"providerID": "stub",
+						"modelID": "stub-model"
+					}
+				},
+				"parts": [
+					{
+						"type": "text",
+						"text": "SLOWCALL abort me",
+						"messageID": "msg_1bf661f08001uPjpS153q1Yx5f",
+						"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"id": "prt_1bf661f0b001Kck7RdVxBhk3kC"
+					}
+				]
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1453,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf661f0c001iJuMuQv3NQ861c",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"info": {
+						"id": "msg_1bf661f08001uPjpS153q1Yx5f",
+						"role": "user",
+						"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"time": {
+							"created": 1794212503304
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1455,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf661f0d001vXWWJnln01P1Hv",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"part": {
+						"type": "text",
+						"text": "SLOWCALL abort me",
+						"messageID": "msg_1bf661f08001uPjpS153q1Yx5f",
+						"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"id": "prt_1bf661f0b001Kck7RdVxBhk3kC"
+					},
+					"time": 1794212503309
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1456,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf661f0e001Jsa8mFgLKci9s2",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"info": {
+						"id": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"slug": "silent-knight",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-abort",
+						"path": "scratch/proj/v1-abort",
+						"title": "New session - 2026-11-09T08:21:41.858Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212501858,
+							"updated": 1794212503310
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1458,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf661f11001h2WPUeXODBmdXL",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1818,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf662078001Fqr2i4ud2aX1Cz",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"info": {
+						"id": "msg_1bf662078001KiFkiGsJRVl004",
+						"parentID": "msg_1bf661f08001uPjpS153q1Yx5f",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-abort",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212503672
+						},
+						"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1840,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf66208e001sZrKfj1iJaVLsk",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"info": {
+						"id": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"slug": "silent-knight",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-abort",
+						"path": "scratch/proj/v1-abort",
+						"title": "New session - 2026-11-09T08:21:41.858Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212501858,
+							"updated": 1794212503694
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1840,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf66208f001JPZNYWOSY0OSCA",
+				"type": "session.diff",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"diff": []
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1842,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf662090001cx8d6Aqdb7yFNp",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"info": {
+						"role": "user",
+						"time": {
+							"created": 1794212503304
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						},
+						"id": "msg_1bf661f08001uPjpS153q1Yx5f",
+						"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"summary": {
+							"diffs": []
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2449,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf6622f0001M1QMM8KCqlengJ",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4373,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf662a730016mPHnn142U8xNl",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"info": {
+						"id": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"slug": "silent-knight",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-abort",
+						"path": "scratch/proj/v1-abort",
+						"title": "Stub title",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212501858,
+							"updated": 1794212503694
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4376,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf662a76001OYOYyevtsKGLFn",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"part": {
+						"id": "prt_1bf662a76001GuCnX2cmNEaZ8S",
+						"messageID": "msg_1bf662078001KiFkiGsJRVl004",
+						"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"type": "step-start"
+					},
+					"time": 1794212506230
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4377,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf662a770018B56bFp1P7JudQ",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"part": {
+						"id": "prt_1bf662a77001CNCH31PC0yjWH0",
+						"messageID": "msg_1bf662078001KiFkiGsJRVl004",
+						"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"type": "tool",
+						"tool": "bash",
+						"callID": "call_stub_slow_1",
+						"state": {
+							"status": "pending",
+							"input": {},
+							"raw": ""
+						}
+					},
+					"time": 1794212506231
+				}
+			}
+		},
+		{
+			"kind": "tool.execute.before",
+			"t": 4379,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"skip": null,
+			"i": {
+				"tool": "bash",
+				"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+				"callID": "call_stub_slow_1"
+			},
+			"o": {
+				"args": {
+					"command": "sleep 4; echo slow-done",
+					"description": "canary"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4381,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf662a7b0011W131iIi9aa3hQ",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"part": {
+						"type": "tool",
+						"tool": "bash",
+						"callID": "call_stub_slow_1",
+						"state": {
+							"status": "running",
+							"input": {
+								"command": "sleep 4; echo slow-done",
+								"description": "canary"
+							},
+							"time": {
+								"start": 1794212506235
+							}
+						},
+						"id": "prt_1bf662a77001CNCH31PC0yjWH0",
+						"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"messageID": "msg_1bf662078001KiFkiGsJRVl004"
+					},
+					"time": 1794212506235
+				}
+			}
+		},
+		{
+			"kind": "shell.env",
+			"t": 4397,
+			"tag": "A",
+			"instance": "36idgx",
+			"i": {
+				"cwd": "/scratch/proj/v1-abort",
+				"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+				"callID": "call_stub_slow_1"
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4399,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf662a8d001mdGLoDvqDNMQLy",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"part": {
+						"type": "tool",
+						"tool": "bash",
+						"callID": "call_stub_slow_1",
+						"state": {
+							"metadata": {
+								"output": ""
+							},
+							"status": "running",
+							"input": {
+								"command": "sleep 4; echo slow-done",
+								"description": "canary"
+							},
+							"time": {
+								"start": 1794212506235
+							}
+						},
+						"id": "prt_1bf662a77001CNCH31PC0yjWH0",
+						"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"messageID": "msg_1bf662078001KiFkiGsJRVl004"
+					},
+					"time": 1794212506253
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5824,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf66301f001CGJLZLAObd7Vaw",
+				"type": "session.error",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"error": {
+						"name": "MessageAbortedError",
+						"data": {
+							"message": "Aborted"
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5824,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf66301f002y6R0W7dw29vJAS",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"status": {
+						"type": "idle"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5824,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf66301f0038MoHWtN2pi1bkV",
+				"type": "session.idle",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr"
+				}
+			}
+		},
+		{
+			"kind": "tool.execute.after",
+			"t": 5826,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"skip": null,
+			"i": {
+				"tool": "bash",
+				"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+				"callID": "call_stub_slow_1",
+				"args": {
+					"command": "sleep 4; echo slow-done",
+					"description": "canary"
+				}
+			},
+			"o": {
+				"title": "sleep 4; echo slow-done",
+				"metadata": {
+					"output": "(no output)\n\n<shell_metadata>\nUser aborted the command\n</shell_metadata>",
+					"exit": null,
+					"truncated": false
+				},
+				"output": "(no output)\n\n<shell_metadata>\nUser aborted the command\n</shell_metadata>"
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5827,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf6630220019UXjGNnzDjX01K",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"part": {
+						"type": "tool",
+						"tool": "bash",
+						"callID": "call_stub_slow_1",
+						"state": {
+							"status": "completed",
+							"input": {
+								"command": "sleep 4; echo slow-done",
+								"description": "canary"
+							},
+							"output": "(no output)\n\n<shell_metadata>\nUser aborted the command\n</shell_metadata>",
+							"metadata": {
+								"output": "(no output)\n\n<shell_metadata>\nUser aborted the command\n</shell_metadata>",
+								"exit": null,
+								"truncated": false
+							},
+							"title": "sleep 4; echo slow-done",
+							"time": {
+								"start": 1794212506235,
+								"end": 1794212507682
+							}
+						},
+						"id": "prt_1bf662a77001CNCH31PC0yjWH0",
+						"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"messageID": "msg_1bf662078001KiFkiGsJRVl004"
+					},
+					"time": 1794212507682
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5828,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf663023001eD8DvoxlTHSoPv",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"info": {
+						"id": "msg_1bf662078001KiFkiGsJRVl004",
+						"parentID": "msg_1bf661f08001uPjpS153q1Yx5f",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-abort",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212503672,
+							"completed": 1794212507683
+						},
+						"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+						"error": {
+							"name": "MessageAbortedError",
+							"data": {
+								"message": "Aborted"
+							}
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5829,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf663024001ovBqTU1LOJ5YLl",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr",
+					"status": {
+						"type": "idle"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5829,
+			"tag": "A",
+			"instance": "36idgx",
+			"directory": "/scratch/proj/v1-abort",
+			"event": {
+				"id": "evt_1bf6630240028mW2UbtOXsQL4f",
+				"type": "session.idle",
+				"properties": {
+					"sessionID": "ses_e4099e69dffer6O0RUE8r04ehr"
+				}
+			}
+		},
+		{
+			"kind": "turn-end",
+			"t": 7830,
+			"tag": "A",
+			"ms": 2005.2106669999994,
+			"e": "TimeoutError: The operation timed out."
+		},
+		{
+			"kind": "turn-end",
+			"t": 7830,
+			"tag": "A",
+			"ms": 2000.6373750000002,
+			"e": "TimeoutError: The operation timed out."
+		}
+	]
+}

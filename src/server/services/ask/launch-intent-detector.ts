@@ -1,4 +1,4 @@
-import { isLaunchable } from "../../../shared/constants.js";
+import { isLaunchable, isObservedOnly } from "../../../shared/constants.js";
 import {
 	type AlertRuleType,
 	type LaunchMode,
@@ -297,16 +297,16 @@ If this is NOT a launch request:
 {"intent":"none"}
 
 If this IS a launch request and the user named a project from the known list:
-{"intent":"launch","projectName":"<exact project name from the known list>","agentType":"claude_code|codex_cli|copilot_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"},"cloneSpec":{"url":"<https URL of the repo to clone, or omit>","branch":"<branch name, or omit>","depth":<positive integer or omit>}}
+{"intent":"launch","projectName":"<exact project name from the known list>","agentType":"claude_code|codex_cli|copilot_cli|opencode|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"},"cloneSpec":{"url":"<https URL of the repo to clone, or omit>","branch":"<branch name, or omit>","depth":<positive integer or omit>}}
 
 If this IS a launch-flavored request but the user did NOT name a project (e.g. "create a plan about caching strategies"):
-{"intent":"launch_needs_project","agentType":"claude_code|codex_cli|copilot_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"},"cloneSpec":{"url":"<https URL of the repo to clone, or omit>","branch":"<branch name, or omit>","depth":<positive integer or omit>}}
+{"intent":"launch_needs_project","agentType":"claude_code|codex_cli|copilot_cli|opencode|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"},"cloneSpec":{"url":"<https URL of the repo to clone, or omit>","branch":"<branch name, or omit>","depth":<positive integer or omit>}}
 
 Rules:
 - Only use project names from the known list (case-insensitive match) for the "launch" shape. If the user mentions a project name with extra whitespace, dashes, underscores, dots, or minor typos, normalize to the closest match from the known list (e.g. "agent pulse" → "agentpulse", "agnetpulse" → "agentpulse"). If you genuinely cannot resolve the user's reference to one known project, leave projectName empty and return "launch_needs_project" instead.
 - If the user mentioned no known project and the message is launch-flavored, return "launch_needs_project" so the caller can ask the user to pick a project.
 - If the message is a plain question or doesn't sound like a launch at all, return "none".
-- agentType: "claude_code" if user says "claude", "codex_cli" if user says "codex", "copilot_cli" if user says "copilot", null otherwise.
+- agentType: "claude_code" if user says "claude", "codex_cli" if user says "codex", "copilot_cli" if user says "copilot", "opencode" if user says "opencode" or "open code", null otherwise.
 - mode: "headless" if user says "headless", "interactive_terminal" if user explicitly asks for interactive, null otherwise (default will be applied).
 - taskHint: any task description the user gave after "to ...", "for ...", e.g. "look at the failing tests".
 - displayName: a short kebab-case slug (2-4 words, lowercase, hyphen-separated) describing the task, e.g. "plan-caching" or "fix-failing-tests". Null if you can't derive one.
@@ -328,11 +328,11 @@ export function parseLaunchIntentResponse(
 		return { kind: "none" };
 	}
 
-	// A recognized-but-non-launchable agent type (copilot_cli) is refused
-	// immediately, before any of the rest of this shape is built (D5 Pattern
-	// A'). This is the only value the classifier can emit here that isn't
-	// yet in LAUNCHABLE_AGENT_TYPES — see D5's honest note.
-	if (parsed.agentType === "copilot_cli") {
+	// A recognized-but-non-launchable agent type (copilot_cli, opencode) is
+	// refused immediately, before any of the rest of this shape is built (D5
+	// Pattern A'). These are the values the classifier can emit here that
+	// aren't in LAUNCHABLE_AGENT_TYPES.
+	if (typeof parsed.agentType === "string" && isObservedOnly(parsed.agentType)) {
 		return { kind: "agent_refused", replyText: launchRefusalCopy(parsed.agentType) };
 	}
 
@@ -735,7 +735,7 @@ If YES:
   "intent": "resume",
   "sessionHint": "<session name or description fragment>",
   "newPrompt": "<the task or prompt to start the new session with, or null>",
-  "agentType": "claude_code|codex_cli|copilot_cli|null",
+  "agentType": "claude_code|codex_cli|copilot_cli|opencode|null",
   "mode": "interactive_terminal|headless|null"
 }
 
@@ -760,7 +760,7 @@ export async function detectResumeIntent(
 
 			// See parseLaunchIntentResponse's identical guard: a recognized but
 			// non-launchable agentType is refused before building the intent.
-			if (parsed.agentType === "copilot_cli") {
+			if (typeof parsed.agentType === "string" && isObservedOnly(parsed.agentType)) {
 				return { kind: "agent_refused", replyText: resumeRefusalCopy(parsed.agentType) };
 			}
 

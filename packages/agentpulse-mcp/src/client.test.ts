@@ -231,7 +231,7 @@ describe("createHttpClient", () => {
 			activeSessions: 4,
 			totalSessionsToday: 9,
 			totalToolUsesToday: 120,
-			byAgentType: { claude_code: 3, codex_cli: 0, copilot_cli: 0 },
+			byAgentType: { claude_code: 3, codex_cli: 0, copilot_cli: 0, opencode: 0 },
 			completedCount: 6,
 			archivedCount: 2,
 		};

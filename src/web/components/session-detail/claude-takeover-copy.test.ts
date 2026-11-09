@@ -88,6 +88,7 @@ import {
 	attemptAnnouncement,
 	bindRefusalMessage,
 	bottomSlot,
+	canOfferTakeover,
 	continuedArrivalAnnouncement,
 	continuedNavigation,
 	takeoverAttempt,
@@ -691,6 +692,14 @@ describe("an attempt on a Claude session", () => {
 		expect(continuedArrivalAnnouncement({ sourceName: null, host: null })).toBe(
 			"Continuing the session in a new session. You can send a prompt now.",
 		);
+	});
+
+	test("only Codex and Claude Code sessions offer a takeover; observed-only agents offer none (AGEN-141)", () => {
+		expect(canOfferTakeover("codex_cli")).toBe(true);
+		expect(canOfferTakeover("claude_code")).toBe(true);
+		expect(canOfferTakeover("copilot_cli")).toBe(false);
+		expect(canOfferTakeover("opencode")).toBe(false);
+		expect(canOfferTakeover("")).toBe(false);
 	});
 
 	test("a Claude takeover in flight takes the bottom slot like any takeover", () => {

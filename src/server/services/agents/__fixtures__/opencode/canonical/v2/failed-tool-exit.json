@@ -1,0 +1,33 @@
+{
+	"line": "v2",
+	"name": "failed-tool-exit",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_e409aa3f3ffeko0hp1Lku6zCYO",
+				"hook_event_name": "PreToolUse",
+				"cwd": "/scratch/proj/v2-failed-tool-exit",
+				"tool_name": "shell",
+				"tool_input": { "command": "exit 3" },
+				"tool_use_id": "call_stub_fail_1",
+				"provider_event_name": "tool.before",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PreToolUse", "tool_use_id": "call_stub_fail_1" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409aa3f3ffeko0hp1Lku6zCYO",
+				"hook_event_name": "PostToolUseFailure",
+				"cwd": "/scratch/proj/v2-failed-tool-exit",
+				"tool_name": "shell",
+				"tool_input": { "command": "exit 3" },
+				"tool_use_id": "call_stub_fail_1",
+				"tool_response": { "output": "(no output)", "exit_code": 3 },
+				"provider_event_name": "tool.after",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PostToolUseFailure", "tool_use_id": "call_stub_fail_1" }
+		}
+	]
+}

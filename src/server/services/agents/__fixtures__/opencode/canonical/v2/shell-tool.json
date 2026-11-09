@@ -1,0 +1,33 @@
+{
+	"line": "v2",
+	"name": "shell-tool",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_e409ad1f6ffegI64qT1DgzijzJ",
+				"hook_event_name": "PreToolUse",
+				"cwd": "/scratch/proj/v2-shell-tool",
+				"tool_name": "shell",
+				"tool_input": { "command": "printf ok" },
+				"tool_use_id": "call_stub_ok_1",
+				"provider_event_name": "tool.before",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PreToolUse", "tool_use_id": "call_stub_ok_1" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409ad1f6ffegI64qT1DgzijzJ",
+				"hook_event_name": "PostToolUse",
+				"cwd": "/scratch/proj/v2-shell-tool",
+				"tool_name": "shell",
+				"tool_input": { "command": "printf ok" },
+				"tool_use_id": "call_stub_ok_1",
+				"tool_response": { "output": "ok", "exit_code": 0 },
+				"provider_event_name": "tool.after",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PostToolUse", "tool_use_id": "call_stub_ok_1" }
+		}
+	]
+}

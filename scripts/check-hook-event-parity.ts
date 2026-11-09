@@ -25,10 +25,12 @@ import {
 	buildCodexHooksFile,
 	buildCopilotHooksFile,
 } from "../src/shared/hook-command.js";
+import { buildOpenCodePluginFiles } from "../src/shared/opencode-plugin.js";
 import {
 	describe,
 	extractQuotedListBlocks,
 	extractQuotedListBlocksCamelCase,
+	extractQuotedTokensDotted,
 	extractUnion,
 	sameSet,
 } from "./lib/parity-utils.js";
@@ -39,15 +41,15 @@ function readFile(relPath: string): string {
 	return readFileSync(join(ROOT, relPath), "utf8");
 }
 
-// 6 sites x 3 agents (Claude, Codex, Copilot).
-const EXPECTED_RESULTS = 18;
+// 6 sites x 4 agents (Claude, Codex, Copilot, OpenCode).
+const EXPECTED_RESULTS = 24;
 
 /** Claude HTTP hook emitting constructs across the six sites (see CLAUDE_HTTP_HOOK_SITES). */
 const EXPECTED_CLAUDE_HTTP_CONSTRUCTS = 9;
 
 interface CheckResult {
 	site: string;
-	agent: "claude" | "codex" | "copilot";
+	agent: "claude" | "codex" | "copilot" | "opencode";
 	events: string[];
 }
 
@@ -227,6 +229,151 @@ export function checkClaudeHttpHookSites(read: (relPath: string) => string): {
 	return { problems, constructCount };
 }
 
+/** The names a plugin line forwards, from its `AP_FORWARDED = [...]` table in `text` (the first one after `from`). */
+function forwardedTable(text: string, from = 0): string[] {
+	const at = text.indexOf("const AP_FORWARDED = [", from);
+	if (at === -1) return [];
+	const end = text.indexOf("];", at);
+	return extractQuotedTokensDotted(text.slice(at, end));
+}
+
+const OPENCODE_SITES = [
+	"scripts/setup-hooks.sh",
+	"scripts/setup-relay.sh",
+	"src/server/routes/setup.ts",
+	"scripts/install-local.ps1",
+	"bin/cli.ts",
+	"src/web/pages/SetupPage.tsx",
+] as const;
+
+/**
+ * AGEN-141: OpenCode's two plugin lines forward OpenCode's own event names. The sites that hold the plugin text
+ * (setup-hooks.sh, install-local.ps1) carry the AP_FORWARDED tables in it; setup-relay.sh gets the text spliced in by
+ * src/server/installers.ts; setup.ts, bin/cli.ts and SetupPage.tsx must take it from the shared module, never hold a
+ * copy. Each line's table must equal its union in src/shared/types.ts. Exported so the guard's own test can break
+ * each rule and see it fail.
+ */
+export function checkOpenCodeParity(read: (relPath: string) => string): {
+	problems: string[];
+	results: CheckResult[];
+} {
+	const problems: string[] = [];
+	const results: CheckResult[] = [];
+	const types = read("src/shared/types.ts");
+	const v1Canonical = extractDottedUnion(types, "OpenCodeV1Event");
+	const v2Canonical = extractDottedUnion(types, "OpenCodeV2Event");
+	if (v1Canonical.length === 0 || v2Canonical.length === 0) {
+		problems.push("OpenCodeV1Event / OpenCodeV2Event extracted empty — check the markers");
+	}
+	const embedded = (text: string, label: string): [string[], string[]] => {
+		const marker = (n: number) => `# @@AGENTPULSE_OPENCODE_PLUGIN_${n}@@ BEGIN`;
+		const a = text.indexOf(marker(1));
+		const b = text.indexOf(marker(2));
+		if (a === -1 || b === -1) {
+			problems.push(`${label}: the plugin markers are missing`);
+			return [[], []];
+		}
+		return [forwardedTable(text, a), forwardedTable(text, b)];
+	};
+
+	for (const site of OPENCODE_SITES) {
+		const text = read(site);
+		let v1: string[] = [];
+		let v2: string[] = [];
+		if (site === "scripts/setup-hooks.sh" || site === "scripts/install-local.ps1") {
+			[v1, v2] = embedded(text, site);
+		} else if (site === "scripts/setup-relay.sh") {
+			for (const n of [1, 2]) {
+				const marker = `# @@AGENTPULSE_OPENCODE_PLUGIN_${n}@@`;
+				if (text.split("\n").filter((l) => l === marker).length !== 1) {
+					problems.push(`${site}: must hold exactly one ${marker} line`);
+				}
+			}
+			const installers = read("src/server/installers.ts");
+			if (
+				!installers.includes("OPENCODE_PLUGIN_V1_LINES") ||
+				!installers.includes("OPENCODE_PLUGIN_V2_LINES") ||
+				!installers.includes("# @@AGENTPULSE_OPENCODE_PLUGIN_1@@")
+			) {
+				problems.push("src/server/installers.ts: the OpenCode plugin splice entries are missing");
+			}
+			[v1, v2] = fromGenerated(read);
+		} else {
+			// setup.ts, cli.ts and SetupPage.tsx: take the plugin from the shared module, hold no text of it.
+			const needle =
+				site === "src/server/routes/setup.ts"
+					? "opencode-plugin-text.generated"
+					: site === "bin/cli.ts"
+						? "opencode-install"
+						: 'import("../components/OpenCodePluginFiles.js")';
+			if (!text.includes(needle)) problems.push(`${site}: does not import ${needle}`);
+			if (text.includes("AP_FORWARDED") || text.includes("agentpulse-opencode-plugin ")) {
+				problems.push(`${site}: holds inline OpenCode plugin text`);
+			}
+			if (site === "src/web/pages/SetupPage.tsx") {
+				const component = read("src/web/components/OpenCodePluginFiles.tsx");
+				if (!component.includes("buildOpenCodePluginFiles")) {
+					problems.push(
+						"src/web/components/OpenCodePluginFiles.tsx: does not build the files with buildOpenCodePluginFiles",
+					);
+				}
+				if (
+					component.includes("AP_FORWARDED") ||
+					component.includes("agentpulse-opencode-plugin ")
+				) {
+					problems.push(
+						"src/web/components/OpenCodePluginFiles.tsx: holds inline OpenCode plugin text",
+					);
+				}
+			}
+			[v1, v2] = fromGenerated(read);
+		}
+		if (v1.length === 0 || v2.length === 0) {
+			problems.push(`${site} [opencode]: extracted no forwarded names — extraction likely broken`);
+		}
+		if (!sameSet(v1, v1Canonical)) {
+			problems.push(
+				`${site} [opencode 1.x]: ${describe(v1)} does not match types.ts OpenCodeV1Event ${describe(v1Canonical)}`,
+			);
+		}
+		if (!sameSet(v2, v2Canonical)) {
+			problems.push(
+				`${site} [opencode 2.x]: ${describe(v2)} does not match types.ts OpenCodeV2Event ${describe(v2Canonical)}`,
+			);
+		}
+		results.push({ site, agent: "opencode", events: [...new Set([...v1, ...v2])] });
+	}
+
+	// The shape of what an installer writes: both files start with the header, hold no `${`, and only 2.x exports a default.
+	const files = buildOpenCodePluginFiles({ baseUrl: "http://localhost:4000", direct: false });
+	for (const f of files) {
+		const isV2 = f.name.includes("opencode-2");
+		if (!f.text.startsWith("// agentpulse-opencode-plugin ")) {
+			problems.push(`${f.name}: does not start with the plugin header`);
+		}
+		if (f.text.includes("${")) problems.push(`${f.name}: contains \${`);
+		if (isV2 !== f.text.includes("export default")) {
+			problems.push(`${f.name}: ${isV2 ? "2.x must" : "1.x must not"} export a default`);
+		}
+	}
+	return { problems, results };
+}
+
+function extractDottedUnion(content: string, typeName: string): string[] {
+	const idx = content.search(new RegExp(`export type ${typeName} =`));
+	if (idx === -1) return [];
+	const end = content.indexOf(";", idx);
+	return extractQuotedTokensDotted(content.slice(idx, end));
+}
+
+function fromGenerated(read: (relPath: string) => string): [string[], string[]] {
+	const text = read("src/shared/opencode-plugin-text.generated.ts");
+	// The generated module holds each line as a JSON string, so quotes are escaped.
+	const plain = text.split('\\"').join('"');
+	const v2At = plain.indexOf("export const OPENCODE_PLUGIN_V2_LINES");
+	return [forwardedTable(plain, 0), forwardedTable(plain, v2At)];
+}
+
 function main() {
 	const typesContent = readFile("src/shared/types.ts");
 	const claudeCanonical = extractUnion(typesContent, "ClaudeCodeEvent");
@@ -316,7 +463,10 @@ function main() {
 		});
 	}
 
-	// 6 sites × 3 agents. A site whose extraction silently vanished would
+	const openCode = checkOpenCodeParity(readFile);
+	results.push(...openCode.results);
+
+	// 6 sites × 4 agents. A site whose extraction silently vanished would
 	// otherwise shrink the population without failing.
 	if (results.length !== EXPECTED_RESULTS) {
 		throw new Error(`expected ${EXPECTED_RESULTS} site/agent lists, extracted ${results.length}`);
@@ -326,15 +476,19 @@ function main() {
 		claude: claudeCanonical,
 		codex: codexCanonical,
 		copilot: copilotCanonical,
+		opencode: [] as string[],
 	} as const;
 	const UNION_NAME_BY_AGENT = {
 		claude: "ClaudeCodeEvent",
 		codex: "CodexEvent",
 		copilot: "CopilotEvent",
+		opencode: "OpenCodeV1Event / OpenCodeV2Event",
 	} as const;
 
-	const mismatches: string[] = [];
+	const mismatches: string[] = [...openCode.problems];
 	for (const result of results) {
+		// OpenCode's lists are judged line by line in checkOpenCodeParity.
+		if (result.agent === "opencode") continue;
 		const canonical = CANONICAL_BY_AGENT[result.agent];
 		if (result.events.length === 0) {
 			mismatches.push(
@@ -388,7 +542,7 @@ function main() {
 	}
 
 	console.log(
-		`OK: hook-event lists match across all ${results.length / 3} wiring sites (Claude: ${describe(claudeCanonical)}, Codex: ${describe(codexCanonical)}, Copilot: ${describe(copilotCanonical)})`,
+		`OK: hook-event lists match across all ${results.length / 4} wiring sites (OpenCode: ${describe(openCode.results[0]?.events ?? [])}; Claude: ${describe(claudeCanonical)}, Codex: ${describe(codexCanonical)}, Copilot: ${describe(copilotCanonical)})`,
 	);
 }
 

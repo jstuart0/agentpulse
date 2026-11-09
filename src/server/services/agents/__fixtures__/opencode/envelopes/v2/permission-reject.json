@@ -1,0 +1,61 @@
+{
+	"line": "v2",
+	"name": "permission-reject",
+	"envelopes": [
+		{
+			"session_id": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+			"hook_event_name": "tool.before",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-permission-reject",
+			"data": {
+				"tool": "write",
+				"tool_use_id": "call_stub_perm_1",
+				"input": { "path": "/scratch/proj/v2-permission-reject/perm.txt", "content": "perm\n" }
+			}
+		},
+		{
+			"session_id": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+			"hook_event_name": "permission.asked",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-permission-reject",
+			"data": {
+				"request_id": "per_1bf65b8c3001NGW9JYQXX3yjps",
+				"tool_use_id": "call_stub_perm_1",
+				"permission": "edit",
+				"patterns": ["perm.txt"]
+			}
+		},
+		{
+			"session_id": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+			"hook_event_name": "tool.after",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-permission-reject",
+			"data": {
+				"tool": "write",
+				"tool_use_id": "call_stub_perm_1",
+				"input": { "path": "/scratch/proj/v2-permission-reject/perm.txt", "content": "perm\n" },
+				"status": "error",
+				"error": { "name": "Tool.Error" }
+			}
+		},
+		{
+			"session_id": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+			"hook_event_name": "permission.replied",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-permission-reject",
+			"data": {
+				"request_id": "per_1bf65b8c3001NGW9JYQXX3yjps",
+				"tool_use_id": "call_stub_perm_1",
+				"reply": "reject"
+			}
+		},
+		{
+			"session_id": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+			"hook_event_name": "session.execution.succeeded",
+			"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" },
+			"cwd": "/scratch/proj/v2-permission-reject",
+			"last_assistant_message": "STUB-DONE after tool",
+			"data": {}
+		}
+	]
+}

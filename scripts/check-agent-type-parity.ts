@@ -24,17 +24,25 @@ import {
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
-function readFile(relPath: string): string {
-	return readFileSync(join(ROOT, relPath), "utf8");
-}
+export type ReadSite = (relPath: string) => string;
 
-interface ListSite {
+const readFromRoot: ReadSite = (relPath) => readFileSync(join(ROOT, relPath), "utf8");
+
+export interface ListSite {
 	site: string;
 	list: "observed" | "launchable";
 	values: string[];
 }
 
-function main() {
+export interface AgentTypeParityResult {
+	errors: string[];
+	sites: ListSite[];
+	observed: string[];
+	launchable: string[];
+}
+
+/** Extracts every site's list from `readFile` and returns what drifted. Pure apart from the reads. */
+export function checkAgentTypeParity(readFile: ReadSite): AgentTypeParityResult {
 	const constantsContent = readFile("src/shared/constants.ts");
 	const mcpEnumsContent = readFile("packages/agentpulse-mcp/src/enums.ts");
 	const mcpTypesContent = readFile("packages/agentpulse-mcp/src/types.ts");
@@ -124,6 +132,11 @@ function main() {
 		);
 	}
 
+	return { errors, sites, observed: canonicalObserved, launchable: canonicalLaunchable };
+}
+
+function main() {
+	const { errors, sites, observed, launchable } = checkAgentTypeParity(readFromRoot);
 	if (errors.length > 0) {
 		console.error("Agent-type-list parity check failed:\n");
 		console.error(errors.join("\n\n"));
@@ -138,8 +151,8 @@ function main() {
 	}
 
 	console.log(
-		`OK: agent-type lists match across all ${sites.length} sites (observed: ${describe(canonicalObserved)}, launchable: ${describe(canonicalLaunchable)})`,
+		`OK: agent-type lists match across all ${sites.length} sites (observed: ${describe(observed)}, launchable: ${describe(launchable)})`,
 	);
 }
 
-main();
+if (import.meta.main) main();

@@ -1,0 +1,262 @@
+{
+	"r0": {
+		"id": "r0",
+		"cold": true,
+		"ms": 1778,
+		"code": 0,
+		"timedOut": false,
+		"stalled": false,
+		"loads": false,
+		"noise": "silent",
+		"markerBefore": false,
+		"markerAfter": false,
+		"nodeModulesBefore": false,
+		"nodeModulesAfter": false,
+		"freshXdg": true,
+		"xdg": {
+			"data": "/scratch/state/v1-g9b-r0/xdg-data",
+			"cache": "/scratch/state/v1-g9b-r0/xdg-cache",
+			"state": "/scratch/state/v1-g9b-r0/xdg-state"
+		},
+		"configDirAfter": [".gitignore", "opencode.json", "plugins"]
+	},
+	"r1": {
+		"id": "r1",
+		"cold": true,
+		"ms": 71870,
+		"code": 0,
+		"timedOut": false,
+		"stalled": true,
+		"loads": true,
+		"noise": "log",
+		"markerBefore": false,
+		"markerAfter": false,
+		"nodeModulesBefore": false,
+		"nodeModulesAfter": false,
+		"freshXdg": true,
+		"xdg": {
+			"data": "/scratch/state/v1-g9b-r1/xdg-data",
+			"cache": "/scratch/state/v1-g9b-r1/xdg-cache",
+			"state": "/scratch/state/v1-g9b-r1/xdg-state"
+		},
+		"configDirAfter": [".gitignore", "opencode.json", "plugins", "probe-config.json"]
+	},
+	"r2": {
+		"id": "r2",
+		"cold": true,
+		"ms": 1896,
+		"code": 0,
+		"timedOut": false,
+		"stalled": false,
+		"loads": false,
+		"noise": "silent",
+		"markerBefore": false,
+		"markerAfter": false,
+		"nodeModulesBefore": false,
+		"nodeModulesAfter": false,
+		"freshXdg": true,
+		"xdg": {
+			"data": "/scratch/state/v1-g9b-r2/xdg-data",
+			"cache": "/scratch/state/v1-g9b-r2/xdg-cache",
+			"state": "/scratch/state/v1-g9b-r2/xdg-state"
+		},
+		"configDirAfter": [".gitignore", "opencode.json", "plugins", "probe-config.json"]
+	},
+	"r2b": {
+		"id": "r2b",
+		"cold": true,
+		"ms": 2029,
+		"code": 0,
+		"timedOut": false,
+		"stalled": false,
+		"loads": false,
+		"noise": "silent",
+		"markerBefore": false,
+		"markerAfter": false,
+		"nodeModulesBefore": false,
+		"nodeModulesAfter": false,
+		"freshXdg": true,
+		"xdg": {
+			"data": "/scratch/state/v1-g9b-r2b/xdg-data",
+			"cache": "/scratch/state/v1-g9b-r2b/xdg-cache",
+			"state": "/scratch/state/v1-g9b-r2b/xdg-state"
+		},
+		"configDirAfter": [".gitignore", "opencode.json", "plugins", "probe-config.json"]
+	},
+	"r3": {
+		"id": "r3",
+		"cold": true,
+		"ms": 1278,
+		"code": 0,
+		"timedOut": false,
+		"stalled": false,
+		"loads": true,
+		"noise": "silent",
+		"markerBefore": false,
+		"markerAfter": false,
+		"nodeModulesBefore": false,
+		"nodeModulesAfter": false,
+		"freshXdg": true,
+		"xdg": {
+			"data": "/scratch/state/v2-g9b-r3/xdg-data",
+			"cache": "/scratch/state/v2-g9b-r3/xdg-cache",
+			"state": "/scratch/state/v2-g9b-r3/xdg-state"
+		},
+		"configDirAfter": ["opencode.json", "plugins", "probe-config.json"]
+	},
+	"r4": {
+		"id": "r4",
+		"cold": true,
+		"ms": 1293,
+		"code": 0,
+		"timedOut": false,
+		"stalled": false,
+		"loads": true,
+		"noise": "silent",
+		"markerBefore": false,
+		"markerAfter": false,
+		"nodeModulesBefore": false,
+		"nodeModulesAfter": false,
+		"freshXdg": true,
+		"xdg": {
+			"data": "/scratch/state/v2-g9b-r4/xdg-data",
+			"cache": "/scratch/state/v2-g9b-r4/xdg-cache",
+			"state": "/scratch/state/v2-g9b-r4/xdg-state"
+		},
+		"configDirAfter": ["opencode.json", "plugins", "probe-config.json"]
+	},
+	"r5": {
+		"id": "r5",
+		"cold": false,
+		"ms": 1650,
+		"code": 0,
+		"timedOut": false,
+		"stalled": false,
+		"loads": true,
+		"noise": "silent",
+		"markerBefore": true,
+		"markerAfter": true,
+		"nodeModulesBefore": true,
+		"nodeModulesAfter": true,
+		"freshXdg": true,
+		"xdg": {
+			"data": "/scratch/state/v1-g9b-r5/xdg-data",
+			"cache": "/scratch/state/v1-g9b-r5/xdg-cache",
+			"state": "/scratch/state/v1-g9b-r5/xdg-state"
+		},
+		"configDirAfter": [
+			".gitignore",
+			"node_modules",
+			"opencode.json",
+			"package-lock.json",
+			"package.json",
+			"plugins",
+			"probe-config.json"
+		]
+	},
+	"r6": {
+		"id": "r6",
+		"cold": false,
+		"ms": 1640,
+		"code": 0,
+		"timedOut": false,
+		"stalled": false,
+		"loads": true,
+		"noise": "silent",
+		"markerBefore": true,
+		"markerAfter": true,
+		"nodeModulesBefore": true,
+		"nodeModulesAfter": true,
+		"freshXdg": true,
+		"xdg": {
+			"data": "/scratch/state/v1-g9b-r6/xdg-data",
+			"cache": "/scratch/state/v1-g9b-r6/xdg-cache",
+			"state": "/scratch/state/v1-g9b-r6/xdg-state"
+		},
+		"configDirAfter": [
+			".gitignore",
+			"node_modules",
+			"opencode.json",
+			"package-lock.json",
+			"package.json",
+			"plugins",
+			"probe-config.json"
+		]
+	},
+	"r7": {
+		"id": "r7",
+		"cold": true,
+		"ms": 72066,
+		"code": 0,
+		"timedOut": false,
+		"stalled": true,
+		"loads": true,
+		"noise": "log",
+		"markerBefore": false,
+		"markerAfter": false,
+		"nodeModulesBefore": false,
+		"nodeModulesAfter": false,
+		"freshXdg": true,
+		"xdg": {
+			"data": "/scratch/state/v1-g9b-r7/xdg-data",
+			"cache": "/scratch/state/v1-g9b-r7/xdg-cache",
+			"state": "/scratch/state/v1-g9b-r7/xdg-state"
+		},
+		"configDirAfter": [".gitignore", "opencode.json", "plugins", "probe-config.json"],
+		"second": {
+			"ms": 71342,
+			"code": 0,
+			"timedOut": false,
+			"stalled": true
+		}
+	},
+	"r8": {
+		"id": "r8",
+		"cold": false,
+		"ms": 1660,
+		"code": 0,
+		"timedOut": false,
+		"stalled": false,
+		"loads": true,
+		"noise": "silent",
+		"markerBefore": true,
+		"markerAfter": true,
+		"nodeModulesBefore": true,
+		"nodeModulesAfter": true,
+		"freshXdg": true,
+		"xdg": {
+			"data": "/scratch/state/v1-g9b-r8/xdg-data",
+			"cache": "/scratch/state/v1-g9b-r8/xdg-cache",
+			"state": "/scratch/state/v1-g9b-r8/xdg-state"
+		},
+		"configDirAfter": [
+			".gitignore",
+			"node_modules",
+			"opencode.json",
+			"package-lock.json",
+			"plugins",
+			"probe-config.json"
+		]
+	},
+	"r9": {
+		"id": "r9",
+		"cold": true,
+		"ms": 72098,
+		"code": 0,
+		"timedOut": false,
+		"stalled": true,
+		"loads": false,
+		"noise": "log",
+		"markerBefore": false,
+		"markerAfter": false,
+		"nodeModulesBefore": false,
+		"nodeModulesAfter": false,
+		"freshXdg": true,
+		"xdg": {
+			"data": "/scratch/state/v1-g9b-r9/xdg-data",
+			"cache": "/scratch/state/v1-g9b-r9/xdg-cache",
+			"state": "/scratch/state/v1-g9b-r9/xdg-state"
+		},
+		"configDirAfter": [".gitignore", "opencode.json", "plugins"]
+	}
+}

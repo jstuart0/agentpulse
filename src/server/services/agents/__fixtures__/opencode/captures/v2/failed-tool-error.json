@@ -1,0 +1,716 @@
+{
+	"line": "v2",
+	"version": "2.2.6",
+	"scenario": "runs",
+	"prompt": "READMISSING now",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"counter": 1,
+			"ctxKeys": [
+				"app",
+				"location",
+				"options",
+				"agent",
+				"aisdk",
+				"command",
+				"credential",
+				"event",
+				"experimental",
+				"generate",
+				"model",
+				"provider",
+				"integration",
+				"mcp",
+				"permission",
+				"plugin",
+				"reference",
+				"rpc",
+				"skill",
+				"storage",
+				"tool",
+				"vcs",
+				"websearch",
+				"worktree",
+				"session",
+				"shell"
+			],
+			"location": {
+				"directory": "/scratch/proj/v2-failed-tool-error",
+				"project": {
+					"id": "5e52cb247448e94c11260cb5fab33d68363b6e51",
+					"directory": "/scratch/proj/v2-failed-tool-error",
+					"canonical": "/scratch/proj/v2-failed-tool-error"
+				}
+			},
+			"app": {
+				"name": "cli",
+				"version": "2.2.6",
+				"channel": "latest"
+			},
+			"skip": null,
+			"argv": ["bun", "/$bunfs/root/opencode", "serve", "--stdio", "--port", "0"],
+			"cwd": "/scratch/proj/v2-failed-tool-error"
+		},
+		{
+			"kind": "event",
+			"t": 5,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf65700b001nrNfO6qKRXSF7X",
+				"created": 1794212458507,
+				"type": "session.created",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 0,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"projectID": "5e52cb247448e94c11260cb5fab33d68363b6e51",
+					"location": {
+						"directory": "/scratch/proj/v2-failed-tool-error"
+					},
+					"subpath": "",
+					"slug": "silent-planet",
+					"version": "2.2.6"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 50,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf657038002mmBtZdzUBgAZRl",
+				"created": 1794212458552,
+				"type": "session.inbox.enqueued",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 1,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"inboxID": "msg_1bf657016001F4x6p8H5VNeQeA",
+					"item": {
+						"type": "user",
+						"payload": {
+							"text": "READMISSING now",
+							"files": []
+						},
+						"delivery": "steer"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 60,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf65703b001Ztdh51oEfuzx0p",
+				"created": 1794212458555,
+				"type": "session.execution.started",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 2,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 62,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf6570420019O42WRm2iGdbUB",
+				"created": 1794212458562,
+				"type": "session.inbox.delivered",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 4,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"inboxID": "msg_1bf657016001F4x6p8H5VNeQeA"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1504,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf6575e20014jhzf8oBruIBmL",
+				"created": 1794212460002,
+				"type": "session.step.started",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 5,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"assistantMessageID": "msg_1bf65704b00115OxRg43X7khq9",
+					"agent": "build",
+					"model": {
+						"id": "stub-model",
+						"providerID": "stub"
+					},
+					"started": 1794212458573
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1505,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf6575e3001s2pBsKC6DbdUbY",
+				"created": 1794212460003,
+				"type": "session.tool.input.started",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 6,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"assistantMessageID": "msg_1bf65704b00115OxRg43X7khq9",
+					"id": "call_stub_read_1",
+					"name": "read"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1505,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf6575e60011mAw6gGurl3Ai4",
+				"created": 1794212460006,
+				"type": "session.tool.input.ended",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 7,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"assistantMessageID": "msg_1bf65704b00115OxRg43X7khq9",
+					"id": "call_stub_read_1",
+					"text": "{\"filePath\":\"/scratch/proj/v2-failed-tool-error/missing.txt\",\"path\":\"/scratch/proj/v2-failed-tool-error/missing.txt\"}"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1505,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf6575e7001YoyjPxuFj78N2n",
+				"created": 1794212460007,
+				"type": "session.tool.called",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 8,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"assistantMessageID": "msg_1bf65704b00115OxRg43X7khq9",
+					"id": "call_stub_read_1",
+					"input": {
+						"filePath": "/scratch/proj/v2-failed-tool-error/missing.txt",
+						"path": "/scratch/proj/v2-failed-tool-error/missing.txt"
+					},
+					"executed": false
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1505,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf6575e8001RO7wZ3TMUBXciA",
+				"created": 1794212460008,
+				"type": "session.step.streamed",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 9,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"assistantMessageID": "msg_1bf65704b00115OxRg43X7khq9"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1507,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf6575ec001Y7epsik2KrTYog",
+				"created": 1794212460012,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"cost": 0,
+					"tokens": {
+						"input": 0,
+						"output": 0,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1508,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf6575ec002nmrf03hGaOx7U6",
+				"created": 1794212460012,
+				"type": "session.renamed",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 11,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"title": "Stub title"
+				}
+			}
+		},
+		{
+			"kind": "tool.before",
+			"t": 1508,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"skip": null,
+			"event": {
+				"tool": "read",
+				"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+				"agent": "build",
+				"messageID": "msg_1bf65704b00115OxRg43X7khq9",
+				"id": "call_stub_read_1",
+				"input": {
+					"path": "/scratch/proj/v2-failed-tool-error/missing.txt"
+				}
+			}
+		},
+		{
+			"kind": "tool.after",
+			"t": 1510,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"skip": null,
+			"event": {
+				"tool": "read",
+				"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+				"agent": "build",
+				"messageID": "msg_1bf65704b00115OxRg43X7khq9",
+				"id": "call_stub_read_1",
+				"input": {
+					"path": "/scratch/proj/v2-failed-tool-error/missing.txt"
+				},
+				"status": "error",
+				"error": {
+					"_tag": "Tool.Error",
+					"message": "File not found: /scratch/proj/v2-failed-tool-error/missing.txt"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1520,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf6575ef0011nj4pBar0HAui1",
+				"created": 1794212460015,
+				"type": "session.tool.failed",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 12,
+					"version": 2
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"assistantMessageID": "msg_1bf65704b00115OxRg43X7khq9",
+					"id": "call_stub_read_1",
+					"error": {
+						"type": "tool.execution",
+						"message": "File not found: /scratch/proj/v2-failed-tool-error/missing.txt"
+					},
+					"executed": false
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1521,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf6575f1001cjMYcDmgm148Ti",
+				"created": 1794212460017,
+				"type": "session.step.ended",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 13,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"assistantMessageID": "msg_1bf65704b00115OxRg43X7khq9",
+					"finish": "tool-calls",
+					"rawFinish": "tool_calls",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1521,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf6575f2001NdDdevbEMRbQxK",
+				"created": 1794212460018,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2789,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf657ae5001Sg13tFAkbuoaSC",
+				"created": 1794212461285,
+				"type": "session.step.started",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 14,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"assistantMessageID": "msg_1bf6575f6001esXP2ceJqloB2N",
+					"agent": "build",
+					"model": {
+						"id": "stub-model",
+						"providerID": "stub"
+					},
+					"started": 1794212460024
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2789,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf657ae70013hpjNIg4gG1MU7",
+				"created": 1794212461287,
+				"type": "session.text.started",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 15,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"assistantMessageID": "msg_1bf6575f6001esXP2ceJqloB2N",
+					"ordinal": 0
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2789,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf657ae9001hIWvBzjz6puYJi",
+				"created": 1794212461289,
+				"type": "session.text.delta",
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"assistantMessageID": "msg_1bf6575f6001esXP2ceJqloB2N",
+					"ordinal": 0,
+					"delta": "STUB-DONE after tool"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2789,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf657ae9002cD7k4kOXF38R30",
+				"created": 1794212461289,
+				"type": "session.text.ended",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 16,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"assistantMessageID": "msg_1bf6575f6001esXP2ceJqloB2N",
+					"ordinal": 0,
+					"text": "STUB-DONE after tool"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2789,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf657aea001JPqhfHJbCtbyDs",
+				"created": 1794212461290,
+				"type": "session.step.streamed",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 17,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"assistantMessageID": "msg_1bf6575f6001esXP2ceJqloB2N"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2789,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf657aeb001C7l0wD3jhPoXbt",
+				"created": 1794212461291,
+				"type": "session.step.ended",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 18,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"assistantMessageID": "msg_1bf6575f6001esXP2ceJqloB2N",
+					"finish": "stop",
+					"rawFinish": "stop",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2789,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf657aec0013kieMxTYgE1JCu",
+				"created": 1794212461292,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"cost": 0,
+					"tokens": {
+						"input": 20,
+						"output": 10,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2790,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf657aec002tqQ0u3pYxJUaDN",
+				"created": 1794212461292,
+				"type": "session.execution.succeeded",
+				"durable": {
+					"aggregateID": "ses_e409a90e7ffeetVUAyq3nR5xKg",
+					"seq": 19,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409a90e7ffeetVUAyq3nR5xKg"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2811,
+			"tag": "A",
+			"instance": "mlhf9b",
+			"directory": "/scratch/proj/v2-failed-tool-error",
+			"event": {
+				"id": "evt_1bf657af8001MHAxlce9V1DnRb",
+				"created": 1794212461304,
+				"type": "location.shutdown",
+				"location": {
+					"directory": "/scratch/proj/v2-failed-tool-error"
+				},
+				"data": {}
+			}
+		},
+		{
+			"kind": "cleanup",
+			"t": 2812,
+			"tag": "A",
+			"instance": "mlhf9b"
+		},
+		{
+			"kind": "process.exit",
+			"t": 2833,
+			"tag": "A"
+		}
+	]
+}

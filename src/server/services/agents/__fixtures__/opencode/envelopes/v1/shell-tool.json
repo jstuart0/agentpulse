@@ -1,0 +1,54 @@
+{
+	"line": "v1",
+	"name": "shell-tool",
+	"envelopes": [
+		{
+			"session_id": "ses_e409b54daffeeg8BXRz7WOao2x",
+			"hook_event_name": "session.created",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-shell-tool",
+			"data": {}
+		},
+		{
+			"session_id": "ses_e409b54daffeeg8BXRz7WOao2x",
+			"hook_event_name": "chat.message",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-shell-tool",
+			"model": "stub/stub-model",
+			"data": { "text": "\"SHELLOK run it\"" }
+		},
+		{
+			"session_id": "ses_e409b54daffeeg8BXRz7WOao2x",
+			"hook_event_name": "tool.execute.before",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-shell-tool",
+			"data": {
+				"tool": "bash",
+				"tool_use_id": "call_stub_ok_1",
+				"input": { "command": "printf ok", "description": "canary" }
+			}
+		},
+		{
+			"session_id": "ses_e409b54daffeeg8BXRz7WOao2x",
+			"hook_event_name": "tool.execute.after",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-shell-tool",
+			"data": {
+				"tool": "bash",
+				"tool_use_id": "call_stub_ok_1",
+				"input": { "command": "printf ok", "description": "canary" },
+				"status": "completed",
+				"exit_code": 0,
+				"output": "ok"
+			}
+		},
+		{
+			"session_id": "ses_e409b54daffeeg8BXRz7WOao2x",
+			"hook_event_name": "session.idle",
+			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"cwd": "/scratch/proj/v1-shell-tool",
+			"last_assistant_message": "STUB-DONE after tool",
+			"data": {}
+		}
+	]
+}

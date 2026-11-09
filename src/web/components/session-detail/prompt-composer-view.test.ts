@@ -122,6 +122,8 @@ describe("composerMode: Claude keeps today's flow and words", () => {
 	test("observed sessions, Copilot and unmanaged sessions get no box", () => {
 		expect(composerMode(probe("claude_code", null), ALLOWED)).toBeNull();
 		expect(composerMode(probe("copilot_cli", "managed"), ALLOWED)).toBeNull();
+		expect(composerMode(probe("opencode", "managed"), ALLOWED)).toBeNull();
+		expect(composerMode(probe("opencode", null), ALLOWED)).toBeNull();
 		expect(composerMode(probe("codex_cli", null), ALLOWED)).toBeNull();
 	});
 });

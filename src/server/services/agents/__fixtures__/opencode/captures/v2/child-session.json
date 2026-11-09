@@ -1,0 +1,1413 @@
+{
+	"line": "v2",
+	"version": "2.2.6",
+	"scenario": "runs",
+	"prompt": "SUBTASK go",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "p0fugj",
+			"counter": 1,
+			"ctxKeys": [
+				"app",
+				"location",
+				"options",
+				"agent",
+				"aisdk",
+				"command",
+				"credential",
+				"event",
+				"experimental",
+				"generate",
+				"model",
+				"provider",
+				"integration",
+				"mcp",
+				"permission",
+				"plugin",
+				"reference",
+				"rpc",
+				"skill",
+				"storage",
+				"tool",
+				"vcs",
+				"websearch",
+				"worktree",
+				"session",
+				"shell"
+			],
+			"location": {
+				"directory": "/scratch/proj/v2-child-session",
+				"project": {
+					"id": "1f2b589c89d819130bed36733c7e7abe8037fa5c",
+					"directory": "/scratch/proj/v2-child-session",
+					"canonical": "/scratch/proj/v2-child-session"
+				}
+			},
+			"app": {
+				"name": "cli",
+				"version": "2.2.6",
+				"channel": "latest"
+			},
+			"skip": null,
+			"argv": ["bun", "/$bunfs/root/opencode", "serve", "--stdio", "--port", "0"],
+			"cwd": "/scratch/proj/v2-child-session"
+		},
+		{
+			"kind": "event",
+			"t": 54,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf65840c001AYx7OAaolxdY0n",
+				"created": 1794212463628,
+				"type": "session.inbox.enqueued",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 1,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"inboxID": "msg_1bf6583dc001Zc7QrBJKbik6J2",
+					"item": {
+						"type": "user",
+						"payload": {
+							"text": "SUBTASK go",
+							"files": []
+						},
+						"delivery": "steer"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 65,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf65840e001dIoEAxc6alHBB8",
+				"created": 1794212463631,
+				"type": "session.execution.started",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 2,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 67,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658415001n0NxHqtEgSA5H1",
+				"created": 1794212463637,
+				"type": "session.inbox.delivered",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 4,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"inboxID": "msg_1bf6583dc001Zc7QrBJKbik6J2"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1567,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6589f0001ipimARtypeNwix",
+				"created": 1794212465136,
+				"type": "session.step.started",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 5,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf65841e001ny091Nn7phpluA",
+					"agent": "build",
+					"model": {
+						"id": "stub-model",
+						"providerID": "stub"
+					},
+					"started": 1794212463649
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1568,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6589f2001qLQMwQnjPBhYWM",
+				"created": 1794212465138,
+				"type": "session.tool.input.started",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 6,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf65841e001ny091Nn7phpluA",
+					"id": "call_stub_sub_1",
+					"name": "subagent"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1568,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6589f4001Mjw0MGnPGOl6x8",
+				"created": 1794212465140,
+				"type": "session.tool.input.ended",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 7,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf65841e001ny091Nn7phpluA",
+					"id": "call_stub_sub_1",
+					"text": "{\"agent\":\"general\",\"description\":\"child job\",\"prompt\":\"CHILDWORK SHELLOK\"}"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1568,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6589f5001Bv7mwetP1YqiaA",
+				"created": 1794212465141,
+				"type": "session.tool.called",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 8,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf65841e001ny091Nn7phpluA",
+					"id": "call_stub_sub_1",
+					"input": {
+						"agent": "general",
+						"description": "child job",
+						"prompt": "CHILDWORK SHELLOK"
+					},
+					"executed": false
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1568,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6589f6001Fio9S2AX74SK1n",
+				"created": 1794212465142,
+				"type": "session.step.streamed",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 9,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf65841e001ny091Nn7phpluA"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1571,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6589fa001fMKDojLdW9vQBx",
+				"created": 1794212465146,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"cost": 0,
+					"tokens": {
+						"input": 0,
+						"output": 0,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1571,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6589fa002219af2fKiP5yXq",
+				"created": 1794212465146,
+				"type": "session.renamed",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 11,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"title": "Stub title"
+				}
+			}
+		},
+		{
+			"kind": "tool.before",
+			"t": 1572,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"skip": null,
+			"event": {
+				"tool": "subagent",
+				"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"agent": "build",
+				"messageID": "msg_1bf65841e001ny091Nn7phpluA",
+				"id": "call_stub_sub_1",
+				"input": {
+					"agent": "general",
+					"description": "child job",
+					"prompt": "CHILDWORK SHELLOK"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1577,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6589ff001ykRoT1i41qQWpx",
+				"created": 1794212465151,
+				"type": "session.created",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 0,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"projectID": "1f2b589c89d819130bed36733c7e7abe8037fa5c",
+					"location": {
+						"directory": "/scratch/proj/v2-child-session"
+					},
+					"subpath": "",
+					"parentID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"slug": "mighty-planet",
+					"title": "child job",
+					"agent": "general",
+					"version": "2.2.6"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1578,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658a00001hW5xpD0qkFlxkN",
+				"created": 1794212465152,
+				"type": "session.tool.progress",
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf65841e001ny091Nn7phpluA",
+					"id": "call_stub_sub_1",
+					"metadata": {
+						"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+						"status": "running"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1578,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658a01001POkpFdAvktTicJ",
+				"created": 1794212465153,
+				"type": "session.inbox.enqueued",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 1,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"inboxID": "msg_1bf658a00002xoalBjERxifUAB",
+					"item": {
+						"type": "user",
+						"payload": {
+							"text": "You are a subagent spawned by another session.\nCHILDWORK SHELLOK"
+						},
+						"delivery": "steer"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1586,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658a02001TOKxk29YUObkHN",
+				"created": 1794212465154,
+				"type": "session.execution.started",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 2,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1586,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658a05001tUo69rZ2g6hvu5",
+				"created": 1794212465157,
+				"type": "session.inbox.delivered",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 4,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"inboxID": "msg_1bf658a00002xoalBjERxifUAB"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2900,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658f27001Je42so8aaDEhor",
+				"created": 1794212466471,
+				"type": "session.step.started",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 5,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658a07001i4PuW1tMQanToy",
+					"agent": "general",
+					"model": {
+						"id": "stub-model",
+						"providerID": "stub"
+					},
+					"started": 1794212465161
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2900,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658f28001eyKkfhllu5QFiV",
+				"created": 1794212466472,
+				"type": "session.tool.input.started",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 6,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658a07001i4PuW1tMQanToy",
+					"id": "call_stub_ok_1",
+					"name": "shell"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2900,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658f29001OpLILRFqYqPCNv",
+				"created": 1794212466474,
+				"type": "session.tool.input.ended",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 7,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658a07001i4PuW1tMQanToy",
+					"id": "call_stub_ok_1",
+					"text": "{\"command\":\"printf ok\"}"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2900,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658f2a001N2LWVht1iHQrBC",
+				"created": 1794212466474,
+				"type": "session.tool.called",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 8,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658a07001i4PuW1tMQanToy",
+					"id": "call_stub_ok_1",
+					"input": {
+						"command": "printf ok"
+					},
+					"executed": false
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2900,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658f2b001qS6brT6v2Uu2Ue",
+				"created": 1794212466475,
+				"type": "session.step.streamed",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 9,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658a07001i4PuW1tMQanToy"
+				}
+			}
+		},
+		{
+			"kind": "tool.before",
+			"t": 2901,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"skip": null,
+			"event": {
+				"tool": "shell",
+				"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+				"agent": "general",
+				"messageID": "msg_1bf658a07001i4PuW1tMQanToy",
+				"id": "call_stub_ok_1",
+				"input": {
+					"command": "printf ok"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2904,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658f300017vSYDv3TUQVlx7",
+				"created": 1794212466480,
+				"type": "shell.created",
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"info": {
+						"id": "sh_1bf658f2e0013Wtd32JTwjNQr2",
+						"status": "running",
+						"command": "printf ok",
+						"cwd": "/scratch/proj/v2-child-session",
+						"shell": "/bin/zsh",
+						"file": "/scratch/state/v2-child-session/xdg-data/opencode/shell/1f2b589c89d819130bed36733c7e7abe8037fa5c/sh_1bf658f2e0013Wtd32JTwjNQr2.out",
+						"metadata": {
+							"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k"
+						},
+						"time": {
+							"started": 1794212466478
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2905,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658f300022VBOZkBAdGAV7T",
+				"created": 1794212466480,
+				"type": "session.tool.progress",
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658a07001i4PuW1tMQanToy",
+					"id": "call_stub_ok_1",
+					"metadata": {
+						"shellID": "sh_1bf658f2e0013Wtd32JTwjNQr2"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2909,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658f35001TLs5w141g7heXb",
+				"created": 1794212466485,
+				"type": "shell.exited",
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"id": "sh_1bf658f2e0013Wtd32JTwjNQr2",
+					"exit": 0,
+					"status": "exited"
+				}
+			}
+		},
+		{
+			"kind": "tool.after",
+			"t": 2910,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"skip": null,
+			"event": {
+				"tool": "shell",
+				"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+				"agent": "general",
+				"messageID": "msg_1bf658a07001i4PuW1tMQanToy",
+				"id": "call_stub_ok_1",
+				"input": {
+					"command": "printf ok"
+				},
+				"status": "completed",
+				"result": {
+					"output": {
+						"exit": 0,
+						"truncated": false,
+						"output": "ok",
+						"status": "completed"
+					},
+					"content": [
+						{
+							"type": "text",
+							"text": "ok"
+						}
+					],
+					"metadata": {
+						"status": "completed",
+						"truncated": false,
+						"exit": 0
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2919,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658f36001iS0MXOlxEklOhX",
+				"created": 1794212466486,
+				"type": "session.tool.success",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 10,
+					"version": 2
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658a07001i4PuW1tMQanToy",
+					"id": "call_stub_ok_1",
+					"content": [
+						{
+							"type": "text",
+							"text": "ok"
+						}
+					],
+					"metadata": {
+						"status": "completed",
+						"truncated": false,
+						"exit": 0
+					},
+					"executed": false
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2919,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658f37001uGpNWikUkfy6iS",
+				"created": 1794212466487,
+				"type": "session.step.ended",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 11,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658a07001i4PuW1tMQanToy",
+					"finish": "tool-calls",
+					"rawFinish": "tool_calls",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2919,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf658f39001LsS18rjjVYe7If",
+				"created": 1794212466489,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "tool.after",
+			"t": 4232,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"skip": null,
+			"event": {
+				"tool": "subagent",
+				"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+				"agent": "build",
+				"messageID": "msg_1bf65841e001ny091Nn7phpluA",
+				"id": "call_stub_sub_1",
+				"input": {
+					"agent": "general",
+					"description": "child job",
+					"prompt": "CHILDWORK SHELLOK"
+				},
+				"status": "completed",
+				"result": {
+					"output": {
+						"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+						"status": "completed",
+						"output": "STUB-DONE after tool"
+					},
+					"content": [
+						{
+							"type": "text",
+							"text": "<subagent sessionID=\"ses_e409a7602ffeFctdrNv0LDEI4k\" state=\"completed\">\nSTUB-DONE after tool\n</subagent>"
+						}
+					],
+					"metadata": {
+						"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+						"status": "completed"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4233,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6594590015gfdEVI1wsBvIe",
+				"created": 1794212467801,
+				"type": "session.step.started",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 12,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658f3b0014S1RaOLjr10FR6",
+					"agent": "general",
+					"model": {
+						"id": "stub-model",
+						"providerID": "stub"
+					},
+					"started": 1794212466494
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4242,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf65945a001ejg2Sjj0KBQlLL",
+				"created": 1794212467802,
+				"type": "session.text.started",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 13,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658f3b0014S1RaOLjr10FR6",
+					"ordinal": 0
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4242,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf65945b001Ted7n86ajKvilw",
+				"created": 1794212467803,
+				"type": "session.text.delta",
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658f3b0014S1RaOLjr10FR6",
+					"ordinal": 0,
+					"delta": "STUB-DONE after tool"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4242,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf65945b002dzXyCJlN4zB8Fs",
+				"created": 1794212467803,
+				"type": "session.text.ended",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 14,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658f3b0014S1RaOLjr10FR6",
+					"ordinal": 0,
+					"text": "STUB-DONE after tool"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4242,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf65945c001P8Q6LJvVnYp4E7",
+				"created": 1794212467804,
+				"type": "session.step.streamed",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 15,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658f3b0014S1RaOLjr10FR6"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4242,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf65945d001FiqqPA2LxWhqLa",
+				"created": 1794212467805,
+				"type": "session.step.ended",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 16,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"assistantMessageID": "msg_1bf658f3b0014S1RaOLjr10FR6",
+					"finish": "stop",
+					"rawFinish": "stop",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4242,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf65945e001V0xzwdpfSkEPID",
+				"created": 1794212467806,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"cost": 0,
+					"tokens": {
+						"input": 20,
+						"output": 10,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4242,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf65945f0011DvwhCeUwCcGwv",
+				"created": 1794212467807,
+				"type": "session.execution.succeeded",
+				"durable": {
+					"aggregateID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+					"seq": 17,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4242,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf659461001X7XnL5NpglGQSg",
+				"created": 1794212467809,
+				"type": "session.tool.success",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 12,
+					"version": 2
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf65841e001ny091Nn7phpluA",
+					"id": "call_stub_sub_1",
+					"content": [
+						{
+							"type": "text",
+							"text": "<subagent sessionID=\"ses_e409a7602ffeFctdrNv0LDEI4k\" state=\"completed\">\nSTUB-DONE after tool\n</subagent>"
+						}
+					],
+					"metadata": {
+						"sessionID": "ses_e409a7602ffeFctdrNv0LDEI4k",
+						"status": "completed",
+						"truncated": false
+					},
+					"executed": false
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4242,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf659462001PGklcpTXgzfAiH",
+				"created": 1794212467810,
+				"type": "session.step.ended",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 13,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf65841e001ny091Nn7phpluA",
+					"finish": "tool-calls",
+					"rawFinish": "tool_calls",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4243,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf659463001tQrmdgf7P5lAq5",
+				"created": 1794212467811,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5589,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6599a60016LXGt3Fi05xNPo",
+				"created": 1794212469158,
+				"type": "session.step.started",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 14,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf659467001xiCqigWFaxaD3p",
+					"agent": "build",
+					"model": {
+						"id": "stub-model",
+						"providerID": "stub"
+					},
+					"started": 1794212467817
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5590,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6599a80012HLHmYsohV9cxE",
+				"created": 1794212469160,
+				"type": "session.text.started",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 15,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf659467001xiCqigWFaxaD3p",
+					"ordinal": 0
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5590,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6599a9001AB99PKfQiDEbP0",
+				"created": 1794212469161,
+				"type": "session.text.delta",
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf659467001xiCqigWFaxaD3p",
+					"ordinal": 0,
+					"delta": "STUB-DONE after tool"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5590,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6599a9002bpw8Ee8MfaJTC1",
+				"created": 1794212469161,
+				"type": "session.text.ended",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 16,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf659467001xiCqigWFaxaD3p",
+					"ordinal": 0,
+					"text": "STUB-DONE after tool"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5590,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6599aa001wzmr2hlOy9UXF1",
+				"created": 1794212469162,
+				"type": "session.step.streamed",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 17,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf659467001xiCqigWFaxaD3p"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5590,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6599ab001pPG1fbb5zNV4o3",
+				"created": 1794212469163,
+				"type": "session.step.ended",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 18,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"assistantMessageID": "msg_1bf659467001xiCqigWFaxaD3p",
+					"finish": "stop",
+					"rawFinish": "stop",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5590,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6599ac001SEItieUbwLpdHt",
+				"created": 1794212469164,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"cost": 0,
+					"tokens": {
+						"input": 20,
+						"output": 10,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5590,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6599ac002snbVGQuvuODQxm",
+				"created": 1794212469164,
+				"type": "session.execution.succeeded",
+				"durable": {
+					"aggregateID": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+					"seq": 19,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409a7d1fffeRRBiaxLFMVxZBh"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 5610,
+			"tag": "A",
+			"instance": "p0fugj",
+			"directory": "/scratch/proj/v2-child-session",
+			"event": {
+				"id": "evt_1bf6599b7001XmFBLV5FGmlJpe",
+				"created": 1794212469175,
+				"type": "location.shutdown",
+				"location": {
+					"directory": "/scratch/proj/v2-child-session"
+				},
+				"data": {}
+			}
+		},
+		{
+			"kind": "cleanup",
+			"t": 5610,
+			"tag": "A",
+			"instance": "p0fugj"
+		},
+		{
+			"kind": "process.exit",
+			"t": 5629,
+			"tag": "A"
+		}
+	]
+}

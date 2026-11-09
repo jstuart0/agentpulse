@@ -1,0 +1,74 @@
+{
+	"line": "v2",
+	"name": "permission-reject",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+				"hook_event_name": "PreToolUse",
+				"cwd": "/scratch/proj/v2-permission-reject",
+				"tool_name": "write",
+				"tool_input": {
+					"path": "/scratch/proj/v2-permission-reject/perm.txt",
+					"content": "perm\n"
+				},
+				"tool_use_id": "call_stub_perm_1",
+				"provider_event_name": "tool.before",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PreToolUse", "tool_use_id": "call_stub_perm_1" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+				"hook_event_name": "PermissionRequest",
+				"cwd": "/scratch/proj/v2-permission-reject",
+				"tool_name": "edit",
+				"tool_input": { "patterns": ["perm.txt"] },
+				"tool_use_id": "call_stub_perm_1",
+				"provider_event_name": "permission.asked",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PermissionRequest", "tool_use_id": "call_stub_perm_1" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+				"hook_event_name": "PostToolUseFailure",
+				"cwd": "/scratch/proj/v2-permission-reject",
+				"tool_name": "write",
+				"tool_input": {
+					"path": "/scratch/proj/v2-permission-reject/perm.txt",
+					"content": "perm\n"
+				},
+				"tool_use_id": "call_stub_perm_1",
+				"error_message": "Tool.Error",
+				"provider_event_name": "tool.after",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PostToolUseFailure", "tool_use_id": "call_stub_perm_1" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+				"hook_event_name": "PermissionDenied",
+				"cwd": "/scratch/proj/v2-permission-reject",
+				"tool_use_id": "call_stub_perm_1",
+				"provider_event_name": "permission.replied",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PermissionDenied", "tool_use_id": "call_stub_perm_1" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+				"hook_event_name": "Stop",
+				"cwd": "/scratch/proj/v2-permission-reject",
+				"last_assistant_message": "STUB-DONE after tool",
+				"provider_event_name": "session.execution.succeeded",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "Stop" }
+		}
+	]
+}

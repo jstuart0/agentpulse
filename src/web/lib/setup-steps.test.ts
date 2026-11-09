@@ -337,3 +337,45 @@ describe("exclude card copy", () => {
 		expect(firstRun).toContain("FIRST_RUN_EXCLUDE_LINK");
 	});
 });
+
+describe("AGEN-141: the OpenCode plugin text stays out of the Setup page's own code", () => {
+	const root = join(import.meta.dir, "../../..");
+	const WEB = join(root, "src/web");
+
+	test("setup-steps.ts imports nothing that carries the generated plugin text", () => {
+		const text = readFileSync(join(import.meta.dir, "setup-steps.ts"), "utf8");
+		expect(text).not.toContain("opencode-plugin-text.generated");
+		expect(text).not.toMatch(/from "[^"]*opencode-plugin\.js"/);
+	});
+
+	test("only the lazy component imports the plugin module: no other web file does, and SetupPage reaches it only by import()", () => {
+		const offenders: string[] = [];
+		const walk = (dir: string) => {
+			for (const name of readdirSync(dir)) {
+				const p = join(dir, name);
+				if (statSync(p).isDirectory()) walk(p);
+				else if (
+					/\.(ts|tsx)$/.test(name) &&
+					!name.endsWith(".test.ts") &&
+					!name.endsWith(".test.tsx")
+				) {
+					const text = readFileSync(p, "utf8");
+					if (/from "[^"]*(opencode-plugin(-text\.generated)?|opencode-install)\.js"/.test(text)) {
+						offenders.push(p.slice(WEB.length + 1));
+					}
+				}
+			}
+		};
+		walk(WEB);
+		expect(offenders).toEqual(["components/OpenCodePluginFiles.tsx"]);
+		const page = readFileSync(join(WEB, "pages/SetupPage.tsx"), "utf8");
+		expect(page).toContain('lazy(() => import("../components/OpenCodePluginFiles.js"))');
+		expect(page).not.toMatch(/^import .*OpenCodePluginFiles/m);
+	});
+
+	test("OpenCode has an auth step, the same key-file step the command hooks use", () => {
+		const step = AUTH_STEP.opencode("ap_x", false);
+		expect(step?.title).toBe(AUTH_STEP.copilot_cli("ap_x", false)?.title);
+		expect(AUTH_STEP.opencode("ap_x", true)).toBeNull();
+	});
+});

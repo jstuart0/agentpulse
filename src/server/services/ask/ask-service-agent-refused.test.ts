@@ -102,6 +102,42 @@ describe("runAskTurn — agent_refused reaches a real persisted reply, no launch
 	});
 });
 
+describe("runAskTurn — OpenCode is refused like Copilot CLI (AGEN-141)", () => {
+	test("a launch-flavored message with agentType:opencode persists the refusal, no launchRequests row", async () => {
+		mockedClassifierText = JSON.stringify({
+			intent: "launch",
+			projectName: "agentpulse",
+			agentType: "opencode",
+		});
+		const result = await runAskTurn({
+			message: "launch opencode for agentpulse",
+			actor: TEST_ACTOR,
+		});
+		expect(result.assistantMessage.content).toBe(
+			"OpenCode can't be launched — AgentPulse can only launch Claude Code or Codex.",
+		);
+		expect(result.includedSessionIds).toEqual([]);
+		const rows = await getDb().select().from(launchRequests).execute();
+		expect(rows.length).toBe(0);
+	});
+
+	test("a resume-flavored message with agentType:opencode persists the resume refusal", async () => {
+		mockedClassifierText = JSON.stringify({
+			intent: "resume",
+			sessionHint: "some session",
+			newPrompt: "keep going",
+			agentType: "opencode",
+		});
+		const result = await runAskTurn({
+			message: "resume my opencode session with: keep going",
+			actor: TEST_ACTOR,
+		});
+		expect(result.assistantMessage.content).toBe(
+			"Resume isn't supported for OpenCode sessions — AgentPulse can only launch Claude Code or Codex.",
+		);
+	});
+});
+
 describe("runAskTurnStream — agent_refused streams start/delta/done, no side effects", () => {
 	test("a launch-flavored message with agentType:copilot_cli streams the refusal", async () => {
 		mockedClassifierText = JSON.stringify({

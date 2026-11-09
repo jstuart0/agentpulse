@@ -1,0 +1,41 @@
+{
+	"line": "v2",
+	"name": "forced-400",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+				"hook_event_name": "UserPromptSubmit",
+				"cwd": "/scratch/proj/v2-forced-400",
+				"prompt": "FAILTURN go",
+				"provider_event_name": "session.inbox.enqueued",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "UserPromptSubmit" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+				"hook_event_name": "ErrorOccurred",
+				"cwd": "/scratch/proj/v2-forced-400",
+				"error_message": "provider.invalid-request (HTTP 400)",
+				"provider_event_name": "session.step.failed",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": {
+				"event": "ErrorOccurred",
+				"errorMessage": "provider.invalid-request (HTTP 400)"
+			}
+		},
+		{
+			"expected": {
+				"session_id": "ses_e409a5e2dffeDMjWcYhzWx1ACt",
+				"hook_event_name": "Stop",
+				"cwd": "/scratch/proj/v2-forced-400",
+				"provider_event_name": "session.execution.failed",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "Stop" }
+		}
+	]
+}

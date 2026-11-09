@@ -1,0 +1,800 @@
+{
+	"line": "v1",
+	"version": "1.19.5",
+	"scenario": "runs",
+	"prompt": "PLAIN hello",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "qxj62q",
+			"counter": 1,
+			"ctxKeys": [
+				"client",
+				"project",
+				"worktree",
+				"directory",
+				"experimental_workspace",
+				"serverUrl",
+				"$"
+			],
+			"directory": "/scratch/proj/v1-plain",
+			"worktree": "/",
+			"serverUrl": "http://localhost:PORT/",
+			"skip": null,
+			"argv": ["bun", "/$bunfs/root/opencode", "run", "PLAIN hello"],
+			"cwd": "/scratch/proj/v1-plain"
+		},
+		{
+			"kind": "event",
+			"t": 73,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a0bb001K2ZYZ6SdKT8KiO",
+				"type": "session.created",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"info": {
+						"id": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"slug": "silent-river",
+						"version": "1.19.5",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-plain",
+						"path": "scratch/proj/v1-plain",
+						"title": "New session - 2026-11-09T08:20:05.434Z",
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212405434,
+							"updated": 1794212405434
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 88,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a0cd001rdr0TjxL1jg9Q0",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"info": {
+						"id": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"slug": "silent-river",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-plain",
+						"path": "scratch/proj/v1-plain",
+						"title": "New session - 2026-11-09T08:20:05.434Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212405434,
+							"updated": 1794212405453
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "chat.message",
+			"t": 90,
+			"tag": "A",
+			"instance": "qxj62q",
+			"skip": null,
+			"i": {
+				"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ"
+			},
+			"o": {
+				"message": {
+					"id": "msg_1bf64a0cd001CJZZM3BFGtY8Mg",
+					"role": "user",
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"time": {
+						"created": 1794212405453
+					},
+					"agent": "build",
+					"model": {
+						"providerID": "stub",
+						"modelID": "stub-model"
+					}
+				},
+				"parts": [
+					{
+						"type": "text",
+						"text": "\"PLAIN hello\"",
+						"messageID": "msg_1bf64a0cd001CJZZM3BFGtY8Mg",
+						"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"id": "prt_1bf64a0d0001oU9xFZh46uX0uB"
+					}
+				]
+			}
+		},
+		{
+			"kind": "event",
+			"t": 91,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a0d0001WP8L5E6BGMlPA8",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"info": {
+						"id": "msg_1bf64a0cd001CJZZM3BFGtY8Mg",
+						"role": "user",
+						"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"time": {
+							"created": 1794212405453
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 93,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a0d2001IMIAdYiTO5dRN1",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"part": {
+						"type": "text",
+						"text": "\"PLAIN hello\"",
+						"messageID": "msg_1bf64a0cd001CJZZM3BFGtY8Mg",
+						"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"id": "prt_1bf64a0d0001oU9xFZh46uX0uB"
+					},
+					"time": 1794212405458
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 94,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a0d3001HIUoi3hgLNPtWt",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"info": {
+						"id": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"slug": "silent-river",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-plain",
+						"path": "scratch/proj/v1-plain",
+						"title": "New session - 2026-11-09T08:20:05.434Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212405434,
+							"updated": 1794212405459
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 97,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a0d7001pMYD13g2MLD9sV",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 472,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a24d001FDDJu7ldyByG4a",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"info": {
+						"id": "msg_1bf64a24d001J2EYnROQrAT7Z9",
+						"parentID": "msg_1bf64a0cd001CJZZM3BFGtY8Mg",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-plain",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212405837
+						},
+						"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 493,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a261001Cs7oRnOGTFpcIV",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"info": {
+						"id": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"slug": "silent-river",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-plain",
+						"path": "scratch/proj/v1-plain",
+						"title": "New session - 2026-11-09T08:20:05.434Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212405434,
+							"updated": 1794212405857
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 493,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a263001c5ukGu7P3gN1zv",
+				"type": "session.diff",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"diff": []
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 494,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a264001b8xt2SfrrOwXQw",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"info": {
+						"role": "user",
+						"time": {
+							"created": 1794212405453
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						},
+						"id": "msg_1bf64a0cd001CJZZM3BFGtY8Mg",
+						"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"summary": {
+							"diffs": []
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1107,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a4c9001zdLw8PWIrUkJN7",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1259,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a560001fPFrnZjIbxQxo7",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"info": {
+						"id": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"slug": "silent-river",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-plain",
+						"path": "scratch/proj/v1-plain",
+						"title": "Stub title",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212405434,
+							"updated": 1794212405857
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1261,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a5620015yDjDTgKlzRtiu",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"part": {
+						"id": "prt_1bf64a562001QscPAkBqrimW9k",
+						"messageID": "msg_1bf64a24d001J2EYnROQrAT7Z9",
+						"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"type": "step-start"
+					},
+					"time": 1794212406626
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1262,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a564001xgLH6X6mc767vz",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"part": {
+						"id": "prt_1bf64a563001pYfVaPTp3JbO0B",
+						"messageID": "msg_1bf64a24d001J2EYnROQrAT7Z9",
+						"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"type": "text",
+						"text": "",
+						"time": {
+							"start": 1794212406627
+						}
+					},
+					"time": 1794212406627
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1262,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a564002znyWt3Rflrox2l",
+				"type": "message.part.delta",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"messageID": "msg_1bf64a24d001J2EYnROQrAT7Z9",
+					"partID": "prt_1bf64a563001pYfVaPTp3JbO0B",
+					"field": "text",
+					"delta": "STUB-PLAIN reply"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1263,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a565001vvkpFBttKZvPxK",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"part": {
+						"id": "prt_1bf64a563001pYfVaPTp3JbO0B",
+						"messageID": "msg_1bf64a24d001J2EYnROQrAT7Z9",
+						"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"type": "text",
+						"text": "STUB-PLAIN reply",
+						"time": {
+							"start": 1794212406627,
+							"end": 1794212406628
+						}
+					},
+					"time": 1794212406629
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1266,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a567001SX6YDGvDysUcoP",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"part": {
+						"id": "prt_1bf64a567001Q0eu4kV0QOUdr6",
+						"reason": "stop",
+						"messageID": "msg_1bf64a24d001J2EYnROQrAT7Z9",
+						"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"type": "step-finish",
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"cost": 0
+					},
+					"time": 1794212406631
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1266,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a568001IwrpOqgGfI7OCK",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"info": {
+						"id": "msg_1bf64a24d001J2EYnROQrAT7Z9",
+						"parentID": "msg_1bf64a0cd001CJZZM3BFGtY8Mg",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-plain",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212405837
+						},
+						"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"finish": "stop"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1268,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a5690012aGToVHuuPixLX",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"info": {
+						"id": "msg_1bf64a24d001J2EYnROQrAT7Z9",
+						"parentID": "msg_1bf64a0cd001CJZZM3BFGtY8Mg",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-plain",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212405837,
+							"completed": 1794212406633
+						},
+						"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+						"finish": "stop"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1268,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a56a001aStuszrRaYDL3J",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1269,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a56b001fYE294sNLxEj9W",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ",
+					"status": {
+						"type": "idle"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1269,
+			"tag": "A",
+			"instance": "qxj62q",
+			"directory": "/scratch/proj/v1-plain",
+			"event": {
+				"id": "evt_1bf64a56b002XN7a4acRBAB1CK",
+				"type": "session.idle",
+				"properties": {
+					"sessionID": "ses_e409b5f45ffe8k06g2lzPXO9ZQ"
+				}
+			}
+		},
+		{
+			"kind": "process.exit",
+			"t": 1281,
+			"tag": "A"
+		}
+	]
+}

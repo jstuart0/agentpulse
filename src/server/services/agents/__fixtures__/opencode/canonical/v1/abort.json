@@ -1,0 +1,69 @@
+{
+	"line": "v1",
+	"name": "abort",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_e4099e69dffer6O0RUE8r04ehr",
+				"hook_event_name": "PreToolUse",
+				"cwd": "/scratch/proj/v1-abort",
+				"tool_name": "bash",
+				"tool_input": {
+					"command": "sleep 4; echo slow-done",
+					"description": "canary"
+				},
+				"tool_use_id": "call_stub_slow_1",
+				"provider_event_name": "tool.execute.before",
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
+			},
+			"semantic": {
+				"event": "PreToolUse",
+				"tool_use_id": "call_stub_slow_1"
+			}
+		},
+		{
+			"expected": {
+				"session_id": "ses_e4099e69dffer6O0RUE8r04ehr",
+				"hook_event_name": "Interrupt",
+				"cwd": "/scratch/proj/v1-abort",
+				"provider_event_name": "session.error",
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
+			},
+			"semantic": {
+				"event": "Interrupt"
+			}
+		},
+		{
+			"expected": {
+				"session_id": "ses_e4099e69dffer6O0RUE8r04ehr",
+				"hook_event_name": "PostToolUse",
+				"cwd": "/scratch/proj/v1-abort",
+				"tool_name": "bash",
+				"tool_input": {
+					"command": "sleep 4; echo slow-done",
+					"description": "canary"
+				},
+				"tool_use_id": "call_stub_slow_1",
+				"tool_response": "(no output)\n\n<shell_metadata>\nUser aborted the command\n</shell_metadata>",
+				"provider_event_name": "tool.execute.after",
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
+			},
+			"semantic": {
+				"event": "PostToolUse",
+				"tool_use_id": "call_stub_slow_1"
+			}
+		}
+	]
+}

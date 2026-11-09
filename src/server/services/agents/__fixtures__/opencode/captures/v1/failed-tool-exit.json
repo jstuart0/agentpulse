@@ -1,0 +1,1320 @@
+{
+	"line": "v1",
+	"version": "1.19.5",
+	"scenario": "runs",
+	"prompt": "SHELLFAIL now",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "vabeqb",
+			"counter": 1,
+			"ctxKeys": [
+				"client",
+				"project",
+				"worktree",
+				"directory",
+				"experimental_workspace",
+				"serverUrl",
+				"$"
+			],
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"worktree": "/",
+			"serverUrl": "http://localhost:PORT/",
+			"skip": null,
+			"argv": ["bun", "/$bunfs/root/opencode", "run", "SHELLFAIL now"],
+			"cwd": "/scratch/proj/v1-failed-tool-exit"
+		},
+		{
+			"kind": "event",
+			"t": 74,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c0eb001m3BCwgO4FDjm01",
+				"type": "session.created",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"id": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"slug": "quick-moon",
+						"version": "1.19.5",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-failed-tool-exit",
+						"path": "scratch/proj/v1-failed-tool-exit",
+						"title": "New session - 2026-11-09T08:20:13.675Z",
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212413675,
+							"updated": 1794212413675
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 90,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c0fc001KdIY7g33LMe8hZ",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"id": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"slug": "quick-moon",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-failed-tool-exit",
+						"path": "scratch/proj/v1-failed-tool-exit",
+						"title": "New session - 2026-11-09T08:20:13.675Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212413675,
+							"updated": 1794212413692
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "chat.message",
+			"t": 91,
+			"tag": "A",
+			"instance": "vabeqb",
+			"skip": null,
+			"i": {
+				"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2"
+			},
+			"o": {
+				"message": {
+					"id": "msg_1bf64c0fc001amUUbMtnZuTuWL",
+					"role": "user",
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"time": {
+						"created": 1794212413692
+					},
+					"agent": "build",
+					"model": {
+						"providerID": "stub",
+						"modelID": "stub-model"
+					}
+				},
+				"parts": [
+					{
+						"type": "text",
+						"text": "\"SHELLFAIL now\"",
+						"messageID": "msg_1bf64c0fc001amUUbMtnZuTuWL",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"id": "prt_1bf64c0ff0015Wd0d0DIQaEnqt"
+					}
+				]
+			}
+		},
+		{
+			"kind": "event",
+			"t": 93,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c100001AppefG2WOiCrfc",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"id": "msg_1bf64c0fc001amUUbMtnZuTuWL",
+						"role": "user",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"time": {
+							"created": 1794212413692
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 94,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c10100101wYJPHZx77XZg",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"part": {
+						"type": "text",
+						"text": "\"SHELLFAIL now\"",
+						"messageID": "msg_1bf64c0fc001amUUbMtnZuTuWL",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"id": "prt_1bf64c0ff0015Wd0d0DIQaEnqt"
+					},
+					"time": 1794212413697
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 96,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c103001Hx1RQGqA4Qzo7C",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"id": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"slug": "quick-moon",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-failed-tool-exit",
+						"path": "scratch/proj/v1-failed-tool-exit",
+						"title": "New session - 2026-11-09T08:20:13.675Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212413675,
+							"updated": 1794212413699
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 98,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c106001oQYfgb8FvjxzSO",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 475,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c27e001iQi19lcn1W62WS",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"id": "msg_1bf64c27e001q3qzQ2BVSmOt8N",
+						"parentID": "msg_1bf64c0fc001amUUbMtnZuTuWL",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-failed-tool-exit",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212414078
+						},
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 499,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c2960016Ttk6VySmTSPcO",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"id": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"slug": "quick-moon",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-failed-tool-exit",
+						"path": "scratch/proj/v1-failed-tool-exit",
+						"title": "New session - 2026-11-09T08:20:13.675Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212413675,
+							"updated": 1794212414101
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 499,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c297001AOCgsQ28eMLaQq",
+				"type": "session.diff",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"diff": []
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 501,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c298001ikRhBKnCUcuXP7",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"role": "user",
+						"time": {
+							"created": 1794212413692
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						},
+						"id": "msg_1bf64c0fc001amUUbMtnZuTuWL",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"summary": {
+							"diffs": []
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1147,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c51f001dwZgpG7fyzfyE0",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1412,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c62700141tp0YfGKf63Ds",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"id": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"slug": "quick-moon",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-failed-tool-exit",
+						"path": "scratch/proj/v1-failed-tool-exit",
+						"title": "Stub title",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212413675,
+							"updated": 1794212414101
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1415,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c62a0012ZLoSymkMA4Mg6",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"part": {
+						"id": "prt_1bf64c62a001y8TjeG4lj3VRvi",
+						"messageID": "msg_1bf64c27e001q3qzQ2BVSmOt8N",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"type": "step-start"
+					},
+					"time": 1794212415018
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1416,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c62b001nQtTQ3fuiiOCde",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"part": {
+						"id": "prt_1bf64c62b0010UK8Jw2f5KIfg0",
+						"messageID": "msg_1bf64c27e001q3qzQ2BVSmOt8N",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"type": "tool",
+						"tool": "bash",
+						"callID": "call_stub_fail_1",
+						"state": {
+							"status": "pending",
+							"input": {},
+							"raw": ""
+						}
+					},
+					"time": 1794212415019
+				}
+			}
+		},
+		{
+			"kind": "tool.execute.before",
+			"t": 1418,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"skip": null,
+			"i": {
+				"tool": "bash",
+				"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+				"callID": "call_stub_fail_1"
+			},
+			"o": {
+				"args": {
+					"command": "exit 3",
+					"description": "canary"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1420,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c62f001jwK87qTkGHTuAb",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"part": {
+						"type": "tool",
+						"tool": "bash",
+						"callID": "call_stub_fail_1",
+						"state": {
+							"status": "running",
+							"input": {
+								"command": "exit 3",
+								"description": "canary"
+							},
+							"time": {
+								"start": 1794212415023
+							}
+						},
+						"id": "prt_1bf64c62b0010UK8Jw2f5KIfg0",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"messageID": "msg_1bf64c27e001q3qzQ2BVSmOt8N"
+					},
+					"time": 1794212415023
+				}
+			}
+		},
+		{
+			"kind": "shell.env",
+			"t": 1435,
+			"tag": "A",
+			"instance": "vabeqb",
+			"i": {
+				"cwd": "/scratch/proj/v1-failed-tool-exit",
+				"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+				"callID": "call_stub_fail_1"
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1436,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c63f001bcxtNBCEa9cQTa",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"part": {
+						"type": "tool",
+						"tool": "bash",
+						"callID": "call_stub_fail_1",
+						"state": {
+							"metadata": {
+								"output": ""
+							},
+							"status": "running",
+							"input": {
+								"command": "exit 3",
+								"description": "canary"
+							},
+							"time": {
+								"start": 1794212415023
+							}
+						},
+						"id": "prt_1bf64c62b0010UK8Jw2f5KIfg0",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"messageID": "msg_1bf64c27e001q3qzQ2BVSmOt8N"
+					},
+					"time": 1794212415039
+				}
+			}
+		},
+		{
+			"kind": "tool.execute.after",
+			"t": 1445,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"skip": null,
+			"i": {
+				"tool": "bash",
+				"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+				"callID": "call_stub_fail_1",
+				"args": {
+					"command": "exit 3",
+					"description": "canary"
+				}
+			},
+			"o": {
+				"title": "exit 3",
+				"metadata": {
+					"output": "(no output)",
+					"exit": 3,
+					"truncated": false
+				},
+				"output": "(no output)"
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1447,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c64a0018TIGFNTcrrqlhx",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"part": {
+						"type": "tool",
+						"tool": "bash",
+						"callID": "call_stub_fail_1",
+						"state": {
+							"status": "completed",
+							"input": {
+								"command": "exit 3",
+								"description": "canary"
+							},
+							"output": "(no output)",
+							"metadata": {
+								"output": "(no output)",
+								"exit": 3,
+								"truncated": false
+							},
+							"title": "exit 3",
+							"time": {
+								"start": 1794212415023,
+								"end": 1794212415050
+							}
+						},
+						"id": "prt_1bf64c62b0010UK8Jw2f5KIfg0",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"messageID": "msg_1bf64c27e001q3qzQ2BVSmOt8N"
+					},
+					"time": 1794212415050
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1449,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c64c0010iM1BBypUbQrz1",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"part": {
+						"id": "prt_1bf64c64c001JP5MtdO82Sj5TJ",
+						"reason": "tool-calls",
+						"messageID": "msg_1bf64c27e001q3qzQ2BVSmOt8N",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"type": "step-finish",
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"cost": 0
+					},
+					"time": 1794212415052
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1450,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c64d001Gg5Vt4qlOM8Ttk",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"id": "msg_1bf64c27e001q3qzQ2BVSmOt8N",
+						"parentID": "msg_1bf64c0fc001amUUbMtnZuTuWL",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-failed-tool-exit",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212414078
+						},
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"finish": "tool-calls"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1452,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c64f00158gyX4BoLa4fQa",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"id": "msg_1bf64c27e001q3qzQ2BVSmOt8N",
+						"parentID": "msg_1bf64c0fc001amUUbMtnZuTuWL",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-failed-tool-exit",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212414078,
+							"completed": 1794212415055
+						},
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"finish": "tool-calls"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1452,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c650001dujr3tCcLKg6FF",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1454,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c651001u2LkBYq7j73AZf",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"id": "msg_1bf64c651001iOyOWKCY84yfUs",
+						"parentID": "msg_1bf64c0fc001amUUbMtnZuTuWL",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-failed-tool-exit",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212415057
+						},
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1457,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c654001y0YkXO4qpuRIL7",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"id": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"slug": "quick-moon",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-failed-tool-exit",
+						"path": "scratch/proj/v1-failed-tool-exit",
+						"title": "Stub title",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212413675,
+							"updated": 1794212415060
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1457,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c655001ILan0CTcQg5597",
+				"type": "session.diff",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"diff": []
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1458,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c6560012OBxpMz2DNtj7q",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"role": "user",
+						"time": {
+							"created": 1794212413692
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						},
+						"summary": {
+							"diffs": []
+						},
+						"id": "msg_1bf64c0fc001amUUbMtnZuTuWL",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1461,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c659001WPyM2VLxqPKR4Z",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1465,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c65d001p8KJKlzieo0edl",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"part": {
+						"id": "prt_1bf64c65d00167J7Bv0bWMmQ0g",
+						"messageID": "msg_1bf64c651001iOyOWKCY84yfUs",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"type": "step-start"
+					},
+					"time": 1794212415069
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1466,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c65e001dQORfb7cjlBfUa",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"part": {
+						"id": "prt_1bf64c65e0017idhELlqsjSaNy",
+						"messageID": "msg_1bf64c651001iOyOWKCY84yfUs",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"type": "text",
+						"text": "",
+						"time": {
+							"start": 1794212415070
+						}
+					},
+					"time": 1794212415070
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1466,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c65e002Gm2IDVbuxkJvTA",
+				"type": "message.part.delta",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"messageID": "msg_1bf64c651001iOyOWKCY84yfUs",
+					"partID": "prt_1bf64c65e0017idhELlqsjSaNy",
+					"field": "text",
+					"delta": "STUB-DONE after tool"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1467,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c65f001K8kS7asX7Reezf",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"part": {
+						"id": "prt_1bf64c65e0017idhELlqsjSaNy",
+						"messageID": "msg_1bf64c651001iOyOWKCY84yfUs",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"type": "text",
+						"text": "STUB-DONE after tool",
+						"time": {
+							"start": 1794212415070,
+							"end": 1794212415071
+						}
+					},
+					"time": 1794212415071
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1468,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c6600014650cVazULykVc",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"part": {
+						"id": "prt_1bf64c660001HyDWY1FrGotz5C",
+						"reason": "stop",
+						"messageID": "msg_1bf64c651001iOyOWKCY84yfUs",
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"type": "step-finish",
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"cost": 0
+					},
+					"time": 1794212415072
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1469,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c661001lV1m2FCNL4gopR",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"id": "msg_1bf64c651001iOyOWKCY84yfUs",
+						"parentID": "msg_1bf64c0fc001amUUbMtnZuTuWL",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-failed-tool-exit",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212415057
+						},
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"finish": "stop"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1470,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c6620016bTIe56XDoVX9l",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"info": {
+						"id": "msg_1bf64c651001iOyOWKCY84yfUs",
+						"parentID": "msg_1bf64c0fc001amUUbMtnZuTuWL",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-failed-tool-exit",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212415057,
+							"completed": 1794212415074
+						},
+						"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+						"finish": "stop"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1470,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c662002imFXJfr2GzdVdq",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1472,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c664001vCCO64gYI3Vytq",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2",
+					"status": {
+						"type": "idle"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1472,
+			"tag": "A",
+			"instance": "vabeqb",
+			"directory": "/scratch/proj/v1-failed-tool-exit",
+			"event": {
+				"id": "evt_1bf64c6640024jc1U6Q0J0NbMb",
+				"type": "session.idle",
+				"properties": {
+					"sessionID": "ses_e409b3f15ffe7Gm45xcOJhC5w2"
+				}
+			}
+		},
+		{
+			"kind": "process.exit",
+			"t": 1482,
+			"tag": "A"
+		}
+	]
+}

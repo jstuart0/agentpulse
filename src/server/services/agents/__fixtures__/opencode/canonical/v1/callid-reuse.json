@@ -1,0 +1,60 @@
+{
+	"line": "v1",
+	"name": "callid-reuse",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_reuse0000000000000000000001",
+				"hook_event_name": "PreToolUse",
+				"cwd": "/scratch/proj/v1-reuse",
+				"tool_name": "bash",
+				"tool_input": { "command": "printf one" },
+				"tool_use_id": "call_0",
+				"provider_event_name": "tool.execute.before",
+				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+			},
+			"semantic": { "event": "PreToolUse", "tool_use_id": "call_0" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_reuse0000000000000000000001",
+				"hook_event_name": "PostToolUse",
+				"cwd": "/scratch/proj/v1-reuse",
+				"tool_name": "bash",
+				"tool_input": { "command": "printf one" },
+				"tool_use_id": "call_0",
+				"tool_response": { "output": "one", "exit_code": 0 },
+				"provider_event_name": "tool.execute.after",
+				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+			},
+			"semantic": { "event": "PostToolUse", "tool_use_id": "call_0" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_reuse0000000000000000000001",
+				"hook_event_name": "PreToolUse",
+				"cwd": "/scratch/proj/v1-reuse",
+				"tool_name": "bash",
+				"tool_input": { "command": "printf two" },
+				"tool_use_id": "call_0#2",
+				"provider_event_name": "tool.execute.before",
+				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+			},
+			"semantic": { "event": "PreToolUse", "tool_use_id": "call_0#2" }
+		},
+		{
+			"expected": {
+				"session_id": "ses_reuse0000000000000000000001",
+				"hook_event_name": "PostToolUse",
+				"cwd": "/scratch/proj/v1-reuse",
+				"tool_name": "bash",
+				"tool_input": { "command": "printf two" },
+				"tool_use_id": "call_0#2",
+				"tool_response": { "output": "two", "exit_code": 0 },
+				"provider_event_name": "tool.execute.after",
+				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+			},
+			"semantic": { "event": "PostToolUse", "tool_use_id": "call_0#2" }
+		}
+	]
+}

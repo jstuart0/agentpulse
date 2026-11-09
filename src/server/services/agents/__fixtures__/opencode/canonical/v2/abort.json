@@ -1,0 +1,30 @@
+{
+	"line": "v2",
+	"name": "abort",
+	"outputs": [
+		{
+			"expected": {
+				"session_id": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+				"hook_event_name": "PreToolUse",
+				"cwd": "/scratch/proj/v2-abort",
+				"tool_name": "shell",
+				"tool_input": { "command": "sleep 4; echo slow-done" },
+				"tool_use_id": "call_stub_slow_1",
+				"provider_event_name": "tool.before",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "PreToolUse", "tool_use_id": "call_stub_slow_1" }
+		},
+		{ "expected": { "session_id": "", "hook_event_name": "" }, "semantic": { "event": "drop" } },
+		{
+			"expected": {
+				"session_id": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+				"hook_event_name": "Interrupt",
+				"cwd": "/scratch/proj/v2-abort",
+				"provider_event_name": "session.execution.interrupted",
+				"opencode": { "line": 2, "protocol": 1, "version": "2.2.6" }
+			},
+			"semantic": { "event": "Interrupt" }
+		}
+	]
+}

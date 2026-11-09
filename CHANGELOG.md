@@ -9,6 +9,21 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Added
 
+- **OpenCode is observed (AGEN-141).** OpenCode 1.x and 2.x sessions appear on the dashboard with an "OpenCode" badge and an
+  "Observed only" hint; AgentPulse can't launch, steer, take over or resume them. A small plugin per OpenCode line runs inside
+  OpenCode and posts to the server (8 events on 1.x, 10 on 2.x); `agentpulse setup`, `setup-hooks.sh`, `install-local.ps1` and
+  the relay installer write it when OpenCode is found, and `--no-opencode` / `-NoOpenCode` removes it. The agent type is
+  `opencode`, accepted by the `agent_type` filters, the MCP `list_sessions` tool and the Setup page. Tested on OpenCode 1.19.5
+  and 2.2.6 on macOS. **Upgrade the server first:** an older server stores OpenCode events as Claude Code sessions.
+  Things to know:
+  - OpenCode 1.x downloads its plugin SDK the first time it finds a plugin and then waits about 70 seconds at each start while
+    offline, so setup writes the 1.x plugin only where the SDK is already present or another plugin is loaded, and says so when
+    it doesn't. The force option (`--opencode-force`, `-OpenCodeForce`) writes it anyway; it isn't remembered.
+  - The plugin applies your exclude rules and sends nothing while they're invalid. A running OpenCode 2 background service
+    doesn't see `AGENTPULSE_SKIP` set in a shell: use a rule, or `opencode service stop`. With a rules file present, a one-shot
+    `opencode run` sends nothing at exit, so a turn end whose POST hadn't started can be lost.
+  - Prompts, tool arguments and output are stored as the other agents' are (no redaction before the server); error rows carry
+    only the error's name and HTTP status. The exit-time send uses `/usr/bin/curl`. PowerShell has never been executed.
 - **Stop turn on a continued Claude session (AGEN-119).** While a continued session's turn runs, the prompt box shows **Stop turn**
   in place of Send (on a phone the overflow menu has it too, above End session). It ends what Claude is doing and the session
   stays open: the process, the conversation and the session keep going and the next prompt runs. Nothing is signalled (Claude's

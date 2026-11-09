@@ -42,6 +42,28 @@ export function ownPids(
 		.map(Number);
 }
 
+/**
+ * Like `ownPids` for many directories at once: one `pgrep`, one `ps` per candidate, however many directories.
+ * (A sampler that asks once per directory per second starves the event loop of a run with hundreds of them.)
+ */
+export function ownPidsAny(
+	spec: OwnProcessSpec,
+	values: readonly string[],
+	matches: EnvMatcher = namesEnvValue,
+): number[] {
+	if (values.length === 0) return [];
+	return spawnSync("pgrep", ["-x", spec.processName], { encoding: "utf8" })
+		.stdout.split("\n")
+		.filter(Boolean)
+		.filter((pid) => {
+			const command = spawnSync("ps", ["-Eww", "-p", pid, "-o", "command="], {
+				encoding: "utf8",
+			}).stdout.trim();
+			return values.some((value) => matches(command, spec.envVar, value));
+		})
+		.map(Number);
+}
+
 /** Signal the group of each of this run's processes, or the process itself when it leads no group. */
 export function signalOwnProcesses(
 	spec: OwnProcessSpec,

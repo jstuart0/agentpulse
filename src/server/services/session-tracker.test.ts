@@ -682,6 +682,14 @@ describe("getStats — byAgentType zero-fill (D18)", () => {
 		expect(stats.byAgentType.claude_code).toBe(2);
 		expect(stats.byAgentType.codex_cli).toBe(0);
 	});
+
+	test("opencode (AGEN-141) is counted under its own key, not zero-filled over", async () => {
+		await mkSession("oc1", { agentType: "opencode", status: "active" });
+		await mkSession("oc2", { agentType: "opencode", status: "active" });
+		const stats = await getStats();
+		expect(stats.byAgentType.opencode).toBe(2);
+		expect(stats.byAgentType.copilot_cli).toBe(0);
+	});
 });
 
 describe("getStats — operational counts (AGEN)", () => {

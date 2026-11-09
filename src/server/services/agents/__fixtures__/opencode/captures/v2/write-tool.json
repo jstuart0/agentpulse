@@ -1,0 +1,704 @@
+{
+	"line": "v2",
+	"version": "2.2.6",
+	"scenario": "runs",
+	"prompt": "WRITEFILE now",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "4k1oud",
+			"counter": 1,
+			"ctxKeys": [
+				"app",
+				"location",
+				"options",
+				"agent",
+				"aisdk",
+				"command",
+				"credential",
+				"event",
+				"experimental",
+				"generate",
+				"model",
+				"provider",
+				"integration",
+				"mcp",
+				"permission",
+				"plugin",
+				"reference",
+				"rpc",
+				"skill",
+				"storage",
+				"tool",
+				"vcs",
+				"websearch",
+				"worktree",
+				"session",
+				"shell"
+			],
+			"location": {
+				"directory": "/scratch/proj/v2-write-tool",
+				"project": {
+					"id": "1aaa79bf3bf567a3f9d94645da7a24b02e5ab2b5",
+					"directory": "/scratch/proj/v2-write-tool",
+					"canonical": "/scratch/proj/v2-write-tool"
+				}
+			},
+			"app": {
+				"name": "cli",
+				"version": "2.2.6",
+				"channel": "latest"
+			},
+			"skip": null,
+			"argv": ["bun", "/$bunfs/root/opencode", "serve", "--stdio", "--port", "0"],
+			"cwd": "/scratch/proj/v2-write-tool"
+		},
+		{
+			"kind": "event",
+			"t": 43,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf6545b8001AfwxEhf7Ws1YzH",
+				"created": 1794212447672,
+				"type": "session.inbox.enqueued",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 1,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"inboxID": "msg_1bf654592001lOT1kh4gnFl3Xw",
+					"item": {
+						"type": "user",
+						"payload": {
+							"text": "WRITEFILE now",
+							"files": []
+						},
+						"delivery": "steer"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 52,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf6545bb001U8sukK8tT5NVWJ",
+				"created": 1794212447675,
+				"type": "session.execution.started",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 2,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 54,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf6545c0001ngfGJj0eJVVTCi",
+				"created": 1794212447680,
+				"type": "session.inbox.delivered",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 4,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"inboxID": "msg_1bf654592001lOT1kh4gnFl3Xw"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2560,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf654f890015P99yI9Inu0RrV",
+				"created": 1794212450185,
+				"type": "session.step.started",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 5,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"assistantMessageID": "msg_1bf6545c80015wBEA84YOWj8Rv",
+					"agent": "build",
+					"model": {
+						"id": "stub-model",
+						"providerID": "stub"
+					},
+					"started": 1794212447691
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2560,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf654f8a001CAQhsJ7NXpT4m2",
+				"created": 1794212450186,
+				"type": "session.tool.input.started",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 6,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"assistantMessageID": "msg_1bf6545c80015wBEA84YOWj8Rv",
+					"id": "call_stub_write_1",
+					"name": "write"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2561,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf654f8c001L5u2EzXbmYhTEW",
+				"created": 1794212450189,
+				"type": "session.tool.input.ended",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 7,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"assistantMessageID": "msg_1bf6545c80015wBEA84YOWj8Rv",
+					"id": "call_stub_write_1",
+					"text": "{\"filePath\":\"/scratch/proj/v2-write-tool/out.txt\",\"path\":\"/scratch/proj/v2-write-tool/out.txt\",\"content\":\"hello from stub\\n\"}"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2561,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf654f8d001IomOxHpVclLfHj",
+				"created": 1794212450189,
+				"type": "session.tool.called",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 8,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"assistantMessageID": "msg_1bf6545c80015wBEA84YOWj8Rv",
+					"id": "call_stub_write_1",
+					"input": {
+						"filePath": "/scratch/proj/v2-write-tool/out.txt",
+						"path": "/scratch/proj/v2-write-tool/out.txt",
+						"content": "hello from stub\n"
+					},
+					"executed": false
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2561,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf654f8e001oLNKfilcRG5f0b",
+				"created": 1794212450190,
+				"type": "session.step.streamed",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 9,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"assistantMessageID": "msg_1bf6545c80015wBEA84YOWj8Rv"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2563,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf654f920013lzoXUlWjh4Hpu",
+				"created": 1794212450194,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"cost": 0,
+					"tokens": {
+						"input": 0,
+						"output": 0,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2564,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf654f920022D6QHKTJXgCCLR",
+				"created": 1794212450194,
+				"type": "session.renamed",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 11,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"title": "Stub title"
+				}
+			}
+		},
+		{
+			"kind": "tool.before",
+			"t": 2564,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"skip": null,
+			"event": {
+				"tool": "write",
+				"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+				"agent": "build",
+				"messageID": "msg_1bf6545c80015wBEA84YOWj8Rv",
+				"id": "call_stub_write_1",
+				"input": {
+					"path": "/scratch/proj/v2-write-tool/out.txt",
+					"content": "hello from stub\n"
+				}
+			}
+		},
+		{
+			"kind": "tool.after",
+			"t": 2566,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"skip": null,
+			"event": {
+				"tool": "write",
+				"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+				"agent": "build",
+				"messageID": "msg_1bf6545c80015wBEA84YOWj8Rv",
+				"id": "call_stub_write_1",
+				"input": {
+					"path": "/scratch/proj/v2-write-tool/out.txt",
+					"content": "hello from stub\n"
+				},
+				"status": "completed",
+				"result": {
+					"output": {
+						"operation": "write",
+						"target": "/scratch/proj/v2-write-tool/out.txt",
+						"resource": "out.txt",
+						"existed": false
+					},
+					"content": [
+						{
+							"type": "text",
+							"text": "Created file successfully: out.txt"
+						}
+					]
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2575,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf654f95001Q9sG7992iZpUI5",
+				"created": 1794212450197,
+				"type": "session.tool.success",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 12,
+					"version": 2
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"assistantMessageID": "msg_1bf6545c80015wBEA84YOWj8Rv",
+					"id": "call_stub_write_1",
+					"content": [
+						{
+							"type": "text",
+							"text": "Created file successfully: out.txt"
+						}
+					],
+					"metadata": {
+						"truncated": false
+					},
+					"executed": false
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2575,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf654f970011mAYGy45MQlWhs",
+				"created": 1794212450199,
+				"type": "session.step.ended",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 13,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"assistantMessageID": "msg_1bf6545c80015wBEA84YOWj8Rv",
+					"finish": "tool-calls",
+					"rawFinish": "tool_calls",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2575,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf654f98001F56YSQnjDgr50i",
+				"created": 1794212450200,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3761,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf655439001WVBSPweBE1SJ6g",
+				"created": 1794212451385,
+				"type": "session.step.started",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 14,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"assistantMessageID": "msg_1bf654f9b001KAACH13G4zdakt",
+					"agent": "build",
+					"model": {
+						"id": "stub-model",
+						"providerID": "stub"
+					},
+					"started": 1794212450205
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3762,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf65543b0012oZVhjzrRrUkMy",
+				"created": 1794212451387,
+				"type": "session.text.started",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 15,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"assistantMessageID": "msg_1bf654f9b001KAACH13G4zdakt",
+					"ordinal": 0
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3762,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf65543c001KS4mlHVr0Nn54Z",
+				"created": 1794212451388,
+				"type": "session.text.delta",
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"assistantMessageID": "msg_1bf654f9b001KAACH13G4zdakt",
+					"ordinal": 0,
+					"delta": "STUB-DONE after tool"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3762,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf65543c002EYwXod1fUW10vP",
+				"created": 1794212451388,
+				"type": "session.text.ended",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 16,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"assistantMessageID": "msg_1bf654f9b001KAACH13G4zdakt",
+					"ordinal": 0,
+					"text": "STUB-DONE after tool"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3762,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf65543d0011HfXWrV2oEifvz",
+				"created": 1794212451389,
+				"type": "session.step.streamed",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 17,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"assistantMessageID": "msg_1bf654f9b001KAACH13G4zdakt"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3762,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf65543e001jG05RcmPYUBObN",
+				"created": 1794212451390,
+				"type": "session.step.ended",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 18,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"assistantMessageID": "msg_1bf654f9b001KAACH13G4zdakt",
+					"finish": "stop",
+					"rawFinish": "stop",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3762,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf65543e002hmBK0IhgpVh9Dd",
+				"created": 1794212451390,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"cost": 0,
+					"tokens": {
+						"input": 20,
+						"output": 10,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3762,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf65543f001Zl6LKOc0R48O4c",
+				"created": 1794212451391,
+				"type": "session.execution.succeeded",
+				"durable": {
+					"aggregateID": "ses_e409abb68ffe3HTaHl5t1vzR2a",
+					"seq": 19,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409abb68ffe3HTaHl5t1vzR2a"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3782,
+			"tag": "A",
+			"instance": "4k1oud",
+			"directory": "/scratch/proj/v2-write-tool",
+			"event": {
+				"id": "evt_1bf65544a001kLRAiO87lslYke",
+				"created": 1794212451402,
+				"type": "location.shutdown",
+				"location": {
+					"directory": "/scratch/proj/v2-write-tool"
+				},
+				"data": {}
+			}
+		},
+		{
+			"kind": "cleanup",
+			"t": 3783,
+			"tag": "A",
+			"instance": "4k1oud"
+		},
+		{
+			"kind": "process.exit",
+			"t": 3803,
+			"tag": "A"
+		}
+	]
+}

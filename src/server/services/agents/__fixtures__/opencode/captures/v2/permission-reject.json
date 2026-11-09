@@ -1,0 +1,781 @@
+{
+	"line": "v2",
+	"version": "2.2.6",
+	"scenario": "runs",
+	"prompt": "PERMASK go",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "vpupr6",
+			"counter": 1,
+			"ctxKeys": [
+				"app",
+				"location",
+				"options",
+				"agent",
+				"aisdk",
+				"command",
+				"credential",
+				"event",
+				"experimental",
+				"generate",
+				"model",
+				"provider",
+				"integration",
+				"mcp",
+				"permission",
+				"plugin",
+				"reference",
+				"rpc",
+				"skill",
+				"storage",
+				"tool",
+				"vcs",
+				"websearch",
+				"worktree",
+				"session",
+				"shell"
+			],
+			"location": {
+				"directory": "/scratch/proj/v2-permission-reject",
+				"project": {
+					"id": "7b55dbf21a5d6139d3be691d23352f854c377bd0",
+					"directory": "/scratch/proj/v2-permission-reject",
+					"canonical": "/scratch/proj/v2-permission-reject"
+				}
+			},
+			"app": {
+				"name": "cli",
+				"version": "2.2.6",
+				"channel": "latest"
+			},
+			"skip": null,
+			"argv": ["bun", "/$bunfs/root/opencode", "serve", "--stdio", "--port", "0"],
+			"cwd": "/scratch/proj/v2-permission-reject"
+		},
+		{
+			"kind": "event",
+			"t": 5,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b232001ff1WtGJKpUo9D8",
+				"created": 1794212475442,
+				"type": "session.created",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 0,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"projectID": "7b55dbf21a5d6139d3be691d23352f854c377bd0",
+					"location": {
+						"directory": "/scratch/proj/v2-permission-reject"
+					},
+					"subpath": "",
+					"slug": "mighty-forest",
+					"version": "2.2.6"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 49,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b25f001iK3fKCyi88at0H",
+				"created": 1794212475487,
+				"type": "session.inbox.enqueued",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 1,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"inboxID": "msg_1bf65b23d001EI3Qs74BV3WqOz",
+					"item": {
+						"type": "user",
+						"payload": {
+							"text": "PERMASK go",
+							"files": []
+						},
+						"delivery": "steer"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 59,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b262001PXIWx5POaF4rV1",
+				"created": 1794212475490,
+				"type": "session.execution.started",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 2,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 61,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b268001qZLi6PSz5u3wWj",
+				"created": 1794212475496,
+				"type": "session.inbox.delivered",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 4,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"inboxID": "msg_1bf65b23d001EI3Qs74BV3WqOz"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1678,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b8b7001hj68V2Hwt5wTyD",
+				"created": 1794212477111,
+				"type": "session.step.started",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 5,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"assistantMessageID": "msg_1bf65b270001lK8uPDFzfN0u22",
+					"agent": "build",
+					"model": {
+						"id": "stub-model",
+						"providerID": "stub"
+					},
+					"started": 1794212475506
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1678,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b8b8001iy8bzlOyRQDBNh",
+				"created": 1794212477112,
+				"type": "session.tool.input.started",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 6,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"assistantMessageID": "msg_1bf65b270001lK8uPDFzfN0u22",
+					"id": "call_stub_perm_1",
+					"name": "write"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1678,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b8bb001Rb0LVohGUqNygN",
+				"created": 1794212477115,
+				"type": "session.tool.input.ended",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 7,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"assistantMessageID": "msg_1bf65b270001lK8uPDFzfN0u22",
+					"id": "call_stub_perm_1",
+					"text": "{\"filePath\":\"/scratch/proj/v2-permission-reject/perm.txt\",\"path\":\"/scratch/proj/v2-permission-reject/perm.txt\",\"content\":\"perm\\n\"}"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1679,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b8bc001nWhlkBAxnagNpY",
+				"created": 1794212477116,
+				"type": "session.tool.called",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 8,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"assistantMessageID": "msg_1bf65b270001lK8uPDFzfN0u22",
+					"id": "call_stub_perm_1",
+					"input": {
+						"filePath": "/scratch/proj/v2-permission-reject/perm.txt",
+						"path": "/scratch/proj/v2-permission-reject/perm.txt",
+						"content": "perm\n"
+					},
+					"executed": false
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1679,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b8bd001nmbJYP0dIknp8l",
+				"created": 1794212477117,
+				"type": "session.step.streamed",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 9,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"assistantMessageID": "msg_1bf65b270001lK8uPDFzfN0u22"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1681,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b8c0001MXs4dW1B07alhf",
+				"created": 1794212477120,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"cost": 0,
+					"tokens": {
+						"input": 0,
+						"output": 0,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1681,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b8c0002Z2RcPsAJjov7Q2",
+				"created": 1794212477120,
+				"type": "session.renamed",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 11,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"title": "Stub title"
+				}
+			}
+		},
+		{
+			"kind": "tool.before",
+			"t": 1682,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"skip": null,
+			"event": {
+				"tool": "write",
+				"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+				"agent": "build",
+				"messageID": "msg_1bf65b270001lK8uPDFzfN0u22",
+				"id": "call_stub_perm_1",
+				"input": {
+					"path": "/scratch/proj/v2-permission-reject/perm.txt",
+					"content": "perm\n"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1683,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b8c3002NWHob72nCBy5nb",
+				"created": 1794212477123,
+				"type": "permission.asked",
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"id": "per_1bf65b8c3001NGW9JYQXX3yjps",
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"action": "edit",
+					"resources": ["perm.txt"],
+					"save": ["*"],
+					"metadata": {
+						"files": [
+							{
+								"file": "perm.txt",
+								"patch": "Index: perm.txt\n===================================================================\n--- perm.txt\n+++ perm.txt\n@@ -0,0 +1,1 @@\n+perm\n",
+								"status": "added",
+								"additions": 1,
+								"deletions": 0
+							}
+						]
+					},
+					"source": {
+						"type": "tool",
+						"messageID": "msg_1bf65b270001lK8uPDFzfN0u22",
+						"id": "call_stub_perm_1"
+					}
+				}
+			}
+		},
+		{
+			"kind": "tool.after",
+			"t": 1685,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"skip": null,
+			"event": {
+				"tool": "write",
+				"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+				"agent": "build",
+				"messageID": "msg_1bf65b270001lK8uPDFzfN0u22",
+				"id": "call_stub_perm_1",
+				"input": {
+					"path": "/scratch/proj/v2-permission-reject/perm.txt",
+					"content": "perm\n"
+				},
+				"status": "error",
+				"error": {
+					"_tag": "Tool.Error",
+					"message": "Unable to write /scratch/proj/v2-permission-reject/perm.txt",
+					"error": {
+						"_tag": "Permission.CorrectedError",
+						"feedback": "This non-interactive run cannot ask the user for permission, so the request was rejected. Continue without this action."
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1695,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b8c5001BznVeBtqAanN7g",
+				"created": 1794212477125,
+				"type": "permission.replied",
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"requestID": "per_1bf65b8c3001NGW9JYQXX3yjps",
+					"reply": "reject"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1695,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b8c60019rf4H4jgCgNQQo",
+				"created": 1794212477126,
+				"type": "session.tool.failed",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 12,
+					"version": 2
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"assistantMessageID": "msg_1bf65b270001lK8uPDFzfN0u22",
+					"id": "call_stub_perm_1",
+					"error": {
+						"type": "permission.rejected",
+						"message": "This non-interactive run cannot ask the user for permission, so the request was rejected. Continue without this action."
+					},
+					"executed": false
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1696,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b8c7001NAFjCB1NXozmaj",
+				"created": 1794212477127,
+				"type": "session.step.ended",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 13,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"assistantMessageID": "msg_1bf65b270001lK8uPDFzfN0u22",
+					"finish": "tool-calls",
+					"rawFinish": "tool_calls",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1696,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65b8c9001E2HHelPUkaKDlS",
+				"created": 1794212477129,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3088,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65be370019OWEp75ta4j9WJ",
+				"created": 1794212478519,
+				"type": "session.step.started",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 14,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"assistantMessageID": "msg_1bf65b8cc001YXbNBu81i5bn89",
+					"agent": "build",
+					"model": {
+						"id": "stub-model",
+						"providerID": "stub"
+					},
+					"started": 1794212477134
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3088,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65be39001TE7W39E9oXVFFV",
+				"created": 1794212478521,
+				"type": "session.text.started",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 15,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"assistantMessageID": "msg_1bf65b8cc001YXbNBu81i5bn89",
+					"ordinal": 0
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3088,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65be3b001wGvqDYjLmQTaH1",
+				"created": 1794212478523,
+				"type": "session.text.delta",
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"assistantMessageID": "msg_1bf65b8cc001YXbNBu81i5bn89",
+					"ordinal": 0,
+					"delta": "STUB-DONE after tool"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3088,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65be3b0020dnrIuWNtorDCp",
+				"created": 1794212478523,
+				"type": "session.text.ended",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 16,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"assistantMessageID": "msg_1bf65b8cc001YXbNBu81i5bn89",
+					"ordinal": 0,
+					"text": "STUB-DONE after tool"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3088,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65be3c001x1m5oeKBN234Jx",
+				"created": 1794212478524,
+				"type": "session.step.streamed",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 17,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"assistantMessageID": "msg_1bf65b8cc001YXbNBu81i5bn89"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3089,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65be3d001LRUZLZocvaHId9",
+				"created": 1794212478525,
+				"type": "session.step.ended",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 18,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"assistantMessageID": "msg_1bf65b8cc001YXbNBu81i5bn89",
+					"finish": "stop",
+					"rawFinish": "stop",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3089,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65be3e001VE55WWN3JneNuJ",
+				"created": 1794212478526,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"cost": 0,
+					"tokens": {
+						"input": 20,
+						"output": 10,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3089,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65be3e002JaMlp1A8u6gYGH",
+				"created": 1794212478526,
+				"type": "session.execution.succeeded",
+				"durable": {
+					"aggregateID": "ses_e409a4ecbffeae1R7qvn7pIZI0",
+					"seq": 19,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409a4ecbffeae1R7qvn7pIZI0"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3112,
+			"tag": "A",
+			"instance": "vpupr6",
+			"directory": "/scratch/proj/v2-permission-reject",
+			"event": {
+				"id": "evt_1bf65be4a001GRQCDpGsGBLphu",
+				"created": 1794212478538,
+				"type": "location.shutdown",
+				"location": {
+					"directory": "/scratch/proj/v2-permission-reject"
+				},
+				"data": {}
+			}
+		},
+		{
+			"kind": "cleanup",
+			"t": 3112,
+			"tag": "A",
+			"instance": "vpupr6"
+		},
+		{
+			"kind": "process.exit",
+			"t": 3128,
+			"tag": "A"
+		}
+	]
+}

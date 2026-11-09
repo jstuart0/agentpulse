@@ -1,0 +1,84 @@
+{
+	"line": "v1",
+	"name": "child-permission",
+	"envelopes": [
+		{
+			"session_id": "ses_parent000000000000000000001",
+			"hook_event_name": "session.created",
+			"opencode": {
+				"line": 1,
+				"protocol": 1,
+				"version": "1.19.5"
+			},
+			"cwd": "/scratch/proj/v1-child-perm",
+			"data": {}
+		},
+		{
+			"session_id": "ses_child0000000000000000000001",
+			"parent_session_id": "ses_parent000000000000000000001",
+			"hook_event_name": "session.created",
+			"opencode": {
+				"line": 1,
+				"protocol": 1,
+				"version": "1.19.5"
+			},
+			"cwd": "/scratch/proj/v1-child-perm",
+			"data": {}
+		},
+		{
+			"session_id": "ses_child0000000000000000000001",
+			"parent_session_id": "ses_parent000000000000000000001",
+			"hook_event_name": "tool.execute.before",
+			"opencode": {
+				"line": 1,
+				"protocol": 1,
+				"version": "1.19.5"
+			},
+			"cwd": "/scratch/proj/v1-child-perm",
+			"data": {
+				"tool": "write",
+				"tool_use_id": "call_stub_perm_1#2",
+				"input": {
+					"filePath": "/scratch/proj/v1-child-perm/perm.txt"
+				}
+			}
+		},
+		{
+			"session_id": "ses_child0000000000000000000001",
+			"parent_session_id": "ses_parent000000000000000000001",
+			"hook_event_name": "permission.asked",
+			"opencode": {
+				"line": 1,
+				"protocol": 1,
+				"version": "1.19.5"
+			},
+			"cwd": "/scratch/proj/v1-child-perm",
+			"data": {
+				"request_id": "per_child0001",
+				"tool_use_id": "call_stub_perm_1#2",
+				"permission": "edit",
+				"patterns": ["perm.txt"]
+			}
+		},
+		{
+			"session_id": "ses_child0000000000000000000001",
+			"parent_session_id": "ses_parent000000000000000000001",
+			"hook_event_name": "tool.execute.after",
+			"opencode": {
+				"line": 1,
+				"protocol": 1,
+				"version": "1.19.5"
+			},
+			"cwd": "/scratch/proj/v1-child-perm",
+			"data": {
+				"tool": "write",
+				"tool_use_id": "call_stub_perm_1#2",
+				"input": {
+					"filePath": "/scratch/proj/v1-child-perm/perm.txt"
+				},
+				"status": "completed",
+				"output": "Wrote file successfully."
+			}
+		}
+	]
+}

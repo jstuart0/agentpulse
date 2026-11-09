@@ -4,10 +4,31 @@ import {
 	SH_GATE_PIECE,
 	buildBashExcludeScriptForInstaller,
 } from "../../shared/hook-command.js";
+import { OPENCODE_SH_INSTALLER_SETUP_SH_LINES } from "../../shared/opencode-install-text.generated.js";
+import {
+	OPENCODE_PLUGIN_V1_LINES,
+	OPENCODE_PLUGIN_V2_LINES,
+} from "../../shared/opencode-plugin-text.generated.js";
 import { config } from "../config.js";
 import { INSTALLER_SOURCES, buildRelayInstaller } from "../installers.js";
 
 const setup = new Hono();
+
+// The OpenCode step of /setup.sh (AGEN-141): the two plugin texts as quoted heredocs and the generated
+// installer functions, interpolated into the script as values (never re-escaped by the template).
+const OPENCODE_SH_SECTION = [
+	"ap_opencode_plugin_1_template() {",
+	"cat <<'AP_OPENCODE_PLUGIN_1_EOF'",
+	OPENCODE_PLUGIN_V1_LINES.join("\n"),
+	"AP_OPENCODE_PLUGIN_1_EOF",
+	"}",
+	"ap_opencode_plugin_2_template() {",
+	"cat <<'AP_OPENCODE_PLUGIN_2_EOF'",
+	OPENCODE_PLUGIN_V2_LINES.join("\n"),
+	"AP_OPENCODE_PLUGIN_2_EOF",
+	"}",
+	OPENCODE_SH_INSTALLER_SETUP_SH_LINES.join("\n"),
+].join("\n");
 
 // F198: 0.0.0.0 is the "any interface" bind address, not a routable host —
 // treated as loopback so a PUBLIC_URL of http://0.0.0.0:<port> is rejected
@@ -155,12 +176,18 @@ HOOK_URL="${defaultLocalUrl}"
 API_KEY="\${AGENTPULSE_KEY:-}"
 # D39 (F246): explicit escape hatch — see ap_check_auth_before_write below.
 NO_AUTH_CHECK="0"
+# OpenCode (AGEN-141): set up whenever it is found; --no-opencode removes our plugins and
+# --opencode-force writes the 1.x plugin where OpenCode 1.x has no plugin SDK yet.
+OPENCODE_FORCE="0"
+NO_OPENCODE="0"
 
 while [[ \$# -gt 0 ]]; do
   case \$1 in
     --key) API_KEY="\$2"; shift 2 ;;
     --url) HOOK_URL="\$2"; shift 2 ;;
     --no-auth-check) NO_AUTH_CHECK="1"; shift ;;
+    --opencode-force) OPENCODE_FORCE="1"; shift ;;
+    --no-opencode) NO_OPENCODE="1"; shift ;;
     *) shift ;;
   esac
 done
@@ -607,6 +634,8 @@ ap_require_curl_755() {
 }
 # <<< agentpulse-hook-cmd
 
+${OPENCODE_SH_SECTION}
+
 # F245: reject a malformed --url before any hook JSON generation.
 ap_validate_hook_base_url "\$HOOK_URL" || exit 1
 
@@ -783,6 +812,22 @@ if command -v copilot >/dev/null 2>&1 || [[ -d "\$HOME/.copilot" ]]; then
     echo "  ✓ Copilot CLI hooks configured in \$COPILOT_HOOKS_FILE"
   fi
   echo "  After editing ~/.agentpulse/exclude by hand, run: agentpulse exclude check"
+fi
+
+# ── OpenCode (AGEN-141) ──
+# Set up whenever it is found (PATH, or its config or data folder); nothing here runs \`opencode\`.
+# Direct mode: the plugin reads ~/.agentpulse/hook-auth-header and the exclude check at send time.
+
+if [[ "\$NO_OPENCODE" == "1" ]] || ap_oc_detected; then
+  if [[ "\$NO_OPENCODE" != "1" ]]; then
+    # An empty key would overwrite a good header file with one the plugin (and the Codex/Copilot shims) reject.
+    if [[ -n "\$API_KEY" ]]; then
+      printf -v AP_OC_AUTH_CONTENT 'Authorization: Bearer %s\\n' "\$API_KEY"
+      ap_write_private_no_follow "\$HOME/.agentpulse/hook-auth-header" "\$AP_OC_AUTH_CONTENT" || exit 1
+    fi
+    ap_install_exclude_script
+  fi
+  ap_opencode_install "\$HOOK_URL" "1" "\$OPENCODE_FORCE" "\$NO_OPENCODE" || true
 fi
 
 # ── Env vars (D37/F243) ──

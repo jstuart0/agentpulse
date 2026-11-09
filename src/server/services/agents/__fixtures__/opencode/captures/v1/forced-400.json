@@ -1,0 +1,694 @@
+{
+	"line": "v1",
+	"version": "1.19.5",
+	"scenario": "runs",
+	"prompt": "FAILTURN go",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "pi5aio",
+			"counter": 1,
+			"ctxKeys": [
+				"client",
+				"project",
+				"worktree",
+				"directory",
+				"experimental_workspace",
+				"serverUrl",
+				"$"
+			],
+			"directory": "/scratch/proj/v1-forced-400",
+			"worktree": "/",
+			"serverUrl": "http://localhost:PORT/",
+			"skip": null,
+			"argv": ["bun", "/$bunfs/root/opencode", "run", "FAILTURN go"],
+			"cwd": "/scratch/proj/v1-forced-400"
+		},
+		{
+			"kind": "event",
+			"t": 72,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf64f7dc002QtDQdiGDZmYHY2",
+				"type": "session.created",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"info": {
+						"id": "ses_e409b0823ffenWLNr1vBO8pCr6",
+						"slug": "crisp-garden",
+						"version": "1.19.5",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-forced-400",
+						"path": "scratch/proj/v1-forced-400",
+						"title": "New session - 2026-11-09T08:20:27.740Z",
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212427740,
+							"updated": 1794212427740
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 87,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf64f7ed001WVyRFpqSGUpBQK",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"info": {
+						"id": "ses_e409b0823ffenWLNr1vBO8pCr6",
+						"slug": "crisp-garden",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-forced-400",
+						"path": "scratch/proj/v1-forced-400",
+						"title": "New session - 2026-11-09T08:20:27.740Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212427740,
+							"updated": 1794212427756
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "chat.message",
+			"t": 89,
+			"tag": "A",
+			"instance": "pi5aio",
+			"skip": null,
+			"i": {
+				"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6"
+			},
+			"o": {
+				"message": {
+					"id": "msg_1bf64f7ec001Zt2R3AAZGTxUfq",
+					"role": "user",
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"time": {
+						"created": 1794212427756
+					},
+					"agent": "build",
+					"model": {
+						"providerID": "stub",
+						"modelID": "stub-model"
+					}
+				},
+				"parts": [
+					{
+						"type": "text",
+						"text": "\"FAILTURN go\"",
+						"messageID": "msg_1bf64f7ec001Zt2R3AAZGTxUfq",
+						"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+						"id": "prt_1bf64f7ef001HEHe3vB0cK8mec"
+					}
+				]
+			}
+		},
+		{
+			"kind": "event",
+			"t": 90,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf64f7f0001EcTLhLlpZLmw3p",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"info": {
+						"id": "msg_1bf64f7ec001Zt2R3AAZGTxUfq",
+						"role": "user",
+						"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+						"time": {
+							"created": 1794212427756
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 91,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf64f7f1001lR5toy3bEj511g",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"part": {
+						"type": "text",
+						"text": "\"FAILTURN go\"",
+						"messageID": "msg_1bf64f7ec001Zt2R3AAZGTxUfq",
+						"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+						"id": "prt_1bf64f7ef001HEHe3vB0cK8mec"
+					},
+					"time": 1794212427761
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 92,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf64f7f2001XfFDoU19LUw22e",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"info": {
+						"id": "ses_e409b0823ffenWLNr1vBO8pCr6",
+						"slug": "crisp-garden",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-forced-400",
+						"path": "scratch/proj/v1-forced-400",
+						"title": "New session - 2026-11-09T08:20:27.740Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212427740,
+							"updated": 1794212427762
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 95,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf64f7f6001jz0CA69IeAlnUN",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 477,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf64f973001NFU6glwoWRV03i",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"info": {
+						"id": "msg_1bf64f973001xpIdefMoW5IKdc",
+						"parentID": "msg_1bf64f7ec001Zt2R3AAZGTxUfq",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-forced-400",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212428147
+						},
+						"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 500,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf64f989001cP1UfRZ2kkLici",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"info": {
+						"id": "ses_e409b0823ffenWLNr1vBO8pCr6",
+						"slug": "crisp-garden",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-forced-400",
+						"path": "scratch/proj/v1-forced-400",
+						"title": "New session - 2026-11-09T08:20:27.740Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212427740,
+							"updated": 1794212428169
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 500,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf64f98b001utZ2DvjkY59ik3",
+				"type": "session.diff",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"diff": []
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 502,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf64f98c0010ikcr07qenrcwL",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"info": {
+						"role": "user",
+						"time": {
+							"created": 1794212427756
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						},
+						"id": "msg_1bf64f7ec001Zt2R3AAZGTxUfq",
+						"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+						"summary": {
+							"diffs": []
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1096,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf64fbdf001BZ7Fl91C62gy6Z",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1534,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf64fd9400119sEIpMGBgDtTD",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"info": {
+						"id": "ses_e409b0823ffenWLNr1vBO8pCr6",
+						"slug": "crisp-garden",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-forced-400",
+						"path": "scratch/proj/v1-forced-400",
+						"title": "Stub title",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212427740,
+							"updated": 1794212428169
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2575,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf6501a60011iMtD3Oa3DiwDV",
+				"type": "session.error",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"error": {
+						"name": "APIError",
+						"data": {
+							"message": "stub forced failure",
+							"statusCode": 400,
+							"isRetryable": false,
+							"responseHeaders": {
+								"content-length": "74",
+								"content-type": "text/plain;charset=utf-8",
+								"date": "Mon, 09 Nov 2026 08:20:30 GMT"
+							},
+							"responseBody": "{\"error\":{\"message\":\"stub forced failure\",\"type\":\"invalid_request_error\"}}",
+							"metadata": {
+								"url": "http://127.0.0.1:PORT/v1/chat/completions"
+							}
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2576,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf6501a70019q2Xk17vK32rv8",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"status": {
+						"type": "idle"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2576,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf6501a7002cnS2CREratNnLP",
+				"type": "session.idle",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2577,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf6501a70033l419Dkv0VKgSy",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"info": {
+						"id": "msg_1bf64f973001xpIdefMoW5IKdc",
+						"parentID": "msg_1bf64f7ec001Zt2R3AAZGTxUfq",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-forced-400",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212428147,
+							"completed": 1794212430247
+						},
+						"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+						"error": {
+							"name": "APIError",
+							"data": {
+								"message": "stub forced failure",
+								"statusCode": 400,
+								"isRetryable": false,
+								"responseHeaders": {
+									"content-length": "74",
+									"content-type": "text/plain;charset=utf-8",
+									"date": "Mon, 09 Nov 2026 08:20:30 GMT"
+								},
+								"responseBody": "{\"error\":{\"message\":\"stub forced failure\",\"type\":\"invalid_request_error\"}}",
+								"metadata": {
+									"url": "http://127.0.0.1:PORT/v1/chat/completions"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2578,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf6501a9001JQnNHlhmWyVzDr",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6",
+					"status": {
+						"type": "idle"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2578,
+			"tag": "A",
+			"instance": "pi5aio",
+			"directory": "/scratch/proj/v1-forced-400",
+			"event": {
+				"id": "evt_1bf6501a90020TGWUIWKuTjGpy",
+				"type": "session.idle",
+				"properties": {
+					"sessionID": "ses_e409b0823ffenWLNr1vBO8pCr6"
+				}
+			}
+		},
+		{
+			"kind": "process.exit",
+			"t": 2588,
+			"tag": "A"
+		}
+	]
+}

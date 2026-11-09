@@ -1,8 +1,8 @@
-import { useEffect, useId, useState } from "react";
+import { Suspense, lazy, useEffect, useId, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { AGENT_METADATA } from "../../shared/constants.js";
+import { AGENT_METADATA, isObservedOnly } from "../../shared/constants.js";
 import { buildCodexHooksFile, buildCopilotHooksFile } from "../../shared/hook-command.js";
-import type { AgentType, ApiKeyInfo } from "../../shared/types.js";
+import type { ApiKeyInfo } from "../../shared/types.js";
 import { ExcludeDirectoriesCard } from "../components/ExcludeDirectoriesCard.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { useOwnershipUi } from "../hooks/useOwnershipUi.js";
@@ -22,29 +22,35 @@ import {
 	CLAUDE_SKIP_LINE,
 	EXCLUDE_CARD_ANCHOR,
 	RELAY_PARAGRAPH,
+	type SetupAgentType,
 	codexSetupSteps,
 	lastEventLine,
 } from "../lib/setup-steps.js";
 import { useUserStore } from "../stores/user-store.js";
 import { keysForSetup } from "./team-view-state.js";
 
-const AGENT_TOGGLE: Array<{ value: AgentType; label: string }> = [
+// Both OpenCode plugin texts, fetched only when the OpenCode toggle is chosen (never in this page's own chunk).
+const OpenCodePluginFiles = lazy(() => import("../components/OpenCodePluginFiles.js"));
+
+const AGENT_TOGGLE: Array<{ value: SetupAgentType; label: string }> = [
 	{ value: "claude_code", label: "Claude Code" },
 	{ value: "codex_cli", label: "Codex CLI" },
 	{ value: "copilot_cli", label: "Copilot CLI" },
+	{ value: "opencode", label: "OpenCode" },
 ];
 
-const CONFIG_FILE: Record<AgentType, string> = {
+const CONFIG_FILE: Record<SetupAgentType, string> = {
 	claude_code: "~/.claude/settings.json",
 	codex_cli: "~/.codex/hooks.json",
 	copilot_cli: "~/.copilot/hooks/agentpulse.json",
+	opencode: "~/.config/opencode/plugins/",
 };
 
 export function SetupPage() {
 	const { copy } = useCopyFeedback();
 	const [apiKey, setApiKey] = useState("");
 	const serverUrl = window.location.origin;
-	const [agentType, setAgentType] = useState<AgentType>("claude_code");
+	const [agentType, setAgentType] = useState<SetupAgentType>("claude_code");
 	const disableAuth = useUserStore((s) => s.disableAuth);
 	const ownership = useOwnershipUi();
 	const { hash } = useLocation();
@@ -269,15 +275,17 @@ export function SetupPage() {
 		return text;
 	};
 
-	const config =
-		agentType === "claude_code"
-			? generateClaudeConfig()
-			: agentType === "codex_cli"
-				? generateCodexConfig()
-				: generateCopilotConfig();
+	// One generator per agent; OpenCode has none here (its plugin files come from OpenCodePluginFiles).
+	const CONFIG_GENERATOR: Record<SetupAgentType, (() => string) | null> = {
+		claude_code: generateClaudeConfig,
+		codex_cli: generateCodexConfig,
+		copilot_cli: generateCopilotConfig,
+		opencode: null,
+	};
+	const config = CONFIG_GENERATOR[agentType]?.() ?? "";
 	const configFile = CONFIG_FILE[agentType];
 	const showStatusLine = agentType === "codex_cli";
-	const showStatusSnippet = agentType !== "copilot_cli";
+	const showStatusSnippet = !isObservedOnly(agentType);
 	const authStep = AUTH_STEP[agentType](apiKey, disableAuth);
 
 	let stepCounter = 1;
@@ -528,6 +536,13 @@ export function SetupPage() {
 							<li key={i}>{lastCodexEventLoaded || i < 3 ? text : "Checking…"}</li>
 						))}
 					</ol>
+				) : agentType === "opencode" ? (
+					<p className="text-xs text-muted-foreground mb-3">
+						The installers write these for you when they find OpenCode (
+						<span className="font-mono text-foreground">npx agentpulse setup</span>, or the commands
+						below). Upgrade the AgentPulse server first: an older server stores OpenCode events as
+						ordinary Claude Code sessions. Copy by hand only if you can&apos;t run an installer.
+					</p>
 				) : (
 					<p className="text-xs text-muted-foreground mb-3">
 						Save this as {configFile} (created automatically if{" "}
@@ -535,18 +550,24 @@ export function SetupPage() {
 						installer commands below for an automated alternative).
 					</p>
 				)}
-				<div className="relative">
-					<pre className="bg-background border border-border rounded-md p-4 text-xs overflow-auto max-h-80">
-						<code>{config}</code>
-					</pre>
-					<button
-						type="button"
-						onClick={() => void copy(config, "Hook config copied")}
-						className="absolute top-2 right-2 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-					>
-						Copy
-					</button>
-				</div>
+				{agentType === "opencode" ? (
+					<Suspense fallback={<p className="text-xs text-muted-foreground">Loading…</p>}>
+						<OpenCodePluginFiles serverUrl={serverUrl} />
+					</Suspense>
+				) : (
+					<div className="relative">
+						<pre className="bg-background border border-border rounded-md p-4 text-xs overflow-auto max-h-80">
+							<code>{config}</code>
+						</pre>
+						<button
+							type="button"
+							onClick={() => void copy(config, "Hook config copied")}
+							className="absolute top-2 right-2 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+						>
+							Copy
+						</button>
+					</div>
+				)}
 				{agentType === "claude_code" && (
 					<p className="text-xs text-muted-foreground mt-3">{CLAUDE_SKIP_LINE}</p>
 				)}
@@ -574,15 +595,16 @@ export function SetupPage() {
 				</div>
 			)}
 
-			{/* Copilot: observed-only notice — no equivalent to Codex's status
-			    line integration, and no native-name source (D14/Pattern D), so
-			    Copilot sessions always keep AgentPulse's generated name. */}
-			{agentType === "copilot_cli" && (
+			{/* Observed-only agents: no equivalent to Codex's status line
+			    integration, and no native-name source (D14/Pattern D), so their
+			    sessions always keep AgentPulse's generated name. */}
+			{isObservedOnly(agentType) && (
 				<div className="border border-fuchsia-500/20 bg-fuchsia-500/5 rounded-lg p-5 mb-4">
 					<p className="text-xs text-muted-foreground">
 						<span className="font-medium text-foreground">Observed only.</span>{" "}
-						{AGENT_METADATA.copilot_cli.observeOnlyHint} Copilot sessions keep AgentPulse's
-						generated name — Copilot has no way to report its own session name back.
+						{AGENT_METADATA[agentType].observeOnlyHint} {AGENT_METADATA[agentType].shortLabel}{" "}
+						sessions keep AgentPulse's generated name — {AGENT_METADATA[agentType].shortLabel} has
+						no way to report its own session name back.
 					</p>
 				</div>
 			)}

@@ -25,6 +25,11 @@ export function extractQuotedTokensCamelCase(slice: string): string[] {
 	return [...slice.matchAll(/"([a-z][A-Za-z]+)"/g)].map((m) => m[1]);
 }
 
+/** OpenCode's event names: quoted, lowercase, dotted (`session.created`, `tool.execute.before`). */
+export function extractQuotedTokensDotted(slice: string): string[] {
+	return [...slice.matchAll(/"([a-z][a-z-]*(?:\.[a-z-]+)+)"/g)].map((m) => m[1]);
+}
+
 /** extractQuotedListBlocks, but for Copilot's camelCase marker shape. */
 export function extractQuotedListBlocksCamelCase(
 	content: string,

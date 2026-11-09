@@ -12,11 +12,17 @@ import installLocalSh from "../../scripts/install-local.sh" with { type: "text" 
 import relayTs from "../../scripts/relay.ts" with { type: "text" };
 import setupRelaySh from "../../scripts/setup-relay.sh" with { type: "text" };
 import statuslineSh from "../../scripts/statusline.sh" with { type: "text" };
+import {
+	OPENCODE_PLUGIN_V1_LINES,
+	OPENCODE_PLUGIN_V2_LINES,
+} from "../shared/opencode-plugin-text.generated.js";
 
 export type InstallerSources = {
 	setupRelay: string;
 	relay: string;
 	statusline: string;
+	opencodePlugin1: string;
+	opencodePlugin2: string;
 	installLocalSh: string;
 	installLocalPs1: string;
 };
@@ -25,6 +31,8 @@ export const INSTALLER_SOURCES: Readonly<InstallerSources> = Object.freeze({
 	setupRelay: setupRelaySh,
 	relay: relayTs as string,
 	statusline: statuslineSh,
+	opencodePlugin1: OPENCODE_PLUGIN_V1_LINES.join("\n"),
+	opencodePlugin2: OPENCODE_PLUGIN_V2_LINES.join("\n"),
 	installLocalSh,
 	installLocalPs1,
 });
@@ -44,6 +52,18 @@ const RELAY_EMBEDS = [
 		file: "statusline.sh",
 		terminator: "AGENTPULSE_STATUSLINE_SH_EOF",
 	},
+	{
+		marker: "# @@AGENTPULSE_OPENCODE_PLUGIN_1@@",
+		key: "opencodePlugin1",
+		file: "agentpulse-opencode-1.js",
+		terminator: "AGENTPULSE_OPENCODE_PLUGIN_1_EOF",
+	},
+	{
+		marker: "# @@AGENTPULSE_OPENCODE_PLUGIN_2@@",
+		key: "opencodePlugin2",
+		file: "agentpulse-opencode-2.js",
+		terminator: "AGENTPULSE_OPENCODE_PLUGIN_2_EOF",
+	},
 ] as const;
 const REMOTE_URL_PLACEHOLDER = 'REMOTE_URL_DEFAULT=""';
 
@@ -54,7 +74,10 @@ export type BuiltInstaller = { ok: true; script: string } | { ok: false; reason:
  * pass a URL that's already been checked for shell-safe characters.
  */
 export function buildRelayInstaller(
-	sources: Pick<InstallerSources, "setupRelay" | "relay" | "statusline">,
+	sources: Pick<
+		InstallerSources,
+		"setupRelay" | "relay" | "statusline" | "opencodePlugin1" | "opencodePlugin2"
+	>,
 	remoteUrl: string,
 ): BuiltInstaller {
 	let script = sources.setupRelay;

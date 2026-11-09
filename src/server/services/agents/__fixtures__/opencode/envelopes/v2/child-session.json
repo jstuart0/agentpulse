@@ -1,0 +1,148 @@
+{
+	"line": "v2",
+	"name": "child-session",
+	"envelopes": [
+		{
+			"session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+			"hook_event_name": "session.inbox.enqueued",
+			"opencode": {
+				"line": 2,
+				"protocol": 1,
+				"version": "2.2.6"
+			},
+			"cwd": "/scratch/proj/v2-child-session",
+			"data": {
+				"text": "SUBTASK go"
+			}
+		},
+		{
+			"session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+			"hook_event_name": "tool.before",
+			"opencode": {
+				"line": 2,
+				"protocol": 1,
+				"version": "2.2.6"
+			},
+			"cwd": "/scratch/proj/v2-child-session",
+			"data": {
+				"tool": "subagent",
+				"tool_use_id": "call_stub_sub_1",
+				"input": {
+					"agent": "general",
+					"description": "child job",
+					"prompt": "CHILDWORK SHELLOK"
+				}
+			}
+		},
+		{
+			"session_id": "ses_e409a7602ffeFctdrNv0LDEI4k",
+			"parent_session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+			"hook_event_name": "session.created",
+			"opencode": {
+				"line": 2,
+				"protocol": 1,
+				"version": "2.2.6"
+			},
+			"cwd": "/scratch/proj/v2-child-session",
+			"data": {}
+		},
+		{
+			"session_id": "ses_e409a7602ffeFctdrNv0LDEI4k",
+			"parent_session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+			"hook_event_name": "session.inbox.enqueued",
+			"opencode": {
+				"line": 2,
+				"protocol": 1,
+				"version": "2.2.6"
+			},
+			"cwd": "/scratch/proj/v2-child-session",
+			"data": {
+				"text": "CHILDWORK SHELLOK"
+			}
+		},
+		{
+			"session_id": "ses_e409a7602ffeFctdrNv0LDEI4k",
+			"parent_session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+			"hook_event_name": "tool.before",
+			"opencode": {
+				"line": 2,
+				"protocol": 1,
+				"version": "2.2.6"
+			},
+			"cwd": "/scratch/proj/v2-child-session",
+			"data": {
+				"tool": "shell",
+				"tool_use_id": "call_stub_ok_1",
+				"input": {
+					"command": "printf ok"
+				}
+			}
+		},
+		{
+			"session_id": "ses_e409a7602ffeFctdrNv0LDEI4k",
+			"parent_session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+			"hook_event_name": "tool.after",
+			"opencode": {
+				"line": 2,
+				"protocol": 1,
+				"version": "2.2.6"
+			},
+			"cwd": "/scratch/proj/v2-child-session",
+			"data": {
+				"tool": "shell",
+				"tool_use_id": "call_stub_ok_1",
+				"input": {
+					"command": "printf ok"
+				},
+				"status": "completed",
+				"exit_code": 0,
+				"output": "ok"
+			}
+		},
+		{
+			"session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+			"hook_event_name": "tool.after",
+			"opencode": {
+				"line": 2,
+				"protocol": 1,
+				"version": "2.2.6"
+			},
+			"cwd": "/scratch/proj/v2-child-session",
+			"data": {
+				"tool": "subagent",
+				"tool_use_id": "call_stub_sub_1",
+				"input": {
+					"agent": "general",
+					"description": "child job",
+					"prompt": "CHILDWORK SHELLOK"
+				},
+				"status": "completed",
+				"output": "STUB-DONE after tool"
+			}
+		},
+		{
+			"session_id": "ses_e409a7602ffeFctdrNv0LDEI4k",
+			"parent_session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+			"hook_event_name": "session.execution.succeeded",
+			"opencode": {
+				"line": 2,
+				"protocol": 1,
+				"version": "2.2.6"
+			},
+			"cwd": "/scratch/proj/v2-child-session",
+			"data": {}
+		},
+		{
+			"session_id": "ses_e409a7d1fffeRRBiaxLFMVxZBh",
+			"hook_event_name": "session.execution.succeeded",
+			"opencode": {
+				"line": 2,
+				"protocol": 1,
+				"version": "2.2.6"
+			},
+			"cwd": "/scratch/proj/v2-child-session",
+			"last_assistant_message": "STUB-DONE after tool",
+			"data": {}
+		}
+	]
+}

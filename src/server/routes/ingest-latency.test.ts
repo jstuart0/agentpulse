@@ -256,3 +256,98 @@ describe("per-event DB cost (measured inside processHookEvent, not racing a deta
 		expect(newSessionWithLaunchCalls).toBe(19);
 	});
 });
+
+describe("OpenCode (AGEN-141) adds no work before the 200 and no statements per event", () => {
+	const envelope = (sessionId: string, name: string, data: Record<string, unknown>) => ({
+		session_id: sessionId,
+		hook_event_name: name,
+		opencode: { line: 1, protocol: 1 },
+		cwd: "/scratch/proj/latency",
+		data,
+	});
+
+	test("an opencode envelope's request makes no DB call beyond auth, canonicalization included", async () => {
+		const { app } = await import("../app.js");
+		const { createApiKey } = await import("../auth/api-key.js");
+		const { getAuthUserFromHeaders } = await import("../auth/middleware.js");
+		const { _setEnqueueHookProcessingOverrideForTest } = await import("./ingest.js");
+
+		const { key } = await createApiKey(`ingest-latency-opencode-${crypto.randomUUID()}`);
+		const headers = new Headers({
+			Authorization: `Bearer ${key}`,
+			"Content-Type": "application/json",
+			"X-Agent-Type": "opencode",
+		});
+		const authBaseline = await countDbCalls(async () => {
+			await getAuthUserFromHeaders(headers);
+		});
+
+		let releaseLatch: () => void = () => {};
+		const latch = new Promise<void>((resolve) => {
+			releaseLatch = resolve;
+		});
+		let overrideInvoked = false;
+		_setEnqueueHookProcessingOverrideForTest(async () => {
+			overrideInvoked = true;
+			await latch;
+		});
+		try {
+			const callsDuringRequest = await countDbCalls(async () => {
+				const res = await app.request("/api/v1/hooks", {
+					method: "POST",
+					headers,
+					body: JSON.stringify(
+						envelope(`latency-opencode-${crypto.randomUUID()}`, "tool.execute.before", {
+							tool: "bash",
+							tool_use_id: "call_1",
+							input: { command: "ls" },
+						}),
+					),
+				});
+				expect(res.status).toBe(200);
+			});
+			// The envelope was valid, so it reached the background task (not dropped at the 200).
+			expect(overrideInvoked).toBe(true);
+			expect(callsDuringRequest).toBe(authBaseline);
+		} finally {
+			releaseLatch();
+			_setEnqueueHookProcessingOverrideForTest(null);
+		}
+	});
+
+	test("the per-event statement counts for an opencode session equal the claude_code pins", async () => {
+		const { canonicalizeHookPayload } = await import("../services/agents/canonicalize.js");
+		const sessionId = `latency-opencode-cost-${crypto.randomUUID()}`;
+		const ctx = {
+			keyId: "key-cost-test",
+			deliveryId: null,
+			origin: "native" as const,
+			attribution: { ownerUserId: "user-cost-test", ingestKeyId: "key-cost-test" },
+		};
+		const first = canonicalizeHookPayload(
+			"opencode",
+			envelope(sessionId, "session.created", {}) as never,
+		);
+		const newSessionCalls = await countDbCalls(async () => {
+			await processHookEvent(first, "opencode", ctx);
+		});
+		const next = canonicalizeHookPayload(
+			"opencode",
+			envelope(sessionId, "tool.execute.after", {
+				tool: "bash",
+				tool_use_id: "call_1",
+				input: {},
+				status: "completed",
+				output: "ok",
+			}) as never,
+		);
+		const existingSessionCalls = await countDbCalls(async () => {
+			await processHookEvent(next, "opencode", ctx);
+		});
+		expect(first.hook_event_name).toBe("SessionStart");
+		expect(next.hook_event_name).toBe("PostToolUse");
+		// Same numbers as the claude_code case above: OpenCode adds no statement.
+		expect(newSessionCalls).toBe(10);
+		expect(existingSessionCalls).toBe(8);
+	});
+});

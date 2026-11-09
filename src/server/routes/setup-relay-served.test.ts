@@ -76,6 +76,8 @@ const sources = () => ({
 	setupRelay: INSTALLER_SOURCES.setupRelay,
 	relay: INSTALLER_SOURCES.relay,
 	statusline: INSTALLER_SOURCES.statusline,
+	opencodePlugin1: INSTALLER_SOURCES.opencodePlugin1,
+	opencodePlugin2: INSTALLER_SOURCES.opencodePlugin2,
 });
 
 // Other files read /health expecting the not-ready state a fresh process has.
@@ -182,6 +184,14 @@ describe("/setup-relay.sh — one installer, canonical sources spliced in", () =
 			.replace(
 				/^cat > "\$SRC_DIR\/statusline\.sh" << 'AGENTPULSE_STATUSLINE_SH_EOF'\n[\s\S]*?\nAGENTPULSE_STATUSLINE_SH_EOF$/m,
 				"# @@AGENTPULSE_STATUSLINE_SH@@",
+			)
+			.replace(
+				/^cat > "\$SRC_DIR\/agentpulse-opencode-1\.js" << 'AGENTPULSE_OPENCODE_PLUGIN_1_EOF'\n[\s\S]*?\nAGENTPULSE_OPENCODE_PLUGIN_1_EOF$/m,
+				"# @@AGENTPULSE_OPENCODE_PLUGIN_1@@",
+			)
+			.replace(
+				/^cat > "\$SRC_DIR\/agentpulse-opencode-2\.js" << 'AGENTPULSE_OPENCODE_PLUGIN_2_EOF'\n[\s\S]*?\nAGENTPULSE_OPENCODE_PLUGIN_2_EOF$/m,
+				"# @@AGENTPULSE_OPENCODE_PLUGIN_2@@",
 			)
 			.replace('REMOTE_URL_DEFAULT="https://agentpulse.example.com"', 'REMOTE_URL_DEFAULT=""');
 		expect(unspliced).toBe(INSTALLER_SOURCES.setupRelay);

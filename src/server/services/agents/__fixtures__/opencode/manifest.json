@@ -1,0 +1,266 @@
+{
+	"fixtures": [
+		{
+			"line": "v1",
+			"name": "plain",
+			"status": "captured",
+			"file": "captures/v1/plain.json"
+		},
+		{
+			"line": "v1",
+			"name": "shell-tool",
+			"status": "captured",
+			"file": "captures/v1/shell-tool.json"
+		},
+		{
+			"line": "v1",
+			"name": "write-tool",
+			"status": "captured",
+			"file": "captures/v1/write-tool.json"
+		},
+		{
+			"line": "v1",
+			"name": "failed-tool-exit",
+			"status": "captured",
+			"file": "captures/v1/failed-tool-exit.json"
+		},
+		{
+			"line": "v1",
+			"name": "failed-tool-error",
+			"status": "captured",
+			"file": "captures/v1/failed-tool-error.json"
+		},
+		{
+			"line": "v1",
+			"name": "child-session",
+			"status": "captured",
+			"file": "captures/v1/child-session.json"
+		},
+		{
+			"line": "v1",
+			"name": "assistant-text-parts",
+			"status": "captured",
+			"file": "captures/v1/assistant-text-parts.json"
+		},
+		{
+			"line": "v1",
+			"name": "permission-reject",
+			"status": "captured",
+			"file": "captures/v1/permission-reject.json"
+		},
+		{
+			"line": "v1",
+			"name": "permission-accept",
+			"status": "captured",
+			"file": "captures/v1/permission-accept.json"
+		},
+		{
+			"line": "v1",
+			"name": "forced-400",
+			"status": "captured",
+			"file": "captures/v1/forced-400.json"
+		},
+		{
+			"line": "v1",
+			"name": "abort",
+			"status": "captured",
+			"file": "captures/v1/abort.json"
+		},
+		{
+			"line": "v2",
+			"name": "plain",
+			"status": "captured",
+			"file": "captures/v2/plain.json"
+		},
+		{
+			"line": "v2",
+			"name": "shell-tool",
+			"status": "captured",
+			"file": "captures/v2/shell-tool.json"
+		},
+		{
+			"line": "v2",
+			"name": "write-tool",
+			"status": "captured",
+			"file": "captures/v2/write-tool.json"
+		},
+		{
+			"line": "v2",
+			"name": "failed-tool-exit",
+			"status": "captured",
+			"file": "captures/v2/failed-tool-exit.json"
+		},
+		{
+			"line": "v2",
+			"name": "failed-tool-error",
+			"status": "captured",
+			"file": "captures/v2/failed-tool-error.json"
+		},
+		{
+			"line": "v2",
+			"name": "child-session",
+			"status": "captured",
+			"file": "captures/v2/child-session.json"
+		},
+		{
+			"line": "v2",
+			"name": "permission-reject",
+			"status": "captured",
+			"file": "captures/v2/permission-reject.json"
+		},
+		{
+			"line": "v2",
+			"name": "permission-accept",
+			"status": "captured",
+			"file": "captures/v2/permission-accept.json"
+		},
+		{
+			"line": "v2",
+			"name": "forced-400",
+			"status": "captured",
+			"file": "captures/v2/forced-400.json"
+		},
+		{
+			"line": "v2",
+			"name": "abort",
+			"status": "captured",
+			"file": "captures/v2/abort.json"
+		}
+	],
+	"envelopes": [
+		{
+			"line": "v1",
+			"name": "plain",
+			"status": "captured",
+			"capture": "captures/v1/plain.json"
+		},
+		{
+			"line": "v1",
+			"name": "shell-tool",
+			"status": "captured",
+			"capture": "captures/v1/shell-tool.json"
+		},
+		{
+			"line": "v1",
+			"name": "write-tool",
+			"status": "captured",
+			"capture": "captures/v1/write-tool.json"
+		},
+		{
+			"line": "v1",
+			"name": "failed-tool-exit",
+			"status": "captured",
+			"capture": "captures/v1/failed-tool-exit.json"
+		},
+		{
+			"line": "v1",
+			"name": "failed-tool-error",
+			"status": "captured",
+			"capture": "captures/v1/failed-tool-error.json",
+			"note": "OpenCode 1.19.5 does not fire tool.execute.after for a tool that throws (G3 v1.fail_signal=part_error). This envelope is what the plugin sends from the part's final error status."
+		},
+		{
+			"line": "v1",
+			"name": "child-session",
+			"status": "captured",
+			"capture": "captures/v1/child-session.json"
+		},
+		{
+			"line": "v1",
+			"name": "permission-reject",
+			"status": "captured",
+			"capture": "captures/v1/permission-reject.json"
+		},
+		{
+			"line": "v1",
+			"name": "permission-accept",
+			"status": "captured",
+			"capture": "captures/v1/permission-accept.json"
+		},
+		{
+			"line": "v1",
+			"name": "forced-400",
+			"status": "captured",
+			"capture": "captures/v1/forced-400.json"
+		},
+		{
+			"line": "v1",
+			"name": "abort",
+			"status": "captured",
+			"capture": "captures/v1/abort.json",
+			"note": "After the abort tool.execute.after fires with exit null and the part ends completed (G13), so the call stays a PostToolUse; the Interrupt row marks the turn."
+		},
+		{
+			"line": "v2",
+			"name": "plain",
+			"status": "captured",
+			"capture": "captures/v2/plain.json"
+		},
+		{
+			"line": "v2",
+			"name": "shell-tool",
+			"status": "captured",
+			"capture": "captures/v2/shell-tool.json"
+		},
+		{
+			"line": "v2",
+			"name": "write-tool",
+			"status": "captured",
+			"capture": "captures/v2/write-tool.json"
+		},
+		{
+			"line": "v2",
+			"name": "failed-tool-exit",
+			"status": "captured",
+			"capture": "captures/v2/failed-tool-exit.json"
+		},
+		{
+			"line": "v2",
+			"name": "failed-tool-error",
+			"status": "captured",
+			"capture": "captures/v2/failed-tool-error.json"
+		},
+		{
+			"line": "v2",
+			"name": "child-session",
+			"status": "captured",
+			"capture": "captures/v2/child-session.json"
+		},
+		{
+			"line": "v2",
+			"name": "permission-reject",
+			"status": "captured",
+			"capture": "captures/v2/permission-reject.json"
+		},
+		{
+			"line": "v2",
+			"name": "permission-accept",
+			"status": "captured",
+			"capture": "captures/v2/permission-accept.json"
+		},
+		{
+			"line": "v2",
+			"name": "forced-400",
+			"status": "captured",
+			"capture": "captures/v2/forced-400.json"
+		},
+		{
+			"line": "v2",
+			"name": "abort",
+			"status": "captured",
+			"capture": "captures/v2/abort.json"
+		},
+		{
+			"line": "v1",
+			"name": "callid-reuse",
+			"status": "synthetic",
+			"waiver": "G7: no capture reuses a callID within one session; the #n suffix is the plugin's contract (P7)."
+		},
+		{
+			"line": "v1",
+			"name": "child-permission",
+			"status": "synthetic",
+			"waiver": "G12: no capture of a permission ask raised by a child session; the child-prefixed id is P9's composition."
+		}
+	]
+}

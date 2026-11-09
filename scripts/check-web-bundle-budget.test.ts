@@ -35,6 +35,8 @@ describe("checkBudget", () => {
 			"SessionTakeoverCard",
 			"DashboardPage",
 			"index",
+			"SetupPage",
+			"OpenCodePluginFiles",
 		]);
 		for (const b of BUDGETS) expect(b.maxGzip).toBeGreaterThan(0);
 	});

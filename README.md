@@ -9,19 +9,19 @@
 [![Website](https://img.shields.io/badge/website-guides-informational)](https://jstuart0.github.io/agentpulse/)
 [![npm](https://img.shields.io/npm/v/@craze0/agentpulse-mcp?label=MCP%20server)](https://www.npmjs.com/package/@craze0/agentpulse-mcp)
 
-**Open-source, self-hosted dashboard to monitor, orchestrate and remotely control Claude Code, Codex CLI and Copilot CLI sessions across all your machines.**
+**Open-source, self-hosted dashboard to monitor, orchestrate and remotely control Claude Code and Codex CLI sessions, and observe Copilot CLI and OpenCode, across all your machines.**
 
-If you run multiple Claude Code, Codex CLI, or Copilot CLI sessions across different terminal tabs, you know the pain: *which tab is doing what?* AgentPulse gives you a live dashboard that shows every active session, what it's working on, and a scrollable chat history of everything you've said to each agent.
+If you run multiple Claude Code, Codex CLI, Copilot CLI, or OpenCode sessions across different terminal tabs, you know the pain: *which tab is doing what?* AgentPulse gives you a live dashboard that shows every active session, what it's working on, and a scrollable chat history of everything you've said to each agent.
 
-![AgentPulse dashboard showing a grid of live Claude Code, Codex CLI and Copilot CLI sessions, each with its status, project, session name and tool-use count](src/web/assets/screenshots/agentpulse-dashboard.png)
+![AgentPulse dashboard showing a grid of live Claude Code, Codex CLI, Copilot CLI and OpenCode sessions, each with its status, project, session name and tool-use count](src/web/assets/screenshots/agentpulse-dashboard.png)
 
-*The AgentPulse dashboard: every running Claude Code, Codex CLI and Copilot CLI session in one grid, marked Working, Waiting, Idle or Error.*
+*The AgentPulse dashboard: every running Claude Code, Codex CLI, Copilot CLI and OpenCode session in one grid, marked Working, Waiting, Idle or Error.*
 
 ## What AgentPulse is
 
 AgentPulse has two major modes:
 
-- **Observability** -- watch Claude Code, Codex, and Copilot CLI sessions in real time, with prompts, responses, progress, notes, and session history in one dashboard (Copilot CLI is observed only -- AgentPulse can't launch or steer it)
+- **Observability** -- watch Claude Code, Codex, Copilot CLI, and OpenCode sessions in real time, with prompts, responses, progress, notes, and session history in one dashboard (Copilot CLI and OpenCode are observed only -- AgentPulse can't launch or steer them)
 - **Orchestration** -- launch and manage sessions from AgentPulse itself with templates, supervisors, headless tasks, interactive sessions, retries, host routing, answering a managed Codex session's command and file-change approvals from the dashboard (see [Answering Codex approvals](#answering-codex-approvals)), and continuing a Claude Code session you started by hand as a fork, with its approvals answered the same way (see [Continuing a Claude Code session](#continuing-a-claude-code-session-you-started-by-hand))
 
 Plus an **AI Labs** layer that's very new and explicitly experimental -- see [the Labs section below](#ai-labs-experimental).
@@ -58,6 +58,9 @@ Your terminal tabs                          AgentPulse dashboard
 ├─────────────────┤                        ├──────────────────────┤
 │ Copilot CLI     │──── hook events ──────>│  quiet-otter: active │
 │ (observed only) │                        │  "review the diff"   │
+├─────────────────┤                        ├──────────────────────┤
+│ OpenCode        │──── plugin events ────>│  calm-heron: idle    │
+│ (observed only) │                        │  last: 2m ago        │
 └─────────────────┘                        └──────────────────────┘
 ```
 
@@ -480,6 +483,7 @@ That single command:
 - Installs the Claude Code statusline at `~/.claude/statusline-agentpulse.sh` and turns it on if you don't already have a `statusLine` (otherwise it prints the line to add)
 - Runs the relay as a macOS LaunchAgent or a Linux systemd user service that starts on login
 - Configures Claude Code + Codex hooks to point at `localhost:4000`, and Copilot CLI hooks too if `copilot` is detected on `PATH` or `~/.copilot` exists
+- Installs the OpenCode plugins too if OpenCode is found (see [OpenCode](#opencode-observed-only) below; the plugins post to the relay)
 - Removes the obsolete `~/.agentpulse/codex-hook.sh` if an older install left one
 
 Your agents send events to `localhost:4000` (allowed by Claude Code), the relay forwards them to your remote server. Open the dashboard from any device to monitor your agents in real time. **Re-run the same command anytime to update the relay and statusline**; the key, port and Codex-names policy from the last run are kept unless you pass new ones.
@@ -736,6 +740,7 @@ If the rules file can't be trusted, whatever applies the rules sends nothing. Th
 |---|---|
 | Codex CLI, Copilot CLI | The hook command checks the rules before anything is sent. If the rules file can't be read or trusted, nothing is sent. `AGENTPULSE_SKIP=1` skips one run. |
 | Claude Code through the relay | The relay on that machine checks the rules before anything is stored or passed on, and sends nothing while the rules file is invalid. `AGENTPULSE_SKIP=1` skips one run. |
+| OpenCode | The AgentPulse plugin inside OpenCode checks the rules before anything is sent and sends nothing while they're invalid. `AGENTPULSE_SKIP=1` skips a run on 1.x; a running 2.x background service doesn't see it, so set it where the service starts or stop the service. `--pure` (1.x) turns the plugin off. |
 | Sessions AgentPulse launches, and the Codex observer | The supervisor on that machine applies the rules. A launch into an excluded directory is refused. The supervisor doesn't see `AGENTPULSE_SKIP`; the directory rules cover these. |
 | Claude Code straight to the server | Path rules are **not applied**, and a broken rules file doesn't stop it. Use the relay, or set `AGENTPULSE_SKIP=1`. With the skip variable the request still reaches the server, which discards it. |
 
@@ -747,10 +752,11 @@ An old relay or supervisor doesn't apply rules at all. Update or reinstall it; `
 - While the file is invalid, the hooks write an empty marker file, `~/.agentpulse/exclude.invalid`.
 - The statusline (where installed) says `not reported (excluded)`, `not reported (AGENTPULSE_SKIP)`, or that the rules are invalid and which senders are paused.
 - The Hosts page shows a warning on a host whose supervisor reports its exclude file as invalid.
-- A machine that only runs Codex or Copilot in direct mode has none of the last two: use the marker file and `exclude check`, and run it after any hand edit of the file.
+- A machine that only runs Codex, Copilot or OpenCode in direct mode has none of the last two: use the marker file and `exclude check`, and run it after any hand edit of the file.
 
 ### Limits and gaps
 
+- **OpenCode.** On Windows the plugin reads `%USERPROFILE%\.agentpulse`, not `HOME`, and sends nothing while a rules file or the invalid marker exists, whatever the rules say. On every platform, a one-shot `opencode run` sends nothing at exit while a rules file or marker exists, so a turn end whose POST hadn't started when the process exits can be lost. A direct-mode key file is checked for being a plain file in the right format; its permissions are the installer's ACL, which the plugin can't read.
 - Rules apply to **new** events. A session reported before a rule existed stays at its last state on the dashboard until the periodic sweep ends it: after 5 minutes without activity it goes idle, and after 30 it's completed; a session still marked as working is cleared after 60 minutes of silence. Delete it yourself to remove it sooner. A managed session whose directory becomes excluded is reported once as completed and the dashboard stops tracking it while the agent may still be running.
 - A skipped request has already left the machine; it is only kept out of the database. The skip header and the rules are honoured by the client, and the server can't enforce them against a modified client.
 - A launch the host refuses because the directory is excluded reads the same as a refusal for a directory outside the host's trusted roots, and the reason goes only to the host's own log. The wording of such a refusal still differs depending on whether the host has an exclude file at all, and the server's own request-time trusted-roots check is unchanged. So a member who can launch on a host, and watches for refusals, can learn which directories under that host's trusted roots are excluded. A host whose exclude file is invalid refuses every launch.
@@ -936,12 +942,13 @@ Running `curl -fsSL --proto '=https' .../setup.sh | bash` configures:
 1. **Claude Code** -- adds HTTP hooks to `~/.claude/settings.json` for 16 events (SessionStart, Stop, PreToolUse, PostToolUse, PermissionRequest, PreCompact, etc.), `async: true`, so they never slow down the agent. A supplied key is embedded directly in the header (`Authorization: Bearer ap_...`), and the file is tightened to mode `0600` (a no-follow write; a symlinked `settings.json` is refused, not written through) -- see "User scope vs. project scope" below for why.
 2. **Codex CLI** -- replaces `~/.codex/hooks.json` with 12 `command`-type events (SessionStart, SessionEnd, PreToolUse, PostToolUse, UserPromptSubmit, Stop, Interrupt, SubagentStart, SubagentStop, PermissionRequest, PreCompact, PostCompact). An existing file is backed up first as `hooks.json.agentpulse-bak.<timestamp>`, never overwritten. Codex 0.145+ requires you to run `/hooks` inside Codex once afterward and trust the AgentPulse entries -- untrusted hooks are silently skipped. Minimum tested version: Codex CLI 0.145. The legacy `codex_hooks` line in `config.toml`, if present from an older AgentPulse setup, is no longer needed and can be deleted. **Re-running the installer with an unchanged URL/key prints "Codex hooks unchanged — no re-trust needed" and leaves `hooks.json` alone** -- you only have to run `/hooks` again when the installer actually rewrites the file (a URL or key change, or an upgrade that changes the hook shape).
 3. **Copilot CLI** (detection-gated -- only when `copilot` is on `PATH` or `~/.copilot` exists) -- writes `~/.copilot/hooks/agentpulse.json` with 10 `command`-type events (sessionStart, sessionEnd, userPromptSubmitted, postToolUse, postToolUseFailure, agentStop, subagentStart, subagentStop, preCompact, errorOccurred). `preToolUse` and `permissionRequest` are deliberately not hooked -- Copilot fails closed on those events, and a synchronous AgentPulse outage would otherwise be able to block every tool call. Copilot CLI is observed only: AgentPulse can't launch or steer it.
-4. **Shell** (Claude Code only) -- writes `AGENTPULSE_API_KEY` and `AGENTPULSE_URL` to a new `~/.agentpulse/env` file (mode `0600`) and adds a key-free, idempotent `[ -f ~/.agentpulse/env ] && . ~/.agentpulse/env` source line to your `.zshrc`/`.bashrc`/`.profile`. The key itself never touches the rc file. If an earlier install already left a plaintext `export AGENTPULSE_API_KEY=...` line there, the script leaves it alone but prints a warning plus the `sed` command to remove it -- it won't edit your rc file's existing content silently. Codex CLI and Copilot CLI don't get a shell/profile write at all: their hooks authenticate via `~/.agentpulse/hook-auth-header` (also `0600`).
-5. **Verify** -- sends a test event to confirm connectivity
+4. **OpenCode** (detection-gated -- see [OpenCode](#opencode-observed-only) below) -- writes the AgentPulse plugins into OpenCode's config directory. OpenCode is observed only.
+5. **Shell** (Claude Code only) -- writes `AGENTPULSE_API_KEY` and `AGENTPULSE_URL` to a new `~/.agentpulse/env` file (mode `0600`) and adds a key-free, idempotent `[ -f ~/.agentpulse/env ] && . ~/.agentpulse/env` source line to your `.zshrc`/`.bashrc`/`.profile`. The key itself never touches the rc file. If an earlier install already left a plaintext `export AGENTPULSE_API_KEY=...` line there, the script leaves it alone but prints a warning plus the `sed` command to remove it -- it won't edit your rc file's existing content silently. Codex CLI and Copilot CLI don't get a shell/profile write at all: their hooks authenticate via `~/.agentpulse/hook-auth-header` (also `0600`).
+6. **Verify** -- sends a test event to confirm connectivity
 
 Codex and Copilot hooks are detached `command` handlers, not `async: true` HTTP hooks -- see [Codex/Copilot command hooks](#codexcopilot-command-hooks) below for why. Direct (non-relay) installs store the API key at `~/.agentpulse/hook-auth-header` (mode `0600`), never in the hooks file itself or in argv. Because they authenticate with `curl -H "@$f"` (reading the header value from a file instead of argv), **direct command hooks need curl >= 7.55** -- older curl silently sends no `Authorization` header at all instead of failing loudly. `setup-hooks.sh`/`/setup.sh` check the installed curl version and refuse to write hooks below that floor, pointing you at the relay installer instead (the relay proxies hooks through itself, so the agent-side `curl` never needs to carry the header).
 
-Claude/Codex/Copilot event counts: 16/12/10. If you set up AgentPulse before this version, re-run the setup script to pick up the current event names and hook shape.
+Claude/Codex/Copilot/OpenCode event counts: 16/12/10/8/10 (OpenCode 1.x forwards 8 events, 2.x forwards 10). If you set up AgentPulse before this version, re-run the setup script to pick up the current event names and hook shape.
 
 **No key, no write.** Before writing any hook, the installer probes `/api/v1/auth/me`. If a key was supplied (`--key` or `$AGENTPULSE_KEY`), the probe is informational and installation proceeds regardless of its result. With no key, the installer proceeds only when the probe confirms `disableAuth: true`; otherwise it refuses and writes nothing, so you never end up with hooks silently 401ing forever. Pass `--no-auth-check` to skip the probe and install anyway -- for a server that isn't reachable yet, or one that runs with auth disabled but can't be probed from here.
 
@@ -951,6 +958,20 @@ Claude Code's native HTTP hook expands `$AGENTPULSE_API_KEY` from **its own proc
 
 - **User scope** (`~/.claude/settings.json` -- the default for `/setup.sh`, `agentpulse setup`, and `setup-hooks.sh`'s default `--scope global`): trades that reliability gap away by embedding the literal key directly in the header. This is made acceptable by tightening the file to mode `0600` (owner-read/write only, never world-readable) with a no-follow write (a symlinked `settings.json` is refused rather than written through) -- the same standard already applied to `~/.agentpulse/hook-auth-header` and `~/.agentpulse/env`. Merging into an existing `settings.json` preserves every other key already in it.
 - **Project scope** (`setup-hooks.sh --scope project`, writing a repo's own `.claude/settings.json`): never gets a literal key -- that file can be committed to source control. It keeps the `$AGENTPULSE_API_KEY` / `allowedEnvVars` form unconditionally, and the installer prints a reminder to fully restart Claude Code afterward (a GUI- or IDE-launched instance may not see a shell-exported env var at all).
+
+### OpenCode (observed only)
+
+OpenCode 1.x and 2.x are observed through a plugin that runs inside OpenCode and posts to AgentPulse. AgentPulse can't launch, steer, take over or resume an OpenCode session. Tested on OpenCode 1.19.5 and 2.2.6 (macOS); other versions are not measured, and a change in OpenCode's events is fixed by a server deploy, not a reinstall.
+
+- **Detection.** The installers set OpenCode up when `opencode` is on `PATH` or its config or data folder exists. They never run `opencode` or a package manager.
+- **Where the files go.** OpenCode's config directory: `OPENCODE_CONFIG_DIR`, else `XDG_CONFIG_HOME/opencode`, else `~/.config/opencode` (on Windows `%USERPROFILE%\.config\opencode`; a rooted value such as `C:\...` is honoured). Two files: `plugins/agentpulse-opencode-1.js` for 1.x and the folder `plugins/agentpulse-opencode-2/index.js` for 2.x. A running 2.x background service reloads a replaced plugin, so setup doesn't ask you to restart it. A file of the same name that isn't ours is moved to `~/.agentpulse/backups/opencode/`, never overwritten; a symlink in the way is refused.
+- **Removing it.** `agentpulse setup --no-opencode`, `setup-hooks.sh --no-opencode`, or `install-local.ps1 -NoOpenCode`.
+- **The 1.x plugin SDK.** OpenCode 1.x downloads its plugin SDK (`@opencode-ai/plugin`) into its config directory the first time it finds a plugin there, and while it can't reach the package registry each start then waits about 70 seconds. So setup writes the 1.x file only where OpenCode 1.x already has the SDK (`node_modules/@opencode-ai/plugin` exists in the config directory) or already loads another `.js` or `.ts` plugin, and otherwise prints why it left it out. The 2.x plugin is always written. A 1.x user with no other plugin gets in by running the force option once while online, spelled per installer: `agentpulse setup --opencode-force`, `setup-hooks.sh --opencode-force`, `curl ... | bash -s -- --opencode-force`, or `install-local.ps1 -OpenCodeForce` from a downloaded file. OpenCode 1.x then downloads the SDK on its next start. In the shipped layout the force option is not remembered and `~/.agentpulse/opencode-force` is never written; once 1.x has the SDK it isn't needed again.
+- **Upgrade the server first.** An older server doesn't know OpenCode and stores its posts as Claude Code sessions. Every installer prints this when it writes a plugin.
+- **`AGENTPULSE_SKIP` and a 2.x service.** A running OpenCode 2 background service doesn't see `AGENTPULSE_SKIP` set in your shell. Use an exclude rule (`agentpulse exclude add <dir>`), or `opencode service stop` so the service restarts with your environment. `agentpulse exclude check` says so. On 1.x, `--pure` turns the plugin off.
+- **What is stored.** Prompts, the last assistant text, tool arguments and tool output (each text up to 64 KiB), with no redaction before the server, and in team mode the same sharing as any session's content. Error rows carry only the error's name and HTTP status, never the message. The plugins folder is writable by the agent itself, so `agentpulse exclude check` reports a changed plugin as "modified".
+- **Limits.** In direct mode `http://` to a non-loopback host is accepted, so the key and the content can travel in plaintext, as with the shell hooks; use `https://`. The key-file check looks at the file, not `~/.agentpulse` itself, and the exit-time curl re-opens the file by path; exploiting either needs another process of your own account. The exit-time send uses `/usr/bin/curl`, so on NixOS and Windows a one-shot run's final events aren't sent at exit. Setup also writes `~/.agentpulse/hook-auth-header` (mode `0600`) when it finds OpenCode during a non-OpenCode install, and the key you give it may be broader than `ingest`; prefer an ingest-only key.
+- **Not verified.** PowerShell (`install-local.ps1`) has never been executed. OpenCode's terminal UI, Linux, Windows and a real model provider were not measured; only the live canary (below) ran.
 
 ### Codex/Copilot command hooks
 
