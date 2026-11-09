@@ -7,6 +7,7 @@ export const AgentPulse = async (ctx) => {
 	try {
 		rec = getRecord();
 		rec.instances += 1;
+		hookExit(rec);
 	} catch {
 		return {};
 	}

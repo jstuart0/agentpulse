@@ -196,6 +196,28 @@ const rows: Row[] = [
 		],
 	},
 	{
+		name: "marker-symlink-no-script",
+		steps: [
+			{
+				do: (c) => {
+					mkAd(c);
+					symlinkSync("/nonexistent-target", join(c.ad, "exclude.invalid"));
+				},
+			},
+		],
+	},
+	{
+		name: "dangling-exclude-no-script",
+		steps: [
+			{
+				do: (c) => {
+					mkAd(c);
+					symlinkSync("/nonexistent-target", join(c.ad, "exclude"));
+				},
+			},
+		],
+	},
+	{
 		name: "agentpulse-dir-symlink",
 		steps: [
 			{
@@ -439,7 +461,7 @@ function shDecision(c: Ctx): boolean {
 }
 
 async function runRow(row: Row) {
-	const dir = scratchDir("sess");
+	const dir = scratchDir("sessn");
 	const other = scratchDir("other");
 	const home = scratchDir("home");
 	const env: Record<string, string | undefined> = { HOME: home, PATH: "/usr/bin:/bin" };
@@ -569,4 +591,91 @@ describe("the plugin's exclude decision equals the shell gate's (plan step 18)",
 		);
 		expect(buildBashExcludeScript()).toContain("exit 42");
 	});
+});
+
+describe("17o the gate runs off the hook path and is bounded", () => {
+	const slowScript = (c: Ctx, log: string, secs: number) =>
+		scriptFile(
+			c,
+			0o500,
+			`#!/bin/sh\necho "start $$" >> "${log}"\nsleep ${secs}\necho "end $$" >> "${log}"\nexit 42\n`,
+		);
+	const alive = (pid: number) => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
+	test("a gate that sleeps 2 s+: every hook still returns in under 50 ms, the send is withheld, the process group is killed, and the next send spawns again", async () => {
+		const dir = scratchDir("sessn");
+		const home = scratchDir("home");
+		const log = join(home, "gate.log");
+		const c: Ctx = {
+			home,
+			dir,
+			other: scratchDir("other"),
+			ad: join(home, ".agentpulse"),
+			clock: { t: 1 },
+			env: {},
+		};
+		rulesFile(c, [c.other]);
+		slowScript(c, log, 5);
+		const r = await rig("v1", { dir, seam: { env: { HOME: home, PATH: "/usr/bin:/bin" } } });
+		r.drv.created(SID, dir);
+		const t = performance.now();
+		r.drv.before(SID, "call_1", "bash", { a: 1 });
+		r.drv.after(SID, "call_1", "bash", { a: 1 });
+		expect(performance.now() - t).toBeLessThan(50);
+		await settle("v1", 15000);
+		expect(r.received.length).toBe(0);
+		const started = readFileSync(log, "utf8")
+			.split("\n")
+			.filter((l) => l.startsWith("start"));
+		expect(started.length).toBeGreaterThanOrEqual(1);
+		await new Promise((res) => setTimeout(res, 100));
+		for (const l of started) expect(alive(Number(l.split(" ")[1])), l).toBe(false);
+		const spawnsBefore = recordOf("v1").counters.gateSpawns;
+		r.drv.before(SID, "call_2", "bash", { a: 1 });
+		await settle("v1", 15000);
+		expect(recordOf("v1").counters.gateSpawns).toBeGreaterThan(spawnsBefore);
+		expect(recordOf("v1").counters.gateTimeouts).toBeGreaterThanOrEqual(2);
+	}, 40000);
+
+	test("three directories at once never have more than two gate processes alive", async () => {
+		const home = scratchDir("home");
+		const log = join(home, "gate.log");
+		const other = scratchDir("other");
+		const c: Ctx = {
+			home,
+			dir: other,
+			other,
+			ad: join(home, ".agentpulse"),
+			clock: { t: 1 },
+			env: {},
+		};
+		rulesFile(c, [other]);
+		slowScript(c, log, 1);
+		const r = await rig("v1", {
+			dir: scratchDir("d0"),
+			seam: { env: { HOME: home, PATH: "/usr/bin:/bin" } },
+		});
+		const dirs = [scratchDir("d1"), scratchDir("d2"), scratchDir("d3")];
+		dirs.forEach((d, i) => {
+			r.drv.created(`ses_gate0000000000000000${i}`, d);
+			r.drv.before(`ses_gate0000000000000000${i}`, "c", "bash", {});
+		});
+		await settle("v1", 20000);
+		let live = 0;
+		let peak = 0;
+		for (const l of readFileSync(log, "utf8").split("\n").filter(Boolean)) {
+			live += l.startsWith("start") ? 1 : -1;
+			peak = Math.max(peak, live);
+		}
+		expect(peak).toBeLessThanOrEqual(2);
+		expect(peak).toBeGreaterThanOrEqual(2);
+		expect(r.received.length).toBe(6);
+	}, 40000);
 });

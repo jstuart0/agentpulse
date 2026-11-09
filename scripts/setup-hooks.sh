@@ -80,7 +80,7 @@ fi
 # @@AGENTPULSE_OPENCODE_PLUGIN_1@@ BEGIN
 ap_opencode_plugin_1_template() {
 cat <<'AP_OPENCODE_PLUGIN_1_EOF'
-// agentpulse-opencode-plugin 4654214d07a2c8
+// agentpulse-opencode-plugin 327b7f0f2df9fb
 import cp from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -98,7 +98,7 @@ import path from "node:path";
 const AP_CONFIG = { baseUrl: "@@AP_OPENCODE_BASE_URL@@", direct: "@@AP_OPENCODE_DIRECT@@" === "1" };
 
 // @@AP_GENERATED BEGIN
-const AP_BUILD = "4654214d07a2c8";
+const AP_BUILD = "327b7f0f2df9fb";
 const AP_SKIP_VALUES = JSON.parse("[\"1\",\"true\",\"yes\",\"on\"]");
 const AP_SEND_STATUS = 42;
 const AP_AGENTPULSE_DIR = ".agentpulse";
@@ -118,6 +118,7 @@ const apEnv = () => (AP_TEST && AP_TEST.env) || process.env;
 const apPlatform = () => (AP_TEST && AP_TEST.platform) || process.platform;
 const apGetuid = () => (AP_TEST && "getuid" in AP_TEST ? AP_TEST.getuid : process.getuid);
 const apNow = () => (AP_TEST && AP_TEST.now ? AP_TEST.now() : Date.now());
+const apArgv = () => (AP_TEST && AP_TEST.argv) || process.argv;
 const apFetch = () => (AP_TEST && AP_TEST.fetch) || globalThis.fetch;
 
 const STRING_CAP = 65536;
@@ -169,6 +170,8 @@ function newRecord(replaced) {
 		gateWaiters: [],
 		gateCache: new Map(),
 		gateInflight: new Map(),
+		verdicts: new Map(),
+		exitHooked: false,
 		hostHeader: undefined,
 		counters: {
 			posts: 0,
@@ -198,6 +201,7 @@ function validRecord(r) {
 		r.claims instanceof Map &&
 		r.gateCache instanceof Map &&
 		r.gateInflight instanceof Map &&
+		r.verdicts instanceof Map &&
 		Array.isArray(r.sendWaiters) &&
 		Array.isArray(r.gateWaiters) &&
 		r.counters !== null &&
@@ -464,14 +468,18 @@ function kick(rec, st) {
 async function drain(rec, st) {
 	try {
 		while (st.q.length > 0 && !st.dead) {
-			const item = st.q.shift();
-			st.bytes -= item.size;
-			rec.queuedItems -= 1;
-			rec.queuedBytes -= item.size;
+			// The item stays at the head while it is judged and sent, so a process that exits meanwhile can still flush it.
+			const item = st.q[0];
 			try {
 				await deliver(rec, st, item);
 			} catch {
 				swallow(rec);
+			}
+			if (st.q[0] === item) {
+				st.q.shift();
+				st.bytes -= item.size;
+				rec.queuedItems -= 1;
+				rec.queuedBytes -= item.size;
 			}
 		}
 	} finally {
@@ -490,6 +498,8 @@ async function deliver(rec, st, item) {
 		}
 	}
 	st.lastVerdict = true;
+	for (let i = 0; i < item.dirs.length; i++)
+		lruTouch(rec.verdicts, String(item.dirs[i]), apNow(), 256);
 	if (item.evt !== undefined && seenBefore(rec, item.evt)) {
 		rec.counters.droppedSeen += 1;
 		return;
@@ -615,6 +625,112 @@ async function post(rec, item) {
 	} catch {
 		rec.counters.failedPosts += 1;
 	}
+}
+
+// ---- the exit flush ------------------------------------------------------------
+// A one-shot "opencode run" exits right after the turn ends, and a POST the chain has not started by then is
+// lost. At exit the plugin sends what is still queued with a synchronous curl, within a fixed budget, and only
+// for a directory it already judged "send" in this process (no gate runs at exit). Nothing secret or
+// user-authored is in argv: the body goes on stdin and the credential is read by curl from the key file.
+
+const EXIT_BUDGET_MS = 300;
+const CURL = "/usr/bin/curl";
+
+/** "opencode run" on 1.x, and on 2.x the private "serve --stdio" server that run starts. A long-lived service is neither. */
+function oneShot() {
+	const argv = apArgv();
+	return argv[2] === "run" || (argv[2] === "serve" && argv.indexOf("--stdio") !== -1);
+}
+
+function exitAuthArgs() {
+	// [] : no credential header. null : send nothing. [..] : curl arguments.
+	if (!AP_CONFIG.direct) return [];
+	const home = homeDir();
+	if (!home) return null;
+	const file = path.join(home, AP_AGENTPULSE_DIR, AP_AUTH_HEADER_FILE);
+	let fd;
+	try {
+		fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+		const st = fs.fstatSync(fd);
+		if (!st.isFile()) return null;
+		if (apPlatform() !== "win32") {
+			const getuid = apGetuid();
+			if (typeof getuid === "function" && st.uid !== getuid.call(process)) return null;
+			if ((st.mode & 0o022) !== 0) return null;
+		}
+		if (st.size === 0) return [];
+		if (st.size > 4096) return null;
+		const text = fs.readFileSync(fd, "utf8").replace(/\r?\n$/, "");
+		if (text === "") return [];
+		return AUTH_LINE_RE.test(text) ? ["-H", "@" + file] : null;
+	} catch (e) {
+		return e && e.code === "ENOENT" ? [] : null;
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				// nothing to do
+			}
+		}
+	}
+}
+
+function flushAtExit(rec) {
+	try {
+		if (!oneShot()) return;
+		const deadline = Date.now() + EXIT_BUDGET_MS;
+		const auth = exitAuthArgs();
+		if (auth === null) return;
+		const curl = (AP_TEST && AP_TEST.curl) || CURL;
+		for (const st of rec.sessions.values()) {
+			for (const item of st.q) {
+				const left = deadline - Date.now();
+				if (left <= 0) return;
+				if (!item.dirs.every((d) => rec.verdicts.has(String(d)))) break;
+				if (item.evt !== undefined && seenBefore(rec, item.evt)) continue;
+				const args = [
+					"-q",
+					"-sS",
+					"--max-time",
+					String(Math.max(0.05, left / 1000)),
+					"-o",
+					"/dev/null",
+					"-X",
+					"POST",
+					"--data-binary",
+					"@-",
+					"-H",
+					"Content-Type: application/json",
+					"-H",
+					"X-Agent-Type: opencode",
+					"-H",
+					AP_DELIVERY_HEADER + ": " + deliveryId(item),
+					...auth,
+				];
+				if (AP_CONFIG.direct) {
+					const host = hostHeaderValue(rec);
+					if (host !== "") args.push("-H", AP_HOST_HEADER + ": " + host);
+				}
+				args.push(AP_CONFIG.baseUrl + "/api/v1/hooks?event=" + encodeURIComponent(item.name));
+				cp.spawnSync(curl, args, {
+					input: item.body,
+					env: { PATH: "/usr/bin:/bin" },
+					stdio: ["pipe", "ignore", "ignore"],
+					timeout: left,
+				});
+			}
+		}
+	} catch {
+		// the process is exiting
+	}
+}
+
+function hookExit(rec) {
+	if (rec.exitHooked) return;
+	rec.exitHooked = true;
+	if (AP_TEST) AP_TEST.exitFlush = () => flushAtExit(rec);
+	process.on("exit", () => flushAtExit(rec));
 }
 
 // ---- the exclude check --------------------------------------------------------
@@ -852,6 +968,7 @@ export const AgentPulse = async (ctx) => {
 	try {
 		rec = getRecord();
 		rec.instances += 1;
+		hookExit(rec);
 	} catch {
 		return {};
 	}
@@ -1150,7 +1267,7 @@ AP_OPENCODE_PLUGIN_1_EOF
 # @@AGENTPULSE_OPENCODE_PLUGIN_2@@ BEGIN
 ap_opencode_plugin_2_template() {
 cat <<'AP_OPENCODE_PLUGIN_2_EOF'
-// agentpulse-opencode-plugin 23fbc10cb6103d
+// agentpulse-opencode-plugin 19a27a63c8c84e
 import cp from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -1168,7 +1285,7 @@ import path from "node:path";
 const AP_CONFIG = { baseUrl: "@@AP_OPENCODE_BASE_URL@@", direct: "@@AP_OPENCODE_DIRECT@@" === "1" };
 
 // @@AP_GENERATED BEGIN
-const AP_BUILD = "23fbc10cb6103d";
+const AP_BUILD = "19a27a63c8c84e";
 const AP_SKIP_VALUES = JSON.parse("[\"1\",\"true\",\"yes\",\"on\"]");
 const AP_SEND_STATUS = 42;
 const AP_AGENTPULSE_DIR = ".agentpulse";
@@ -1188,6 +1305,7 @@ const apEnv = () => (AP_TEST && AP_TEST.env) || process.env;
 const apPlatform = () => (AP_TEST && AP_TEST.platform) || process.platform;
 const apGetuid = () => (AP_TEST && "getuid" in AP_TEST ? AP_TEST.getuid : process.getuid);
 const apNow = () => (AP_TEST && AP_TEST.now ? AP_TEST.now() : Date.now());
+const apArgv = () => (AP_TEST && AP_TEST.argv) || process.argv;
 const apFetch = () => (AP_TEST && AP_TEST.fetch) || globalThis.fetch;
 
 const STRING_CAP = 65536;
@@ -1239,6 +1357,8 @@ function newRecord(replaced) {
 		gateWaiters: [],
 		gateCache: new Map(),
 		gateInflight: new Map(),
+		verdicts: new Map(),
+		exitHooked: false,
 		hostHeader: undefined,
 		counters: {
 			posts: 0,
@@ -1268,6 +1388,7 @@ function validRecord(r) {
 		r.claims instanceof Map &&
 		r.gateCache instanceof Map &&
 		r.gateInflight instanceof Map &&
+		r.verdicts instanceof Map &&
 		Array.isArray(r.sendWaiters) &&
 		Array.isArray(r.gateWaiters) &&
 		r.counters !== null &&
@@ -1534,14 +1655,18 @@ function kick(rec, st) {
 async function drain(rec, st) {
 	try {
 		while (st.q.length > 0 && !st.dead) {
-			const item = st.q.shift();
-			st.bytes -= item.size;
-			rec.queuedItems -= 1;
-			rec.queuedBytes -= item.size;
+			// The item stays at the head while it is judged and sent, so a process that exits meanwhile can still flush it.
+			const item = st.q[0];
 			try {
 				await deliver(rec, st, item);
 			} catch {
 				swallow(rec);
+			}
+			if (st.q[0] === item) {
+				st.q.shift();
+				st.bytes -= item.size;
+				rec.queuedItems -= 1;
+				rec.queuedBytes -= item.size;
 			}
 		}
 	} finally {
@@ -1560,6 +1685,8 @@ async function deliver(rec, st, item) {
 		}
 	}
 	st.lastVerdict = true;
+	for (let i = 0; i < item.dirs.length; i++)
+		lruTouch(rec.verdicts, String(item.dirs[i]), apNow(), 256);
 	if (item.evt !== undefined && seenBefore(rec, item.evt)) {
 		rec.counters.droppedSeen += 1;
 		return;
@@ -1685,6 +1812,112 @@ async function post(rec, item) {
 	} catch {
 		rec.counters.failedPosts += 1;
 	}
+}
+
+// ---- the exit flush ------------------------------------------------------------
+// A one-shot "opencode run" exits right after the turn ends, and a POST the chain has not started by then is
+// lost. At exit the plugin sends what is still queued with a synchronous curl, within a fixed budget, and only
+// for a directory it already judged "send" in this process (no gate runs at exit). Nothing secret or
+// user-authored is in argv: the body goes on stdin and the credential is read by curl from the key file.
+
+const EXIT_BUDGET_MS = 300;
+const CURL = "/usr/bin/curl";
+
+/** "opencode run" on 1.x, and on 2.x the private "serve --stdio" server that run starts. A long-lived service is neither. */
+function oneShot() {
+	const argv = apArgv();
+	return argv[2] === "run" || (argv[2] === "serve" && argv.indexOf("--stdio") !== -1);
+}
+
+function exitAuthArgs() {
+	// [] : no credential header. null : send nothing. [..] : curl arguments.
+	if (!AP_CONFIG.direct) return [];
+	const home = homeDir();
+	if (!home) return null;
+	const file = path.join(home, AP_AGENTPULSE_DIR, AP_AUTH_HEADER_FILE);
+	let fd;
+	try {
+		fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+		const st = fs.fstatSync(fd);
+		if (!st.isFile()) return null;
+		if (apPlatform() !== "win32") {
+			const getuid = apGetuid();
+			if (typeof getuid === "function" && st.uid !== getuid.call(process)) return null;
+			if ((st.mode & 0o022) !== 0) return null;
+		}
+		if (st.size === 0) return [];
+		if (st.size > 4096) return null;
+		const text = fs.readFileSync(fd, "utf8").replace(/\r?\n$/, "");
+		if (text === "") return [];
+		return AUTH_LINE_RE.test(text) ? ["-H", "@" + file] : null;
+	} catch (e) {
+		return e && e.code === "ENOENT" ? [] : null;
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				// nothing to do
+			}
+		}
+	}
+}
+
+function flushAtExit(rec) {
+	try {
+		if (!oneShot()) return;
+		const deadline = Date.now() + EXIT_BUDGET_MS;
+		const auth = exitAuthArgs();
+		if (auth === null) return;
+		const curl = (AP_TEST && AP_TEST.curl) || CURL;
+		for (const st of rec.sessions.values()) {
+			for (const item of st.q) {
+				const left = deadline - Date.now();
+				if (left <= 0) return;
+				if (!item.dirs.every((d) => rec.verdicts.has(String(d)))) break;
+				if (item.evt !== undefined && seenBefore(rec, item.evt)) continue;
+				const args = [
+					"-q",
+					"-sS",
+					"--max-time",
+					String(Math.max(0.05, left / 1000)),
+					"-o",
+					"/dev/null",
+					"-X",
+					"POST",
+					"--data-binary",
+					"@-",
+					"-H",
+					"Content-Type: application/json",
+					"-H",
+					"X-Agent-Type: opencode",
+					"-H",
+					AP_DELIVERY_HEADER + ": " + deliveryId(item),
+					...auth,
+				];
+				if (AP_CONFIG.direct) {
+					const host = hostHeaderValue(rec);
+					if (host !== "") args.push("-H", AP_HOST_HEADER + ": " + host);
+				}
+				args.push(AP_CONFIG.baseUrl + "/api/v1/hooks?event=" + encodeURIComponent(item.name));
+				cp.spawnSync(curl, args, {
+					input: item.body,
+					env: { PATH: "/usr/bin:/bin" },
+					stdio: ["pipe", "ignore", "ignore"],
+					timeout: left,
+				});
+			}
+		}
+	} catch {
+		// the process is exiting
+	}
+}
+
+function hookExit(rec) {
+	if (rec.exitHooked) return;
+	rec.exitHooked = true;
+	if (AP_TEST) AP_TEST.exitFlush = () => flushAtExit(rec);
+	process.on("exit", () => flushAtExit(rec));
 }
 
 // ---- the exclude check --------------------------------------------------------
@@ -1942,6 +2175,7 @@ export default {
 		if (!myDir) return noop;
 		const appVersion = plainText(ctx.app && ctx.app.version, 64);
 		rec.instances += 1;
+		hookExit(rec);
 
 		function emit(sid, name, data, opts) {
 			const root = rootOf(rec, sid);

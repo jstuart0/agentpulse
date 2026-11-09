@@ -4,7 +4,7 @@
  * lists), replays a Phase 0 capture through it, and collects what it POSTs.
  * Used by scripts/opencode-plugin-*.test.ts and the live canary's self-tests.
  */
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OPENCODE_PLUGIN_HASHES } from "../../src/shared/opencode-plugin-text.generated.ts";
@@ -32,7 +32,7 @@ let counter = 0;
 const tmpRoot = mkdtempSync(join(tmpdir(), "ap-oc-plugin-"));
 
 export function scratchDir(name: string): string {
-	const dir = join(tmpRoot, `${name}-${++counter}`);
+	const dir = join(tmpRoot, `${name}-${String(++counter).padStart(5, "0")}`);
 	mkdirSync(dir, { recursive: true });
 	return dir;
 }
@@ -382,5 +382,54 @@ export async function makeDriver(line: Line, plugin: any, dir: string): Promise<
 			await tick();
 		},
 		cleanup: () => (cleanup as () => void)?.(),
+	};
+}
+
+// ---- a collector in another process (a synchronous curl at exit blocks this one) -----------------
+
+const REMOTE_SERVER = `
+const fs = require("node:fs");
+const [log, hangFile] = process.argv.slice(2);
+const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+  const raw = await req.text();
+  if (fs.existsSync(hangFile)) await new Promise(() => {});
+  const headers = {}; req.headers.forEach((v, k) => { headers[k] = v; });
+  fs.appendFileSync(log, JSON.stringify({ headers, raw, url: req.url }) + "\\n");
+  return Response.json({ ok: true });
+}});
+console.log(server.port);
+`;
+
+export async function startRemoteCollector() {
+	const dir = scratchDir("remote");
+	const log = join(dir, "log.jsonl");
+	const hangFile = join(dir, "hang");
+	const script = join(dir, "server.js");
+	writeFileSync(script, REMOTE_SERVER);
+	writeFileSync(log, "");
+	const child = Bun.spawn(["bun", script, log, hangFile], { stdout: "pipe", stderr: "ignore" });
+	const reader = child.stdout.getReader();
+	const first = await reader.read();
+	const port = Number(new TextDecoder().decode(first.value).trim());
+	return {
+		url: `http://127.0.0.1:${port}`,
+		hang(on: boolean) {
+			if (on) writeFileSync(hangFile, "");
+			else rmSync(hangFile, { force: true });
+		},
+		read(): Received[] {
+			return readFileSync(log, "utf8")
+				.split("\n")
+				.filter(Boolean)
+				.map((l) => {
+					const x = JSON.parse(l) as { headers: Record<string, string>; raw: string; url: string };
+					let body: any = null;
+					try {
+						body = JSON.parse(x.raw);
+					} catch {}
+					return { headers: x.headers, body, raw: x.raw, url: x.url };
+				});
+		},
+		stop: () => child.kill(),
 	};
 }

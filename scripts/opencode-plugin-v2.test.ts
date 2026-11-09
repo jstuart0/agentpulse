@@ -41,6 +41,13 @@ describe("v2 plugin: only 2.x", () => {
 		expect(typeof cleanup).toBe("function");
 		expect(cleanup()).toBeUndefined();
 		expect(await plugin.default.setup(undefined)).toBeInstanceOf(Function);
+		// An event object with no subscribe, and a tool object with a hook: still a no-op that registers nothing.
+		const noSubscribe = await plugin.default.setup({
+			event: {},
+			tool: { hook: () => {} },
+			location: { directory: "/x" },
+		});
+		expect(noSubscribe()).toBeUndefined();
 		expect(recordOf("v2")).toBeUndefined();
 		c.stop();
 	});

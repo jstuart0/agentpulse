@@ -20,7 +20,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { EXIT } from "./lib/canary-verdict.js";
+import { EXIT, classifyScenarioWith, exitCodeFor } from "./lib/canary-verdict.js";
 import { OPENCODE_PINS, type OpenCodeLine } from "./lib/opencode-canary-pins.js";
 import { REAL_HOME } from "./lib/opencode-canary-safety.js";
 import {
@@ -53,6 +53,9 @@ import { makeWorld, stopWorld } from "./opencode-canary-scenarios/world.js";
 
 interface Options {
 	measure: boolean;
+	product: boolean;
+	mutate: string[];
+	overhead: number;
 	v1Bin?: string;
 	v2Bin?: string;
 	v1Warm?: string;
@@ -64,7 +67,13 @@ interface Options {
 }
 
 function parseArgs(argv: string[]): Options {
-	const options: Options = { measure: false, keepAlive: [] };
+	const options: Options = {
+		measure: false,
+		product: false,
+		mutate: [],
+		overhead: 0,
+		keepAlive: [],
+	};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		const next = () => {
@@ -73,6 +82,9 @@ function parseArgs(argv: string[]): Options {
 			return value;
 		};
 		if (arg === "--measure") options.measure = true;
+		else if (arg === "--product") options.product = true;
+		else if (arg === "--mutate") options.mutate = next().split(",");
+		else if (arg === "--overhead") options.overhead = Number(next());
 		else if (arg === "--v1-bin") options.v1Bin = next();
 		else if (arg === "--v2-bin") options.v2Bin = next();
 		else if (arg === "--emit") options.emit = next();
@@ -115,9 +127,9 @@ async function main(): Promise<number> {
 		console.error(String((error as Error).message));
 		return EXIT.usage;
 	}
-	if (!options.measure || !options.v1Bin || !options.v2Bin || !options.work) {
+	if (options.measure === options.product || !options.v1Bin || !options.v2Bin || !options.work) {
 		console.error(
-			"usage: --measure --v1-bin <path> --v2-bin <path> --work <dir> [--only ids] [--result file]",
+			"usage: (--measure | --product) --v1-bin <path> --v2-bin <path> --work <dir> [--only ids] [--result file]\n  --product also takes [--v1-warm <dir>] [--mutate await-post,throw-in-tool-hook] [--overhead <pairs>]",
 		);
 		return EXIT.usage;
 	}
@@ -158,6 +170,7 @@ async function main(): Promise<number> {
 	sampler.unref();
 
 	const outputs: MeasureOutput[] = [];
+	let productResults: import("./opencode-canary-scenarios/product.js").ProductResult[] = [];
 	const perScenarioChanges: string[] = [];
 	const instrument: string[] = [];
 	try {
@@ -182,7 +195,21 @@ async function main(): Promise<number> {
 				instrument.push(`${line} --version printed ${JSON.stringify(versions[line])}`);
 			}
 		}
-		const ids = options.only ?? Object.keys(MEASURE_SCENARIOS);
+		if (options.product) {
+			const { runProductScenarios } = await import("./opencode-canary-scenarios/product.js");
+			productResults = await runProductScenarios({
+				world,
+				...(options.only ? { only: options.only } : {}),
+				mutate: options.mutate,
+				overhead: options.overhead,
+				noteDataHome: (dir) => {
+					dataHomes.add(dir);
+					guard.addDataHome(dir);
+				},
+				onProgress: (line) => console.error(line),
+			});
+		}
+		const ids = options.product ? [] : (options.only ?? Object.keys(MEASURE_SCENARIOS));
 		for (const id of ids) {
 			const scenario = MEASURE_SCENARIOS[id];
 			if (!scenario) {
@@ -233,8 +260,22 @@ async function main(): Promise<number> {
 			instrument,
 		},
 	};
-	const resultPath = options.result ?? join(root, "measure-result.json");
-	writeFileSync(resultPath, JSON.stringify({ ...record, outputs }, null, 2));
+	const { MUTATION_TARGETS } = await import("./lib/opencode-canary-mutations.js");
+	const verdicts = productResults.map((r) => ({
+		scenario: `${r.scenario}.${r.line}${r.mutation ? `+${r.mutation}` : ""}`,
+		verdict: classifyScenarioWith(r, (m) => MUTATION_TARGETS[m] ?? []),
+		failed: r.expectations.filter((e) => e.ok === false).map((e) => e.name),
+	}));
+	for (const v of verdicts)
+		console.error(
+			`[product] ${v.verdict.padEnd(16)} ${v.scenario}${v.failed.length ? `  failed: ${v.failed.join("; ")}` : ""}`,
+		);
+	const resultPath =
+		options.result ?? join(root, options.product ? "product-result.json" : "measure-result.json");
+	writeFileSync(
+		resultPath,
+		JSON.stringify({ ...record, outputs, product: { results: productResults, verdicts } }, null, 2),
+	);
 	console.error(`[measure] wrote ${resultPath}`);
 	guard.cleanup();
 
@@ -293,7 +334,7 @@ async function main(): Promise<number> {
 		Object.values(keepAliveReport).some((a) => !a);
 	if (unsafe) return EXIT.fail;
 	if (instrument.length > 0) return EXIT.instrumentInvalid;
-	return EXIT.ok;
+	return exitCodeFor(verdicts.map((v) => v.verdict));
 }
 
 main().then(

@@ -126,6 +126,25 @@ describe("v1 plugin: only 1.x", () => {
 		]);
 	});
 
+	test("an after that fired is held, and a part that then ends in error makes it the one failure row", async () => {
+		const r = await rig("v1");
+		r.drv.created(SID, r.dir);
+		r.drv.before(SID, "call_1", "bash", { c: 1 });
+		r.drv.hooks["tool.execute.after"](
+			{ tool: "bash", sessionID: SID, callID: "call_1", args: { c: 1 } },
+			{ metadata: { exit: 0 }, output: "ok" },
+		);
+		r.drv.event(
+			partTool(SID, "call_1", "bash", { status: "error", input: { c: 1 }, error: "boom SECRET" }),
+		);
+		await settle("v1");
+		const after = r.received.filter((x) => x.body.hook_event_name === "tool.execute.after");
+		expect(after.length).toBe(1);
+		expect(after[0]?.body.data).toMatchObject({ status: "error", error: { name: "Error" } });
+		expect(after[0]?.body.data.output).toBeUndefined();
+		expect(JSON.stringify(after[0]?.body)).not.toContain("SECRET");
+	});
+
 	test("a held after whose part never arrives is sent after 2 s as completed", async () => {
 		const r = await rig("v1");
 		r.drv.created(SID, r.dir);

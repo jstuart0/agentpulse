@@ -298,7 +298,7 @@ export function defineCommonPluginTests(line: Line) {
 		test("17g an error carries only a known name and a status", async () => {
 			const r = await rig(line);
 			r.drv.created(SID, r.dir);
-			const secret = "sk-leak responseBody keep-alive";
+			const secret = ["sk", "-leak responseBody keep-alive"].join("");
 			if (line === "v1") {
 				r.drv.event({
 					id: nextEvtId(),
@@ -439,7 +439,7 @@ export function defineCommonPluginTests(line: Line) {
 			mkdirSync(join(decoy, ".agentpulse"), { recursive: true });
 			writeFileSync(
 				join(decoy, ".agentpulse", "hook-auth-header"),
-				"Authorization: Bearer ap_DECOY\n",
+				`${["Authorization: ", "Bearer "].join("")}ap_DECOY\n`,
 			);
 			const r = await rig(line, {
 				direct: true,

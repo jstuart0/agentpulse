@@ -27,6 +27,7 @@ export default {
 		if (!myDir) return noop;
 		const appVersion = plainText(ctx.app && ctx.app.version, 64);
 		rec.instances += 1;
+		hookExit(rec);
 
 		function emit(sid, name, data, opts) {
 			const root = rootOf(rec, sid);
