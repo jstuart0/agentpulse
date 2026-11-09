@@ -24,7 +24,6 @@
 				"hook_event_name": "SubagentStart",
 				"agent_id": "ses_child0000000000000000000001",
 				"parent_session_id": "ses_parent000000000000000000001",
-				"cwd": "/scratch/proj/v1-child-perm",
 				"provider_event_name": "session.created",
 				"opencode": {
 					"line": 1,
@@ -43,7 +42,6 @@
 				"hook_event_name": "PreToolUse",
 				"agent_id": "ses_child0000000000000000000001",
 				"parent_session_id": "ses_parent000000000000000000001",
-				"cwd": "/scratch/proj/v1-child-perm",
 				"tool_name": "write",
 				"tool_input": {
 					"filePath": "/scratch/proj/v1-child-perm/perm.txt"
@@ -68,7 +66,6 @@
 				"hook_event_name": "PermissionRequest",
 				"agent_id": "ses_child0000000000000000000001",
 				"parent_session_id": "ses_parent000000000000000000001",
-				"cwd": "/scratch/proj/v1-child-perm",
 				"tool_name": "edit",
 				"tool_input": {
 					"patterns": ["perm.txt"]
@@ -93,7 +90,6 @@
 				"hook_event_name": "PostToolUse",
 				"agent_id": "ses_child0000000000000000000001",
 				"parent_session_id": "ses_parent000000000000000000001",
-				"cwd": "/scratch/proj/v1-child-perm",
 				"tool_name": "write",
 				"tool_input": {
 					"filePath": "/scratch/proj/v1-child-perm/perm.txt"

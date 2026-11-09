@@ -340,8 +340,18 @@ describe("tool_use_id: permissive accepted, hostile dropped", () => {
 		}
 	});
 
-	test("a root approval: id is still the server's to drop; the canonicalizer passes it through unchanged", () => {
-		expect(canonicalize(post("approval:x")).tool_use_id).toBe("approval:x");
+	test("an approval: id is rejected by the parser, and a child id that composes one is dropped (xander L1)", () => {
+		expect(canonicalize(post("approval:x"))).toEqual(DROP);
+		expect(canonicalize(post("Approval:x"))).toEqual(DROP);
+		// A child session literally named "approval" would compose the server's reserved prefix.
+		expect(
+			canonicalize({ ...post("call_1"), session_id: "approval", parent_session_id: "ses_p" }),
+		).toEqual(DROP);
+		// Positive control: the same child shape with another name is stored.
+		expect(
+			canonicalize({ ...post("call_1"), session_id: "approvals", parent_session_id: "ses_p" })
+				.tool_use_id,
+		).toBe("approvals:call_1");
 	});
 
 	test("a child's id is prefixed, and hashed to c:<24 hex> when the composition passes 64 characters", () => {
@@ -397,15 +407,37 @@ describe("error rows carry a name and a status, never OpenCode's text", () => {
 			opencode: { line: 2, protocol: 1 },
 			data: { error },
 		});
-		expect(canonicalize(err({ name: "provider.invalid-request" })).error_message).toBe(
-			"provider.invalid-request",
+		expect(canonicalize(err({ name: "Tool.Error" })).error_message).toBe("Tool.Error");
+		expect(canonicalize(err({ name: "APIError", status: 503 })).error_message).toBe(
+			"APIError (HTTP 503)",
 		);
-		expect(canonicalize(err({ name: "X", status: 503 })).error_message).toBe("X (HTTP 503)");
 		// A name that isn't a plain identifier arrives as "Error"; a status outside 100..599 is left out.
 		expect(canonicalize(err({ name: "bad name\nwith text", status: 99999 })).error_message).toBe(
 			"Error",
 		);
 		expect(canonicalize(err({ name: "A".repeat(65) })).error_message).toBe("Error");
+	});
+
+	test("an error name that was not seen in the captures is folded to Error (xander L3)", () => {
+		const err = (name: string, status?: number): Raw => ({
+			session_id: "ses_abc",
+			hook_event_name: "session.step.failed",
+			opencode: { line: 2, protocol: 1 },
+			data: { error: { name, status } },
+		});
+		for (const name of ["provider.rate-limit", "ProviderAuthError", "sk-leaked.key", "X"]) {
+			expect(canonicalize(err(name)).error_message, name).toBe("Error");
+		}
+		expect(canonicalize(err("secret.name", 503)).error_message).toBe("Error (HTTP 503)");
+		for (const name of [
+			"Error",
+			"APIError",
+			"Tool.Error",
+			"MessageAbortedError",
+			"provider.invalid-request",
+		]) {
+			expect(canonicalize(err(name)).error_message, name).toBe(name);
+		}
 	});
 
 	test("an error with no detail is still an error row", () => {
@@ -673,5 +705,65 @@ describe("fixture hygiene and the no-writer rule", () => {
 			return FIXTURE_DIR_RE.test(text) && /--update\b/.test(text);
 		});
 		expect(offenders).toEqual([]);
+	});
+});
+
+describe("an error status stores no output (xander L4)", () => {
+	const afterRow = (line: 1 | 2, status: string): Raw => ({
+		session_id: "ses_abc",
+		hook_event_name: line === 1 ? "tool.execute.after" : "tool.after",
+		opencode: { line, protocol: 1 },
+		data: {
+			tool: "read",
+			tool_use_id: "call_1",
+			input: {},
+			status,
+			output: "ENOENT: /home/someone/.env has KEY=abc",
+			error: { name: "Tool.Error" },
+		},
+	});
+
+	test("both lines drop the output of a status:error row, and keep it for a completed one", () => {
+		for (const line of [1, 2] as const) {
+			const failed = canonicalize(afterRow(line, "error"));
+			expect(failed.hook_event_name).toBe("PostToolUseFailure");
+			expect(failed.tool_response).toBeUndefined();
+			expect(JSON.stringify(failed)).not.toContain("KEY=abc");
+			expect(failed.error_message).toBe("Tool.Error");
+			expect(canonicalize(afterRow(line, "completed")).tool_response).toBe(
+				"ENOENT: /home/someone/.env has KEY=abc",
+			);
+		}
+	});
+});
+
+describe("a child's directory, model and final text stay off the parent (ian L5)", () => {
+	const stop = (parent?: string): Raw => ({
+		session_id: "ses_child",
+		hook_event_name: "session.idle",
+		opencode: { line: 1, protocol: 1 },
+		cwd: "/work/child-dir",
+		model: "stub/child-model",
+		last_assistant_message: "the child's last answer",
+		...(parent ? { parent_session_id: parent } : {}),
+		data: {},
+	});
+
+	test("a child's SubagentStop carries no cwd, model or last_assistant_message", () => {
+		const out = canonicalize(stop("ses_parent"));
+		expect(out.hook_event_name).toBe("SubagentStop");
+		expect(out.session_id).toBe("ses_parent");
+		expect(out.agent_id).toBe("ses_child");
+		for (const key of ["cwd", "model", "last_assistant_message"]) {
+			expect(Object.keys(out), key).not.toContain(key);
+		}
+	});
+
+	test("positive control: the same fields on a root Stop are kept", () => {
+		const out = canonicalize(stop());
+		expect(out.hook_event_name).toBe("Stop");
+		expect(out.cwd).toBe("/work/child-dir");
+		expect(out.model).toBe("stub/child-model");
+		expect(out.last_assistant_message).toBe("the child's last answer");
 	});
 });

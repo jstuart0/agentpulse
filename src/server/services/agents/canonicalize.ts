@@ -226,6 +226,11 @@ function openCodeErrorMessage(error: OpenCodeWireError | undefined): string | un
 function openCodeToolUseId(toolUseId: string, childId: string | undefined): string {
 	if (childId === undefined) return toolUseId;
 	const composed = `${childId}:${toolUseId}`;
+	// A child id of "approval" would build the server's reserved prefix (xander L1). The
+	// registry turns this throw into the drop payload.
+	if (composed.toLowerCase().startsWith("approval:")) {
+		throw new Error("opencode tool_use_id uses the reserved approval: prefix");
+	}
 	if (composed.length <= OPENCODE_CHILD_TOOL_USE_ID_MAX) return composed;
 	return `c:${sha256Hex(composed).slice(0, OPENCODE_CHILD_TOOL_USE_ID_HASH_CHARS)}`;
 }
@@ -297,16 +302,18 @@ function buildOpenCodePayload(
 		provider_event_name: capProviderEventName(env.hook_event_name),
 		opencode: { ...env.opencode },
 	};
-	if (env.cwd !== undefined) out.cwd = env.cwd;
-	if (env.model !== undefined) out.model = env.model;
-	if (childId !== undefined) {
+	// A child's cwd, model and final text are not the parent's: carried over, they would
+	// overwrite the parent's directory and model and turn the child's last answer into an
+	// AssistantMessage on the parent (ian L5). The relay and the plugin judge the child's
+	// directory before the envelope is sent; the server stores none of it.
+	if (childId === undefined) {
+		if (env.cwd !== undefined) out.cwd = env.cwd;
+		if (env.model !== undefined) out.model = env.model;
+	} else {
 		out.agent_id = childId;
 		out.parent_session_id = env.parent_session_id;
 	}
-	if (
-		env.last_assistant_message !== undefined &&
-		(canonical === "Stop" || canonical === "SubagentStop")
-	) {
+	if (childId === undefined && env.last_assistant_message !== undefined && canonical === "Stop") {
 		out.last_assistant_message = env.last_assistant_message;
 	}
 
@@ -326,10 +333,13 @@ function buildOpenCodePayload(
 			out.tool_name = env.data.tool;
 			out.tool_input = deps.capToolInput(env.data.input);
 			out.tool_use_id = openCodeToolUseId(env.data.tool_use_id, childId);
-			const output = env.data.output === undefined ? "" : env.data.output;
+			// An error status carries no output: a provider or tool error text can echo request
+			// material (xander L4). The plugin sends none either; this holds if a sender does.
+			const output =
+				env.data.output === undefined || env.data.status === "error" ? "" : env.data.output;
 			if (env.data.exit_code !== undefined) {
 				out.tool_response = deps.capToolResponse({ output, exit_code: env.data.exit_code });
-			} else if (env.data.output !== undefined) {
+			} else if (env.data.output !== undefined && env.data.status !== "error") {
 				out.tool_response = deps.capToolResponse(output);
 			}
 			if (canonical === "PostToolUseFailure") {

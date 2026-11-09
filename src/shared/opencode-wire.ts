@@ -50,6 +50,21 @@ const ERROR_NAME_RE = /^[A-Za-z0-9_.-]+$/;
 const REPLY_RE = /^[a-z_-]+$/;
 const CONTROL_RE = /\p{Cc}/u;
 const FALLBACK_ERROR_NAME = "Error";
+/**
+ * The only error names that cross the wire as themselves: the ones seen in the
+ * Phase 0 captures. A name is provider-influenced text, so anything else is
+ * folded to "Error" (xander L3). Add a name only with a capture that shows it.
+ */
+export const OPENCODE_KNOWN_ERROR_NAMES: ReadonlySet<string> = new Set([
+	"Error",
+	"APIError",
+	"Tool.Error",
+	"MessageAbortedError",
+	"aborted",
+	"provider.invalid-request",
+]);
+/** The server reserves this prefix for its own approval waits (event-processor). */
+const RESERVED_TOOL_USE_ID_PREFIX = "approval:";
 
 export interface OpenCodeWireError {
 	/** `^[A-Za-z0-9_.-]+$`, at most 64 characters; anything else arrives as "Error". */
@@ -213,7 +228,8 @@ function textOf(value: unknown): string | null {
 }
 
 function toolUseIdOf(value: unknown): string | null {
-	return plainString(value, OPENCODE_TOOL_USE_ID_MAX);
+	const id = plainString(value, OPENCODE_TOOL_USE_ID_MAX);
+	return id === null || id.toLowerCase().startsWith(RESERVED_TOOL_USE_ID_PREFIX) ? null : id;
 }
 
 function errorOf(value: unknown): OpenCodeWireError | undefined | null {
@@ -222,9 +238,9 @@ function errorOf(value: unknown): OpenCodeWireError | undefined | null {
 	const rawName = value.name;
 	const name =
 		typeof rawName === "string" &&
-		rawName.length > 0 &&
 		rawName.length <= OPENCODE_ERROR_NAME_MAX &&
-		ERROR_NAME_RE.test(rawName)
+		ERROR_NAME_RE.test(rawName) &&
+		OPENCODE_KNOWN_ERROR_NAMES.has(rawName)
 			? rawName
 			: FALLBACK_ERROR_NAME;
 	const status = value.status;

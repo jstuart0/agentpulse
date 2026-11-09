@@ -8,9 +8,15 @@
 				"hook_event_name": "SessionStart",
 				"cwd": "/scratch/proj/v1-child-session",
 				"provider_event_name": "session.created",
-				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
 			},
-			"semantic": { "event": "SessionStart" }
+			"semantic": {
+				"event": "SessionStart"
+			}
 		},
 		{
 			"expected": {
@@ -20,9 +26,15 @@
 				"model": "stub/stub-model",
 				"prompt": "\"SUBTASK go\"",
 				"provider_event_name": "chat.message",
-				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
 			},
-			"semantic": { "event": "UserPromptSubmit" }
+			"semantic": {
+				"event": "UserPromptSubmit"
+			}
 		},
 		{
 			"expected": {
@@ -37,9 +49,16 @@
 				},
 				"tool_use_id": "call_stub_task_1",
 				"provider_event_name": "tool.execute.before",
-				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
 			},
-			"semantic": { "event": "PreToolUse", "tool_use_id": "call_stub_task_1" }
+			"semantic": {
+				"event": "PreToolUse",
+				"tool_use_id": "call_stub_task_1"
+			}
 		},
 		{
 			"expected": {
@@ -47,25 +66,45 @@
 				"hook_event_name": "SubagentStart",
 				"agent_id": "ses_e409b1d18ffeWjzFzszlIdpkVh",
 				"parent_session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
-				"cwd": "/scratch/proj/v1-child-session",
 				"provider_event_name": "session.created",
-				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
 			},
-			"semantic": { "event": "SubagentStart", "agentId": "ses_e409b1d18ffeWjzFzszlIdpkVh" }
+			"semantic": {
+				"event": "SubagentStart",
+				"agentId": "ses_e409b1d18ffeWjzFzszlIdpkVh"
+			}
 		},
-		{ "expected": { "session_id": "", "hook_event_name": "" }, "semantic": { "event": "drop" } },
+		{
+			"expected": {
+				"session_id": "",
+				"hook_event_name": ""
+			},
+			"semantic": {
+				"event": "drop"
+			}
+		},
 		{
 			"expected": {
 				"session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
 				"hook_event_name": "PreToolUse",
 				"agent_id": "ses_e409b1d18ffeWjzFzszlIdpkVh",
 				"parent_session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
-				"cwd": "/scratch/proj/v1-child-session",
 				"tool_name": "bash",
-				"tool_input": { "command": "printf ok", "description": "canary" },
+				"tool_input": {
+					"command": "printf ok",
+					"description": "canary"
+				},
 				"tool_use_id": "ses_e409b1d18ffeWjzFzszlIdpkVh:call_stub_ok_1",
 				"provider_event_name": "tool.execute.before",
-				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
 			},
 			"semantic": {
 				"event": "PreToolUse",
@@ -79,13 +118,22 @@
 				"hook_event_name": "PostToolUse",
 				"agent_id": "ses_e409b1d18ffeWjzFzszlIdpkVh",
 				"parent_session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
-				"cwd": "/scratch/proj/v1-child-session",
 				"tool_name": "bash",
-				"tool_input": { "command": "printf ok", "description": "canary" },
+				"tool_input": {
+					"command": "printf ok",
+					"description": "canary"
+				},
 				"tool_use_id": "ses_e409b1d18ffeWjzFzszlIdpkVh:call_stub_ok_1",
-				"tool_response": { "output": "ok", "exit_code": 0 },
+				"tool_response": {
+					"output": "ok",
+					"exit_code": 0
+				},
 				"provider_event_name": "tool.execute.after",
-				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
 			},
 			"semantic": {
 				"event": "PostToolUse",
@@ -99,12 +147,17 @@
 				"hook_event_name": "SubagentStop",
 				"agent_id": "ses_e409b1d18ffeWjzFzszlIdpkVh",
 				"parent_session_id": "ses_e409b228bffe8UiJIX3B6hKEVy",
-				"cwd": "/scratch/proj/v1-child-session",
-				"last_assistant_message": "STUB-DONE after tool",
 				"provider_event_name": "session.idle",
-				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
 			},
-			"semantic": { "event": "SubagentStop", "agentId": "ses_e409b1d18ffeWjzFzszlIdpkVh" }
+			"semantic": {
+				"event": "SubagentStop",
+				"agentId": "ses_e409b1d18ffeWjzFzszlIdpkVh"
+			}
 		},
 		{
 			"expected": {
@@ -118,11 +171,18 @@
 					"subagent_type": "general"
 				},
 				"tool_use_id": "call_stub_task_1",
-				"tool_response": "STUB-DONE after tool",
+				"tool_response": "<task id=\"ses_e409b1d18ffeWjzFzszlIdpkVh\" state=\"completed\">\n<task_result>\nSTUB-DONE after tool\n</task_result>\n</task>",
 				"provider_event_name": "tool.execute.after",
-				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
 			},
-			"semantic": { "event": "PostToolUse", "tool_use_id": "call_stub_task_1" }
+			"semantic": {
+				"event": "PostToolUse",
+				"tool_use_id": "call_stub_task_1"
+			}
 		},
 		{
 			"expected": {
@@ -131,9 +191,15 @@
 				"cwd": "/scratch/proj/v1-child-session",
 				"last_assistant_message": "STUB-DONE after tool",
 				"provider_event_name": "session.idle",
-				"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" }
+				"opencode": {
+					"line": 1,
+					"protocol": 1,
+					"version": "1.19.5"
+				}
 			},
-			"semantic": { "event": "Stop" }
+			"semantic": {
+				"event": "Stop"
+			}
 		}
 	]
 }

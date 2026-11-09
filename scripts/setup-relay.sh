@@ -1539,6 +1539,8 @@ trap 'rm -rf "$SRC_DIR"' EXIT
 
 # @@AGENTPULSE_RELAY_TS@@
 # @@AGENTPULSE_STATUSLINE_SH@@
+# @@AGENTPULSE_OPENCODE_PLUGIN_1@@
+# @@AGENTPULSE_OPENCODE_PLUGIN_2@@
 
 if [[ ! -s "$SRC_DIR/relay.ts" || ! -s "$SRC_DIR/statusline.sh" ]]; then
   SELF="${BASH_SOURCE[0]:-}"

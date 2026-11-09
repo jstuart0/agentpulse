@@ -5,21 +5,41 @@
 		{
 			"session_id": "ses_e409b0823ffenWLNr1vBO8pCr6",
 			"hook_event_name": "chat.message",
-			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"opencode": {
+				"line": 1,
+				"protocol": 1,
+				"version": "1.19.5"
+			},
 			"cwd": "/scratch/proj/v1-forced-400",
-			"data": { "text": "FAILTURN go" }
+			"data": {
+				"text": "\"FAILTURN go\""
+			},
+			"model": "stub/stub-model"
 		},
 		{
 			"session_id": "ses_e409b0823ffenWLNr1vBO8pCr6",
 			"hook_event_name": "session.error",
-			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"opencode": {
+				"line": 1,
+				"protocol": 1,
+				"version": "1.19.5"
+			},
 			"cwd": "/scratch/proj/v1-forced-400",
-			"data": { "error": { "name": "APIError", "status": 400 } }
+			"data": {
+				"error": {
+					"name": "APIError",
+					"status": 400
+				}
+			}
 		},
 		{
 			"session_id": "ses_e409b0823ffenWLNr1vBO8pCr6",
 			"hook_event_name": "session.idle",
-			"opencode": { "line": 1, "protocol": 1, "version": "1.19.5" },
+			"opencode": {
+				"line": 1,
+				"protocol": 1,
+				"version": "1.19.5"
+			},
 			"cwd": "/scratch/proj/v1-forced-400",
 			"data": {}
 		}
