@@ -3399,8 +3399,12 @@ ap_oc_first_line_is_ours() {
 }
 
 ap_oc_config_dir() {
+	local v
 	if [ -n "${OPENCODE_CONFIG_DIR:-}" ] && [ "${OPENCODE_CONFIG_DIR#/}" != "$OPENCODE_CONFIG_DIR" ]; then
-		printf '%s' "${OPENCODE_CONFIG_DIR%/}"
+		v="$OPENCODE_CONFIG_DIR"
+		while [ "${v%/}" != "$v" ]; do v="${v%/}"; done
+		[ -n "$v" ] || v="/"
+		printf '%s' "$v"
 	elif [ -n "${XDG_CONFIG_HOME:-}" ] && [ "${XDG_CONFIG_HOME#/}" != "$XDG_CONFIG_HOME" ]; then
 		printf '%s' "${XDG_CONFIG_HOME%/}/opencode"
 	else
@@ -3425,9 +3429,12 @@ ap_oc_detected() {
 }
 
 ap_oc_backup() {
-	local path="$1" to
-	to="$HOME/.agentpulse/backups/opencode/$(basename -- "$path").$(date -u +%Y%m%dT%H%M%SZ)"
-	( umask 077 && mkdir -p "$HOME/.agentpulse/backups/opencode" ) || return 1
+	local path="$1" dir="$HOME/.agentpulse/backups/opencode" stamp to n=0
+	stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+	( umask 077 && mkdir -p "$dir" ) || return 1
+	to="$dir/$(basename -- "$path").$stamp"
+	# Never overwrite an earlier backup (and never let mv move into one that is a folder).
+	while [ -e "$to" ] || [ -L "$to" ]; do n=$((n + 1)); to="$dir/$(basename -- "$path").$stamp.$n"; done
 	mv -- "$path" "$to" || return 1
 	echo "  ✓ Moved $path to $to"
 }
@@ -3498,6 +3505,10 @@ ap_opencode_install() {
 	plugins="$cfg/plugins"
 	from_env=0
 	if [ -n "${OPENCODE_CONFIG_DIR:-}" ] && [ "${OPENCODE_CONFIG_DIR#/}" != "$OPENCODE_CONFIG_DIR" ]; then from_env=1; fi
+	if [ "$cfg" = "/" ]; then
+		echo "  ✗ OpenCode: refusing to use / as OpenCode's config folder (check OPENCODE_CONFIG_DIR). No OpenCode plugin was written or removed." >&2
+		return 1
+	fi
 	if [ "$noop" != 1 ] && ! ap_oc_detected; then
 		echo "  - OpenCode not detected (no \`opencode\` on PATH, no config or data folder); nothing written."
 		return 0
@@ -3508,14 +3519,14 @@ ap_opencode_install() {
 	fi
 	# Links first: nothing below writes or removes anything unless none of these is a link.
 	while IFS='|' read -r e_name e_file e_line e_gated e_kind; do
-		if [ "$e_kind" = dir ] && [ -L "$plugins/$e_name" ]; then
-			echo "  ✗ OpenCode: refusing to touch $plugins/$e_name: it is a symlink. Nothing was written or removed." >&2
+		if [ -L "$plugins/$e_name" ]; then
+			echo "  ✗ OpenCode: refusing to touch $plugins/$e_name: it is a symlink. No OpenCode plugin was written or removed." >&2
 			return 1
 		fi
 	done <<< "$AP_OC_ENTRIES"
 	for p in "$cfg" "$plugins"; do
 		if [ -L "$p" ]; then
-			echo "  ✗ OpenCode: refusing to touch $p: it is a symlink. Nothing was written or removed." >&2
+			echo "  ✗ OpenCode: refusing to touch $p: it is a symlink. No OpenCode plugin was written or removed." >&2
 			return 1
 		fi
 	done
@@ -3861,9 +3872,11 @@ elif [[ "$AGENT_TYPE" == "opencode" ]]; then
   fi
   echo "Configuring OpenCode plugins..."
   if [[ "$NO_OPENCODE" != "1" ]]; then
-    AP_AUTH_HEADER_FILE="$HOME/.agentpulse/hook-auth-header"
-    printf -v AP_AUTH_HEADER_CONTENT 'Authorization: Bearer %s\n' "${AGENTPULSE_KEY}"
-    ap_write_private_no_follow "$AP_AUTH_HEADER_FILE" "$AP_AUTH_HEADER_CONTENT" || exit 1
+    if [[ -n "$AGENTPULSE_KEY" ]]; then
+      AP_AUTH_HEADER_FILE="$HOME/.agentpulse/hook-auth-header"
+      printf -v AP_AUTH_HEADER_CONTENT 'Authorization: Bearer %s\n' "${AGENTPULSE_KEY}"
+      ap_write_private_no_follow "$AP_AUTH_HEADER_FILE" "$AP_AUTH_HEADER_CONTENT" || exit 1
+    fi
     ap_install_exclude_script
   fi
   ap_opencode_install "$AGENTPULSE_URL" "1" "$OPENCODE_FORCE" "$NO_OPENCODE" || exit 1
@@ -3876,8 +3889,10 @@ fi
 # OpenCode alongside the agent just configured (AGEN-141): set up when found, removed on --no-opencode.
 if [[ "$AGENT_TYPE" != "opencode" ]] && { [[ "$NO_OPENCODE" == "1" ]] || ap_oc_detected; }; then
   if [[ "$NO_OPENCODE" != "1" ]]; then
-    printf -v AP_AUTH_HEADER_CONTENT 'Authorization: Bearer %s\n' "${AGENTPULSE_KEY}"
-    ap_write_private_no_follow "$HOME/.agentpulse/hook-auth-header" "$AP_AUTH_HEADER_CONTENT" || exit 1
+    if [[ -n "$AGENTPULSE_KEY" ]]; then
+      printf -v AP_AUTH_HEADER_CONTENT 'Authorization: Bearer %s\n' "${AGENTPULSE_KEY}"
+      ap_write_private_no_follow "$HOME/.agentpulse/hook-auth-header" "$AP_AUTH_HEADER_CONTENT" || exit 1
+    fi
     ap_install_exclude_script
   fi
   ap_opencode_install "$AGENTPULSE_URL" "1" "$OPENCODE_FORCE" "$NO_OPENCODE" || true

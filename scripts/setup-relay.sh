@@ -889,8 +889,12 @@ ap_oc_first_line_is_ours() {
 }
 
 ap_oc_config_dir() {
+	local v
 	if [ -n "${OPENCODE_CONFIG_DIR:-}" ] && [ "${OPENCODE_CONFIG_DIR#/}" != "$OPENCODE_CONFIG_DIR" ]; then
-		printf '%s' "${OPENCODE_CONFIG_DIR%/}"
+		v="$OPENCODE_CONFIG_DIR"
+		while [ "${v%/}" != "$v" ]; do v="${v%/}"; done
+		[ -n "$v" ] || v="/"
+		printf '%s' "$v"
 	elif [ -n "${XDG_CONFIG_HOME:-}" ] && [ "${XDG_CONFIG_HOME#/}" != "$XDG_CONFIG_HOME" ]; then
 		printf '%s' "${XDG_CONFIG_HOME%/}/opencode"
 	else
@@ -915,9 +919,12 @@ ap_oc_detected() {
 }
 
 ap_oc_backup() {
-	local path="$1" to
-	to="$HOME/.agentpulse/backups/opencode/$(basename -- "$path").$(date -u +%Y%m%dT%H%M%SZ)"
-	( umask 077 && mkdir -p "$HOME/.agentpulse/backups/opencode" ) || return 1
+	local path="$1" dir="$HOME/.agentpulse/backups/opencode" stamp to n=0
+	stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+	( umask 077 && mkdir -p "$dir" ) || return 1
+	to="$dir/$(basename -- "$path").$stamp"
+	# Never overwrite an earlier backup (and never let mv move into one that is a folder).
+	while [ -e "$to" ] || [ -L "$to" ]; do n=$((n + 1)); to="$dir/$(basename -- "$path").$stamp.$n"; done
 	mv -- "$path" "$to" || return 1
 	echo "  ✓ Moved $path to $to"
 }
@@ -988,6 +995,10 @@ ap_opencode_install() {
 	plugins="$cfg/plugins"
 	from_env=0
 	if [ -n "${OPENCODE_CONFIG_DIR:-}" ] && [ "${OPENCODE_CONFIG_DIR#/}" != "$OPENCODE_CONFIG_DIR" ]; then from_env=1; fi
+	if [ "$cfg" = "/" ]; then
+		echo "  ✗ OpenCode: refusing to use / as OpenCode's config folder (check OPENCODE_CONFIG_DIR). No OpenCode plugin was written or removed." >&2
+		return 1
+	fi
 	if [ "$noop" != 1 ] && ! ap_oc_detected; then
 		echo "  - OpenCode not detected (no \`opencode\` on PATH, no config or data folder); nothing written."
 		return 0
@@ -998,14 +1009,14 @@ ap_opencode_install() {
 	fi
 	# Links first: nothing below writes or removes anything unless none of these is a link.
 	while IFS='|' read -r e_name e_file e_line e_gated e_kind; do
-		if [ "$e_kind" = dir ] && [ -L "$plugins/$e_name" ]; then
-			echo "  ✗ OpenCode: refusing to touch $plugins/$e_name: it is a symlink. Nothing was written or removed." >&2
+		if [ -L "$plugins/$e_name" ]; then
+			echo "  ✗ OpenCode: refusing to touch $plugins/$e_name: it is a symlink. No OpenCode plugin was written or removed." >&2
 			return 1
 		fi
 	done <<< "$AP_OC_ENTRIES"
 	for p in "$cfg" "$plugins"; do
 		if [ -L "$p" ]; then
-			echo "  ✗ OpenCode: refusing to touch $p: it is a symlink. Nothing was written or removed." >&2
+			echo "  ✗ OpenCode: refusing to touch $p: it is a symlink. No OpenCode plugin was written or removed." >&2
 			return 1
 		fi
 	done

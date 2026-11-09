@@ -7,12 +7,14 @@
  */
 
 import {
+	cpSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
 	renameSync,
+	rmSync,
 	rmdirSync,
 	statSync,
 	unlinkSync,
@@ -117,6 +119,29 @@ export function foreignPluginPresent(
 	return false;
 }
 
+/**
+ * Moves `path` into `backupsDir` under a name no earlier backup has, and returns the new path. `rename` fails
+ * with EXDEV when the folders are on different filesystems; then the move is a copy followed by removing the original.
+ */
+export function moveToBackups(
+	path: string,
+	backupsDir: string,
+	stamp: string,
+	rename: (from: string, to: string) => void = renameSync,
+): string {
+	mkdirSync(backupsDir, { recursive: true, mode: 0o700 });
+	let to = join(backupsDir, `${basename(path)}.${stamp}`);
+	for (let n = 1; lstatOrNull(to); n++) to = join(backupsDir, `${basename(path)}.${stamp}.${n}`);
+	try {
+		rename(path, to);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+		cpSync(path, to, { recursive: true, verbatimSymlinks: true, errorOnExist: true, force: false });
+		rmSync(path, { recursive: true, force: true });
+	}
+	return to;
+}
+
 export function installOpenCode(opts: OpenCodeInstallOptions): OpenCodeInstallResult {
 	const { home, env, log, warn } = opts;
 	const { dir: cfg, fromEnv } = resolveOpenCodeConfigDir(env, home);
@@ -127,6 +152,13 @@ export function installOpenCode(opts: OpenCodeInstallOptions): OpenCodeInstallRe
 	const forceMarker = join(home, OPENCODE_FORCE_MARKER);
 	const remembersForce = OPENCODE_LAYOUT === "all_gated";
 
+	if (cfg === "/") {
+		warn(
+			"  ✗ OpenCode: refusing to use / as OpenCode's config folder (check OPENCODE_CONFIG_DIR). No OpenCode plugin was written or removed.",
+		);
+		return { ok: false, installed: false };
+	}
+
 	const detected = opts.onPath("opencode") || existsSync(cfg) || existsSync(data);
 	if (!detected && !opts.noOpenCode) {
 		log(
@@ -136,24 +168,18 @@ export function installOpenCode(opts: OpenCodeInstallOptions): OpenCodeInstallRe
 	}
 
 	// Links first: nothing below writes or removes anything until none of these is a link.
-	const guarded = [
-		cfg,
-		plugins,
-		...entries.filter((e) => e.file.includes("/")).map((e) => join(plugins, e.entry)),
-	];
+	const guarded = [cfg, plugins, ...entries.map((e) => join(plugins, e.entry))];
 	for (const p of guarded) {
 		if (lstatOrNull(p)?.isSymbolicLink()) {
 			warn(
-				`  ✗ OpenCode: refusing to touch ${p}: it is a symlink. Nothing was written or removed.`,
+				`  ✗ OpenCode: refusing to touch ${p}: it is a symlink. No OpenCode plugin was written or removed.`,
 			);
 			return { ok: false, installed: false };
 		}
 	}
 
 	const backup = (path: string): void => {
-		mkdirSync(backups, { recursive: true, mode: 0o700 });
-		const to = join(backups, `${basename(path)}.${stampNow()}`);
-		renameSync(path, to);
+		const to = moveToBackups(path, backups, stampNow());
 		log(`  ✓ Moved ${path} to ${to}`);
 	};
 

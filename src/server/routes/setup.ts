@@ -820,8 +820,11 @@ fi
 
 if [[ "\$NO_OPENCODE" == "1" ]] || ap_oc_detected; then
   if [[ "\$NO_OPENCODE" != "1" ]]; then
-    printf -v AP_OC_AUTH_CONTENT 'Authorization: Bearer %s\\n' "\$API_KEY"
-    ap_write_private_no_follow "\$HOME/.agentpulse/hook-auth-header" "\$AP_OC_AUTH_CONTENT" || exit 1
+    # An empty key would overwrite a good header file with one the plugin (and the Codex/Copilot shims) reject.
+    if [[ -n "\$API_KEY" ]]; then
+      printf -v AP_OC_AUTH_CONTENT 'Authorization: Bearer %s\\n' "\$API_KEY"
+      ap_write_private_no_follow "\$HOME/.agentpulse/hook-auth-header" "\$AP_OC_AUTH_CONTENT" || exit 1
+    fi
     ap_install_exclude_script
   fi
   ap_opencode_install "\$HOOK_URL" "1" "\$OPENCODE_FORCE" "\$NO_OPENCODE" || true

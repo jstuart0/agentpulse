@@ -266,7 +266,7 @@ export function resolveOpenCodeConfigDir(
 	home: string,
 ): { dir: string; fromEnv: boolean } {
 	const isAbs = (v: string | undefined): v is string => typeof v === "string" && v.startsWith("/");
-	const trim = (v: string) => (v.length > 1 ? v.replace(/\/+$/, "") : v);
+	const trim = (v: string) => v.replace(/\/+$/, "") || "/";
 	if (isAbs(env.OPENCODE_CONFIG_DIR)) return { dir: trim(env.OPENCODE_CONFIG_DIR), fromEnv: true };
 	if (isAbs(env.XDG_CONFIG_HOME))
 		return { dir: `${trim(env.XDG_CONFIG_HOME)}/opencode`, fromEnv: false };

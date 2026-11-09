@@ -42,7 +42,10 @@ function Move-ApOcToBackups {
   param([Parameter(Mandatory = $true)][string]$Path)
   $dir = Join-Path $HOME '.agentpulse\backups\opencode'
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
-  $to = Join-Path $dir ("{0}.{1}" -f (Split-Path -Leaf $Path), (Get-Date -AsUTC -Format 'yyyyMMddTHHmmssZ'))
+  $name = "{0}.{1}" -f (Split-Path -Leaf $Path), (Get-Date -AsUTC -Format 'yyyyMMddTHHmmssZ')
+  $to = Join-Path $dir $name
+  $n = 0
+  while (Test-Path -LiteralPath $to) { $n++; $to = Join-Path $dir "$name.$n" }
   Move-Item -LiteralPath $Path -Destination $to
   Write-Step "Moved $Path to $to"
 }
@@ -100,20 +103,29 @@ function Test-ApOcDetected {
 function Install-ApOpenCode {
   param([string]$BaseUrl, [bool]$Direct, [bool]$Force, [bool]$NoOpenCode)
   $cfg = Get-ApOcConfigDir
+  if ([string]::IsNullOrEmpty($cfg) -or $cfg -match '^([A-Za-z]:)?$') {
+    Write-Warning "OpenCode: refusing to use a drive or filesystem root as OpenCode's config folder (check OPENCODE_CONFIG_DIR). No OpenCode plugin was written or removed."
+    return $false
+  }
   $plugins = Join-Path $cfg 'plugins'
   if (-not $NoOpenCode -and -not (Test-ApOcDetected)) {
     Write-Step 'OpenCode not detected (no opencode on PATH, no config or data folder); nothing written.'
     return $true
   }
   if (-not $NoOpenCode) {
-    if ($BaseUrl -notmatch '^https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(:[0-9]{1,5})?$') { throw "invalid AgentPulse base URL for the OpenCode plugin: $BaseUrl" }
-  }
-  foreach ($p in (@($cfg, $plugins) + @($script:ApOcEntries | Where-Object { $_.Kind -eq 'dir' } | ForEach-Object { Join-Path $plugins $_.Name }))) {
-    if (Test-ApOcLink -Path $p) {
-      Write-Warning "OpenCode: refusing to touch ${p}: it is a link. Nothing was written or removed."
+    # \z, not $: .NET's $ also matches before a final line break. The same explicit rejects as the shell and CLI installers.
+    if ($BaseUrl -notmatch '^https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(:[0-9]{1,5})?\z' -or $BaseUrl -match '["\\\r\n]' -or $BaseUrl.Contains('@@')) {
+      Write-Warning "invalid AgentPulse base URL for the OpenCode plugin: $BaseUrl"
       return $false
     }
   }
+  foreach ($p in (@($cfg, $plugins) + @($script:ApOcEntries | ForEach-Object { Join-Path $plugins $_.Name }))) {
+    if (Test-ApOcLink -Path $p) {
+      Write-Warning "OpenCode: refusing to touch ${p}: it is a link. No OpenCode plugin was written or removed."
+      return $false
+    }
+  }
+  try {
   if ($NoOpenCode) {
     foreach ($entry in $script:ApOcEntries) { Remove-ApOcOurs -Plugins $plugins -Entry $entry }
 @@AP_OC_NOOP_MARKER@@
@@ -150,4 +162,8 @@ function Install-ApOpenCode {
     Write-Step $script:ApOcNoteServiceSkip
   }
   return $true
+  } catch {
+    Write-Warning "OpenCode: stopped, and the plugins may be partly installed: $($_.Exception.Message)"
+    return $false
+  }
 }

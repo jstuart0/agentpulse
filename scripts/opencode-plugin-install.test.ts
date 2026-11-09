@@ -19,6 +19,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	readdirSync,
+	rmSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -482,6 +483,65 @@ for (const site of SITES) {
 				const removal = await site.run(ctx, { no: true });
 				expect(removal.out.toLowerCase()).toMatch(/refus/);
 				expect(treeHash(target)).toBe(before);
+			}
+		});
+
+		test("L3: a symlinked flat entry is refused up front, so removing and installing leave our other entry and the link target alone", async () => {
+			const ctx = makeCtx();
+			const ours = buildOpenCodePluginFiles({ baseUrl: site.baseUrl, direct: site.direct });
+			const flat = openCodeEntries().find((e) => e.file === e.entry);
+			const dir = openCodeEntries().find((e) => e.file !== e.entry);
+			if (!flat || !dir) return;
+			mkdirSync(join(ctx.plugins, dir.entry), { recursive: true });
+			const v2 = ours.find((f) => f.name === dir.file);
+			writeFileSync(join(ctx.plugins, dir.file), v2?.text ?? "");
+			const target = join(ctx.root, "elsewhere.js");
+			writeFileSync(target, "// someone else's file\n");
+			symlinkSync(target, join(ctx.plugins, flat.entry));
+			sdkMarker(ctx);
+			const before = treeHash(ctx.plugins);
+			for (const opts of [{ no: true }, {}] as const) {
+				const res = await site.run(ctx, opts);
+				expect(res.out.toLowerCase()).toMatch(/refus/);
+				expect(treeHash(ctx.plugins)).toBe(before);
+				expect(readFileSync(target, "utf8")).toBe("// someone else's file\n");
+			}
+		});
+
+		test("L4: two backups of the same name in the same second both survive", async () => {
+			if (site === cliSite) return; // the CLI's stamp can't be pinned from outside; moveToBackups is tested directly
+			const ctx = makeCtx();
+			const stub = join(ctx.bin, "date");
+			writeFileSync(stub, "#!/bin/sh\necho 20260101T000000Z\n");
+			chmodSync(stub, 0o755);
+			sdkMarker(ctx);
+			const dir = openCodeEntries().find((e) => e.file !== e.entry);
+			if (!dir) return;
+			for (const content of ["first", "second"]) {
+				rmSync(join(ctx.plugins, dir.entry), { recursive: true, force: true });
+				mkdirSync(ctx.plugins, { recursive: true });
+				writeFileSync(join(ctx.plugins, dir.entry), `${content}\n`);
+				const res = await site.run(ctx);
+				expect(res.code).toBe(0);
+			}
+			const backups = join(ctx.home, ".agentpulse", "backups", "opencode");
+			const kept = readdirSync(backups).sort();
+			expect(kept).toHaveLength(2);
+			expect(kept.map((n) => readFileSync(join(backups, n), "utf8")).sort()).toEqual([
+				"first\n",
+				"second\n",
+			]);
+		});
+
+		test("L5: a config folder that resolves to the filesystem root is refused", async () => {
+			for (const value of ["/", "//"]) {
+				const ctx = makeCtx();
+				const res = await site.run(ctx, { extraEnv: { OPENCODE_CONFIG_DIR: value } });
+				expect(res.out).toContain("refusing to use / as OpenCode's config folder");
+				expect(res.out).not.toContain("OpenCode plugin →");
+				expect(existsSync(join(ctx.home, ".agentpulse", "backups"))).toBe(false);
+				const removal = await site.run(ctx, { no: true, extraEnv: { OPENCODE_CONFIG_DIR: value } });
+				expect(removal.out).toContain("refusing to use / as OpenCode's config folder");
 			}
 		});
 
