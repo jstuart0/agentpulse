@@ -49,8 +49,28 @@ const ARGS = [
 	"--statusline",
 ];
 
+/**
+ * Linux refuses any single argument over 128 KiB (MAX_ARG_STRLEN), and the installer is now larger
+ * than that, so `bash -c <whole text>` cannot be started there (E2BIG; macOS has no such limit).
+ * The guard keys on `$-` carrying `c` and on BASH_SOURCE, not on how the text arrived, so where the
+ * argument is too long the same text is handed to `bash -c` through eval, which keeps `$-`, `$0`
+ * and the empty BASH_SOURCE of a script given as text. Everywhere else the real form runs.
+ */
+function spawnBash(argv: string[], options: Parameters<typeof Bun.spawn>[1]) {
+	try {
+		return Bun.spawn(argv, options);
+	} catch (error) {
+		if ((error as { code?: string }).code !== "E2BIG" || argv[1] !== "-c") throw error;
+		const dir = scratch("ap-sl-text-");
+		const file = join(dir, "text");
+		writeFileSync(file, argv[2]);
+		const viaEval = [argv[0], "-c", `eval "$(cat '${file}')"`, ...argv.slice(3)];
+		return Bun.spawn(viaEval, options);
+	}
+}
+
 async function run(argv: string[], home: string, cwd: string, stdin?: string, path = PATH) {
-	const proc = Bun.spawn(argv, {
+	const proc = spawnBash(argv, {
 		cwd,
 		stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
 		stdout: "pipe",
