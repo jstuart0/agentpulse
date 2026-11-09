@@ -42,7 +42,11 @@ import {
 import { ownOpenCodePids } from "./lib/opencode-own-pids.js";
 import { installOpenCodeGuard } from "./opencode-canary-guard.js";
 import type { Rec } from "./opencode-canary-scenarios/analyze.js";
-import { emitFixtures } from "./opencode-canary-scenarios/emit.js";
+import {
+	PARTIAL_SCENARIOS,
+	emitFixtures,
+	insertGateRows,
+} from "./opencode-canary-scenarios/emit.js";
 import { MEASURE_SCENARIOS } from "./opencode-canary-scenarios/index.js";
 import type { MeasureOutput } from "./opencode-canary-scenarios/measure-kit.js";
 import { makeWorld, stopWorld } from "./opencode-canary-scenarios/world.js";
@@ -196,6 +200,7 @@ async function main(): Promise<number> {
 				},
 			});
 			outputs.push(out);
+			instrument.push(...(out.invalid ?? []));
 			const moved = diffRealState(scenarioBefore, snapshotRealState(REAL_HOME)).failures;
 			if (moved.length > 0) perScenarioChanges.push(...moved.map((m) => `${id}: ${m}`));
 		}
@@ -233,7 +238,26 @@ async function main(): Promise<number> {
 	console.error(`[measure] wrote ${resultPath}`);
 	guard.cleanup();
 
-	if (options.emit && changes.length === 0) {
+	if (
+		options.emit &&
+		changes.length === 0 &&
+		instrument.length === 0 &&
+		outputs.length > 0 &&
+		outputs.every((o) => PARTIAL_SCENARIOS.has(o.id))
+	) {
+		insertGateRows({
+			rows: outputs.flatMap((o) => o.gates),
+			versions: { v1: OPENCODE_PINS.v1.version, v2: OPENCODE_PINS.v2.version },
+			outDir: resolve(options.emit),
+			work: root,
+			realHome: REAL_HOME,
+			evidence: Object.assign({}, ...outputs.map((o) => o.evidence)),
+		});
+		spawnSync("bunx", ["biome", "format", "--write", resolve(options.emit)], { encoding: "utf8" });
+		console.error(
+			`[measure] inserted ${outputs.flatMap((o) => o.gates).length} gate row(s) into ${options.emit}`,
+		);
+	} else if (options.emit && changes.length === 0) {
 		const allRecords: Record<"v1" | "v2", Rec[]> = { v1: [], v2: [] };
 		for (const line of ["v1", "v2"] as const) {
 			const dir = join(root, "records", line);

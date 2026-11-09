@@ -2,7 +2,7 @@
  * The measurement scenarios of Phase 0 (AGEN-141) that drive `opencode run`: layout (G1, G2, G9) and runs
  * (G3, G7, G10, G14 and most captures). The serve, service and exit scenarios are in `measure-live.ts`.
  */
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { OpenCodeLine } from "../lib/opencode-canary-pins.js";
 import {
@@ -235,6 +235,304 @@ async function layoutScenario(ctx: MeasureContext): Promise<MeasureOutput> {
 	return {
 		id: "layout",
 		gates,
+		captures: [],
+		evidence,
+	};
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// g9b: which plugin entries make a cold 1.x start fetch its SDK, and what stops the wait (G9 re-plan)
+
+const SDK_MARKER = ["node_modules", "@opencode-ai", "plugin", "package.json"];
+const STALE_VERSION = "0.0.1";
+const G9B_TIMEOUT = 170_000;
+
+type G9bShape = "none" | "v1_flat" | "v2_flat" | "v2_dir_pkg" | "v2_dir_index" | "foreign_ts";
+
+interface G9bRun {
+	id: string;
+	line: OpenCodeLine;
+	cold: boolean;
+	shape: G9bShape;
+	/** Applied after the place exists and before the run. */
+	prepare?: (configDir: string) => void;
+	/** Run the same place a second time. */
+	twice?: boolean;
+}
+
+interface G9bResult {
+	id: string;
+	cold: boolean;
+	ms: number;
+	code: number | null;
+	timedOut: boolean;
+	stalled: boolean;
+	loads: boolean;
+	noise: "terminal" | "log" | "silent";
+	markerBefore: boolean;
+	markerAfter: boolean;
+	nodeModulesBefore: boolean;
+	nodeModulesAfter: boolean;
+	/** XDG_DATA_HOME, XDG_CACHE_HOME and XDG_STATE_HOME held nothing before the first run. */
+	freshXdg: boolean;
+	xdg: { data: string; cache: string; state: string };
+	configDirAfter: string[];
+	second?: { ms: number; code: number | null; timedOut: boolean; stalled: boolean };
+}
+
+const markerPath = (configDir: string) => join(configDir, ...SDK_MARKER);
+const stalled = (r: { ms: number; timedOut: boolean; code: number | null }) =>
+	r.ms > 15_000 || r.timedOut || r.code !== 0;
+
+function placeG9bEntry(
+	ctx: MeasureContext,
+	place: ReturnType<typeof makePlace>,
+	shape: G9bShape,
+): void {
+	const { configDir, pluginsDir, probeLog } = place;
+	const config = JSON.stringify({ log: probeLog, post: `${ctx.world.capture.origin}/probe` });
+	if (shape === "none") return;
+	if (shape === "foreign_ts") {
+		// Someone else's plugin: no probe, nothing of ours.
+		writeFileSync(
+			join(pluginsDir, "theirs.ts"),
+			"export const Theirs = async () => ({});\nexport default Theirs;\n",
+		);
+		return;
+	}
+	if (shape === "v1_flat") {
+		installProbe(ctx.world, "v1", configDir, probeLog, "A", "agentpulse-opencode-1.js");
+		return;
+	}
+	if (shape === "v2_flat") {
+		installProbe(ctx.world, "v2", configDir, probeLog, "A", "agentpulse-opencode-2.js");
+		return;
+	}
+	const dir = join(pluginsDir, "agentpulse-opencode-2");
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "index.js"), probeSource("v2", "A", 2));
+	if (shape === "v2_dir_pkg") {
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({ name: "ap-g9b-dir", type: "module", exports: { ".": "./index.js" } }),
+		);
+	}
+	writeFileSync(join(configDir, "probe-config.json"), config);
+}
+
+/** A warm config dir whose `package.json` is gone while `node_modules` stays. */
+function dropPackageJson(configDir: string): void {
+	rmSync(join(configDir, "package.json"));
+}
+
+/** An SDK left by an older OpenCode: the installed package and the config dir's dependency both say 0.0.1. */
+function makeStale(configDir: string): void {
+	const sdk = markerPath(configDir);
+	const sdkJson = JSON.parse(readFileSync(sdk, "utf8"));
+	sdkJson.version = STALE_VERSION;
+	writeFileSync(sdk, JSON.stringify(sdkJson, null, 2));
+	const pkgPath = join(configDir, "package.json");
+	const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+	pkg.dependencies = { ...(pkg.dependencies ?? {}), "@opencode-ai/plugin": STALE_VERSION };
+	writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+}
+
+async function runG9b(ctx: MeasureContext, spec: G9bRun): Promise<G9bResult> {
+	const name = `g9b-${spec.id}`;
+	const place = makePlace(ctx.world, spec.line, name, {
+		probe: false,
+		...(spec.cold ? { warmFrom: "" } : {}),
+	});
+	ctx.noteDataHome(place.sandbox.paths.XDG_DATA_HOME);
+	placeG9bEntry(ctx, place, spec.shape);
+	spec.prepare?.(place.configDir);
+	const nodeModulesBefore = existsSync(join(place.configDir, "node_modules"));
+	const markerBefore = existsSync(markerPath(place.configDir));
+	const { XDG_DATA_HOME, XDG_CACHE_HOME, XDG_STATE_HOME } = place.sandbox.paths;
+	const freshXdg = [XDG_DATA_HOME, XDG_CACHE_HOME, XDG_STATE_HOME].every(
+		(d) => readdirSync(d).length === 0,
+	);
+	const cwd = projectDir(ctx.world, `${spec.line}-${name}`);
+	const first = await runTurn(ctx.world, place, {
+		cwd,
+		prompt: "PLAIN hello",
+		timeoutMs: G9B_TIMEOUT,
+	});
+	const records = readProbe(place);
+	saveRecords(ctx, spec.line, name, records);
+	const term = NOISE_WORDS.test(`${first.stdout}\n${first.stderr}`);
+	const inLog = NOISE_WORDS.test(logText(place));
+	const out: G9bResult = {
+		id: spec.id,
+		cold: spec.cold,
+		ms: Math.round(first.ms),
+		code: first.code,
+		timedOut: first.timedOut,
+		stalled: stalled({ ms: Math.round(first.ms), timedOut: first.timedOut, code: first.code }),
+		loads: loads(records, "A").length > 0,
+		noise: term ? "terminal" : inLog ? "log" : "silent",
+		markerBefore,
+		markerAfter: existsSync(markerPath(place.configDir)),
+		nodeModulesBefore,
+		nodeModulesAfter: existsSync(join(place.configDir, "node_modules")),
+		freshXdg,
+		xdg: { data: XDG_DATA_HOME, cache: XDG_CACHE_HOME, state: XDG_STATE_HOME },
+		configDirAfter: readdirSync(place.configDir).sort(),
+	};
+	if (spec.twice) {
+		const second = await runTurn(ctx.world, place, {
+			cwd,
+			prompt: "PLAIN hello",
+			timeoutMs: G9B_TIMEOUT,
+			label: "second",
+		});
+		const ms = Math.round(second.ms);
+		out.second = {
+			ms,
+			code: second.code,
+			timedOut: second.timedOut,
+			stalled: stalled({ ms, timedOut: second.timedOut, code: second.code }),
+		};
+		out.markerAfter = existsSync(markerPath(place.configDir));
+		out.nodeModulesAfter = existsSync(join(place.configDir, "node_modules"));
+		out.configDirAfter = readdirSync(place.configDir).sort();
+	}
+	return out;
+}
+
+async function g9bScenario(ctx: MeasureContext): Promise<MeasureOutput> {
+	const cmd = "--measure --only g9b";
+	const invalid: string[] = [];
+	const warmSdk = ctx.world.v1Warm ? markerPath(ctx.world.v1Warm) : "";
+	const warmVersionBefore = warmSdk ? JSON.parse(readFileSync(warmSdk, "utf8")).version : "";
+	if (!warmSdk || !existsSync(warmSdk)) invalid.push("g9b: --v1-warm has no SDK marker");
+	const warmPkgListsSdk =
+		!!ctx.world.v1Warm &&
+		existsSync(join(ctx.world.v1Warm, "package.json")) &&
+		readFileSync(join(ctx.world.v1Warm, "package.json"), "utf8").includes('"@opencode-ai/plugin"');
+	if (!warmPkgListsSdk) invalid.push("g9b: the warm tree's package.json does not list the SDK");
+
+	const control = await runG9b(ctx, { id: "r0", line: "v1", cold: true, shape: "none" });
+	if (control.stalled)
+		invalid.push(
+			`g9b: control (cold, empty plugins/) took ${control.ms} ms: network profile or state invalid`,
+		);
+	const specs: G9bRun[] = [
+		{ id: "r1", line: "v1", cold: true, shape: "v2_flat" },
+		{ id: "r2", line: "v1", cold: true, shape: "v2_dir_pkg" },
+		{ id: "r2b", line: "v1", cold: true, shape: "v2_dir_index" },
+		{ id: "r3", line: "v2", cold: true, shape: "v2_dir_pkg" },
+		{ id: "r4", line: "v2", cold: true, shape: "v2_dir_index" },
+		{ id: "r5", line: "v1", cold: false, shape: "v1_flat" },
+		{ id: "r6", line: "v1", cold: false, shape: "v1_flat", prepare: makeStale },
+		{ id: "r7", line: "v1", cold: true, shape: "v1_flat", twice: true },
+		{ id: "r8", line: "v1", cold: false, shape: "v1_flat", prepare: dropPackageJson },
+		{ id: "r9", line: "v1", cold: true, shape: "foreign_ts" },
+	];
+	const res: Record<string, G9bResult> = { r0: control };
+	for (const spec of specs) {
+		if (invalid.length > 0) break;
+		const r = await runG9b(ctx, spec);
+		res[spec.id] = r;
+		if (spec.cold && (r.nodeModulesBefore || r.markerBefore))
+			invalid.push(`g9b: ${spec.id} was not cold before the run`);
+		if (!spec.cold && !r.markerBefore)
+			invalid.push(`g9b: ${spec.id} had no SDK marker before the run`);
+		// H1: r7's first run is the positive control: a cold 1.x with its own plugin must stall here.
+		if (spec.id === "r7" && !r.stalled)
+			invalid.push(`g9b: positive control (r7 first run) took ${r.ms} ms and did not stall`);
+	}
+	if (warmSdk && JSON.parse(readFileSync(warmSdk, "utf8")).version !== warmVersionBefore)
+		invalid.push("g9b: the shared warm tree was modified");
+	const ran = Object.values(res);
+	const cold = ran.filter((r) => r.cold);
+	const warm = ran.filter((r) => !r.cold);
+	if (cold.some((r) => r.nodeModulesAfter || r.markerAfter))
+		invalid.push("g9b: a cold place gained node_modules or the SDK marker");
+	if (ran.some((r) => !r.freshXdg))
+		invalid.push("g9b: a place did not start with empty XDG data/cache/state");
+	const evidence = { g9b: res };
+	if (invalid.length > 0) return { id: "g9b", gates: [], captures: [], evidence, invalid };
+
+	const R = res as Record<string, G9bResult>;
+	const r = (id: string) => R[id] as G9bResult;
+	const yn = (b: boolean) => (b ? "yes" : "no");
+	const second = r("r7").second as NonNullable<G9bResult["second"]>;
+
+	// The rule of step 4b, verbatim; the observations test recomputes all of it from the run tokens.
+	const dirIdxOK =
+		!r("r2b").stalled && r("r2b").noise !== "terminal" && r("r4").loads && !r("r4").stalled;
+	const dirPkgOK =
+		!r("r2").stalled && r("r2").noise !== "terminal" && r("r3").loads && !r("r3").stalled;
+	const layout = !r("r1").stalled
+		? "flat_v1_gated"
+		: dirIdxOK || dirPkgOK
+			? "v1_flat_v2_dir"
+			: "all_gated";
+	const dirFiles =
+		layout !== "v1_flat_v2_dir" ? "n/a" : dirIdxOK ? "index_only" : "index_and_package";
+	const sdkRule = r("r6").stalled ? "sdk_and_foreign_plugin" : "sdk_present";
+	const sdkCheck = r("r8").stalled ? "marker_and_config_dep" : "marker_only";
+	const foreignExts = r("r9").stalled ? "js_ts" : "js";
+	const foreignOpens = second.stalled ? "yes" : "no";
+	const wording = second.stalled ? "each_start" : "first_start";
+	const stop = r("r5").stalled || !r("r5").loads;
+	const result: GateResult = stop ? "stop" : `branch-${layout.replace(/_/g, "-")}`;
+
+	const run = (prefix: string, x: G9bResult, extra: string[] = []) => [
+		`${prefix}_ms=${x.ms}`,
+		`${prefix}_stall=${yn(x.stalled)}`,
+		...extra,
+	];
+	const tokens = [
+		"control.network_profile=g9",
+		`control.xdg_fresh=${yn(ran.every((x) => x.freshXdg))}`,
+		`control.warm_scope=${warm.every((x) => x.freshXdg) ? "config_only" : "wider"}`,
+		`control.warm_marker_before=${yn(warm.every((x) => x.markerBefore))}`,
+		`control.warm_pkg_lists_sdk=${yn(warmPkgListsSdk)}`,
+		`control.cold_node_modules_after=${cold.some((x) => x.nodeModulesAfter || x.markerAfter) ? "some" : "none"}`,
+		`control.v1_cold_empty_ms=${control.ms}`,
+		`control.v1_cold_empty_stall=${yn(control.stalled)}`,
+		...run("v1.cold_v2flat", r("r1")),
+		...run("v1.cold_v2dir", r("r2"), [`v1.cold_v2dir_noise=${r("r2").noise}`]),
+		...run("v1.cold_v2dir_index_only", r("r2b"), [
+			`v1.cold_v2dir_index_only_noise=${r("r2b").noise}`,
+		]),
+		...run("v2.cold_dir", r("r3"), [`v2.cold_dir_loads=${yn(r("r3").loads)}`]),
+		...run("v2.cold_dir_index_only", r("r4"), [
+			`v2.cold_dir_index_only_loads=${yn(r("r4").loads)}`,
+		]),
+		...run("v1.warm_plugin", r("r5"), [`v1.warm_plugin_loads=${yn(r("r5").loads)}`]),
+		...run("v1.warm_stale", r("r6")),
+		`v1.cold_first_run_ms=${r("r7").ms}`,
+		`v1.cold_first_run_stall=${yn(r("r7").stalled)}`,
+		`v1.cold_second_run_ms=${second.ms}`,
+		`v1.cold_second_run_stall=${yn(second.stalled)}`,
+		`v1.cold_sdk_written=${yn(r("r7").markerAfter)}`,
+		...run("v1.warm_no_pkgjson", r("r8")),
+		...run("v1.cold_ts_only", r("r9")),
+		`layout=${layout}`,
+		`v2_dir_files=${dirFiles}`,
+		`sdk_rule=${sdkRule}`,
+		`sdk_check=${sdkCheck}`,
+		`foreign_exts=${foreignExts}`,
+		`foreign_opens=${foreignOpens}`,
+		`wording=${wording}`,
+	];
+	const verdict = (x: G9bResult) => (x.stalled ? "stall" : "no stall");
+	const answer = `Network blocked by the sandbox profile (loopback only); every run in a fresh place, stall = over 15 s, a timeout or a non-zero exit. r0 control (1.19.5, cold, empty plugins/): ${control.ms} ms. r1 1.19.5 cold with a V2-style flat file: ${r("r1").ms} ms (${verdict(r("r1"))}). r2 1.19.5 cold with a V2-style directory (index.js + package.json): ${r("r2").ms} ms (${verdict(r("r2"))}, noise ${r("r2").noise}). r2b the same with index.js only: ${r("r2b").ms} ms (${verdict(r("r2b"))}, noise ${r("r2b").noise}). r3 2.2.6 cold, directory with package.json: loads ${yn(r("r3").loads)} (${r("r3").ms} ms). r4 2.2.6 cold, index.js only: loads ${yn(r("r4").loads)} (${r("r4").ms} ms, ${verdict(r("r4"))}). r5 1.19.5 with its own SDK present (warm) and a V1 flat file: ${r("r5").ms} ms, plugin loads ${yn(r("r5").loads)}. r6 stale SDK (0.0.1 in the package and in the config dir's dependency): ${r("r6").ms} ms (${verdict(r("r6"))}). r7 cold, the same place run twice with a V1 flat file (the positive control is its first run): first ${r("r7").ms} ms, second ${second.ms} ms; SDK marker written after run 2: ${yn(r("r7").markerAfter)}. r8 warm with the config dir's package.json deleted (node_modules kept) and a V1 file: ${r("r8").ms} ms (${verdict(r("r8"))}, plugin loads ${yn(r("r8").loads)}). r9 cold with a lone foreign .ts file in plugins/: ${r("r9").ms} ms (${verdict(r("r9"))}). r2b, r4, r8 and r9 and the positive control were added at bob r3 (review of the G9 re-plan). Isolation: every place has its own sandbox under state/<line>-g9b-<id>/ with fresh, empty xdg-data, xdg-cache and xdg-state (checked empty before the first run; paths per run in g9b-runs.json); only the config dir is warmed (r5, r6, r8 clone the warm tree; r6 then makes the SDK stale). r7's second run deliberately reuses r7's first place, so its data, cache and state are whatever run 1 left. No cold place gained node_modules. Caveat: "network blocked" is a connect refusal from the sandbox, not DNS failure; online timing was not measured.`;
+	return {
+		id: "g9b",
+		gates: [
+			row(
+				"G9b",
+				"Which entries in plugins/ trigger the 1.x SDK fetch on a cold config dir, does a present SDK (same version, stale version) stop the wait, does a second cold start wait again, and does 2.x load a directory entry cold?",
+				answer,
+				result,
+				tokens,
+				cmd,
+			),
+		],
 		captures: [],
 		evidence,
 	};
@@ -499,5 +797,6 @@ async function runsScenario(ctx: MeasureContext): Promise<MeasureOutput> {
 
 export const LAYOUT_RUNS_SCENARIOS = {
 	layout: { run: layoutScenario },
+	g9b: { run: g9bScenario },
 	runs: { run: runsScenario },
 };

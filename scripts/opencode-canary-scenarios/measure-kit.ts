@@ -36,6 +36,8 @@ export interface MeasureOutput {
 	gates: GateRow[];
 	captures: CaptureOut[];
 	evidence: Record<string, unknown>;
+	/** Preconditions that failed: the run is `instrumentInvalid` and has no row. */
+	invalid?: string[];
 }
 
 export interface MeasureContext {

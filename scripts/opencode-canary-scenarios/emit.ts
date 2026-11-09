@@ -127,12 +127,59 @@ export function mergeGates(rows: readonly GateRow[]): GateRow[] {
 		g15.tokens.push(`tool_hook_fanout=${any ? "yes" : "no"}`);
 		if (any) g15.result = "branch-fanout";
 	}
-	return [...byGate.values()].sort((a, b) => Number(a.gate.slice(1)) - Number(b.gate.slice(1)));
+	return [...byGate.values()].sort((a, b) => gateOrder(a.gate) - gateOrder(b.gate));
 }
+/** G1 < G2 < ... < G9 < G9b < G10: a trailing `b` sorts right after its number. */
+const gateOrder = (gate: string) =>
+	Number.parseInt(gate.slice(1), 10) * 2 + (gate.endsWith("b") ? 1 : 0);
 const distinctJoin = (a: string, b: string) =>
 	[...new Set([...a.split("; "), ...b.split("; ")])].join("; ");
 
 const cell = (text: string) => text.replace(/\|/g, "\\|").replace(/\n/g, " ");
+
+const tableRow = (r: GateRow, versions: { v1: string; v2: string }) =>
+	`| ${r.gate} | ${cell(r.question)} | ${cell(r.answer)} | ${r.result} | ${cell(r.tokens.map((t) => `\`${t}\``).join(" "))} | ${versions.v1} / ${versions.v2} | \`${cell(r.command)}\` |`;
+
+/** Scenarios that add rows to an existing `OBSERVATIONS.md` and leave every other row and the captures alone. */
+export const PARTIAL_SCENARIOS = new Set(["g9b"]);
+
+/**
+ * Puts `rows` into the existing table in gate order, replacing a row of the same gate, and writes the raw
+ * evidence next to it. Nothing else in the fixture directory is touched.
+ */
+export function insertGateRows(input: {
+	rows: readonly GateRow[];
+	versions: { v1: string; v2: string };
+	outDir: string;
+	work: string;
+	realHome: string;
+	evidence: Record<string, unknown>;
+}): void {
+	const scrub = scrubber({ work: input.work, realHome: input.realHome });
+	const path = join(input.outDir, "OBSERVATIONS.md");
+	const lines = readFileSync(path, "utf8").split("\n");
+	const ids = new Set(input.rows.map((r) => r.gate));
+	const kept = lines.filter((l) => {
+		const m = /^\| (G\d+b?) \|/.exec(l);
+		return !(m && ids.has(m[1] as string));
+	});
+	const gateOf = (l: string) => /^\| (G\d+b?) \|/.exec(l)?.[1];
+	for (const r of [...input.rows].sort((a, b) => gateOrder(a.gate) - gateOrder(b.gate))) {
+		let at = -1;
+		kept.forEach((l, i) => {
+			const g = gateOf(l);
+			if (g && gateOrder(g) < gateOrder(r.gate)) at = i;
+		});
+		kept.splice(at + 1, 0, tableRow(r, input.versions));
+	}
+	writeFileSync(path, scrub(kept.join("\n")));
+	for (const [name, value] of Object.entries(input.evidence)) {
+		writeFileSync(
+			join(input.outDir, `${name}-runs.json`),
+			scrub(`${JSON.stringify(value, null, "\t")}\n`),
+		);
+	}
+}
 
 export function observationsMarkdown(
 	rows: readonly GateRow[],
@@ -147,10 +194,7 @@ export function observationsMarkdown(
 		"",
 		"| Gate | Question | Answer | Result | Tokens | Version | Command |",
 		"|---|---|---|---|---|---|---|",
-		...rows.map(
-			(r) =>
-				`| ${r.gate} | ${cell(r.question)} | ${cell(r.answer)} | ${r.result} | ${cell(r.tokens.map((t) => `\`${t}\``).join(" "))} | ${versions.v1} / ${versions.v2} | \`${cell(r.command)}\` |`,
-		),
+		...rows.map((r) => tableRow(r, versions)),
 		"",
 	];
 	const notes = readFileSync(join(import.meta.dir, "observations-notes.md"), "utf8");
