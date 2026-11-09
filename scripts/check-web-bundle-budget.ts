@@ -41,6 +41,11 @@
  * SessionDetailPage 34,782 (+4,609 on 30,173), CodexApprovalCard 15,022 (+1,406: the mcp and agent request kinds)
  * and SessionTakeoverCard 7,904 (+1,034: the dialog's two opt-in options and their consent copy); DashboardPage
  * 26,444 and index 118,531 stay under their limits unmoved. Limits moved to 35,100, 15,300 and 8,200.
+ * AGEN-141 (OpenCode, observed only): the agent type's registration and copy took index to 118,528 (+144 on 118,384),
+ * so its limit moved to 119,000. The Setup page gained an OpenCode toggle and a lazy chunk, OpenCodePluginFiles, that
+ * carries both plugin texts (the only chunk that does; setup-steps.ts and the index chunk's static graph import
+ * nothing of them, held by setup-steps.test.ts). Measured SetupPage 9,774 (a new budget entry) and
+ * OpenCodePluginFiles 23,196 (the two plugin texts, which a person who never picks OpenCode never fetches).
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -69,7 +74,9 @@ export const BUDGETS: Budget[] = [
 	{ chunk: "CodexApprovalCard", maxGzip: 15_300, measured: 15_022 },
 	{ chunk: "SessionTakeoverCard", maxGzip: 8_200, measured: 7_904 },
 	{ chunk: "DashboardPage", maxGzip: 27_200, measured: 26_341 },
-	{ chunk: "index", maxGzip: 118_600, measured: 118_384 },
+	{ chunk: "index", maxGzip: 119_000, measured: 118_528 },
+	{ chunk: "SetupPage", maxGzip: 10_300, measured: 9_774 },
+	{ chunk: "OpenCodePluginFiles", maxGzip: 24_000, measured: 23_196 },
 ];
 
 /** A missing chunk fails: a renamed chunk must not silently escape its budget. `scale` shrinks every limit (the self-test). */

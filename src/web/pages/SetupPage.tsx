@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { Suspense, lazy, useEffect, useId, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { AGENT_METADATA, isObservedOnly } from "../../shared/constants.js";
 import { buildCodexHooksFile, buildCopilotHooksFile } from "../../shared/hook-command.js";
@@ -29,16 +29,21 @@ import {
 import { useUserStore } from "../stores/user-store.js";
 import { keysForSetup } from "./team-view-state.js";
 
+// Both OpenCode plugin texts, fetched only when the OpenCode toggle is chosen (never in this page's own chunk).
+const OpenCodePluginFiles = lazy(() => import("../components/OpenCodePluginFiles.js"));
+
 const AGENT_TOGGLE: Array<{ value: SetupAgentType; label: string }> = [
 	{ value: "claude_code", label: "Claude Code" },
 	{ value: "codex_cli", label: "Codex CLI" },
 	{ value: "copilot_cli", label: "Copilot CLI" },
+	{ value: "opencode", label: "OpenCode" },
 ];
 
 const CONFIG_FILE: Record<SetupAgentType, string> = {
 	claude_code: "~/.claude/settings.json",
 	codex_cli: "~/.codex/hooks.json",
 	copilot_cli: "~/.copilot/hooks/agentpulse.json",
+	opencode: "~/.config/opencode/plugins/",
 };
 
 export function SetupPage() {
@@ -275,7 +280,9 @@ export function SetupPage() {
 			? generateClaudeConfig()
 			: agentType === "codex_cli"
 				? generateCodexConfig()
-				: generateCopilotConfig();
+				: agentType === "copilot_cli"
+					? generateCopilotConfig()
+					: "";
 	const configFile = CONFIG_FILE[agentType];
 	const showStatusLine = agentType === "codex_cli";
 	const showStatusSnippet = !isObservedOnly(agentType);
@@ -529,6 +536,13 @@ export function SetupPage() {
 							<li key={i}>{lastCodexEventLoaded || i < 3 ? text : "Checking…"}</li>
 						))}
 					</ol>
+				) : agentType === "opencode" ? (
+					<p className="text-xs text-muted-foreground mb-3">
+						The installers write these for you when they find OpenCode (
+						<span className="font-mono text-foreground">npx agentpulse setup</span>, or the commands
+						below). Upgrade the AgentPulse server first: an older server stores OpenCode events as
+						ordinary Claude Code sessions. Copy by hand only if you can&apos;t run an installer.
+					</p>
 				) : (
 					<p className="text-xs text-muted-foreground mb-3">
 						Save this as {configFile} (created automatically if{" "}
@@ -536,18 +550,24 @@ export function SetupPage() {
 						installer commands below for an automated alternative).
 					</p>
 				)}
-				<div className="relative">
-					<pre className="bg-background border border-border rounded-md p-4 text-xs overflow-auto max-h-80">
-						<code>{config}</code>
-					</pre>
-					<button
-						type="button"
-						onClick={() => void copy(config, "Hook config copied")}
-						className="absolute top-2 right-2 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-					>
-						Copy
-					</button>
-				</div>
+				{agentType === "opencode" ? (
+					<Suspense fallback={<p className="text-xs text-muted-foreground">Loading…</p>}>
+						<OpenCodePluginFiles serverUrl={serverUrl} />
+					</Suspense>
+				) : (
+					<div className="relative">
+						<pre className="bg-background border border-border rounded-md p-4 text-xs overflow-auto max-h-80">
+							<code>{config}</code>
+						</pre>
+						<button
+							type="button"
+							onClick={() => void copy(config, "Hook config copied")}
+							className="absolute top-2 right-2 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+						>
+							Copy
+						</button>
+					</div>
+				)}
 				{agentType === "claude_code" && (
 					<p className="text-xs text-muted-foreground mt-3">{CLAUDE_SKIP_LINE}</p>
 				)}

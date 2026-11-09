@@ -11,7 +11,7 @@ import { withHiddenKey } from "./hidden-key-prompt.js";
  * table also serves copilot_cli ahead of Phase 6/7's onboarding UI, per D13's
  * "both agents share this shape." Not the same union as shared/constants.ts's
  * AgentType — that one gains "copilot_cli" only in Phase 6. */
-export type SetupAgentType = "claude_code" | "codex_cli" | "copilot_cli";
+export type SetupAgentType = "claude_code" | "codex_cli" | "copilot_cli" | "opencode";
 
 export interface AuthStep {
 	title: string;
@@ -62,6 +62,8 @@ export const AUTH_STEP: Record<
 	},
 	codex_cli: (key, disableAuth) => buildCommandHookAuthStep(key, disableAuth),
 	copilot_cli: (key, disableAuth) => buildCommandHookAuthStep(key, disableAuth),
+	// The OpenCode plugin reads the same key file the command hooks use.
+	opencode: (key, disableAuth) => buildCommandHookAuthStep(key, disableAuth),
 };
 
 function buildCommandHookAuthStep(_key: string, disableAuth: boolean): AuthStep | null {

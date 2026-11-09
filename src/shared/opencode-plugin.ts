@@ -41,6 +41,11 @@ export const OPENCODE_G9B: OpenCodeG9b = {
 export const OPENCODE_PLUGIN_HEADER_PREFIX = "// agentpulse-opencode-plugin ";
 export const OPENCODE_SDK_MARKER = "node_modules/@opencode-ai/plugin/package.json";
 export const OPENCODE_SDK_CONFIG_DEP = '"@opencode-ai/plugin"';
+/**
+ * Written by an installer, never by a plugin, and only in the all-gated layout: the force option is remembered
+ * here so a routine re-run doesn't take the plugin away again. It is cleared only by the no-opencode option,
+ * which removes the plugins as well. Outside that layout no installer writes it.
+ */
 export const OPENCODE_FORCE_MARKER = ".agentpulse/opencode-force";
 
 const BASE_URL_HOLE = "@@AP_OPENCODE_BASE_URL@@";
@@ -190,17 +195,31 @@ export interface OpenCodeInstallPlan {
 	forceMarker: "write" | "keep" | "none";
 }
 
-export function planOpenCodeInstall(input: OpenCodeInstallInput): OpenCodeInstallPlan {
-	const allGated = OPENCODE_LAYOUT === "all_gated";
+export interface OpenCodePlanConfig {
+	layout: OpenCodeLayout;
+	g9b: OpenCodeG9b;
+}
+
+/** The values this build ships with; tests pass others to cover the branches a real build embeds only one of. */
+export const OPENCODE_PLAN_CONFIG: OpenCodePlanConfig = {
+	layout: OPENCODE_LAYOUT,
+	g9b: OPENCODE_G9B,
+};
+
+export function planOpenCodeInstall(
+	input: OpenCodeInstallInput,
+	config: OpenCodePlanConfig = OPENCODE_PLAN_CONFIG,
+): OpenCodeInstallPlan {
+	const allGated = config.layout === "all_gated";
 	const force = input.forceFlag || (allGated && input.forceRemembered);
-	const sdkOpens = OPENCODE_G9B.sdkRule === "sdk_present" && input.sdkPresent;
-	const foreignOpens = OPENCODE_G9B.foreignOpens === "yes" && input.foreignPluginPresent;
+	const sdkOpens = config.g9b.sdkRule === "sdk_present" && input.sdkPresent;
+	const foreignOpens = config.g9b.foreignOpens === "yes" && input.foreignPluginPresent;
 	const ruleHolds = sdkOpens || foreignOpens;
 	const open = force || ruleHolds;
 
 	const write: OpenCodeInstallPlan["write"] = [];
 	const remove: OpenCodeEntryName[] = [];
-	for (const e of openCodeEntries()) {
+	for (const e of openCodeEntries(config.layout)) {
 		if (!e.gated || open) write.push({ entry: e.entry, gated: e.gated });
 		else remove.push(e.entry);
 	}
@@ -214,4 +233,53 @@ export function planOpenCodeInstall(input: OpenCodeInstallInput): OpenCodeInstal
 	if (allGated && input.forceFlag) forceMarker = "write";
 	else if (allGated && input.forceRemembered) forceMarker = "keep";
 	return { write, remove, messages, forceMarker };
+}
+
+// ---- what the installers observe and print --------------------------------------------------
+
+/** Printed whenever an installer writes or keeps an OpenCode plugin: an older server files OpenCode posts as junk Claude Code rows. */
+export const OPENCODE_SERVER_FIRST_NOTE =
+	"Upgrade the AgentPulse server first: an older server stores OpenCode events as ordinary Claude Code sessions.";
+
+export const OPENCODE_SERVICE_SKIP_NOTE =
+	"AGENTPULSE_SKIP set in your shell is not seen by a running OpenCode 2 background service; use an exclude rule (agentpulse exclude add <dir>), or stop the service so it restarts with your environment (opencode service stop).";
+
+/** Our two flat names, whatever the layout: a file by either name is never "someone else's plugin". */
+const OPENCODE_OWN_FLAT_NAMES: readonly string[] = [
+	"agentpulse-opencode-1.js",
+	"agentpulse-opencode-2.js",
+];
+
+/** A file in `plugins/` that counts as another plugin: not a dot file, not ours, with an extension 1.x loads. */
+export function isForeignPluginName(
+	name: string,
+	foreignExts: OpenCodeG9b["foreignExts"] = OPENCODE_G9B.foreignExts,
+): boolean {
+	if (name === "" || name.startsWith(".") || OPENCODE_OWN_FLAT_NAMES.includes(name)) return false;
+	const exts = foreignExts === "js_ts" ? [".js", ".ts"] : [".js"];
+	return exts.some((ext) => name.length > ext.length && name.endsWith(ext));
+}
+
+/** `OPENCODE_CONFIG_DIR` (absolute), else `XDG_CONFIG_HOME` (absolute) plus `/opencode`, else `<home>/.config/opencode`. */
+export function resolveOpenCodeConfigDir(
+	env: Record<string, string | undefined>,
+	home: string,
+): { dir: string; fromEnv: boolean } {
+	const isAbs = (v: string | undefined): v is string => typeof v === "string" && v.startsWith("/");
+	const trim = (v: string) => (v.length > 1 ? v.replace(/\/+$/, "") : v);
+	if (isAbs(env.OPENCODE_CONFIG_DIR)) return { dir: trim(env.OPENCODE_CONFIG_DIR), fromEnv: true };
+	if (isAbs(env.XDG_CONFIG_HOME))
+		return { dir: `${trim(env.XDG_CONFIG_HOME)}/opencode`, fromEnv: false };
+	return { dir: `${home}/.config/opencode`, fromEnv: false };
+}
+
+/** The data directory whose existence alone says OpenCode has run here. */
+export function resolveOpenCodeDataDir(
+	env: Record<string, string | undefined>,
+	home: string,
+): string {
+	const x = env.XDG_DATA_HOME;
+	const base =
+		typeof x === "string" && x.startsWith("/") ? x.replace(/\/+$/, "") : `${home}/.local/share`;
+	return `${base}/opencode`;
 }

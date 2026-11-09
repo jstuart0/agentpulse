@@ -44,6 +44,20 @@ import {
 	SUPERVISOR_EXCLUDE_STATE_STAMP_RELATIVE_PATH,
 } from "../src/shared/hook-headers.js";
 import {
+	foreignPluginPresent,
+	installOpenCode,
+	openCodeSdkPresent,
+} from "../src/shared/opencode-install.js";
+import {
+	OPENCODE_FORCE_MARKER,
+	OPENCODE_LAYOUT,
+	OPENCODE_PLUGIN_HEADER_PREFIX,
+	buildOpenCodePluginFiles,
+	openCodeEntries,
+	planOpenCodeInstall,
+	resolveOpenCodeConfigDir,
+} from "../src/shared/opencode-plugin.js";
+import {
 	writeConfigFileSyncNoFollow,
 	writePrivateFileSyncNoFollow,
 } from "../src/shared/private-file.js";
@@ -60,6 +74,9 @@ function printHelp() {
     npx agentpulse setup        Configure Claude Code + Codex hooks
     npx agentpulse setup --url <url> --key <key>
     npx agentpulse setup --statusline   Also install the Claude Code statusline (off by default)
+    npx agentpulse setup --no-opencode  Remove the OpenCode plugins (OpenCode is set up when found)
+    npx agentpulse setup --opencode-force   Write OpenCode 1.x's plugin even where its plugin SDK
+                                  isn't downloaded yet (run while online; see the message setup prints)
     npx agentpulse mcp serve    Start the AgentPulse MCP server from this checkout (stdio)
     npx agentpulse mcp install  Print MCP client config for Claude Code / Codex
     npx agentpulse exclude check [dir]   Report whether [dir] (default: cwd) is excluded
@@ -98,6 +115,8 @@ async function setup() {
 	let url = "";
 	let key = "";
 	let withStatusline = false;
+	let openCodeForce = false;
+	let noOpenCode = false;
 	let codexHooksWritten: "new" | "updated" | null = null;
 
 	// Parse flags
@@ -108,6 +127,10 @@ async function setup() {
 			key = args[++i];
 		} else if (args[i] === "--statusline") {
 			withStatusline = true;
+		} else if (args[i] === "--opencode-force") {
+			openCodeForce = true;
+		} else if (args[i] === "--no-opencode") {
+			noOpenCode = true;
 		}
 	}
 
@@ -403,6 +426,26 @@ async function setup() {
 		}
 		console.log(`    ${EXCLUDE_CHECK_HINT}`);
 	}
+
+	// ── OpenCode (AGEN-141) ──
+	// Detected by looking at PATH and two folders; `opencode` itself is never run.
+	let openCode = { ok: true, installed: false };
+	try {
+		openCode = installOpenCode({
+			home,
+			env: process.env,
+			baseUrl: url,
+			direct: true,
+			force: openCodeForce,
+			noOpenCode,
+			onPath: (name) => Bun.which(name) !== null,
+			log: (line) => console.log(line),
+			warn: (line) => console.error(line),
+		});
+	} catch (error) {
+		console.error(`  ✗ OpenCode plugins not written: ${(error as Error).message}`);
+	}
+	if (openCode.installed) console.log(`    ${EXCLUDE_CHECK_HINT}`);
 
 	// ── Shell env (D37/F243) ──
 	// The key itself no longer goes into the rc file — world-readable by
@@ -1022,6 +1065,76 @@ interface SenderRow {
 	sender: string;
 	mode: string;
 	status: string;
+	/** Information, not a finding: never printed as a warning. */
+	info?: boolean;
+}
+
+/**
+ * The OpenCode row (AGEN-141): what is installed in OpenCode's plugins folder and whether it is the text this
+ * version writes (the server URL is read back out of the file, so a different server is not "modified"). It never
+ * says "enforced": the plugin applies the exclude rules itself, but a 2.x service started earlier keeps the
+ * environment it was started with, so the skip variable can't be promised.
+ */
+function openCodeStatus(home: string, script: ExcludeScriptState): string {
+	const { dir: cfg } = resolveOpenCodeConfigDir(process.env, home);
+	const plugins = join(cfg, "plugins");
+	const entries = openCodeEntries();
+	const states = entries.map((e) => {
+		const file = join(plugins, e.file);
+		let text: string | null = null;
+		try {
+			text = readFileSync(file, "utf-8");
+		} catch {
+			return { e, state: "absent" as const };
+		}
+		const url = /baseUrl: "([^"]*)", direct: "(\d)" === "1"/.exec(text);
+		if (!url?.[1] || !text.startsWith(OPENCODE_PLUGIN_HEADER_PREFIX))
+			return { e, state: "modified" as const };
+		try {
+			const want = buildOpenCodePluginFiles({ baseUrl: url[1], direct: url[2] === "1" }).find(
+				(f) => f.name === e.file,
+			);
+			return { e, state: want?.text === text ? ("current" as const) : ("modified" as const) };
+		} catch {
+			return { e, state: "modified" as const };
+		}
+	});
+	const present = states.filter((s) => s.state !== "absent");
+	const sdk = openCodeSdkPresent(cfg);
+	const foreign = foreignPluginPresent(plugins);
+	const remembered =
+		OPENCODE_LAYOUT === "all_gated" && existsSync(join(home, OPENCODE_FORCE_MARKER));
+	const plan = planOpenCodeInstall({
+		sdkPresent: sdk,
+		foreignPluginPresent: foreign,
+		forceFlag: false,
+		forceRemembered: remembered,
+	});
+	const expected = new Set(plan.write.map((w) => w.entry));
+	const parts: string[] = [];
+	if (present.length === 0) parts.push("not installed");
+	else if (states.some((s) => s.state === "modified")) parts.push("modified: re-run setup");
+	else if ([...expected].every((n) => states.find((s) => s.e.entry === n)?.state === "current")) {
+		parts.push("installed");
+	} else parts.push("installed (partly: see below)");
+	const gated = states.find((s) => s.e.gated);
+	if (gated?.state === "absent" && !expected.has(gated.e.entry)) {
+		parts.push(
+			"1.x plugin not installed: OpenCode 1.x has no plugin SDK here and downloads it only when a plugin is present (run `agentpulse setup --opencode-force`, or your installer's OpenCode force option, while online)",
+		);
+	}
+	if (gated && gated.state !== "absent" && !sdk && !foreign) {
+		parts.push(
+			"1.x plugin installed but OpenCode 1.x's plugin SDK is missing: offline starts wait about 70 s (start OpenCode 1.x once while online, or run setup again to remove it)",
+		);
+	}
+	if (remembered) parts.push("OpenCode force remembered (setup --no-opencode clears it)");
+	if (present.length > 0 && rulesFileExists(home)) {
+		if (wantsPowerShellCheck()) parts.push("sends nothing while a rules file exists");
+		else if (scriptProblem(script))
+			parts.push(`sends NOTHING until the check script is usable (${scriptProblem(script)})`);
+	}
+	return parts.join("; ");
 }
 
 async function buildSenderTable(
@@ -1048,6 +1161,13 @@ async function buildSenderTable(
 			sender: "Copilot CLI",
 			mode: "hooks",
 			status: probeCommandHookRow(copilotHooksPath, script, scriptPs),
+		},
+		{ sender: "OpenCode", mode: "plugin", status: openCodeStatus(home, script) },
+		{
+			sender: "",
+			mode: "",
+			status: "AGENTPULSE_SKIP isn't seen by a running OpenCode 2 service",
+			info: true,
 		},
 	];
 
@@ -1174,13 +1294,18 @@ async function excludeCheck(dirArg: string | undefined) {
 		console.log(formatTable(table));
 		console.log("");
 		for (const row of table) {
-			if (!/^enforced\b/i.test(row.status) && !row.status.startsWith("STILL REPORTING")) {
+			if (row.info) continue;
+			if (
+				!/^enforced\b/i.test(row.status) &&
+				!/^(installed$|not installed)/.test(row.status) &&
+				!row.status.startsWith("STILL REPORTING")
+			) {
 				console.log(`  warning: ${row.sender}: ${row.status}`);
 			}
 		}
 		if (rulesFileExists(home) && (scriptProblem(script) || (scriptPs && scriptProblem(scriptPs)))) {
 			console.log(
-				`  warning: a rules file exists but the check script is not usable, so Codex and Copilot hooks send NOTHING (they fail closed) until it is installed: ${SCRIPT_FIX_HINT}.`,
+				`  warning: a rules file exists but the check script is not usable, so Codex and Copilot hooks and the OpenCode plugin send NOTHING (they fail closed) until it is installed: ${SCRIPT_FIX_HINT}.`,
 			);
 		}
 		if (homeWarning) console.log(`  warning: ${homeWarning}`);

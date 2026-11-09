@@ -35,6 +35,8 @@ describe("checkBudget", () => {
 			"SessionTakeoverCard",
 			"DashboardPage",
 			"index",
+			"SetupPage",
+			"OpenCodePluginFiles",
 		]);
 		for (const b of BUDGETS) expect(b.maxGzip).toBeGreaterThan(0);
 	});
@@ -49,11 +51,11 @@ describe("CodexApprovalCard (AGEN-87)", () => {
 		expect(row?.maxGzip).toBeGreaterThan(0);
 	});
 
-	test("the entry chunk grew at most 200 B over its AGEN-87 base (the two take-over api methods and one error sentence, AGEN-115); the session page's limit is the one AGEN-119..123 re-based (35,100: Stop turn, the tool-call detail panel, per-call result words and the MCP and subagent cards measured 34,782 on a base of 30,173, see the budget file)", () => {
+	test("the entry chunk grew at most 400 B over its AGEN-87 base (the two take-over api methods and one error sentence, AGEN-115, then 144 B for the OpenCode agent type, AGEN-141); the session page's limit is the one AGEN-119..123 re-based (35,100: Stop turn, the tool-call detail panel, per-call result words and the MCP and subagent cards measured 34,782 on a base of 30,173, see the budget file)", () => {
 		const index = BUDGETS.find((b) => b.chunk === "index");
 		const page = BUDGETS.find((b) => b.chunk === "SessionDetailPage");
-		expect(index?.measured as number).toBeLessThanOrEqual(base.index + 200);
-		expect(index?.maxGzip as number).toBeLessThanOrEqual(118_600);
+		expect(index?.measured as number).toBeLessThanOrEqual(base.index + 400);
+		expect(index?.maxGzip as number).toBeLessThanOrEqual(119_000);
 		expect(page?.maxGzip as number).toBeLessThanOrEqual(35_100);
 	});
 
