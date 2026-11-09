@@ -260,26 +260,62 @@ export function isForeignPluginName(
 	return exts.some((ext) => name.length > ext.length && name.endsWith(ext));
 }
 
-/** `OPENCODE_CONFIG_DIR` (absolute), else `XDG_CONFIG_HOME` (absolute) plus `/opencode`, else `<home>/.config/opencode`. */
+// This module is also bundled for the browser, so it carries the two path rules itself instead of importing node:path.
+// Rooted means what path.isAbsolute says on that platform (a test holds the two together).
+const WIN_ROOTED = /^(?:[A-Za-z]:[\\/]|[\\/])/;
+const WIN_ROOT = /^(?:[A-Za-z]:[\\/]*|[\\/]{2}[^\\/]+[\\/]+[^\\/]+[\\/]*|[\\/]+)$/;
+const separatorOf = (platform: NodeJS.Platform) => (platform === "win32" ? "\\" : "/");
+
+function isRooted(v: string | undefined, platform: NodeJS.Platform): v is string {
+	if (typeof v !== "string" || v === "") return false;
+	return platform === "win32" ? WIN_ROOTED.test(v) : v.startsWith("/");
+}
+
+/** The root of a drive or of the filesystem (`/`, `C:\`, `\\host\share`): never a place to write a config folder. */
+export function isFilesystemRoot(
+	dir: string,
+	platform: NodeJS.Platform = process.platform,
+): boolean {
+	return platform === "win32" ? WIN_ROOT.test(dir) : /^\/+$/.test(dir);
+}
+
+/** Drops trailing separators, but never the root itself (`/` and `C:\` stay). */
+function trimSeparators(v: string, platform: NodeJS.Platform): string {
+	const win = platform === "win32";
+	const t = v.replace(win ? /[\\/]+$/ : /\/+$/, "");
+	if (t === "") return win ? "\\" : "/";
+	return win && /^[A-Za-z]:$/.test(t) ? `${t}\\` : t;
+}
+
+const joinPath = (platform: NodeJS.Platform, base: string, ...rest: string[]) =>
+	[base.replace(platform === "win32" ? /[\\/]+$/ : /\/+$/, ""), ...rest].join(
+		separatorOf(platform),
+	);
+
+/** `OPENCODE_CONFIG_DIR` (rooted), else `XDG_CONFIG_HOME` (rooted) plus `opencode`, else `<home>/.config/opencode`. */
 export function resolveOpenCodeConfigDir(
 	env: Record<string, string | undefined>,
 	home: string,
+	platform: NodeJS.Platform = process.platform,
 ): { dir: string; fromEnv: boolean } {
-	const isAbs = (v: string | undefined): v is string => typeof v === "string" && v.startsWith("/");
-	const trim = (v: string) => v.replace(/\/+$/, "") || "/";
-	if (isAbs(env.OPENCODE_CONFIG_DIR)) return { dir: trim(env.OPENCODE_CONFIG_DIR), fromEnv: true };
-	if (isAbs(env.XDG_CONFIG_HOME))
-		return { dir: `${trim(env.XDG_CONFIG_HOME)}/opencode`, fromEnv: false };
-	return { dir: `${home}/.config/opencode`, fromEnv: false };
+	if (isRooted(env.OPENCODE_CONFIG_DIR, platform))
+		return { dir: trimSeparators(env.OPENCODE_CONFIG_DIR, platform), fromEnv: true };
+	if (isRooted(env.XDG_CONFIG_HOME, platform))
+		return {
+			dir: joinPath(platform, trimSeparators(env.XDG_CONFIG_HOME, platform), "opencode"),
+			fromEnv: false,
+		};
+	return { dir: joinPath(platform, home, ".config", "opencode"), fromEnv: false };
 }
 
 /** The data directory whose existence alone says OpenCode has run here. */
 export function resolveOpenCodeDataDir(
 	env: Record<string, string | undefined>,
 	home: string,
+	platform: NodeJS.Platform = process.platform,
 ): string {
-	const x = env.XDG_DATA_HOME;
-	const base =
-		typeof x === "string" && x.startsWith("/") ? x.replace(/\/+$/, "") : `${home}/.local/share`;
-	return `${base}/opencode`;
+	const base = isRooted(env.XDG_DATA_HOME, platform)
+		? trimSeparators(env.XDG_DATA_HOME, platform)
+		: joinPath(platform, home, ".local", "share");
+	return joinPath(platform, base, "opencode");
 }

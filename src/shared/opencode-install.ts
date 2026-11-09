@@ -31,6 +31,7 @@ import {
 	OPENCODE_SERVICE_SKIP_NOTE,
 	type OpenCodeG9b,
 	buildOpenCodePluginFiles,
+	isFilesystemRoot,
 	isForeignPluginName,
 	openCodeEntries,
 	planOpenCodeInstall,
@@ -152,9 +153,9 @@ export function installOpenCode(opts: OpenCodeInstallOptions): OpenCodeInstallRe
 	const forceMarker = join(home, OPENCODE_FORCE_MARKER);
 	const remembersForce = OPENCODE_LAYOUT === "all_gated";
 
-	if (cfg === "/") {
+	if (isFilesystemRoot(cfg)) {
 		warn(
-			"  ✗ OpenCode: refusing to use / as OpenCode's config folder (check OPENCODE_CONFIG_DIR). No OpenCode plugin was written or removed.",
+			`  ✗ OpenCode: refusing to use ${cfg} as OpenCode's config folder (check OPENCODE_CONFIG_DIR). No OpenCode plugin was written or removed.`,
 		);
 		return { ok: false, installed: false };
 	}

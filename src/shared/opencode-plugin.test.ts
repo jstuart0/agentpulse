@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { OPENCODE_PLUGIN_HASHES } from "./opencode-plugin-text.generated.js";
 import {
 	OPENCODE_FORCE_INVOCATION,
@@ -12,9 +12,12 @@ import {
 	OPENCODE_SDK_SKIP_MESSAGE,
 	type OpenCodeInstallSite,
 	buildOpenCodePluginFiles,
+	isFilesystemRoot,
 	openCodeEntries,
 	planOpenCodeInstall,
 	renderOpenCodeMessage,
+	resolveOpenCodeConfigDir,
+	resolveOpenCodeDataDir,
 } from "./opencode-plugin.js";
 
 const OBSERVATIONS = readFileSync(
@@ -182,5 +185,70 @@ describe("the install plan", () => {
 		expect(OPENCODE_FORCE_INVOCATION["install-local-ps1"]).not.toContain("--opencode-force");
 		expect(OPENCODE_FORCE_INVOCATION["setup-sh"]).toContain("| bash -s -- --opencode-force");
 		expect(OPENCODE_NO_OPENCODE_INVOCATION["install-local-ps1"]).toContain("-NoOpenCode");
+	});
+});
+
+describe("AGEN-141 review: OpenCode config folder resolution is per platform", () => {
+	const WIN_HOME = "C:\\Users\\me";
+
+	test("a rooted Windows OPENCODE_CONFIG_DIR is honoured, not ignored", () => {
+		for (const v of ["C:\\cfg\\opencode", "C:/cfg/opencode", "\\\\host\\share\\oc", "\\cfg"]) {
+			expect(win32.isAbsolute(v)).toBe(true);
+			expect(resolveOpenCodeConfigDir({ OPENCODE_CONFIG_DIR: v }, WIN_HOME, "win32")).toEqual({
+				dir: v,
+				fromEnv: true,
+			});
+		}
+	});
+
+	test("trailing separators go; XDG_CONFIG_HOME and XDG_DATA_HOME join with a backslash", () => {
+		expect(
+			resolveOpenCodeConfigDir({ OPENCODE_CONFIG_DIR: "C:\\cfg\\oc\\\\" }, WIN_HOME, "win32").dir,
+		).toBe("C:\\cfg\\oc");
+		expect(resolveOpenCodeConfigDir({ XDG_CONFIG_HOME: "D:\\xdg\\" }, WIN_HOME, "win32")).toEqual({
+			dir: "D:\\xdg\\opencode",
+			fromEnv: false,
+		});
+		expect(resolveOpenCodeDataDir({ XDG_DATA_HOME: "D:\\data" }, WIN_HOME, "win32")).toBe(
+			"D:\\data\\opencode",
+		);
+		expect(resolveOpenCodeConfigDir({}, WIN_HOME, "win32").dir).toBe(
+			"C:\\Users\\me\\.config\\opencode",
+		);
+	});
+
+	test("a drive-relative or relative value is ignored, as on POSIX a relative one is", () => {
+		for (const v of ["C:cfg", "cfg\\oc", "", "."]) {
+			expect(win32.isAbsolute(v)).toBe(false);
+			expect(resolveOpenCodeConfigDir({ OPENCODE_CONFIG_DIR: v }, WIN_HOME, "win32").fromEnv).toBe(
+				false,
+			);
+		}
+		expect(
+			resolveOpenCodeConfigDir({ OPENCODE_CONFIG_DIR: "C:\\x" }, "/home/me", "linux").fromEnv,
+		).toBe(false);
+	});
+
+	test("rooted agrees with path.isAbsolute on both platforms", () => {
+		const samples = ["/a", "a", "C:\\a", "C:/a", "C:a", "\\a", "\\\\h\\s", "//a", "", "~", "./a"];
+		for (const v of samples) {
+			const w = resolveOpenCodeConfigDir({ OPENCODE_CONFIG_DIR: v }, WIN_HOME, "win32").fromEnv;
+			const p = resolveOpenCodeConfigDir({ OPENCODE_CONFIG_DIR: v }, "/h", "linux").fromEnv;
+			expect(w).toBe(win32.isAbsolute(v));
+			expect(p).toBe(posix.isAbsolute(v));
+		}
+	});
+
+	test("the filesystem root and a drive root are refused as a config folder; their children are not", () => {
+		for (const v of ["/", "//"]) expect(isFilesystemRoot(v, "linux")).toBe(true);
+		for (const v of ["C:\\", "C:/", "C:", "c:\\\\", "\\", "\\\\host\\share", "\\\\host\\share\\"])
+			expect(isFilesystemRoot(v, "win32")).toBe(true);
+		for (const v of ["C:\\cfg", "\\\\host\\share\\oc", "D:\\a\\b"])
+			expect(isFilesystemRoot(v, "win32")).toBe(false);
+		expect(isFilesystemRoot("/cfg", "linux")).toBe(false);
+		const root = resolveOpenCodeConfigDir({ OPENCODE_CONFIG_DIR: "C:\\" }, WIN_HOME, "win32");
+		expect(root.dir).toBe("C:\\");
+		expect(isFilesystemRoot(root.dir, "win32")).toBe(true);
+		expect(resolveOpenCodeConfigDir({ OPENCODE_CONFIG_DIR: "//" }, "/h", "linux").dir).toBe("/");
 	});
 });
