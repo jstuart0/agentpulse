@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { forgetGoneSessions } from "./forget-gone-sessions.js";
+import {
+	__resetForgottenForTests,
+	forgetGoneSessions,
+	handleGoneSession,
+} from "./forget-gone-sessions.js";
 import { useSessionStore } from "./session-store.js";
 import { useTabsStore } from "./tabs-store.js";
 import { useUserStore } from "./user-store.js";
@@ -16,6 +20,7 @@ const tab = (sessionId: string) => ({
 });
 
 beforeEach(() => {
+	__resetForgottenForTests();
 	files.clear();
 	writes = 0;
 	(globalThis as unknown as { localStorage: unknown }).localStorage = {
@@ -59,5 +64,28 @@ describe("forgetGoneSessions", () => {
 	test("closing many tabs is one write", () => {
 		forgetGoneSessions(["s1", "s2", "s3"]);
 		expect(writes).toBe(1);
+	});
+});
+
+describe("handleGoneSession: the page's own 404 says 'deleted' whenever the server's word is confirmed", () => {
+	test("the page answers first: it closes the tab itself", () => {
+		const result = handleGoneSession("s1", false);
+		expect(result).toEqual({ closedTabs: 1, notice: true });
+	});
+
+	test("the restored-tab check answered first: the tab is already closed, and the page still says deleted", () => {
+		forgetGoneSessions(["s1"]); // what useRestoredTabsCheck does
+		const result = handleGoneSession("s1", false);
+		expect(result).toEqual({ closedTabs: 0, notice: true });
+	});
+
+	test("a session the page showed before says deleted even with no tab open", () => {
+		expect(handleGoneSession("not-a-tab", true)).toEqual({ closedTabs: 0, notice: true });
+	});
+
+	test("a first load of a bad link, with no tab and nothing confirmed earlier, stays hedged", () => {
+		expect(handleGoneSession("typo-id", false)).toEqual({ closedTabs: 0, notice: false });
+		forgetGoneSessions(["another"]);
+		expect(handleGoneSession("typo-id", false).notice).toBe(false);
 	});
 });

@@ -7,7 +7,6 @@ import { api } from "../../lib/api.js";
 import { forkSourceOf } from "../../lib/fork-session.js";
 import { sessionActionAccess } from "../../lib/session-action-access.js";
 import { sessionBindAccess } from "../../lib/session-bind-access.js";
-import { formatTimeAgo } from "../../lib/utils.js";
 import { useUserStore } from "../../stores/user-store.js";
 import { HostSentence } from "./HostSentence.js";
 import { controlBlockedReason } from "./host-control-view.js";
@@ -33,10 +32,12 @@ import {
 	focusBoxAfterSettle,
 	lockedNotice,
 	offersNewSession,
+	savedAgoText,
+	undoFocusTarget,
 } from "./prompt-composer-view.js";
 import type { TakeoverAttempt } from "./session-takeover-view.js";
 import { STOPPING_TURN_LABEL, STOP_TURN_LABEL, STOP_TURN_NOTICE } from "./stop-view.js";
-import { usePromptComposer } from "./usePromptComposer.js";
+import { UNDO_ROW_MS, usePromptComposer } from "./usePromptComposer.js";
 
 /** Keeps a long name or sentence inside a phone's width. */
 const WRAP = "[overflow-wrap:anywhere]";
@@ -138,17 +139,58 @@ export function SessionPromptComposer({
 	const [resumeRefusal, setResumeRefusal] = useState<{ reason: string; startNew: boolean } | null>(
 		null,
 	);
-	const { prompt, edit, discard, phase, posting, justSent, submit, sending, restoredAt } =
-		usePromptComposer({
-			session,
-			mode,
-			onSubmitted,
-			onSettled: () => {
-				const matchMedia = typeof window === "undefined" ? undefined : window.matchMedia;
-				focusBoxAfterSettle(textareaRef.current, matchMedia?.bind(window));
-				caretToEnd(textareaRef.current);
-			},
-		});
+	const {
+		prompt,
+		edit,
+		discard,
+		discarded,
+		dismissDiscarded,
+		undoDiscard,
+		phase,
+		posting,
+		justSent,
+		submit,
+		sending,
+		restoredAt,
+	} = usePromptComposer({
+		session,
+		mode,
+		onSubmitted,
+		onSettled: () => {
+			const matchMedia = typeof window === "undefined" ? undefined : window.matchMedia;
+			focusBoxAfterSettle(textareaRef.current, matchMedia?.bind(window));
+			caretToEnd(textareaRef.current);
+		},
+	});
+	// "Draft discarded. Undo": focus goes to Undo when it appears, and comes back to the box (or, in the
+	// locked view, to the reason) when the row goes away while Undo had it.
+	const undoRef = useRef<HTMLButtonElement>(null);
+	const reasonRef = useRef<HTMLParagraphElement>(null);
+	const [returnFocus, setReturnFocus] = useState(0);
+	const keepsReason = useRef(false);
+	useEffect(() => {
+		if (returnFocus === 0) return;
+		(undoFocusTarget(keepsReason.current) === "reason"
+			? reasonRef.current
+			: textareaRef.current
+		)?.focus();
+	}, [returnFocus]);
+	const undoRowShown = discarded !== null;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: one timer per shown row
+	useEffect(() => {
+		if (!undoRowShown) return;
+		const timer = setTimeout(() => {
+			const hadFocus =
+				typeof document !== "undefined" && document.activeElement === undoRef.current;
+			dismissDiscarded();
+			if (hadFocus) setReturnFocus((n) => n + 1);
+		}, UNDO_ROW_MS);
+		return () => clearTimeout(timer);
+	}, [undoRowShown]);
+	function undo() {
+		undoDiscard();
+		setReturnFocus((n) => n + 1);
+	}
 	const [interactiveControlState, setInteractiveControlState] = useState<{
 		available: boolean;
 		reason: string | null;
@@ -207,7 +249,8 @@ export function SessionPromptComposer({
 	}
 
 	const hasDraft = prompt.trim() !== "";
-	const locked = lockedNotice(mode, hasDraft);
+	const locked = lockedNotice(mode, hasDraft || undoRowShown);
+	keepsReason.current = locked !== null;
 	if (locked !== null) {
 		const failed =
 			attempt.state === "failed" && attempt.kind === "recovery"
@@ -220,6 +263,10 @@ export function SessionPromptComposer({
 				draft={prompt}
 				restoredAt={restoredAt}
 				onDiscard={sending ? undefined : discard}
+				discarded={undoRowShown}
+				onUndo={undo}
+				undoRef={undoRef}
+				reasonRef={reasonRef}
 				startNew={locked.startNew}
 				resume={
 					locked.resume
@@ -270,6 +317,9 @@ export function SessionPromptComposer({
 			prompt={prompt}
 			restoredAt={restoredAt}
 			onDiscard={sending ? undefined : discard}
+			discarded={undoRowShown}
+			onUndo={undo}
+			undoRef={undoRef}
 			notice={
 				mode.kind === "codex" || mode.kind === "claude_taken_over" ? composerNotice(session) : null
 			}
@@ -291,6 +341,10 @@ export function LockedDraft({
 	draft,
 	restoredAt = null,
 	onDiscard,
+	discarded = false,
+	onUndo,
+	undoRef,
+	reasonRef,
 	startNew,
 	resume,
 }: {
@@ -301,6 +355,12 @@ export function LockedDraft({
 	restoredAt?: number | null;
 	/** Removes the draft (with an Undo); absent while a send is in progress. */
 	onDiscard?: () => void;
+	/** The draft was just discarded: "Draft discarded. Undo" takes the note's place. */
+	discarded?: boolean;
+	onUndo?: () => void;
+	undoRef?: RefObject<HTMLButtonElement | null>;
+	/** Where focus goes when the Undo row goes away. */
+	reasonRef?: RefObject<HTMLParagraphElement | null>;
 	startNew: boolean;
 	resume?: {
 		offer: ResumeOffer;
@@ -323,8 +383,10 @@ export function LockedDraft({
 				{retryFirst ? null : (
 					<p
 						id={reasonId}
+						ref={reasonRef}
+						tabIndex={-1}
 						role={resume?.offer.state === "in_flight" ? "status" : undefined}
-						className="text-[11px] leading-relaxed text-foreground"
+						className="text-[11px] leading-relaxed text-foreground focus:outline-none"
 					>
 						{reason}
 						{startNew ? <StartNewLink /> : null}
@@ -375,6 +437,14 @@ export function LockedDraft({
 						) : null}
 					</div>
 				) : null}
+				<DraftNote
+					id={restoredId}
+					restoredAt={showDraft ? restoredAt : null}
+					onDiscard={showDraft ? onDiscard : undefined}
+					discarded={discarded}
+					onUndo={onUndo}
+					undoRef={undoRef}
+				/>
 				{showDraft ? (
 					<>
 						<label htmlFor={textareaId} className="sr-only">
@@ -387,7 +457,7 @@ export function LockedDraft({
 							aria-describedby={restoredAt === null ? reasonId : `${reasonId} ${restoredId}`}
 							className="min-h-20 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
 						/>
-						<DraftNote id={restoredId} restoredAt={restoredAt} onDiscard={onDiscard} />
+
 						{reason === COMPOSER_ENDED ? null : (
 							<p className="text-[11px] text-muted-foreground">{COMPOSER_KEEP_TEXT}</p>
 						)}
@@ -398,21 +468,50 @@ export function LockedDraft({
 	);
 }
 
-/** "Unsent draft from …" for a draft that came back from storage, and the way to throw a draft away. */
+/**
+ * Under the box: "Unsent draft, saved ..." for a draft that came back from storage, with Discard; or, right
+ * after a discard, "Draft discarded. Undo" with focus on Undo.
+ */
 function DraftNote({
 	id,
 	restoredAt,
 	onDiscard,
+	discarded = false,
+	onUndo,
+	undoRef,
 }: {
 	id: string;
 	restoredAt: number | null;
 	onDiscard?: () => void;
+	discarded?: boolean;
+	onUndo?: () => void;
+	undoRef?: RefObject<HTMLButtonElement | null>;
 }) {
+	const doneId = useId();
+	useEffect(() => {
+		if (discarded) undoRef?.current?.focus();
+	}, [discarded, undoRef]);
+	if (discarded) {
+		return (
+			<div className="flex flex-wrap items-center gap-x-3 text-[11px] text-muted-foreground">
+				<span id={doneId}>Draft discarded.</span>
+				<button
+					type="button"
+					ref={undoRef}
+					onClick={onUndo}
+					aria-describedby={doneId}
+					className="min-h-[44px] underline underline-offset-2 hover:text-foreground md:min-h-0"
+				>
+					Undo
+				</button>
+			</div>
+		);
+	}
 	if (restoredAt === null && !onDiscard) return null;
 	return (
 		<div className="flex flex-wrap items-center gap-x-3 text-[11px] text-muted-foreground">
 			{restoredAt === null ? null : (
-				<span id={id}>Unsent draft from {formatTimeAgo(new Date(restoredAt).toISOString())}.</span>
+				<span id={id}>Unsent draft, saved {savedAgoText(restoredAt, Date.now())}.</span>
 			)}
 			{onDiscard ? (
 				<button
@@ -448,6 +547,10 @@ export interface ComposerBodyProps {
 	restoredAt?: number | null;
 	/** Throws the draft away (with an Undo). Absent while a send is in progress, and when there is nothing to discard. */
 	onDiscard?: () => void;
+	/** The draft was just discarded: "Draft discarded. Undo" takes the note's place. */
+	discarded?: boolean;
+	onUndo?: () => void;
+	undoRef?: RefObject<HTMLButtonElement | null>;
 	notice: string | null;
 	sideText: string | null;
 	/**
@@ -473,6 +576,9 @@ export function ComposerBody({
 	prompt,
 	restoredAt = null,
 	onDiscard,
+	discarded = false,
+	onUndo,
+	undoRef,
 	notice,
 	sideText,
 	stoppingNotice = null,
@@ -586,7 +692,10 @@ export function ComposerBody({
 				<DraftNote
 					id={restoredId}
 					restoredAt={restoredAt}
-					onDiscard={prompt.trim() === "" ? undefined : onDiscard}
+					onDiscard={restoredAt === null ? undefined : onDiscard}
+					discarded={discarded}
+					onUndo={onUndo}
+					undoRef={undoRef}
 				/>
 				{status ? (
 					<output className={status.srOnly ? "sr-only" : "block text-[11px] text-muted-foreground"}>

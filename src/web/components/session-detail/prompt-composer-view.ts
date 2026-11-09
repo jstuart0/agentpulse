@@ -53,6 +53,13 @@ export const COMPOSER_UNKNOWN_OUTCOME =
 /** The same sentences when the text could not be put back (the person typed something else meanwhile). */
 export const COMPOSER_UNKNOWN_OUTCOME_NOT_RESTORED =
 	"No answer from the host yet, so it may still run. If Control history shows it queued or running, don't send it again yet.";
+/** The POST got no answer from AgentPulse's server in time: the prompt may have been sent. */
+export const COMPOSER_TIMEOUT_OUTCOME =
+	"AgentPulse didn't answer within 30 seconds, so the prompt may have been sent. Your text is back here. Check Control history before you send it again.";
+export const COMPOSER_TIMEOUT_OUTCOME_NOT_RESTORED =
+	"AgentPulse didn't answer within 30 seconds, so the prompt may have been sent. Check Control history before you send it again.";
+/** The answer to a send that had timed out arrived after all: the host has the prompt. */
+export const COMPOSER_LATE_ACCEPT = "The host took the prompt.";
 export const COMPOSER_FAILED_FALLBACK_NOT_RESTORED = "The host couldn't take the prompt.";
 export const COMPOSER_FAILED_FALLBACK =
 	"The host couldn't take the prompt. Your text is back here.";
@@ -387,7 +394,9 @@ export type SendPhase =
 	| { step: "following" }
 	| { step: "failed"; reason: string; startNew: boolean }
 	/** `textBack: false`: the box holds something newer, so the sentence doesn't say the text is back. */
-	| { step: "unknown"; textBack?: false };
+	| { step: "unknown"; textBack?: false; timeout?: true }
+	/** A send whose answer was late arrived: the prompt went. A status, not a warning. */
+	| { step: "accepted" };
 
 export interface BoxState {
 	readOnly: boolean;
@@ -413,9 +422,7 @@ export function boxState(
 		phase.step === "failed"
 			? phase.reason
 			: phase.step === "unknown"
-				? phase.textBack === false
-					? COMPOSER_UNKNOWN_OUTCOME_NOT_RESTORED
-					: COMPOSER_UNKNOWN_OUTCOME
+				? unknownOutcomeText(phase)
 				: null;
 	return {
 		readOnly: isBlocked || following || (posting && followsAction(mode)),
@@ -432,12 +439,24 @@ export function boxState(
 	};
 }
 
+function unknownOutcomeText(phase: { textBack?: false; timeout?: true }): string {
+	if (phase.timeout) {
+		return phase.textBack === false
+			? COMPOSER_TIMEOUT_OUTCOME_NOT_RESTORED
+			: COMPOSER_TIMEOUT_OUTCOME;
+	}
+	return phase.textBack === false
+		? COMPOSER_UNKNOWN_OUTCOME_NOT_RESTORED
+		: COMPOSER_UNKNOWN_OUTCOME;
+}
+
 /** The live line for a followed send: what to wait for, then (to a screen reader only) that it went. */
 export function composerStatus(
 	mode: ComposerMode | null,
 	phase: SendPhase,
 	justSent: boolean,
 ): { text: string; srOnly: boolean } | null {
+	if (phase.step === "accepted") return { text: COMPOSER_LATE_ACCEPT, srOnly: false };
 	if (!followsAction(mode)) return null;
 	if (phase.step === "following") return { text: COMPOSER_STATUS_WAITING, srOnly: false };
 	if (justSent) return { text: COMPOSER_STATUS_SENT, srOnly: true };
@@ -555,11 +574,26 @@ export function settleFollow(
 
 /** The settled phase, worded for a box that did not get its text back. */
 export function withoutTextBack(phase: SendPhase): SendPhase {
-	if (phase.step === "unknown") return { step: "unknown", textBack: false };
+	if (phase.step === "unknown") return { ...phase, textBack: false };
 	if (phase.step === "failed" && phase.reason === COMPOSER_FAILED_FALLBACK) {
 		return { ...phase, reason: COMPOSER_FAILED_FALLBACK_NOT_RESTORED };
 	}
 	return phase;
+}
+
+/** "just now", "5 minutes ago", "1 hour ago": full unit words, so a screen reader doesn't say "2 h". */
+export function savedAgoText(savedAt: number, now: number): string {
+	const seconds = Math.max(0, Math.floor((now - savedAt) / 1000));
+	const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"} ago`;
+	if (seconds < 60) return "just now";
+	if (seconds < 3600) return unit(Math.floor(seconds / 60), "minute");
+	if (seconds < 86400) return unit(Math.floor(seconds / 3600), "hour");
+	return unit(Math.floor(seconds / 86400), "day");
+}
+
+/** Where focus goes when the "Draft discarded. Undo" row goes away while Undo had it: the box, or in the locked view the reason. */
+export function undoFocusTarget(locked: boolean): "box" | "reason" {
+	return locked ? "reason" : "box";
 }
 
 /** Puts the caret after a restored draft, so typing continues where the person left off. */

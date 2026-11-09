@@ -47,9 +47,19 @@ export interface Sending {
 
 export type SendOutcome = "succeeded" | "failed" | "unknown";
 
+/**
+ * How the last send for a session ended, kept beside the marker so a box mounted again still tells the
+ * person (a send can end while no box is mounted). Memory only; cleared by an edit or a new send.
+ */
+export type SendNote =
+	| { step: "failed"; reason: string; startNew: boolean }
+	| { step: "unknown"; textBack?: false; timeout?: true }
+	| { step: "accepted" };
+
 interface PromptDraftStore {
 	drafts: Record<string, Draft>;
 	sending: Record<string, Sending>;
+	outcomes: Record<string, SendNote>;
 	edit: (sessionId: string, text: string) => void;
 	/** Removes the draft at once (memory and storage) and returns it for an undo; null when there is none or a send is in progress. */
 	discard: (sessionId: string) => Draft | null;
@@ -59,7 +69,11 @@ interface PromptDraftStore {
 	beginSend: (sessionId: string, text: string, onTimeout?: () => void) => SendTicket | null;
 	/** The POST answered 202. True when the caller should follow the action (the marker is still ours). */
 	sendAccepted: (ticket: SendTicket, actionId: string, follow: boolean) => boolean;
-	sendRefused: (ticket: SendTicket) => void;
+	/** The POST was refused. `note` is what to tell the person; it is kept even if no box is mounted. */
+	sendRefused: (ticket: SendTicket, note?: SendNote) => void;
+	/** Records how a settled send ended, unless the viewer changed since. */
+	noteOutcome: (ticket: SendTicket, note: SendNote) => void;
+	clearOutcome: (sessionId: string, onlyFailed?: boolean) => void;
 	/** The send is over. For failed and unknown, puts the text back; returns whether it did. */
 	sendSettled: (ticket: SendTicket, outcome: SendOutcome, text: string) => boolean;
 	flush: (sessionId?: string) => void;
@@ -184,24 +198,31 @@ function withoutSending(sessionId: string): Record<string, Sending> {
 }
 
 /** The draft is the sent text and nothing was typed since (same version, same viewer). */
-function clearSent(ticket: SendTicket): void {
-	if (ticket.generation !== generation) return;
-	if ((versions.get(ticket.sessionId) ?? 0) !== ticket.version) return;
+function clearSent(ticket: SendTicket): boolean {
+	if (ticket.generation !== generation) return false;
+	if ((versions.get(ticket.sessionId) ?? 0) !== ticket.version) return false;
 	const { drafts } = usePromptDraftStore.getState();
-	if (!(ticket.sessionId in drafts)) return;
+	if (!(ticket.sessionId in drafts)) return false;
 	const { [ticket.sessionId]: _removed, ...rest } = drafts;
 	cancelWrite(ticket.sessionId);
 	usePromptDraftStore.setState({ drafts: rest });
 	removeStored(ticket.sessionId);
+	return true;
+}
+
+function withOutcome(sessionId: string, note: SendNote): Record<string, SendNote> {
+	return { ...usePromptDraftStore.getState().outcomes, [sessionId]: note };
 }
 
 export const usePromptDraftStore = create<PromptDraftStore>((set, get) => ({
 	drafts: {},
 	sending: {},
+	outcomes: {},
 
 	edit: (sessionId, text) => {
 		if (get().sending[sessionId]) return;
 		bump(sessionId);
+		get().clearOutcome(sessionId);
 		if (text === "") {
 			cancelWrite(sessionId);
 			const { [sessionId]: _removed, ...rest } = get().drafts;
@@ -244,6 +265,7 @@ export const usePromptDraftStore = create<PromptDraftStore>((set, get) => ({
 			version: versions.get(sessionId) ?? 0,
 			generation,
 		};
+		get().clearOutcome(sessionId);
 		set((state) => ({
 			sending: { ...state.sending, [sessionId]: { text, ticket, actionId: null } },
 		}));
@@ -252,7 +274,12 @@ export const usePromptDraftStore = create<PromptDraftStore>((set, get) => ({
 			setTimeout(() => {
 				sendTimers.delete(ticket);
 				if (get().sending[sessionId]?.ticket !== ticket) return;
-				get().sendSettled(ticket, "unknown", text);
+				const restored = get().sendSettled(ticket, "unknown", text);
+				get().noteOutcome(ticket, {
+					step: "unknown",
+					timeout: true,
+					...(restored ? {} : { textBack: false as const }),
+				});
 				onTimeout?.();
 			}, SEND_ANSWER_TIMEOUT_MS),
 		);
@@ -260,9 +287,13 @@ export const usePromptDraftStore = create<PromptDraftStore>((set, get) => ({
 	},
 
 	sendAccepted: (ticket, actionId, follow) => {
-		clearSent(ticket);
+		const cleared = clearSent(ticket);
 		const marker = get().sending[ticket.sessionId];
-		if (marker?.ticket !== ticket) return false;
+		if (marker?.ticket !== ticket) {
+			// A late answer to a send that had already timed out: say the prompt went.
+			if (cleared) get().noteOutcome(ticket, { step: "accepted" });
+			return false;
+		}
 		clearSendTimer(ticket);
 		if (!follow) {
 			set({ sending: withoutSending(ticket.sessionId) });
@@ -274,10 +305,25 @@ export const usePromptDraftStore = create<PromptDraftStore>((set, get) => ({
 		return true;
 	},
 
-	sendRefused: (ticket) => {
+	sendRefused: (ticket, note) => {
 		clearSendTimer(ticket);
-		if (get().sending[ticket.sessionId]?.ticket !== ticket) return;
-		set({ sending: withoutSending(ticket.sessionId) });
+		const ours = get().sending[ticket.sessionId]?.ticket === ticket;
+		if (ours) set({ sending: withoutSending(ticket.sessionId) });
+		const afterTimeout = get().outcomes[ticket.sessionId];
+		const replacesTimeout = afterTimeout?.step === "unknown" && afterTimeout.timeout === true;
+		if (note && (ours || replacesTimeout)) get().noteOutcome(ticket, note);
+	},
+
+	noteOutcome: (ticket, note) => {
+		if (ticket.generation !== generation) return;
+		set({ outcomes: withOutcome(ticket.sessionId, note) });
+	},
+
+	clearOutcome: (sessionId, onlyFailed = false) => {
+		const current = get().outcomes[sessionId];
+		if (!current || (onlyFailed && current.step !== "failed")) return;
+		const { [sessionId]: _removed, ...rest } = get().outcomes;
+		set({ outcomes: rest });
 	},
 
 	sendSettled: (ticket, outcome, text) => {
@@ -285,7 +331,10 @@ export const usePromptDraftStore = create<PromptDraftStore>((set, get) => ({
 		if (get().sending[ticket.sessionId]?.ticket === ticket) {
 			set({ sending: withoutSending(ticket.sessionId) });
 		}
-		if (outcome === "succeeded") return false;
+		if (outcome === "succeeded") {
+			get().clearOutcome(ticket.sessionId);
+			return false;
+		}
 		if (ticket.generation !== generation) return false;
 		const existing = get().drafts[ticket.sessionId];
 		if (existing && existing.text !== "") {
@@ -363,7 +412,7 @@ function forget(): void {
 	versions.clear();
 	currentTag = null;
 	indexMem = [];
-	usePromptDraftStore.setState({ drafts: {}, sending: {} });
+	usePromptDraftStore.setState({ drafts: {}, sending: {}, outcomes: {} });
 }
 
 function adopt(tag: string | null): void {
@@ -373,7 +422,7 @@ function adopt(tag: string | null): void {
 	versions.clear();
 	currentTag = tag;
 	const drafts = tag === null ? {} : loadStored(tag);
-	usePromptDraftStore.setState({ drafts, sending: {} });
+	usePromptDraftStore.setState({ drafts, sending: {}, outcomes: {} });
 }
 
 // Drafts follow the signed-in person (the pattern of tabs-store). A viewer who can't be told apart from
@@ -400,7 +449,7 @@ export function __resetPromptDraftsForTests(): void {
 	versions.clear();
 	currentTag = null;
 	indexMem = [];
-	usePromptDraftStore.setState({ drafts: {}, sending: {} });
+	usePromptDraftStore.setState({ drafts: {}, sending: {}, outcomes: {} });
 	adoptedFor = null;
 	adoptViewer();
 }

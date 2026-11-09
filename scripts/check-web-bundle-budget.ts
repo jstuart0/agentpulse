@@ -52,6 +52,10 @@
  * hook rewrite and the two views' markup took the rest) and index 119,467 (+358: the sign-out purge pulls the
  * key scheme and the storage helper into index; the store itself stays in the page chunk). Limits moved to
  * 38,000 and 119,800 (measured + about 350).
+ * AGEN-142 fix pass (codex r2 and ruby's review: the last send's outcome kept in the store, the inline "Draft
+ * discarded. Undo" row with its focus rules, the gone card as its own component with the "Session deleted"
+ * wording, the timeout and late-accept copy, the full-word draft age) measured SessionDetailPage 38,477 (+824)
+ * and index 119,532 (+65). The page limit moved to 38,800 (measured + about 320); index stays at 119,800.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -75,7 +79,7 @@ export interface Finding {
 }
 
 export const BUDGETS: Budget[] = [
-	{ chunk: "SessionDetailPage", maxGzip: 38_000, measured: 37_653 },
+	{ chunk: "SessionDetailPage", maxGzip: 38_800, measured: 38_477 },
 	{ chunk: "SessionSummaryTab", maxGzip: 12_500, measured: 11_582 },
 	{ chunk: "CodexApprovalCard", maxGzip: 15_300, measured: 15_022 },
 	{ chunk: "SessionTakeoverCard", maxGzip: 8_200, measured: 7_904 },

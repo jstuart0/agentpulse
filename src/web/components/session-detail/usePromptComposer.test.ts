@@ -26,10 +26,13 @@ import {
 import { HOST_RESTARTED_PROMPT_COPY } from "./host-control-view.js";
 import {
 	COMPOSER_BUSY,
+	COMPOSER_LATE_ACCEPT,
+	COMPOSER_TIMEOUT_OUTCOME,
 	COMPOSER_UNKNOWN_OUTCOME,
 	FOLLOW_POLL_MS,
 	boxState,
 	composerMode,
+	composerStatus,
 } from "./prompt-composer-view.js";
 import { type PromptComposerOptions, usePromptComposer } from "./usePromptComposer.js";
 
@@ -42,6 +45,9 @@ const realSetTimeout = globalThis.setTimeout;
 let fakeNow = 0;
 let pollDelays: number[] = [];
 let fastSendTimeout = false;
+/** When set, the 30 s send timer is captured instead of run, so a test can fire it at the moment it chooses. */
+let holdSendTimeout = false;
+let heldTimeout: (() => void) | null = null;
 
 beforeAll(() => installDomStubs());
 afterAll(() => removeDomStubs());
@@ -50,9 +56,15 @@ beforeEach(() => {
 	__resetPromptDraftsForTests();
 	pollDelays = [];
 	fastSendTimeout = false;
+	holdSendTimeout = false;
+	heldTimeout = null;
 	Date.now = () => fakeNow;
 	// Only the poll's own 1.5 s wait is shortened (and moves the clock by what it was asked to wait).
 	globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
+		if (ms === SEND_ANSWER_TIMEOUT_MS && holdSendTimeout) {
+			heldTimeout = fn;
+			return realSetTimeout(() => {}, 0);
+		}
 		if (ms === SEND_ANSWER_TIMEOUT_MS && fastSendTimeout) return realSetTimeout(fn, 0);
 		if (ms === FOLLOW_POLL_MS) {
 			pollDelays.push(ms);
@@ -740,15 +752,17 @@ describe("the draft belongs to the session and the viewer (AGEN-142)", () => {
 		await flush(30);
 		expect(store().sending.s1).toBeUndefined();
 		expect(t.now().prompt).toBe("lost answer");
-		expect(t.now().phase).toEqual({ step: "unknown" });
+		expect(t.now().phase).toEqual({ step: "unknown", timeout: true });
 		expect(store().drafts.s1?.persist).toBe(false);
 		const mode = t.options.mode;
 		if (!mode) throw new Error("mode");
-		expect(boxState(mode, t.now().phase, { posting: false }).alert).toBe(COMPOSER_UNKNOWN_OUTCOME);
+		expect(boxState(mode, t.now().phase, { posting: false }).alert).toBe(COMPOSER_TIMEOUT_OUTCOME);
 
 		post.resolve({ action: action() });
 		await flush(30);
 		expect(t.now().prompt).toBe(""); // not edited: the late 202 means it was sent
+		expect(t.now().phase).toEqual({ step: "accepted" }); // no stale "your text is back" over an empty box
+		expect(composerStatus(mode, t.now().phase, false)?.text).toBe(COMPOSER_LATE_ACCEPT);
 		expect(polls).toBe(0);
 		await t.h.unmount();
 	});
@@ -767,6 +781,100 @@ describe("the draft belongs to the session and the viewer (AGEN-142)", () => {
 		post.resolve({ action: action() });
 		await flush(30);
 		expect(t.now().prompt).toBe("lost answer, and more");
+		await t.h.unmount();
+	});
+});
+
+describe("how a send ended survives a box that was unmounted when it ended (AGEN-142)", () => {
+	const store = () => usePromptDraftStore.getState();
+
+	/** Sends from a first box, unmounts it before the POST answers, and mounts a second one. */
+	async function sendThenRemount(post: ReturnType<typeof deferred<{ action: ControlAction }>>) {
+		holdSendTimeout = true;
+		client.sendSessionPrompt = () => post.promise;
+		client.getSessionControlActions = () =>
+			Promise.resolve({ controlActions: [action({ status: "succeeded" })] });
+		const first = mount();
+		await first.render();
+		await first.type("remount me");
+		await first.send();
+		await first.h.unmount();
+		const second = mount();
+		await second.render();
+		expect(second.now().sending).toBe(true);
+		return second;
+	}
+
+	test("a timeout after the remount: the new box has its text back and the 'may have been sent' warning", async () => {
+		const second = await sendThenRemount(deferred());
+		await act(async () => heldTimeout?.());
+		const v = second.now();
+		expect(v.sending).toBe(false);
+		expect(v.prompt).toBe("remount me");
+		expect(v.phase).toEqual({ step: "unknown", timeout: true });
+		const mode = second.options.mode;
+		if (!mode) throw new Error("mode");
+		expect(boxState(mode, v.phase, { posting: false }).alert).toBe(COMPOSER_TIMEOUT_OUTCOME);
+		await second.h.unmount();
+	});
+
+	test("a refusal after the remount: the new box shows why, and keeps the text", async () => {
+		const post = deferred<{ action: ControlAction }>();
+		const second = await sendThenRemount(post);
+		await act(async () => {
+			post.reject(new ApiError(409, "x", { error: "host_offline" }));
+			await Promise.resolve();
+		});
+		await flush(30);
+		const v = second.now();
+		expect(v.sending).toBe(false);
+		expect(v.prompt).toBe("remount me");
+		expect(v.phase.step).toBe("failed");
+		expect((v.phase as { reason: string }).reason.length).toBeGreaterThan(0);
+		await second.h.unmount();
+	});
+
+	test("a late 202 after a timeout and a remount: the draft is cleared and the box says the host took it", async () => {
+		const post = deferred<{ action: ControlAction }>();
+		const second = await sendThenRemount(post);
+		await act(async () => heldTimeout?.());
+		expect(second.now().phase).toEqual({ step: "unknown", timeout: true });
+		post.resolve({ action: action() });
+		await flush(30);
+		expect(second.now().prompt).toBe("");
+		expect(second.now().phase).toEqual({ step: "accepted" });
+		await second.h.unmount();
+	});
+
+	test("typing clears the note", async () => {
+		const second = await sendThenRemount(deferred());
+		await act(async () => heldTimeout?.());
+		await second.type("something else");
+		expect(second.now().phase).toEqual({ step: "idle" });
+		expect(store().outcomes.s1).toBeUndefined();
+		await second.h.unmount();
+	});
+
+	test("after a timeout, Send works again while the hung POST is still out (it no longer holds the box)", async () => {
+		holdSendTimeout = true;
+		const hung = deferred<{ action: ControlAction }>();
+		let sends = 0;
+		client.sendSessionPrompt = () => {
+			sends += 1;
+			return sends === 1 ? hung.promise : Promise.resolve({ action: action({ id: "act-2" }) });
+		};
+		client.getSessionControlActions = () =>
+			Promise.resolve({ controlActions: [action({ id: "act-2", status: "succeeded" })] });
+		const t = mount();
+		await t.render();
+		await t.type("try twice");
+		await t.send();
+		await act(async () => heldTimeout?.());
+		expect(t.now().posting).toBe(false);
+		await t.send();
+		expect(sends).toBe(2);
+		await flush(30);
+		expect(t.now().prompt).toBe("");
 		await t.h.unmount();
 	});
 });
