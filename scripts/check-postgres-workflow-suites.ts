@@ -35,6 +35,8 @@ export const EXPECTED_SUITES: readonly string[] = [
 	"src/server/services/claude-mcp-approval-e2e.test.ts",
 	// AGEN-120
 	"src/server/services/claude-agent-approval-e2e.test.ts",
+	// AGEN-140: the control-lock race harness; a Claude Stop's host check moved under it once and CI caught it only after merge.
+	"src/server/services/ai/hitl-decision-races.test.ts",
 ];
 
 /** Every path-like token of every `run:` block (folded `>-`, literal `|` or one line). */

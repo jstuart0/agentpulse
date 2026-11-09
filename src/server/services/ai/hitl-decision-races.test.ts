@@ -38,8 +38,13 @@ const { enableAiRuntime, seedFinishedTurn, seedProposalWithHitl, seedProvider } 
 );
 const { hashPrompt } = await import("./prompt-hash.js");
 const { decideHitl, retryDelivery } = await import("./hitl-decision-service.js");
-const { queuePromptAction, queueStopAction, expireStaleControlLock, ControlBusyError } =
-	await import("../control-actions.js");
+const {
+	queuePromptAction,
+	queueStopAction,
+	expireStaleControlLock,
+	ControlBusyError,
+	HostUpgradeRequiredError,
+} = await import("../control-actions.js");
 const { default: postgres } = await import("postgres");
 
 const SUPERVISOR = "race-sup";
@@ -75,7 +80,12 @@ beforeEach(async () => {
 }, LIMIT);
 afterEach(reset, LIMIT);
 
-async function seedManaged(sessionId: string) {
+/**
+ * The host is seeded by `seedOwnedLaunch` (a current one: it advertises `claude_stop` and
+ * `codex_follow_up_prompts`), so a Stop gets past the host-feature check to the lock statement this file
+ * tests. `olderHost` seeds a host with no features first, to test the Stop an older supervisor refuses.
+ */
+async function seedManaged(sessionId: string, opts?: { olderHost?: boolean }) {
 	await getDb().insert(sessions).values({
 		sessionId,
 		agentType: "claude_code",
@@ -83,18 +93,19 @@ async function seedManaged(sessionId: string) {
 		metadata: {},
 		displayName: sessionId,
 	});
-	await getDb()
-		.insert(supervisors)
-		.values({
-			id: SUPERVISOR,
-			hostName: "h",
-			platform: "linux",
-			arch: "x64",
-			version: "0",
-			enrollmentState: "active",
-			heartbeatLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-		})
-		.onConflictDoNothing();
+	if (opts?.olderHost) {
+		await getDb()
+			.insert(supervisors)
+			.values({
+				id: SUPERVISOR,
+				hostName: "h",
+				platform: "linux",
+				arch: "x64",
+				version: "0",
+				enrollmentState: "active",
+				heartbeatLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+			});
+	}
 	const { launchId } = await seedOwnedLaunch(sessionId, SUPERVISOR);
 	const now = new Date().toISOString();
 	await getDb().insert(managedSessions).values({
@@ -243,6 +254,23 @@ describePostgresOnly("interleaved: operations that have all read the same state"
 			expect(actions).toHaveLength(1);
 		});
 	}
+
+	test("a stop on a host without claude_stop is HostUpgradeRequiredError and takes no lock", async () => {
+		await seedManaged("rc-old", { olderHost: true });
+		await expect(queueStopAction("rc-old", ctx.actor)).rejects.toBeInstanceOf(
+			HostUpgradeRequiredError,
+		);
+		const [managed] = await getDb()
+			.select()
+			.from(managedSessions)
+			.where(eq(managedSessions.sessionId, "rc-old"));
+		expect(managed?.activeControlActionId).toBeNull();
+		const actions = await getDb()
+			.select()
+			.from(controlActions)
+			.where(eq(controlActions.sessionId, "rc-old"));
+		expect(actions).toHaveLength(0);
+	});
 
 	test("interleaved: double-decide. Two approvals that both saw the request open: one wins, the other is already_resolved, one delivery and one action exist", async () => {
 		await seedManaged("rc-2");

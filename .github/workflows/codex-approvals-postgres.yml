@@ -53,6 +53,7 @@ on:
       - "src/server/services/ai/session-summary/**" # AGEN-122
       - "src/server/services/session-summary-service.ts" # AGEN-122
       - "src/server/services/fork-call-row*" # AGEN-122
+      - "src/server/services/ai/hitl-decision*" # AGEN-140
       # AGEN-123: the owner-only tool detail
       - "src/server/services/fork-tool-detail*"
       - "src/server/routes/fork-tool-calls*"
@@ -154,7 +155,8 @@ jobs:
             src/server/services/control-actions-claude-interrupt.test.ts \
             src/server/services/codex-approvals-turn-fence.test.ts \
             src/server/routes/sessions-interrupt.test.ts \
-            src/server/services/claude-mcp-approval-e2e.test.ts 2>&1 | tee claude-turn.log
+            src/server/services/claude-mcp-approval-e2e.test.ts \
+            src/server/services/ai/hitl-decision-races.test.ts 2>&1 | tee claude-turn.log
           if grep -Eq '^ *[1-9][0-9]* skip' claude-turn.log; then
             echo "A Claude turn guard test was skipped on Postgres." >&2
             exit 1
