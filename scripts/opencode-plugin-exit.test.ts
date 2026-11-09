@@ -62,6 +62,12 @@ async function setup(line: Line, argv: string[], direct = false) {
 	return { r, remote, w, flush };
 }
 
+/** A terminal event with a fixed id, in the shape each line's host delivers it. */
+const idleEvent = (line: Line, id: string) =>
+	line === "v1"
+		? { id, type: "session.idle", properties: { sessionID: SID } }
+		: { id, type: "session.execution.succeeded", data: { sessionID: SID } };
+
 const RUN = ["bun", "/$bunfs/root/opencode", "run", "go"];
 
 for (const line of ["v1", "v2"] as const) {
@@ -96,6 +102,70 @@ for (const line of ["v1", "v2"] as const) {
 			const t = performance.now();
 			flush();
 			expect(performance.now() - t).toBeLessThan(350);
+		});
+
+		test("an event whose POST is still in flight at exit is sent by the flush (claimed is not delivered)", async () => {
+			const { r, remote, flush } = await setup(line, RUN);
+			remote.hang(true);
+			r.drv.idle(SID, "done");
+			await new Promise((res) => setTimeout(res, 30));
+			remote.hang(false);
+			const before = remote.read().length;
+			flush();
+			const got = remote.read().slice(before);
+			expect(got.length).toBeGreaterThanOrEqual(1);
+		});
+
+		test("the same event queued twice while its POST hangs goes out once at exit", async () => {
+			const { r, remote, flush } = await setup(line, RUN);
+			remote.hang(true);
+			const idle = idleEvent(line, "evt_dup0000000001");
+			r.drv.event(idle);
+			r.drv.event(idle);
+			await new Promise((res) => setTimeout(res, 30));
+			remote.hang(false);
+			const before = remote.read().length;
+			flush();
+			expect(remote.read().length - before).toBe(1);
+		});
+
+		test("a delivered event stays claimed: the same event again is dropped, one POST per event id", async () => {
+			const { r, remote } = await setup(line, RUN);
+			const idle = idleEvent(line, "evt_once0000000001");
+			r.drv.event(idle);
+			await r.drv.flush();
+			await settle(line);
+			const before = remote.read().length;
+			r.drv.event(idle);
+			await r.drv.flush();
+			await settle(line);
+			expect(remote.read().length).toBe(before);
+			expect(recordOf(line).counters.droppedSeen).toBe(1);
+		});
+
+		test("a POST that failed releases its claim, so the same event can be sent again", async () => {
+			const { r, remote } = await setup(line, RUN);
+			remote.stop();
+			const idle = idleEvent(line, "evt_fail0000000001");
+			r.drv.event(idle);
+			await r.drv.flush();
+			await settle(line);
+			r.drv.event(idle);
+			await r.drv.flush();
+			await settle(line);
+			const c = recordOf(line).counters;
+			expect(c.failedPosts).toBe(2);
+			expect(c.droppedSeen).toBe(0);
+		});
+
+		test("an event the server already answered is not sent again at exit", async () => {
+			const { r, remote, flush } = await setup(line, RUN);
+			r.drv.idle(SID, "done");
+			await r.drv.flush();
+			await settle(line);
+			const before = remote.read().length;
+			flush();
+			expect(remote.read().length).toBe(before);
 		});
 
 		test("a long-lived serve process flushes nothing at exit", async () => {

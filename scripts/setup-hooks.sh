@@ -89,7 +89,7 @@ fi
 # @@AGENTPULSE_OPENCODE_PLUGIN_1@@ BEGIN
 ap_opencode_plugin_1_template() {
 cat <<'AP_OPENCODE_PLUGIN_1_EOF'
-// agentpulse-opencode-plugin f0116446dd0baf
+// agentpulse-opencode-plugin 5aee272898f11e
 import cp from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -107,7 +107,7 @@ import path from "node:path";
 const AP_CONFIG = { baseUrl: "@@AP_OPENCODE_BASE_URL@@", direct: "@@AP_OPENCODE_DIRECT@@" === "1" };
 
 // @@AP_GENERATED BEGIN
-const AP_BUILD = "f0116446dd0baf";
+const AP_BUILD = "5aee272898f11e";
 const AP_SKIP_VALUES = JSON.parse("[\"1\",\"true\",\"yes\",\"on\"]");
 const AP_SEND_STATUS = 42;
 const AP_AGENTPULSE_DIR = ".agentpulse";
@@ -419,10 +419,20 @@ function toolUseId(callID, entry) {
 
 // ---- queue --------------------------------------------------------------------
 
-function seenBefore(rec, evt) {
+// An event id is "claimed" (1) while its POST is in flight and "delivered" (2) once the server answered. A claim stops a
+// second plugin instance in this process from sending the same event; only a delivery stops the exit flush, so an
+// event whose POST never finished is still sent at exit (the server dedupes by delivery id).
+const SEEN_CLAIMED = 1;
+const SEEN_DELIVERED = 2;
+
+function claimEvent(rec, evt) {
 	if (rec.seen.has(evt)) return true;
-	lruTouch(rec.seen, evt, 1, SEEN_LIMIT);
+	lruTouch(rec.seen, evt, SEEN_CLAIMED, SEEN_LIMIT);
 	return false;
+}
+
+function deliveredEvent(rec, evt) {
+	return rec.seen.get(evt) === SEEN_DELIVERED;
 }
 
 function dropOldest(rec, st) {
@@ -521,15 +531,23 @@ async function deliver(rec, st, item) {
 		const dir = item.dirs[i];
 		if (typeof dir === "string" && dir !== "") lruTouch(rec.verdicts, dir, apNow(), 256);
 	}
-	if (item.evt !== undefined && seenBefore(rec, item.evt)) {
+	if (item.evt !== undefined && claimEvent(rec, item.evt)) {
 		rec.counters.droppedSeen += 1;
 		return;
 	}
-	await acquireSend(rec);
+	let delivered = false;
 	try {
-		await post(rec, item);
+		await acquireSend(rec);
+		try {
+			delivered = await post(rec, item);
+		} finally {
+			releaseSend(rec);
+		}
 	} finally {
-		releaseSend(rec);
+		if (item.evt !== undefined) {
+			if (delivered) lruTouch(rec.seen, item.evt, SEEN_DELIVERED, SEEN_LIMIT);
+			else rec.seen.delete(item.evt);
+		}
 	}
 }
 
@@ -626,7 +644,7 @@ async function post(rec, item) {
 	};
 	if (AP_CONFIG.direct) {
 		const auth = await readAuthHeader();
-		if (auth === null) return;
+		if (auth === null) return false;
 		if (auth !== undefined) headers.Authorization = auth;
 		const host = hostHeaderValue(rec);
 		if (host !== "") headers[AP_HOST_HEADER] = host;
@@ -643,8 +661,10 @@ async function post(rec, item) {
 		rec.counters.posts += 1;
 		if (res && res.body && typeof res.body.cancel === "function")
 			await res.body.cancel().catch(() => {});
+		return true;
 	} catch {
 		rec.counters.failedPosts += 1;
+		return false;
 	}
 }
 
@@ -733,12 +753,16 @@ function flushAtExit(rec) {
 		const auth = exitAuthArgs();
 		if (auth === null) return;
 		const curl = (AP_TEST && AP_TEST.curl) || CURL;
+		const sentNow = new Set();
 		for (const st of rec.sessions.values()) {
 			for (const item of st.q) {
 				const left = deadline - Date.now();
 				if (left <= 0) return;
 				if (!item.dirs.every((d) => freshVerdict(rec, d))) break;
-				if (item.evt !== undefined && seenBefore(rec, item.evt)) continue;
+				if (item.evt !== undefined) {
+					if (deliveredEvent(rec, item.evt) || sentNow.has(item.evt)) continue;
+					sentNow.add(item.evt);
+				}
 				const args = [
 					"-q",
 					"-sS",
@@ -1333,7 +1357,7 @@ AP_OPENCODE_PLUGIN_1_EOF
 # @@AGENTPULSE_OPENCODE_PLUGIN_2@@ BEGIN
 ap_opencode_plugin_2_template() {
 cat <<'AP_OPENCODE_PLUGIN_2_EOF'
-// agentpulse-opencode-plugin 54d3c63d08a9d9
+// agentpulse-opencode-plugin dba966b1d1ad22
 import cp from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -1351,7 +1375,7 @@ import path from "node:path";
 const AP_CONFIG = { baseUrl: "@@AP_OPENCODE_BASE_URL@@", direct: "@@AP_OPENCODE_DIRECT@@" === "1" };
 
 // @@AP_GENERATED BEGIN
-const AP_BUILD = "54d3c63d08a9d9";
+const AP_BUILD = "dba966b1d1ad22";
 const AP_SKIP_VALUES = JSON.parse("[\"1\",\"true\",\"yes\",\"on\"]");
 const AP_SEND_STATUS = 42;
 const AP_AGENTPULSE_DIR = ".agentpulse";
@@ -1663,10 +1687,20 @@ function toolUseId(callID, entry) {
 
 // ---- queue --------------------------------------------------------------------
 
-function seenBefore(rec, evt) {
+// An event id is "claimed" (1) while its POST is in flight and "delivered" (2) once the server answered. A claim stops a
+// second plugin instance in this process from sending the same event; only a delivery stops the exit flush, so an
+// event whose POST never finished is still sent at exit (the server dedupes by delivery id).
+const SEEN_CLAIMED = 1;
+const SEEN_DELIVERED = 2;
+
+function claimEvent(rec, evt) {
 	if (rec.seen.has(evt)) return true;
-	lruTouch(rec.seen, evt, 1, SEEN_LIMIT);
+	lruTouch(rec.seen, evt, SEEN_CLAIMED, SEEN_LIMIT);
 	return false;
+}
+
+function deliveredEvent(rec, evt) {
+	return rec.seen.get(evt) === SEEN_DELIVERED;
 }
 
 function dropOldest(rec, st) {
@@ -1765,15 +1799,23 @@ async function deliver(rec, st, item) {
 		const dir = item.dirs[i];
 		if (typeof dir === "string" && dir !== "") lruTouch(rec.verdicts, dir, apNow(), 256);
 	}
-	if (item.evt !== undefined && seenBefore(rec, item.evt)) {
+	if (item.evt !== undefined && claimEvent(rec, item.evt)) {
 		rec.counters.droppedSeen += 1;
 		return;
 	}
-	await acquireSend(rec);
+	let delivered = false;
 	try {
-		await post(rec, item);
+		await acquireSend(rec);
+		try {
+			delivered = await post(rec, item);
+		} finally {
+			releaseSend(rec);
+		}
 	} finally {
-		releaseSend(rec);
+		if (item.evt !== undefined) {
+			if (delivered) lruTouch(rec.seen, item.evt, SEEN_DELIVERED, SEEN_LIMIT);
+			else rec.seen.delete(item.evt);
+		}
 	}
 }
 
@@ -1870,7 +1912,7 @@ async function post(rec, item) {
 	};
 	if (AP_CONFIG.direct) {
 		const auth = await readAuthHeader();
-		if (auth === null) return;
+		if (auth === null) return false;
 		if (auth !== undefined) headers.Authorization = auth;
 		const host = hostHeaderValue(rec);
 		if (host !== "") headers[AP_HOST_HEADER] = host;
@@ -1887,8 +1929,10 @@ async function post(rec, item) {
 		rec.counters.posts += 1;
 		if (res && res.body && typeof res.body.cancel === "function")
 			await res.body.cancel().catch(() => {});
+		return true;
 	} catch {
 		rec.counters.failedPosts += 1;
+		return false;
 	}
 }
 
@@ -1977,12 +2021,16 @@ function flushAtExit(rec) {
 		const auth = exitAuthArgs();
 		if (auth === null) return;
 		const curl = (AP_TEST && AP_TEST.curl) || CURL;
+		const sentNow = new Set();
 		for (const st of rec.sessions.values()) {
 			for (const item of st.q) {
 				const left = deadline - Date.now();
 				if (left <= 0) return;
 				if (!item.dirs.every((d) => freshVerdict(rec, d))) break;
-				if (item.evt !== undefined && seenBefore(rec, item.evt)) continue;
+				if (item.evt !== undefined) {
+					if (deliveredEvent(rec, item.evt) || sentNow.has(item.evt)) continue;
+					sentNow.add(item.evt);
+				}
 				const args = [
 					"-q",
 					"-sS",

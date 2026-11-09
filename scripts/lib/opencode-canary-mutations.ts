@@ -59,10 +59,10 @@ export const MUTATIONS: Record<string, Record<Line, Replacement[]>> = {
 		v2: [
 			{
 				anchor:
-					"if (item.evt !== undefined && seenBefore(rec, item.evt)) {\n\t\trec.counters.droppedSeen += 1;\n\t\treturn;\n\t}\n\tawait acquireSend(rec);",
+					"if (item.evt !== undefined && claimEvent(rec, item.evt)) {\n\t\trec.counters.droppedSeen += 1;\n\t\treturn;\n\t}\n\tlet delivered = false;",
 				// The set still records, and a hit is written to a file instead of dropping the item: that file is the
 				// scenario's proof that two instances really forwarded one event (its precondition).
-				replace: `if (item.evt !== undefined && seenBefore(rec, item.evt)) {\n\t\ttry {\n\t\t\tfs.appendFileSync(path.join(homeDir() || "/", "${SEEN_LOG}"), item.sid + " " + item.evt + "\\n");\n\t\t} catch {}\n\t}\n\tawait acquireSend(rec);`,
+				replace: `if (item.evt !== undefined && claimEvent(rec, item.evt)) {\n\t\ttry {\n\t\t\tfs.appendFileSync(path.join(homeDir() || "/", "${SEEN_LOG}"), item.sid + " " + item.evt + "\\n");\n\t\t} catch {}\n\t}\n\tlet delivered = false;`,
 			},
 		],
 	},

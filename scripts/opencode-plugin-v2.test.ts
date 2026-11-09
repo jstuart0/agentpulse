@@ -475,7 +475,7 @@ describe("17d patches: each removal of a fan-out defence makes a scenario fail",
 
 	test("no-seen-set: with a shared realm an unclaimed event is posted by every instance", async () => {
 		const got = await scenario("unclaimed", true, (t) =>
-			t.replace("if (item.evt !== undefined && seenBefore(rec, item.evt)) {", "if (false) {"),
+			t.replace("if (item.evt !== undefined && claimEvent(rec, item.evt)) {", "if (false) {"),
 		);
 		expect(got.length).toBeGreaterThan(1);
 	});
