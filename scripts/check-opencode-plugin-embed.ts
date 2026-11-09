@@ -21,6 +21,9 @@ const errors = checkOpenCodePluginEmbed({
 	setupHooksSh: read("scripts/setup-hooks.sh"),
 	installLocalPs1: read("scripts/install-local.ps1"),
 	setupRelaySh: read("scripts/setup-relay.sh"),
+	installShTemplate: read("scripts/opencode-installer/install.sh"),
+	installPsTemplate: read("scripts/opencode-installer/install.ps1"),
+	installerModule: read("src/shared/opencode-install-text.generated.ts"),
 });
 if (errors.length > 0) {
 	for (const error of errors) console.error(`FAIL: ${error}`);

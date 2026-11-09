@@ -253,6 +253,9 @@ export interface EmbedInputs {
 	setupHooksSh: string;
 	installLocalPs1: string;
 	setupRelaySh: string;
+	installShTemplate: string;
+	installPsTemplate: string;
+	installerModule: string;
 }
 
 export function buildAll(sources: PluginSources): Record<PluginLine, BuiltPlugin> {
@@ -304,5 +307,331 @@ export function checkOpenCodePluginEmbed(input: EmbedInputs): string[] {
 			errors.push(`setup-relay.sh must hold exactly one ${marker} line`);
 		}
 	}
+	try {
+		const wanted: Array<[string, string, "sh" | "ps1", string]> = [
+			[
+				"setup-hooks.sh",
+				input.setupHooksSh,
+				"sh",
+				renderShInstaller(input.installShTemplate, "setup-hooks"),
+			],
+			[
+				"setup-relay.sh",
+				input.setupRelaySh,
+				"sh",
+				renderShInstaller(input.installShTemplate, "setup-relay"),
+			],
+			[
+				"install-local.ps1",
+				input.installLocalPs1,
+				"ps1",
+				renderPsInstaller(input.installPsTemplate),
+			],
+		];
+		for (const [label, source, kind, body] of wanted) {
+			try {
+				if (installBodyNow(source, kind) !== body) {
+					errors.push(
+						`${label} holds a different OpenCode installer step than the templates generate; ${fix}`,
+					);
+				}
+			} catch (e) {
+				errors.push(`${label}: ${(e as Error).message}`);
+			}
+		}
+		if (
+			input.installerModule !==
+			installerModuleText(renderShInstaller(input.installShTemplate, "setup-sh"))
+		) {
+			errors.push(
+				`src/shared/opencode-install-text.generated.ts differs from the templates; ${fix}`,
+			);
+		}
+	} catch (e) {
+		errors.push((e as Error).message);
+	}
 	return errors;
+}
+
+// ---- the installer step (AGEN-141, P19) ----------------------------------------------
+// scripts/opencode-installer/install.sh and install.ps1 are templates. Their @@AP_OC_*@@ lines are
+// filled here from src/shared/opencode-plugin.ts, so the shell and PowerShell decision functions are
+// generated from the same data planOpenCodeInstall reads.
+
+import {
+	OPENCODE_PLAN_CONFIG,
+	OPENCODE_PLUGIN_HEADER_PREFIX,
+	OPENCODE_SDK_CONFIG_DEP,
+	OPENCODE_SDK_FORCE_MESSAGE,
+	OPENCODE_SDK_MARKER,
+	OPENCODE_SDK_SKIP_MESSAGE,
+	OPENCODE_SDK_SKIP_MESSAGE_ALL_GATED,
+	OPENCODE_SERVER_FIRST_NOTE,
+	OPENCODE_SERVICE_SKIP_NOTE,
+	type OpenCodeInstallSite,
+	type OpenCodePlanConfig,
+	openCodeEntries,
+	renderOpenCodeMessage,
+} from "../../src/shared/opencode-plugin.ts";
+
+export const INSTALL_MARKERS = {
+	sh: {
+		begin: "# >>> agentpulse-opencode-install",
+		end: "# <<< agentpulse-opencode-install",
+	},
+	ps1: {
+		begin: "# >>> agentpulse-opencode-install",
+		end: "# <<< agentpulse-opencode-install",
+	},
+} as const;
+
+export type ShSite = "setup-hooks" | "setup-sh" | "setup-relay";
+
+const shQuote = (value: string) => `'${value.split("'").join("'\\''")}'`;
+const psQuote = (value: string) => `'${value.split("'").join("''")}'`;
+
+function messagesFor(config: OpenCodePlanConfig, site: OpenCodeInstallSite) {
+	const allGated = config.layout === "all_gated";
+	const fill = (template: string) =>
+		// <dir> stays: it is the config folder the installer found at run time.
+		renderOpenCodeMessage(template, { dir: "<dir>", site });
+	return {
+		skip: fill(allGated ? OPENCODE_SDK_SKIP_MESSAGE_ALL_GATED : OPENCODE_SDK_SKIP_MESSAGE),
+		force: fill(OPENCODE_SDK_FORCE_MESSAGE),
+	};
+}
+
+function replaceTokenLine(text: string, token: string, replacement: string | null): string {
+	const lines = text.split("\n");
+	const at = lines.indexOf(token);
+	if (at === -1 || lines.lastIndexOf(token) !== at) {
+		throw new Error(`the installer template must hold exactly one ${token} line`);
+	}
+	if (replacement === null) lines.splice(at, 1);
+	else lines.splice(at, 1, replacement);
+	return lines.join("\n");
+}
+
+/** The shell installer step for one site, from install.sh. */
+export function renderShInstaller(
+	template: string,
+	site: ShSite,
+	config: OpenCodePlanConfig = OPENCODE_PLAN_CONFIG,
+): string {
+	const remembers = config.layout === "all_gated";
+	const msg = messagesFor(config, site);
+	const entries = openCodeEntries(config.layout)
+		.map(
+			(e) =>
+				`${e.entry}|${e.file}|${e.line === "v1" ? 1 : 2}|${e.gated ? 1 : 0}|${e.file === e.entry ? "file" : "dir"}`,
+		)
+		.join("\n");
+	const exts = config.g9b.foreignExts === "js_ts" ? "js ts" : "js";
+	const data = [
+		`AP_OC_SDK_MARKER=${shQuote(OPENCODE_SDK_MARKER)}`,
+		`AP_OC_SDK_CONFIG_DEP=${shQuote(OPENCODE_SDK_CONFIG_DEP)}`,
+		`AP_OC_SDK_RULE=${shQuote(config.g9b.sdkRule)}`,
+		`AP_OC_SDK_CHECK=${shQuote(config.g9b.sdkCheck)}`,
+		`AP_OC_FOREIGN_EXTS=${shQuote(exts)}`,
+		`AP_OC_FOREIGN_OPENS=${shQuote(config.g9b.foreignOpens)}`,
+		`AP_OC_LAYOUT=${shQuote(config.layout)}`,
+		`AP_OC_REMEMBERS_FORCE=${remembers ? 1 : 0}`,
+		`AP_OC_HEADER_PREFIX=${shQuote(OPENCODE_PLUGIN_HEADER_PREFIX)}`,
+		`AP_OC_ENTRIES=${shQuote(entries)}`,
+		`AP_OC_MSG_SKIP=${shQuote(msg.skip)}`,
+		`AP_OC_MSG_FORCE=${shQuote(msg.force)}`,
+		`AP_OC_NOTE_SERVER_FIRST=${shQuote(OPENCODE_SERVER_FIRST_NOTE)}`,
+		`AP_OC_NOTE_SERVICE_SKIP=${shQuote(OPENCODE_SERVICE_SKIP_NOTE)}`,
+	].join("\n");
+	const gate = [
+		"# ap_oc_gate_open <sdk> <foreign> <force> <remembered>, each 0 or 1: exit 0 when the gated entries are written.",
+		"ap_oc_gate_open() {",
+		'\t[ "$3" = 1 ] && return 0',
+		'\t[ "$AP_OC_REMEMBERS_FORCE" = 1 ] && [ "$4" = 1 ] && return 0',
+		'\t[ "$AP_OC_SDK_RULE" = sdk_present ] && [ "$1" = 1 ] && return 0',
+		'\t[ "$AP_OC_FOREIGN_OPENS" = yes ] && [ "$2" = 1 ] && return 0',
+		"\treturn 1",
+		"}",
+		"",
+		"# ap_oc_foreign_plugin_present <plugins dir>: a plain file there that is not a dot file, not ours, and has a listed extension.",
+		"ap_oc_foreign_plugin_present() {",
+		'\tlocal p="$1" f n e',
+		'\t[ -d "$p" ] || return 1',
+		'\tfor f in "$p"/*; do',
+		'\t\t[ -f "$f" ] || continue',
+		'\t\tn="${f##*/}"',
+		'\t\tcase "$n" in .*|agentpulse-opencode-1.js|agentpulse-opencode-2.js) continue ;; esac',
+		"\t\tfor e in $AP_OC_FOREIGN_EXTS; do",
+		'\t\t\tcase "$n" in ?*."$e") return 0 ;; esac',
+		"\t\tdone",
+		"\tdone",
+		"\treturn 1",
+		"}",
+	].join("\n");
+	const remembered = remembers
+		? [
+				'\tif [ -L "$marker" ]; then',
+				'\t\techo "  - Ignoring $marker: it is not a plain file of yours."',
+				'\telif [ -e "$marker" ]; then',
+				'\t\tif [ -f "$marker" ] && [ -O "$marker" ]; then',
+				"\t\t\tremembered=1",
+				"\t\telse",
+				'\t\t\techo "  - Ignoring $marker: it is not a plain file of yours."',
+				"\t\tfi",
+				"\tfi",
+			].join("\n")
+		: null;
+	const noopMarker = remembers
+		? [
+				'\t\tif [ -e "$marker" ] || [ -L "$marker" ]; then',
+				'\t\t\trm -f -- "$marker"',
+				'\t\t\techo "  ✓ Removed $marker"',
+				"\t\tfi",
+			].join("\n")
+		: null;
+	const writeMarker = remembers
+		? [
+				'\tif [ "$force" = 1 ]; then',
+				'\t\tap_write_private_no_follow "$marker" "1"$\'\\n\' || return 1',
+				"\tfi",
+			].join("\n")
+		: null;
+	let out = replaceTokenLine(template, "@@AP_OC_DATA@@", data);
+	out = replaceTokenLine(out, "@@AP_OC_GATE@@", gate);
+	out = replaceTokenLine(out, "@@AP_OC_REMEMBERED@@", remembered);
+	out = replaceTokenLine(out, "@@AP_OC_NOOP_MARKER@@", noopMarker);
+	out = replaceTokenLine(out, "@@AP_OC_WRITE_MARKER@@", writeMarker);
+	return out.replace(/\n+$/, "");
+}
+
+/** The PowerShell installer step, from install.ps1. */
+export function renderPsInstaller(
+	template: string,
+	config: OpenCodePlanConfig = OPENCODE_PLAN_CONFIG,
+): string {
+	const remembers = config.layout === "all_gated";
+	const msg = messagesFor(config, "install-local-ps1");
+	const exts = config.g9b.foreignExts === "js_ts" ? ["js", "ts"] : ["js"];
+	const data = [
+		`$script:ApOcSdkMarker = ${psQuote(OPENCODE_SDK_MARKER)}`,
+		`$script:ApOcSdkConfigDep = ${psQuote(OPENCODE_SDK_CONFIG_DEP)}`,
+		`$script:ApOcSdkRule = ${psQuote(config.g9b.sdkRule)}`,
+		`$script:ApOcSdkCheck = ${psQuote(config.g9b.sdkCheck)}`,
+		`$script:ApOcForeignExts = @(${exts.map(psQuote).join(", ")})`,
+		`$script:ApOcForeignOpens = ${psQuote(config.g9b.foreignOpens)}`,
+		`$script:ApOcLayout = ${psQuote(config.layout)}`,
+		`$script:ApOcRemembersForce = $${remembers ? "true" : "false"}`,
+		`$script:ApOcHeaderPrefix = ${psQuote(OPENCODE_PLUGIN_HEADER_PREFIX)}`,
+		"$script:ApOcFromEnv = $false",
+		"$script:ApOcEntries = @(",
+		openCodeEntries(config.layout)
+			.map(
+				(e) =>
+					`  [pscustomobject]@{ Name = ${psQuote(e.entry)}; File = ${psQuote(e.file)}; Line = ${e.line === "v1" ? 1 : 2}; Gated = $${e.gated ? "true" : "false"}; Kind = ${psQuote(e.file === e.entry ? "file" : "dir")} }`,
+			)
+			.join("\n"),
+		")",
+		`$script:ApOcMsgSkip = ${psQuote(msg.skip)}`,
+		`$script:ApOcMsgForce = ${psQuote(msg.force)}`,
+		`$script:ApOcNoteServerFirst = ${psQuote(OPENCODE_SERVER_FIRST_NOTE)}`,
+		`$script:ApOcNoteServiceSkip = ${psQuote(OPENCODE_SERVICE_SKIP_NOTE)}`,
+	].join("\n");
+	const gate = [
+		"# Test-ApOcGateOpen: $true when the gated entries are written (the same table as ap_oc_gate_open and planOpenCodeInstall).",
+		"function Test-ApOcGateOpen {",
+		"  param([bool]$Sdk, [bool]$Foreign, [bool]$Force, [bool]$Remembered)",
+		"  if ($Force) { return $true }",
+		"  if ($script:ApOcRemembersForce -and $Remembered) { return $true }",
+		"  if ($script:ApOcSdkRule -eq 'sdk_present' -and $Sdk) { return $true }",
+		"  if ($script:ApOcForeignOpens -eq 'yes' -and $Foreign) { return $true }",
+		"  return $false",
+		"}",
+		"",
+		"# A plain file in plugins that is not a dot file, not ours, and has a listed extension.",
+		"function Test-ApOcForeignPlugin {",
+		"  param([Parameter(Mandatory = $true)][string]$Plugins)",
+		"  if (-not (Test-Path -LiteralPath $Plugins -PathType Container)) { return $false }",
+		"  foreach ($f in @(Get-ChildItem -LiteralPath $Plugins -File -Force)) {",
+		"    $n = $f.Name",
+		"    if ($n.StartsWith('.')) { continue }",
+		"    if ($n -eq 'agentpulse-opencode-1.js' -or $n -eq 'agentpulse-opencode-2.js') { continue }",
+		"    foreach ($e in $script:ApOcForeignExts) {",
+		'      if ($n.Length -gt $e.Length + 1 -and $n.EndsWith(".$e")) { return $true }',
+		"    }",
+		"  }",
+		"  return $false",
+		"}",
+	].join("\n");
+	const marker = "(Join-Path $HOME '.agentpulse\\opencode-force')";
+	const remembered = remembers
+		? [
+				"  $remembered = $false",
+				`  $markerPath = ${marker}`,
+				"  $markerItem = Get-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue",
+				"  if ($markerItem) {",
+				"    if ((Get-Item -LiteralPath $markerPath -Force).LinkType -or $markerItem.PSIsContainer -or (Get-Acl -LiteralPath $markerPath).Owner -ne [System.Security.Principal.WindowsIdentity]::GetCurrent().Name) {",
+				'      Write-Step "Ignoring $markerPath: it is not a plain file of yours."',
+				"    } else {",
+				"      $remembered = $true",
+				"    }",
+				"  }",
+			].join("\n")
+		: "  $remembered = $false";
+	const noopMarker = remembers
+		? [
+				`    $markerPath = ${marker}`,
+				"    if (Test-Path -LiteralPath $markerPath) {",
+				"      Remove-Item -LiteralPath $markerPath -Force",
+				'      Write-Step "Removed $markerPath"',
+				"    }",
+			].join("\n")
+		: null;
+	const writeMarker = remembers
+		? ["  if ($Force) {", `    Write-ApPrivateFile -Path ${marker} -Content "1\`n"`, "  }"].join(
+				"\n",
+			)
+		: null;
+	let out = replaceTokenLine(template, "@@AP_OC_DATA@@", data);
+	out = replaceTokenLine(out, "@@AP_OC_GATE@@", gate);
+	out = replaceTokenLine(out, "@@AP_OC_REMEMBERED@@", remembered);
+	out = replaceTokenLine(out, "@@AP_OC_NOOP_MARKER@@", noopMarker);
+	out = replaceTokenLine(out, "@@AP_OC_WRITE_MARKER@@", writeMarker);
+	return out.replace(/\n+$/, "");
+}
+
+export function replaceInstallBody(source: string, kind: "sh" | "ps1", body: string): string {
+	const { begin, end } = INSTALL_MARKERS[kind];
+	if (markerCount(source, begin) !== 1 || markerCount(source, end) !== 1) {
+		throw new Error(`expected exactly one ${begin} / ${end} pair`);
+	}
+	const lines = source.split("\n");
+	const b = lines.indexOf(begin);
+	const e = lines.indexOf(end);
+	if (e < b) throw new Error(`${end} comes before ${begin}`);
+	return [...lines.slice(0, b + 1), body, ...lines.slice(e)].join("\n");
+}
+
+export function installBodyNow(source: string, kind: "sh" | "ps1"): string {
+	const { begin, end } = INSTALL_MARKERS[kind];
+	const lines = source.split("\n");
+	const b = lines.indexOf(begin);
+	const e = lines.indexOf(end);
+	if (markerCount(source, begin) !== 1 || markerCount(source, end) !== 1 || e < b) {
+		throw new Error(`expected exactly one ${begin} / ${end} pair`);
+	}
+	return lines.slice(b + 1, e).join("\n");
+}
+
+const INSTALLER_GENERATED_HEADER =
+	"// Generated by `bun run embed:opencode-plugin` from scripts/opencode-installer/. Edit those, never this file.\n";
+
+/** The /setup.sh template's copy: the one shell block the server interpolates. */
+export function installerModuleText(setupShBlock: string): string {
+	return [
+		INSTALLER_GENERATED_HEADER,
+		`export const OPENCODE_SH_INSTALLER_SETUP_SH_LINES: readonly string[] = [\n${setupShBlock
+			.split("\n")
+			.map((l) => `\t${JSON.stringify(l)},`)
+			.join("\n")}\n];\n`,
+	].join("\n");
 }

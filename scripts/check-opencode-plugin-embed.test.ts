@@ -21,6 +21,9 @@ const inputs = (): EmbedInputs => ({
 	setupHooksSh: read("scripts/setup-hooks.sh"),
 	installLocalPs1: read("scripts/install-local.ps1"),
 	setupRelaySh: read("scripts/setup-relay.sh"),
+	installShTemplate: read("scripts/opencode-installer/install.sh"),
+	installPsTemplate: read("scripts/opencode-installer/install.ps1"),
+	installerModule: read("src/shared/opencode-install-text.generated.ts"),
 });
 
 describe("L2 the test seam never ships", () => {

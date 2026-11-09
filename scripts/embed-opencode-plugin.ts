@@ -10,6 +10,10 @@ import { join } from "node:path";
 import {
 	buildAll,
 	generatedModuleText,
+	installerModuleText,
+	renderPsInstaller,
+	renderShInstaller,
+	replaceInstallBody,
 	replaceSiteBody,
 	siteBody,
 } from "./lib/opencode-plugin-embed.ts";
@@ -25,13 +29,27 @@ writeFileSync(
 	join(ROOT, "src/shared/opencode-plugin-text.generated.ts"),
 	generatedModuleText(built),
 );
+const shTemplate = read("scripts/opencode-installer/install.sh");
+const psTemplate = read("scripts/opencode-installer/install.ps1");
+writeFileSync(
+	join(ROOT, "src/shared/opencode-install-text.generated.ts"),
+	installerModuleText(renderShInstaller(shTemplate, "setup-sh")),
+);
 for (const [file, site] of [
 	["scripts/setup-hooks.sh", "sh"],
+	["scripts/setup-relay.sh", "sh-relay"],
 	["scripts/install-local.ps1", "ps1"],
 ] as const) {
 	let text = read(file);
-	for (const line of ["v1", "v2"] as const)
-		text = replaceSiteBody(text, line, siteBody(site, line, built[line]));
+	if (site !== "sh-relay") {
+		for (const line of ["v1", "v2"] as const)
+			text = replaceSiteBody(text, line, siteBody(site, line, built[line]));
+	}
+	const body =
+		site === "ps1"
+			? renderPsInstaller(psTemplate)
+			: renderShInstaller(shTemplate, site === "sh" ? "setup-hooks" : "setup-relay");
+	text = replaceInstallBody(text, site === "ps1" ? "ps1" : "sh", body);
 	writeFileSync(join(ROOT, file), text);
 }
 console.log("embedded the OpenCode plugins");

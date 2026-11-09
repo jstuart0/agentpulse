@@ -2,6 +2,21 @@
 
 const V2_CLAIM_LIMIT = 4096;
 
+// The event names this plugin forwards. scripts/check-hook-event-parity.ts holds this list to OpenCodeV2Event
+// in src/shared/types.ts, and emit() sends nothing that isn't on it.
+const AP_FORWARDED = [
+	"session.created",
+	"session.inbox.enqueued",
+	"tool.before",
+	"tool.after",
+	"permission.asked",
+	"permission.replied",
+	"session.step.failed",
+	"session.execution.succeeded",
+	"session.execution.failed",
+	"session.execution.interrupted",
+];
+
 export default {
 	id: "agentpulse",
 	async setup(ctx) {
@@ -30,6 +45,7 @@ export default {
 		hookExit(rec);
 
 		function emit(sid, name, data, opts) {
+			if (AP_FORWARDED.indexOf(name) === -1) return;
 			const root = rootOf(rec, sid);
 			const info = sessionInfo(rec, sid) || {};
 			// A claimed session lives in this instance's directory. One nobody claimed, seen by several instances, has no safe owner: judged as unknown, it is dropped when rules exist.

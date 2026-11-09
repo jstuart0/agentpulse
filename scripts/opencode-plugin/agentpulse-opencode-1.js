@@ -2,6 +2,19 @@
 
 const V1_EXIT_WAIT_MS = 2000;
 
+// The event names this plugin forwards. scripts/check-hook-event-parity.ts holds this list to OpenCodeV1Event
+// in src/shared/types.ts, and emit() sends nothing that isn't on it.
+const AP_FORWARDED = [
+	"session.created",
+	"chat.message",
+	"tool.execute.before",
+	"tool.execute.after",
+	"permission.asked",
+	"permission.replied",
+	"session.error",
+	"session.idle",
+];
+
 export const AgentPulse = async (ctx) => {
 	let rec;
 	try {
@@ -15,6 +28,7 @@ export const AgentPulse = async (ctx) => {
 	let lastVersion;
 
 	function emit(sid, name, data, opts) {
+		if (AP_FORWARDED.indexOf(name) === -1) return;
 		const root = rootOf(rec, sid);
 		const info = sessionInfo(rec, sid) || {};
 		// With several instances in one process, a session of unknown directory has no safe owner: judged as unknown, it is dropped when rules exist.

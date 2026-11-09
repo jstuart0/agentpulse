@@ -10,6 +10,10 @@ param(
   [string]$ApiKey = "",
   [switch]$SkipHooks,
   [switch]$SkipSupervisor,
+  # OpenCode (AGEN-141): set up whenever it is found; -NoOpenCode removes our plugins and
+  # -OpenCodeForce writes the 1.x plugin where OpenCode 1.x has no plugin SDK yet.
+  [switch]$NoOpenCode,
+  [switch]$OpenCodeForce,
   # Phase 5: dot-source with -FunctionsOnly to load the hook-command
   # generators (New-ApHookCommand / New-ApCodexHooksFile / New-ApHookAuthHeaderFile)
   # without running the installer's main flow — used by
@@ -34,7 +38,7 @@ $SupervisorTask = "AgentPulseSupervisor"
 # `bun run embed:opencode-plugin`. Do not edit between the markers.
 # @@AGENTPULSE_OPENCODE_PLUGIN_1@@ BEGIN
 $ApOpenCodePlugin1Template = @'
-// agentpulse-opencode-plugin e97ea733dc3a8b
+// agentpulse-opencode-plugin f28559765093d2
 import cp from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -52,7 +56,7 @@ import path from "node:path";
 const AP_CONFIG = { baseUrl: "@@AP_OPENCODE_BASE_URL@@", direct: "@@AP_OPENCODE_DIRECT@@" === "1" };
 
 // @@AP_GENERATED BEGIN
-const AP_BUILD = "e97ea733dc3a8b";
+const AP_BUILD = "f28559765093d2";
 const AP_SKIP_VALUES = JSON.parse("[\"1\",\"true\",\"yes\",\"on\"]");
 const AP_SEND_STATUS = 42;
 const AP_AGENTPULSE_DIR = ".agentpulse";
@@ -958,6 +962,19 @@ function lastAssistantText(st, sid) {
 
 const V1_EXIT_WAIT_MS = 2000;
 
+// The event names this plugin forwards. scripts/check-hook-event-parity.ts holds this list to OpenCodeV1Event
+// in src/shared/types.ts, and emit() sends nothing that isn't on it.
+const AP_FORWARDED = [
+	"session.created",
+	"chat.message",
+	"tool.execute.before",
+	"tool.execute.after",
+	"permission.asked",
+	"permission.replied",
+	"session.error",
+	"session.idle",
+];
+
 export const AgentPulse = async (ctx) => {
 	let rec;
 	try {
@@ -971,6 +988,7 @@ export const AgentPulse = async (ctx) => {
 	let lastVersion;
 
 	function emit(sid, name, data, opts) {
+		if (AP_FORWARDED.indexOf(name) === -1) return;
 		const root = rootOf(rec, sid);
 		const info = sessionInfo(rec, sid) || {};
 		// With several instances in one process, a session of unknown directory has no safe owner: judged as unknown, it is dropped when rules exist.
@@ -1261,7 +1279,7 @@ export const AgentPulse = async (ctx) => {
 # @@AGENTPULSE_OPENCODE_PLUGIN_1@@ END
 # @@AGENTPULSE_OPENCODE_PLUGIN_2@@ BEGIN
 $ApOpenCodePlugin2Template = @'
-// agentpulse-opencode-plugin 85ddd24d85f495
+// agentpulse-opencode-plugin 2078077c6d538b
 import cp from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -1279,7 +1297,7 @@ import path from "node:path";
 const AP_CONFIG = { baseUrl: "@@AP_OPENCODE_BASE_URL@@", direct: "@@AP_OPENCODE_DIRECT@@" === "1" };
 
 // @@AP_GENERATED BEGIN
-const AP_BUILD = "85ddd24d85f495";
+const AP_BUILD = "2078077c6d538b";
 const AP_SKIP_VALUES = JSON.parse("[\"1\",\"true\",\"yes\",\"on\"]");
 const AP_SEND_STATUS = 42;
 const AP_AGENTPULSE_DIR = ".agentpulse";
@@ -2185,6 +2203,21 @@ function lastAssistantText(st, sid) {
 
 const V2_CLAIM_LIMIT = 4096;
 
+// The event names this plugin forwards. scripts/check-hook-event-parity.ts holds this list to OpenCodeV2Event
+// in src/shared/types.ts, and emit() sends nothing that isn't on it.
+const AP_FORWARDED = [
+	"session.created",
+	"session.inbox.enqueued",
+	"tool.before",
+	"tool.after",
+	"permission.asked",
+	"permission.replied",
+	"session.step.failed",
+	"session.execution.succeeded",
+	"session.execution.failed",
+	"session.execution.interrupted",
+];
+
 export default {
 	id: "agentpulse",
 	async setup(ctx) {
@@ -2213,6 +2246,7 @@ export default {
 		hookExit(rec);
 
 		function emit(sid, name, data, opts) {
+			if (AP_FORWARDED.indexOf(name) === -1) return;
 			const root = rootOf(rec, sid);
 			const info = sessionInfo(rec, sid) || {};
 			// A claimed session lives in this instance's directory. One nobody claimed, seen by several instances, has no safe owner: judged as unknown, it is dropped when rules exist.
@@ -2491,6 +2525,202 @@ export default {
 
 '@
 # @@AGENTPULSE_OPENCODE_PLUGIN_2@@ END
+
+# The OpenCode installer step (AGEN-141), written by `bun run embed:opencode-plugin`
+# from scripts/opencode-installer/install.ps1. Never executed on Windows by this repo's tests.
+# >>> agentpulse-opencode-install
+# The OpenCode step of install-local.ps1 (AGEN-141). A template: `bun run embed:opencode-plugin`
+# fills the @@AP_OC_*@@ lines from src/shared/opencode-plugin.ts and writes the result between
+# the OPENCODE_INSTALL_PS1 markers of install-local.ps1. This has never been executed on Windows.
+# It never runs `opencode`.
+# In the all-gated layout -OpenCodeForce is remembered in $HOME\.agentpulse\opencode-force; only -NoOpenCode
+# clears it (and it removes the plugins too). Outside that layout nothing is remembered.
+$script:ApOcSdkMarker = 'node_modules/@opencode-ai/plugin/package.json'
+$script:ApOcSdkConfigDep = '"@opencode-ai/plugin"'
+$script:ApOcSdkRule = 'sdk_present'
+$script:ApOcSdkCheck = 'marker_only'
+$script:ApOcForeignExts = @('js', 'ts')
+$script:ApOcForeignOpens = 'yes'
+$script:ApOcLayout = 'v1_flat_v2_dir'
+$script:ApOcRemembersForce = $false
+$script:ApOcHeaderPrefix = '// agentpulse-opencode-plugin '
+$script:ApOcFromEnv = $false
+$script:ApOcEntries = @(
+  [pscustomobject]@{ Name = 'agentpulse-opencode-1.js'; File = 'agentpulse-opencode-1.js'; Line = 1; Gated = $true; Kind = 'file' }
+  [pscustomobject]@{ Name = 'agentpulse-opencode-2'; File = 'agentpulse-opencode-2/index.js'; Line = 2; Gated = $false; Kind = 'dir' }
+)
+$script:ApOcMsgSkip = 'OpenCode 1.x plugin: not installed. OpenCode 1.x downloads its plugin SDK (@opencode-ai/plugin) into <dir> only when it finds a plugin there, and while it can''t reach the package registry each start then waits about 70 seconds. It hasn''t downloaded the SDK here, so AgentPulse left its 1.x plugin out. To add it, run install-local.ps1 with -OpenCodeForce (download it and run `powershell -ExecutionPolicy Bypass -File install-local.ps1 -OpenCodeForce`; the `irm ... | iex` form can''t pass a switch) while this machine is online: OpenCode 1.x downloads the SDK on its next start, and setup keeps the plugin from then on. If you don''t use OpenCode 1.x, nothing is needed.'
+$script:ApOcMsgForce = 'OpenCode 1.x will download its plugin SDK into <dir> on its next start; until it can reach the package registry, each start waits about 70 seconds.'
+$script:ApOcNoteServerFirst = 'Upgrade the AgentPulse server first: an older server stores OpenCode events as ordinary Claude Code sessions.'
+$script:ApOcNoteServiceSkip = 'AGENTPULSE_SKIP set in your shell is not seen by a running OpenCode 2 background service; use an exclude rule (agentpulse exclude add <dir>), or stop the service so it restarts with your environment (opencode service stop).'
+
+# Test-ApOcGateOpen: $true when the gated entries are written (the same table as ap_oc_gate_open and planOpenCodeInstall).
+function Test-ApOcGateOpen {
+  param([bool]$Sdk, [bool]$Foreign, [bool]$Force, [bool]$Remembered)
+  if ($Force) { return $true }
+  if ($script:ApOcRemembersForce -and $Remembered) { return $true }
+  if ($script:ApOcSdkRule -eq 'sdk_present' -and $Sdk) { return $true }
+  if ($script:ApOcForeignOpens -eq 'yes' -and $Foreign) { return $true }
+  return $false
+}
+
+# A plain file in plugins that is not a dot file, not ours, and has a listed extension.
+function Test-ApOcForeignPlugin {
+  param([Parameter(Mandatory = $true)][string]$Plugins)
+  if (-not (Test-Path -LiteralPath $Plugins -PathType Container)) { return $false }
+  foreach ($f in @(Get-ChildItem -LiteralPath $Plugins -File -Force)) {
+    $n = $f.Name
+    if ($n.StartsWith('.')) { continue }
+    if ($n -eq 'agentpulse-opencode-1.js' -or $n -eq 'agentpulse-opencode-2.js') { continue }
+    foreach ($e in $script:ApOcForeignExts) {
+      if ($n.Length -gt $e.Length + 1 -and $n.EndsWith(".$e")) { return $true }
+    }
+  }
+  return $false
+}
+
+function Test-ApOcLink {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+  return [bool]($item -and (Get-Item -LiteralPath $Path -Force).LinkType)
+}
+
+function Get-ApOcRooted {
+  param([string]$Value)
+  return ($Value -and [System.IO.Path]::IsPathRooted($Value))
+}
+
+function Get-ApOcConfigDir {
+  if (Get-ApOcRooted $env:OPENCODE_CONFIG_DIR) { $script:ApOcFromEnv = $true; return $env:OPENCODE_CONFIG_DIR.TrimEnd('\', '/') }
+  $script:ApOcFromEnv = $false
+  if (Get-ApOcRooted $env:XDG_CONFIG_HOME) { return (Join-Path $env:XDG_CONFIG_HOME.TrimEnd('\', '/') 'opencode') }
+  return (Join-Path $HOME '.config\opencode')
+}
+
+function Get-ApOcDataDir {
+  if (Get-ApOcRooted $env:XDG_DATA_HOME) { return (Join-Path $env:XDG_DATA_HOME.TrimEnd('\', '/') 'opencode') }
+  return (Join-Path $HOME '.local\share\opencode')
+}
+
+function Test-ApOcOurHeader {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+  $first = Get-Content -LiteralPath $Path -TotalCount 1
+  return [bool]($first -and $first.StartsWith($script:ApOcHeaderPrefix))
+}
+
+function Move-ApOcToBackups {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $dir = Join-Path $HOME '.agentpulse\backups\opencode'
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $to = Join-Path $dir ("{0}.{1}" -f (Split-Path -Leaf $Path), (Get-Date -AsUTC -Format 'yyyyMMddTHHmmssZ'))
+  Move-Item -LiteralPath $Path -Destination $to
+  Write-Step "Moved $Path to $to"
+}
+
+function Remove-ApOcOurs {
+  param([string]$Plugins, $Entry)
+  $top = Join-Path $Plugins $Entry.Name
+  if (-not (Test-Path -LiteralPath $top)) { return }
+  if ($Entry.Kind -eq 'file') {
+    if (Test-ApOcOurHeader -Path $top) {
+      Remove-Item -LiteralPath $top -Force
+      Write-Step "Removed OpenCode plugin $top"
+    }
+    return
+  }
+  $index = Join-Path $top 'index.js'
+  if (-not (Test-ApOcOurHeader -Path $index)) { return }
+  $others = @(Get-ChildItem -LiteralPath $top -Force | Where-Object { $_.Name -ne 'index.js' })
+  if ($others.Count -eq 0) {
+    Remove-Item -LiteralPath $index -Force
+    Remove-Item -LiteralPath $top -Force
+    Write-Step "Removed OpenCode plugin $top"
+  } else {
+    Move-ApOcToBackups -Path $top
+  }
+}
+
+function Write-ApOcEntry {
+  param([string]$Plugins, $Entry, [string]$BaseUrl, [bool]$Direct)
+  $template = if ($Entry.Line -eq 1) { $ApOpenCodePlugin1Template } else { $ApOpenCodePlugin2Template }
+  $text = $template.TrimEnd("`r", "`n").Replace('@@AP_OPENCODE_BASE_URL@@', $BaseUrl).Replace('@@AP_OPENCODE_DIRECT@@', $(if ($Direct) { '1' } else { '0' }))
+  # Exactly one line break at the end, as buildOpenCodePluginFiles' text has.
+  $text = $text + "`n"
+  $abs = Join-Path $Plugins $Entry.File
+  $top = Join-Path $Plugins $Entry.Name
+  if ($Entry.Kind -eq 'dir' -and (Test-Path -LiteralPath $top -PathType Leaf)) { Move-ApOcToBackups -Path $top }
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $abs) | Out-Null
+  if (Test-Path -LiteralPath $abs -PathType Leaf) {
+    if ([System.IO.File]::ReadAllText($abs) -ceq $text) {
+      Write-Step "OpenCode plugin unchanged: $abs"
+      return
+    }
+    if (-not (Test-ApOcOurHeader -Path $abs)) { Move-ApOcToBackups -Path $abs }
+  }
+  Write-ApFileNoFollow -Path $abs -Content $text
+  Write-Step "OpenCode plugin -> $abs"
+}
+
+function Test-ApOcDetected {
+  $cfg = Get-ApOcConfigDir
+  return [bool]((Get-Command opencode -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $cfg) -or (Test-Path -LiteralPath (Get-ApOcDataDir)))
+}
+
+# Returns $false only when it refused because something it would touch is a link.
+function Install-ApOpenCode {
+  param([string]$BaseUrl, [bool]$Direct, [bool]$Force, [bool]$NoOpenCode)
+  $cfg = Get-ApOcConfigDir
+  $plugins = Join-Path $cfg 'plugins'
+  if (-not $NoOpenCode -and -not (Test-ApOcDetected)) {
+    Write-Step 'OpenCode not detected (no opencode on PATH, no config or data folder); nothing written.'
+    return $true
+  }
+  if (-not $NoOpenCode) {
+    if ($BaseUrl -notmatch '^https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(:[0-9]{1,5})?$') { throw "invalid AgentPulse base URL for the OpenCode plugin: $BaseUrl" }
+  }
+  foreach ($p in (@($cfg, $plugins) + @($script:ApOcEntries | Where-Object { $_.Kind -eq 'dir' } | ForEach-Object { Join-Path $plugins $_.Name }))) {
+    if (Test-ApOcLink -Path $p) {
+      Write-Warning "OpenCode: refusing to touch ${p}: it is a link. Nothing was written or removed."
+      return $false
+    }
+  }
+  if ($NoOpenCode) {
+    foreach ($entry in $script:ApOcEntries) { Remove-ApOcOurs -Plugins $plugins -Entry $entry }
+    Write-Step 'OpenCode plugins removed (-NoOpenCode).'
+    return $true
+  }
+  $sdk = Test-Path -LiteralPath (Join-Path $cfg $script:ApOcSdkMarker) -PathType Leaf
+  if ($sdk -and $script:ApOcSdkCheck -ne 'marker_only') {
+    $pkg = Join-Path $cfg 'package.json'
+    $sdk = (Test-Path -LiteralPath $pkg -PathType Leaf) -and [bool](Select-String -LiteralPath $pkg -SimpleMatch $script:ApOcSdkConfigDep -Quiet)
+  }
+  $foreign = Test-ApOcForeignPlugin -Plugins $plugins
+  $remembered = $false
+  $rule = Test-ApOcGateOpen -Sdk $sdk -Foreign $foreign -Force $false -Remembered $false
+  $open = Test-ApOcGateOpen -Sdk $sdk -Foreign $foreign -Force $Force -Remembered $remembered
+  $touched = $false
+  foreach ($entry in $script:ApOcEntries) {
+    if ($entry.Gated -and -not $open) {
+      Remove-ApOcOurs -Plugins $plugins -Entry $entry
+    } else {
+      Write-ApOcEntry -Plugins $plugins -Entry $entry -BaseUrl $BaseUrl -Direct $Direct
+      $touched = $true
+    }
+  }
+  if ($script:ApOcFromEnv) { Write-Step "OPENCODE_CONFIG_DIR is set; installing into $cfg\plugins." }
+  if (-not $open) {
+    Write-Step $script:ApOcMsgSkip.Replace('<dir>', $cfg)
+  } elseif ($Force -and -not $rule) {
+    Write-Step $script:ApOcMsgForce.Replace('<dir>', $cfg)
+  }
+  if ($touched) {
+    Write-Step $script:ApOcNoteServerFirst
+    Write-Step $script:ApOcNoteServiceSkip
+  }
+  return $true
+}
+# <<< agentpulse-opencode-install
 
 function Write-Step($msg) {
   Write-Host "  $msg"
@@ -3952,6 +4182,12 @@ function Configure-Hooks {
       Write-Step "Copilot CLI hooks configured"
     }
     Write-Step "After editing ~/.agentpulse/exclude by hand, run: agentpulse exclude check"
+  }
+
+  # OpenCode (AGEN-141): set up whenever it is found; nothing here runs opencode.
+  # The plugin reads $HOME\.agentpulse\hook-auth-header and the exclude check at send time.
+  if ($NoOpenCode -or (Test-ApOcDetected)) {
+    [void](Install-ApOpenCode -BaseUrl $PublicUrl -Direct $true -Force ([bool]$OpenCodeForce) -NoOpenCode ([bool]$NoOpenCode))
   }
 
   # D37/F243 (xander re-verify — "check whether install-local.ps1 persists

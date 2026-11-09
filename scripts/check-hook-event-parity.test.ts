@@ -8,7 +8,11 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildBashHookCommand } from "../src/shared/hook-command.js";
-import { checkClaudeHttpHookSites, checkNoStdoutShape } from "./check-hook-event-parity.js";
+import {
+	checkClaudeHttpHookSites,
+	checkNoStdoutShape,
+	checkOpenCodeParity,
+} from "./check-hook-event-parity.js";
 
 describe("checkNoStdoutShape (guard self-test)", () => {
 	test("a real generated command passes clean", () => {
@@ -149,6 +153,74 @@ describe("checkClaudeHttpHookSites (guard self-test): every site and every kind 
 				result.problems.some((p) => p.startsWith(site) && p.includes("AGENTPULSE_SKIP")),
 				`${site}: ${JSON.stringify(result.problems)}`,
 			).toBe(true);
+		});
+	}
+});
+
+describe("checkOpenCodeParity (guard self-test): six sites, two plugin lines", () => {
+	const ROOT = new URL("..", import.meta.url).pathname;
+	const real = (rel: string) => readFileSync(join(ROOT, rel), "utf-8");
+
+	test("the tree is clean and yields one OpenCode list per site", () => {
+		const out = checkOpenCodeParity(real);
+		expect(out.problems).toEqual([]);
+		expect(out.results.length).toBe(6);
+	});
+
+	for (const site of ["scripts/setup-hooks.sh", "scripts/install-local.ps1"]) {
+		test(`${site}: a table that gained or lost a name is named`, () => {
+			const out = checkOpenCodeParity((rel) =>
+				rel === site ? real(rel).replace('\t"session.idle",\n', "") : real(rel),
+			);
+			expect(out.problems.some((p) => p.startsWith(site) && p.includes("1.x"))).toBe(true);
+			const extra = checkOpenCodeParity((rel) =>
+				rel === site
+					? real(rel).replace('\t"tool.before",\n', '\t"tool.before",\n\t"tool.sneaky",\n')
+					: real(rel),
+			);
+			expect(extra.problems.some((p) => p.startsWith(site) && p.includes("2.x"))).toBe(true);
+		});
+
+		test(`${site}: a lost plugin marker is named`, () => {
+			const out = checkOpenCodeParity((rel) =>
+				rel === site
+					? real(rel).replace("# @@AGENTPULSE_OPENCODE_PLUGIN_2@@ BEGIN", "# gone")
+					: real(rel),
+			);
+			expect(out.problems.some((p) => p.startsWith(site) && p.includes("markers"))).toBe(true);
+		});
+	}
+
+	test("setup-relay.sh: a removed splice marker is named", () => {
+		const out = checkOpenCodeParity((rel) =>
+			rel === "scripts/setup-relay.sh"
+				? real(rel).replace("# @@AGENTPULSE_OPENCODE_PLUGIN_1@@\n", "")
+				: real(rel),
+		);
+		expect(out.problems.some((p) => p.includes("setup-relay.sh") && p.includes("PLUGIN_1"))).toBe(
+			true,
+		);
+	});
+
+	for (const [site, needle] of [
+		["src/server/routes/setup.ts", "opencode-plugin-text.generated"],
+		["bin/cli.ts", "opencode-install"],
+		["src/web/pages/SetupPage.tsx", "OpenCodePluginFiles"],
+	] as const) {
+		test(`${site}: a removed import is named`, () => {
+			const out = checkOpenCodeParity((rel) =>
+				rel === site ? real(rel).replaceAll(needle, "gone") : real(rel),
+			);
+			expect(out.problems.some((p) => p.startsWith(site) && p.includes("does not import"))).toBe(
+				true,
+			);
+		});
+
+		test(`${site}: inline plugin text is named`, () => {
+			const out = checkOpenCodeParity((rel) =>
+				rel === site ? `${real(rel)}\nconst AP_FORWARDED = ["session.created"];\n` : real(rel),
+			);
+			expect(out.problems.some((p) => p.startsWith(site) && p.includes("inline"))).toBe(true);
 		});
 	}
 });
