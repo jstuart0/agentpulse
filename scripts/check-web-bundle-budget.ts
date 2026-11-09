@@ -84,7 +84,7 @@ export const BUDGETS: Budget[] = [
 	{ chunk: "CodexApprovalCard", maxGzip: 15_300, measured: 15_022 },
 	{ chunk: "SessionTakeoverCard", maxGzip: 8_200, measured: 7_904 },
 	{ chunk: "DashboardPage", maxGzip: 27_200, measured: 26_341 },
-	{ chunk: "index", maxGzip: 119_800, measured: 119_467 },
+	{ chunk: "index", maxGzip: 119_800, measured: 119_532 },
 ];
 
 /** A missing chunk fails: a renamed chunk must not silently escape its budget. `scale` shrinks every limit (the self-test). */
