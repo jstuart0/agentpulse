@@ -6,6 +6,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { HOST_RESTARTED_SYNC_ERROR } from "../../../shared/managed-messages.js";
 import type { ManagedState, Session } from "../../../shared/types.js";
+import {
+	__resetPromptDraftsForTests,
+	usePromptDraftStore,
+} from "../../stores/prompt-draft-store.js";
 import { useUserStore } from "../../stores/user-store.js";
 import { followLiveState } from "../../test-utils/live-stores.js";
 import { installDomStubs, removeDomStubs, renderHook } from "../../test-utils/render-hook.js";
@@ -16,14 +20,16 @@ import {
 	SessionComposerSlot,
 	SessionPromptComposer,
 } from "./SessionPromptComposer.js";
+import { savedAgoText, undoFocusTarget } from "./prompt-composer-view.js";
 import { type ComposerMode, composerMode } from "./prompt-composer-view.js";
 
 let undo: () => void;
 beforeAll(() => installDomStubs());
 afterAll(() => removeDomStubs());
 beforeEach(() => {
-	undo = followLiveState(useUserStore);
+	undo = followLiveState(useUserStore, usePromptDraftStore);
 	useUserStore.setState({ mode: "solo", userId: null, effectiveRole: "admin" });
+	__resetPromptDraftsForTests();
 });
 afterEach(() => undo());
 
@@ -518,5 +524,117 @@ describe("Resume session on a Codex session whose process is gone (AGEN-115)", (
 	test("a kept draft stays readable beside the busy button", () => {
 		const out = renderWith(degraded());
 		expect(out).not.toContain("Your unsent prompt");
+	});
+});
+
+describe("an unsent draft that came back from storage (AGEN-142)", () => {
+	const hourAgo = () => Date.now() - 3_600_000;
+	const putDraft = (restored: boolean) =>
+		usePromptDraftStore.setState({
+			drafts: {
+				s1: { text: "my half-written prompt", savedAt: hourAgo(), restored, persist: true },
+			},
+		});
+
+	test("says when it was saved, and the textarea is described by that line", () => {
+		putDraft(true);
+		const out = render(session("codex_cli", "managed"));
+		const note = out.match(/<span id="([^"]+)">Unsent draft, saved 1 hour ago\.<\/span>/);
+		expect(note).not.toBeNull();
+		const textarea = out.match(/<textarea[^>]*>/)?.[0] ?? "";
+		expect(textarea).toContain(note?.[1] as string);
+		expect(out).toContain("Discard draft");
+	});
+
+	test("a draft typed in this visit shows neither the note nor Discard, so the box doesn't move while typing", () => {
+		putDraft(false);
+		const out = render(session("codex_cli", "managed"));
+		expect(out).not.toContain("Unsent draft");
+		expect(out).not.toContain("Discard draft");
+	});
+
+	test("an empty box offers no Discard", () => {
+		expect(render(session("codex_cli", "managed"))).not.toContain("Discard draft");
+	});
+
+	test("an ended session holding a draft offers Discard in the locked view too", () => {
+		putDraft(true);
+		const out = render(session("codex_cli", "completed"));
+		expect(out).toContain("Your unsent prompt");
+		expect(out).toContain("Unsent draft, saved 1 hour ago.");
+		expect(out).toContain("Discard draft");
+	});
+
+	test("while a send is in progress the box shows the sent text read-only and has no Discard", () => {
+		putDraft(true);
+		usePromptDraftStore.setState({
+			sending: {
+				s1: {
+					text: "my half-written prompt",
+					ticket: { sessionId: "s1", version: 0, generation: 0 },
+					actionId: "act-1",
+				},
+			},
+		});
+		const out = render(session("codex_cli", "managed"));
+		expect(out).toMatch(/<textarea[^>]*readonly/i);
+		expect(out).toContain("Sending…");
+		expect(out).not.toContain("Discard draft");
+		expect(out).not.toContain("Unsent draft");
+	});
+});
+
+describe("Draft discarded, with Undo (AGEN-142)", () => {
+	const base: ComposerBodyProps = {
+		mode: composerMode(session("codex_cli", "managed"), {
+			canPrompt: true,
+			canResume: true,
+		}) as ComposerBodyProps["mode"],
+		phase: { step: "idle" },
+		posting: false,
+		justSent: false,
+		prompt: "",
+		notice: null,
+		sideText: null,
+		unavailable: false,
+		onEdit: () => {},
+		onSubmit: () => {},
+	};
+
+	test("the editable box shows the row with an Undo button in place of the note", () => {
+		const out = html(createElement(ComposerBody, { ...base, discarded: true, onUndo: () => {} }));
+		expect(out).toContain("Draft discarded.");
+		expect(out).toMatch(/<button[^>]*aria-describedby="[^"]+"[^>]*>Undo<\/button>/);
+		expect(out).not.toContain("Discard draft");
+	});
+
+	test("the locked view shows the row too, with no draft text", () => {
+		const out = html(
+			createElement(LockedDraft, {
+				reason: "This session has ended, so it can't take prompts.",
+				showDraft: false,
+				draft: "",
+				startNew: false,
+				discarded: true,
+				onUndo: () => {},
+			}),
+		);
+		expect(out).toContain("Draft discarded.");
+		expect(out).toContain(">Undo</button>");
+		expect(out).not.toContain("<textarea");
+		expect(out).toMatch(/<p[^>]*tabindex="-1"/);
+	});
+
+	test("when the row goes away, focus returns to the box, or to the reason in the locked view", () => {
+		expect(undoFocusTarget(false)).toBe("box");
+		expect(undoFocusTarget(true)).toBe("reason");
+	});
+
+	test("a draft's age is said in full words", () => {
+		const now = 10_000_000_000;
+		expect(savedAgoText(now - 20_000, now)).toBe("just now");
+		expect(savedAgoText(now - 60_000, now)).toBe("1 minute ago");
+		expect(savedAgoText(now - 125 * 60_000, now)).toBe("2 hours ago");
+		expect(savedAgoText(now - 3 * 86_400_000, now)).toBe("3 days ago");
 	});
 });

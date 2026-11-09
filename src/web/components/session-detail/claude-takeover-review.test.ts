@@ -29,6 +29,7 @@ import type { ControlAction, Session } from "../../../shared/types.js";
 import { ApiError, api } from "../../lib/api.js";
 import { focusLandingNow } from "../../lib/focus-landing.js";
 import { forkInfo, forkSourceOf } from "../../lib/fork-session.js";
+import { __resetPromptDraftsForTests } from "../../stores/prompt-draft-store.js";
 import { useUserStore } from "../../stores/user-store.js";
 import { followLiveState } from "../../test-utils/live-stores.js";
 import {
@@ -78,6 +79,7 @@ afterAll(() => removeDomStubs());
 beforeEach(() => {
 	undo = followLiveState(useUserStore);
 	useUserStore.setState({ mode: "solo", userId: null, effectiveRole: "admin" });
+	__resetPromptDraftsForTests();
 });
 afterEach(() => {
 	undo();
@@ -398,6 +400,7 @@ describe("a prompt to a continued session: queued, running, accepted; and a fail
 		expect(t.now().phase).toEqual({ step: "idle" });
 		expect(t.now().prompt).toBe("");
 		expect(t.now().justSent).toBe(true);
+		await t.h.unmount();
 	});
 
 	test("a failure from the host keeps the draft and says why, with the machine's own name in the words", async () => {
@@ -420,6 +423,7 @@ describe("a prompt to a continued session: queued, running, accepted; and a fail
 			reason:
 				"AgentPulse couldn't check whether this session is open elsewhere on studio, so nothing was sent. Your text is here. Send it again.",
 		});
+		await t.h.unmount();
 	});
 
 	test("a busy refusal keeps the draft too, in the fork's words", async () => {
@@ -439,6 +443,7 @@ describe("a prompt to a continued session: queued, running, accepted; and a fail
 		expect((t.now().phase as { reason: string }).reason).toBe(
 			"Claude is still on this turn. Your text is here. Send it when the turn ends.",
 		);
+		await t.h.unmount();
 	});
 
 	test("followPromptAction alone: `accept` ends only at acceptedAt, never at a bare claim", async () => {

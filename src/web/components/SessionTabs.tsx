@@ -1,10 +1,12 @@
 import { useLocation, useNavigate } from "react-router-dom";
+import { useRestoredTabsCheck } from "../hooks/useRestoredTabsCheck.js";
 import { getSessionMode, projectColor } from "../lib/utils.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
 import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
 
 export function SessionTabs() {
+	useRestoredTabsCheck();
 	const tabs = useTabsStore((s) => s.tabs);
 	const close = useTabsStore((s) => s.close);
 	const location = useLocation();

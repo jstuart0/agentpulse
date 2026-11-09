@@ -140,7 +140,12 @@ describe("the name-only read", () => {
 		const light = await get(`/sessions/nope${LIGHT}`);
 		const full = await get("/sessions/nope");
 		expect(light.status).toBe(404);
-		expect(await light.json()).toEqual(await full.json());
+		const lightBody = await light.json();
+		const fullBody = await full.json();
+		expect(lightBody).toEqual(fullBody);
+		// The web closes a tab on exactly this body (src/web/lib/session-gone.ts).
+		expect(fullBody).toEqual({ error: "Session not found" });
+		expect(lightBody).toEqual({ error: "Session not found" });
 	});
 
 	test("a field it doesn't serve, an empty list, or a mix is a 400 naming the value, never a silent full detail", async () => {

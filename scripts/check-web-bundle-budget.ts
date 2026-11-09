@@ -41,6 +41,21 @@
  * SessionDetailPage 34,782 (+4,609 on 30,173), CodexApprovalCard 15,022 (+1,406: the mcp and agent request kinds)
  * and SessionTakeoverCard 7,904 (+1,034: the dialog's two opt-in options and their consent copy); DashboardPage
  * 26,444 and index 118,531 stay under their limits unmoved. Limits moved to 35,100, 15,300 and 8,200.
+ * AGEN-142 Phase 1 (ordered loads on the session and Hosts pages: a shared request-order chunk of 173 bytes)
+ * measured SessionDetailPage 35,032 (+250) and index 118,535 (+4); no limit moved. Phase 2 (tabs for sessions that
+ * no longer exist: the gone test, the restored-tab check mounted in the tab strip, the batch store methods, the
+ * name read and the gone card) measured SessionDetailPage 35,236 (+204) and index 119,109 (+574, the check and the
+ * stores it uses live in index). Limits moved to 35,500 and 119,400 (measured + about 300).
+ * AGEN-142 Phase 3 (unsent prompt drafts: the per-viewer draft store with its debounce, index, TTL and LRU, the
+ * sending marker and the follow that resumes from it, the key scheme, and the box's restored-draft line and
+ * Discard) measured SessionDetailPage 37,653 (+2,417 on 35,236; the plan expected +1.0 to 1.5 kB, the composer
+ * hook rewrite and the two views' markup took the rest) and index 119,467 (+358: the sign-out purge pulls the
+ * key scheme and the storage helper into index; the store itself stays in the page chunk). Limits moved to
+ * 38,000 and 119,800 (measured + about 350).
+ * AGEN-142 fix pass (codex r2 and ruby's review: the last send's outcome kept in the store, the inline "Draft
+ * discarded. Undo" row with its focus rules, the gone card as its own component with the "Session deleted"
+ * wording, the timeout and late-accept copy, the full-word draft age) measured SessionDetailPage 38,477 (+824)
+ * and index 119,532 (+65). The page limit moved to 38,800 (measured + about 320); index stays at 119,800.
  * AGEN-141 (OpenCode, observed only): the agent type's registration and copy took index to 118,528 (+144 on 118,384),
  * so its limit moved to 119,000. The Setup page gained an OpenCode toggle and a lazy chunk, OpenCodePluginFiles, that
  * carries both plugin texts (the only chunk that does; setup-steps.ts and the index chunk's static graph import
@@ -69,14 +84,14 @@ export interface Finding {
 }
 
 export const BUDGETS: Budget[] = [
-	{ chunk: "SessionDetailPage", maxGzip: 35_100, measured: 34_782 },
+	{ chunk: "SessionDetailPage", maxGzip: 38_800, measured: 38_477 },
 	{ chunk: "SessionSummaryTab", maxGzip: 12_500, measured: 11_582 },
 	{ chunk: "CodexApprovalCard", maxGzip: 15_300, measured: 15_022 },
 	{ chunk: "SessionTakeoverCard", maxGzip: 8_200, measured: 7_904 },
 	{ chunk: "DashboardPage", maxGzip: 27_200, measured: 26_341 },
-	{ chunk: "index", maxGzip: 119_000, measured: 118_528 },
+	{ chunk: "index", maxGzip: 119_800, measured: 119_532 },
 	{ chunk: "SetupPage", maxGzip: 10_300, measured: 9_774 },
-	{ chunk: "OpenCodePluginFiles", maxGzip: 24_000, measured: 23_196 },
+	{ chunk: "OpenCodePluginFiles", maxGzip: 24_000, measured: 23_905 },
 ];
 
 /** A missing chunk fails: a renamed chunk must not silently escape its budget. `scale` shrinks every limit (the self-test). */

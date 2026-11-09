@@ -7,7 +7,7 @@ AgentPulse is the command center for AI coding agents across all your machines. 
 - **Runtime:** Bun
 - **Backend:** Hono (HTTP framework)
 - **Frontend:** React 19 + Vite + TailwindCSS
-- **State:** 8 Zustand stores
+- **State:** 16 Zustand stores
 - **Database:** SQLite (default) and PostgreSQL (production / multi-replica, v0.4.0+) via Drizzle ORM — set `DATABASE_URL=postgres://...` to opt into Postgres
 - **Real-time:** WebSocket (native Bun) + 3s polling fallback
 - **MCP:** Model Context Protocol server in `packages/agentpulse-mcp/` (`agentpulse mcp serve|install`); see `docs/MCP.md`
@@ -58,9 +58,12 @@ src/
     components/   SessionCard, SessionGrid, StatusBadge, Layout, PlanTracker,
                   IntelligenceBadge, MarkdownContent, TopBar, WsStatusChip,
                   + subdirs: inbox/, session-detail/, settings/, templates/
-    stores/       8 stores: connection-store, event-store, labs-store,
-                  projects-store, session-store, tabs-store, ui-prefs-store,
-                  user-store
+    stores/       16 stores: ai-status-store, connection-store,
+                  dashboard-scope-store, db-fingerprint-store, event-store,
+                  inbox-signal-store, labs-store, projects-store,
+                  prompt-draft-store, reachability-store, session-store,
+                  summary-view-store, tabs-store, ui-prefs-store, user-store,
+                  users-store
     hooks/        useWebSocket, useSessions
     lib/          api.ts (single API client), utils.ts (parseDate(), etc.)
   shared/         Shared types (session-state.ts, etc.)

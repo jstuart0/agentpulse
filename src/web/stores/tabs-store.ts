@@ -82,19 +82,24 @@ function forget() {
 
 interface TabsStore {
 	tabs: OpenTab[];
+	/** How many times a viewer's tabs were adopted. A check of restored tabs is stale once this moves. */
+	restored: number;
 	/** The viewer is known (or changed): show and save their tabs, not the previous person's. */
 	adopt: (userId: string | null) => void;
 	open: (tab: OpenTab) => void;
 	close: (sessionId: string) => void;
+	/** Closes every listed tab in one write; nothing is written when none of them is open. */
+	closeMany: (sessionIds: string[]) => void;
 	clear: () => void;
 }
 
 export const useTabsStore = create<TabsStore>((set) => ({
 	tabs: [],
+	restored: 0,
 	adopt: (userId) => {
 		storageKey = keyFor(userId);
 		moveSharedTabsTo(userId, storageKey);
-		set({ tabs: read(storageKey) });
+		set((state) => ({ tabs: read(storageKey as string), restored: state.restored + 1 }));
 	},
 	open: (tab) =>
 		set((state) => {
@@ -122,6 +127,15 @@ export const useTabsStore = create<TabsStore>((set) => ({
 	close: (sessionId) =>
 		set((state) => {
 			const next = state.tabs.filter((t) => t.sessionId !== sessionId);
+			if (next.length === state.tabs.length) return state;
+			save(next);
+			return { tabs: next };
+		}),
+	closeMany: (sessionIds) =>
+		set((state) => {
+			const gone = new Set(sessionIds);
+			const next = state.tabs.filter((t) => !gone.has(t.sessionId));
+			if (next.length === state.tabs.length) return state;
 			save(next);
 			return { tabs: next };
 		}),
