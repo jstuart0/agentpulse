@@ -1,0 +1,418 @@
+{
+	"line": "v2",
+	"version": "2.2.6",
+	"scenario": "runs",
+	"prompt": "PLAIN hello",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "lsiom6",
+			"counter": 1,
+			"ctxKeys": [
+				"app",
+				"location",
+				"options",
+				"agent",
+				"aisdk",
+				"command",
+				"credential",
+				"event",
+				"experimental",
+				"generate",
+				"model",
+				"provider",
+				"integration",
+				"mcp",
+				"permission",
+				"plugin",
+				"reference",
+				"rpc",
+				"skill",
+				"storage",
+				"tool",
+				"vcs",
+				"websearch",
+				"worktree",
+				"session",
+				"shell"
+			],
+			"location": {
+				"directory": "/scratch/proj/v2-plain",
+				"project": {
+					"id": "f028ad200e1bd2fd3e702603a7d54f2290a7217b",
+					"directory": "/scratch/proj/v2-plain",
+					"canonical": "/scratch/proj/v2-plain"
+				}
+			},
+			"app": {
+				"name": "cli",
+				"version": "2.2.6",
+				"channel": "latest"
+			},
+			"skip": null,
+			"argv": ["bun", "/$bunfs/root/opencode", "serve", "--stdio", "--port", "0"],
+			"cwd": "/scratch/proj/v2-plain"
+		},
+		{
+			"kind": "event",
+			"t": 45,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf651dc3001VuODZ1E6SYGcXc",
+				"created": 1794212437443,
+				"type": "session.inbox.enqueued",
+				"durable": {
+					"aggregateID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"seq": 1,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-plain"
+				},
+				"data": {
+					"sessionID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"inboxID": "msg_1bf651d9c0014UAcxjIBN3Rknp",
+					"item": {
+						"type": "user",
+						"payload": {
+							"text": "PLAIN hello",
+							"files": []
+						},
+						"delivery": "steer"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 55,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf651dc6001gB6UEkqkSfAyfd",
+				"created": 1794212437446,
+				"type": "session.execution.started",
+				"durable": {
+					"aggregateID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"seq": 2,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409ae358ffeA525XpuAwGG4NA"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 57,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf651dcd001x8SKeYRSgZjKzW",
+				"created": 1794212437453,
+				"type": "session.inbox.delivered",
+				"durable": {
+					"aggregateID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"seq": 4,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-plain"
+				},
+				"data": {
+					"sessionID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"inboxID": "msg_1bf651d9c0014UAcxjIBN3Rknp"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2295,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf652685001XE6YYGJLpP26Oo",
+				"created": 1794212439685,
+				"type": "session.step.started",
+				"durable": {
+					"aggregateID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"seq": 5,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-plain"
+				},
+				"data": {
+					"sessionID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"assistantMessageID": "msg_1bf651dd5001RPIG29HliziH7s",
+					"agent": "build",
+					"model": {
+						"id": "stub-model",
+						"providerID": "stub"
+					},
+					"started": 1794212437464
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2295,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf652687001VlMa4YHZOoY7bF",
+				"created": 1794212439687,
+				"type": "session.text.started",
+				"durable": {
+					"aggregateID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"seq": 6,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-plain"
+				},
+				"data": {
+					"sessionID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"assistantMessageID": "msg_1bf651dd5001RPIG29HliziH7s",
+					"ordinal": 0
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2296,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf65268a001vufw30bfb9aZsS",
+				"created": 1794212439690,
+				"type": "session.text.delta",
+				"location": {
+					"directory": "/scratch/proj/v2-plain"
+				},
+				"data": {
+					"sessionID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"assistantMessageID": "msg_1bf651dd5001RPIG29HliziH7s",
+					"ordinal": 0,
+					"delta": "STUB-PLAIN reply"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2296,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf65268a0022y1lZ3LNTxRlgK",
+				"created": 1794212439690,
+				"type": "session.text.ended",
+				"durable": {
+					"aggregateID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"seq": 7,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-plain"
+				},
+				"data": {
+					"sessionID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"assistantMessageID": "msg_1bf651dd5001RPIG29HliziH7s",
+					"ordinal": 0,
+					"text": "STUB-PLAIN reply"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2296,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf65268b001iQmcOZ9o1cDHew",
+				"created": 1794212439691,
+				"type": "session.step.streamed",
+				"durable": {
+					"aggregateID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"seq": 8,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-plain"
+				},
+				"data": {
+					"sessionID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"assistantMessageID": "msg_1bf651dd5001RPIG29HliziH7s"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2296,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf65268c00175b5FsIXLMqI7H",
+				"created": 1794212439692,
+				"type": "session.step.ended",
+				"durable": {
+					"aggregateID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"seq": 9,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-plain"
+				},
+				"data": {
+					"sessionID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"assistantMessageID": "msg_1bf651dd5001RPIG29HliziH7s",
+					"finish": "stop",
+					"rawFinish": "stop",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2296,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf65268e001VbIWLW3Q0N8W5F",
+				"created": 1794212439694,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2296,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf65268f0017tczH8EKcGBES4",
+				"created": 1794212439695,
+				"type": "session.execution.succeeded",
+				"durable": {
+					"aggregateID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"seq": 10,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e409ae358ffeA525XpuAwGG4NA"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2299,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf652693001ZbAoDA1jrq5y3W",
+				"created": 1794212439699,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2299,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf652694001ZwCVeO7Hr2AEy2",
+				"created": 1794212439700,
+				"type": "session.renamed",
+				"durable": {
+					"aggregateID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"seq": 12,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-plain"
+				},
+				"data": {
+					"sessionID": "ses_e409ae358ffeA525XpuAwGG4NA",
+					"title": "Stub title"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2320,
+			"tag": "A",
+			"instance": "lsiom6",
+			"directory": "/scratch/proj/v2-plain",
+			"event": {
+				"id": "evt_1bf65269d001zaNn31TELm8Nxj",
+				"created": 1794212439709,
+				"type": "location.shutdown",
+				"location": {
+					"directory": "/scratch/proj/v2-plain"
+				},
+				"data": {}
+			}
+		},
+		{
+			"kind": "cleanup",
+			"t": 2320,
+			"tag": "A",
+			"instance": "lsiom6"
+		},
+		{
+			"kind": "process.exit",
+			"t": 2347,
+			"tag": "A"
+		}
+	]
+}

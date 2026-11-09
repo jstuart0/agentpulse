@@ -1,0 +1,874 @@
+{
+	"line": "v1",
+	"version": "1.19.5",
+	"scenario": "runs",
+	"prompt": "PERMASK go",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"counter": 1,
+			"ctxKeys": [
+				"client",
+				"project",
+				"worktree",
+				"directory",
+				"experimental_workspace",
+				"serverUrl",
+				"$"
+			],
+			"directory": "/scratch/proj/v1-permission-reject",
+			"worktree": "/",
+			"serverUrl": "http://localhost:PORT/",
+			"skip": null,
+			"argv": ["bun", "/$bunfs/root/opencode", "run", "PERMASK go"],
+			"cwd": "/scratch/proj/v1-permission-reject"
+		},
+		{
+			"kind": "event",
+			"t": 73,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf650ae6002x5nEdp1vOgXoit",
+				"type": "session.created",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"info": {
+						"id": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"slug": "proud-wolf",
+						"version": "1.19.5",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-permission-reject",
+						"path": "scratch/proj/v1-permission-reject",
+						"title": "New session - 2026-11-09T08:20:32.614Z",
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212432614,
+							"updated": 1794212432614
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 88,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf650af8001AfpeCBmOPit7tU",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"info": {
+						"id": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"slug": "proud-wolf",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-permission-reject",
+						"path": "scratch/proj/v1-permission-reject",
+						"title": "New session - 2026-11-09T08:20:32.614Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212432614,
+							"updated": 1794212432631
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "chat.message",
+			"t": 90,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"skip": null,
+			"i": {
+				"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2"
+			},
+			"o": {
+				"message": {
+					"id": "msg_1bf650af7001Opel3XpXaoPKnz",
+					"role": "user",
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"time": {
+						"created": 1794212432631
+					},
+					"agent": "build",
+					"model": {
+						"providerID": "stub",
+						"modelID": "stub-model"
+					}
+				},
+				"parts": [
+					{
+						"type": "text",
+						"text": "\"PERMASK go\"",
+						"messageID": "msg_1bf650af7001Opel3XpXaoPKnz",
+						"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"id": "prt_1bf650afb001uA7Uvdym2V560I"
+					}
+				]
+			}
+		},
+		{
+			"kind": "event",
+			"t": 91,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf650afb0017MrnosQl23taPC",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"info": {
+						"id": "msg_1bf650af7001Opel3XpXaoPKnz",
+						"role": "user",
+						"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"time": {
+							"created": 1794212432631
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 93,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf650afd001ZFwKqu1D4lLFzp",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"part": {
+						"type": "text",
+						"text": "\"PERMASK go\"",
+						"messageID": "msg_1bf650af7001Opel3XpXaoPKnz",
+						"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"id": "prt_1bf650afb001uA7Uvdym2V560I"
+					},
+					"time": 1794212432637
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 94,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf650afe001bGvZrSskUgXoN6",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"info": {
+						"id": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"slug": "proud-wolf",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-permission-reject",
+						"path": "scratch/proj/v1-permission-reject",
+						"title": "New session - 2026-11-09T08:20:32.614Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212432614,
+							"updated": 1794212432638
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 97,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf650b02001JaUxfUlDIMU0iz",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 474,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf650c7a001Su4e8GvckEiMaw",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"info": {
+						"id": "msg_1bf650c7a0019eLrwRIMMEcHQN",
+						"parentID": "msg_1bf650af7001Opel3XpXaoPKnz",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-permission-reject",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212433018
+						},
+						"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 497,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf650c910019Rnkwr82tOIsHX",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"info": {
+						"id": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"slug": "proud-wolf",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-permission-reject",
+						"path": "scratch/proj/v1-permission-reject",
+						"title": "New session - 2026-11-09T08:20:32.614Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212432614,
+							"updated": 1794212433040
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 497,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf650c92001A1dcL3bx2zpBZP",
+				"type": "session.diff",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"diff": []
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 499,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf650c9300101LA79GE8Uh6wN",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"info": {
+						"role": "user",
+						"time": {
+							"created": 1794212432631
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						},
+						"id": "msg_1bf650af7001Opel3XpXaoPKnz",
+						"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"summary": {
+							"diffs": []
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1145,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf650f1a001zfqRsh3lAUa8s3",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1623,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf6510f7001xkxm8mFT9FfcVK",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"info": {
+						"id": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"slug": "proud-wolf",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-permission-reject",
+						"path": "scratch/proj/v1-permission-reject",
+						"title": "Stub title",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"permission": [
+							{
+								"permission": "question",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_enter",
+								"pattern": "*",
+								"action": "deny"
+							},
+							{
+								"permission": "plan_exit",
+								"pattern": "*",
+								"action": "deny"
+							}
+						],
+						"time": {
+							"created": 1794212432614,
+							"updated": 1794212433040
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2697,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf651529001q08Xe6YHAjBvA0",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"part": {
+						"id": "prt_1bf651528001GqH8DAa4p9tUxU",
+						"messageID": "msg_1bf650c7a0019eLrwRIMMEcHQN",
+						"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"type": "step-start"
+					},
+					"time": 1794212435241
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2699,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf65152b001hPwsoz7l2Rp09D",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"part": {
+						"id": "prt_1bf65152b001foQrTje9d1NGPb",
+						"messageID": "msg_1bf650c7a0019eLrwRIMMEcHQN",
+						"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"type": "tool",
+						"tool": "write",
+						"callID": "call_stub_perm_1",
+						"state": {
+							"status": "pending",
+							"input": {},
+							"raw": ""
+						}
+					},
+					"time": 1794212435243
+				}
+			}
+		},
+		{
+			"kind": "tool.execute.before",
+			"t": 2702,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"skip": null,
+			"i": {
+				"tool": "write",
+				"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+				"callID": "call_stub_perm_1"
+			},
+			"o": {
+				"args": {
+					"filePath": "/scratch/proj/v1-permission-reject/perm.txt",
+					"path": "/scratch/proj/v1-permission-reject/perm.txt",
+					"content": "perm\n"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2705,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf6515310013LWA6bzJUbDycF",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"part": {
+						"type": "tool",
+						"tool": "write",
+						"callID": "call_stub_perm_1",
+						"state": {
+							"status": "running",
+							"input": {
+								"filePath": "/scratch/proj/v1-permission-reject/perm.txt",
+								"path": "/scratch/proj/v1-permission-reject/perm.txt",
+								"content": "perm\n"
+							},
+							"time": {
+								"start": 1794212435249
+							}
+						},
+						"id": "prt_1bf65152b001foQrTje9d1NGPb",
+						"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"messageID": "msg_1bf650c7a0019eLrwRIMMEcHQN"
+					},
+					"time": 1794212435249
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2707,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf651534002PgJlJkq23yJYXM",
+				"type": "permission.asked",
+				"properties": {
+					"id": "per_1bf651534001nnqrfKiHUnafSp",
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"permission": "edit",
+					"patterns": ["scratch/proj/v1-permission-reject/perm.txt"],
+					"metadata": {
+						"filepath": "/scratch/proj/v1-permission-reject/perm.txt",
+						"diff": "Index: /scratch/proj/v1-permission-reject/perm.txt\n===================================================================\n--- /scratch/proj/v1-permission-reject/perm.txt\n+++ /scratch/proj/v1-permission-reject/perm.txt\n@@ -0,0 +1,1 @@\n+perm\n"
+					},
+					"always": ["*"],
+					"tool": {
+						"messageID": "msg_1bf650c7a0019eLrwRIMMEcHQN",
+						"callID": "call_stub_perm_1"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2709,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf651536001EffvEq8KYiW9or",
+				"type": "permission.replied",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"requestID": "per_1bf651534001nnqrfKiHUnafSp",
+					"reply": "reject"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2711,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf651537001ESV1ZD5Sx1yB09",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"part": {
+						"type": "tool",
+						"tool": "write",
+						"callID": "call_stub_perm_1",
+						"state": {
+							"status": "error",
+							"input": {
+								"filePath": "/scratch/proj/v1-permission-reject/perm.txt",
+								"path": "/scratch/proj/v1-permission-reject/perm.txt",
+								"content": "perm\n"
+							},
+							"error": "The user rejected permission to use this specific tool call.",
+							"time": {
+								"start": 1794212435249,
+								"end": 1794212435255
+							}
+						},
+						"id": "prt_1bf65152b001foQrTje9d1NGPb",
+						"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"messageID": "msg_1bf650c7a0019eLrwRIMMEcHQN"
+					},
+					"time": 1794212435255
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2714,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf651539001BOHPGG4AsxqWyW",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"part": {
+						"id": "prt_1bf651539001tEFNEeUUojL6zP",
+						"reason": "tool-calls",
+						"messageID": "msg_1bf650c7a0019eLrwRIMMEcHQN",
+						"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"type": "step-finish",
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"cost": 0
+					},
+					"time": 1794212435257
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2715,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf65153b001OoscGJ2iAYz2dz",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"info": {
+						"id": "msg_1bf650c7a0019eLrwRIMMEcHQN",
+						"parentID": "msg_1bf650af7001Opel3XpXaoPKnz",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-permission-reject",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212433018
+						},
+						"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"finish": "tool-calls"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2716,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf65153d001ggyAIAcEVMkLR7",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"info": {
+						"id": "msg_1bf650c7a0019eLrwRIMMEcHQN",
+						"parentID": "msg_1bf650af7001Opel3XpXaoPKnz",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-permission-reject",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212433018,
+							"completed": 1794212435261
+						},
+						"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+						"finish": "tool-calls"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2717,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf65153e001XxLgj6oETAWgr5",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2",
+					"status": {
+						"type": "idle"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2717,
+			"tag": "A",
+			"instance": "tv8iqd",
+			"directory": "/scratch/proj/v1-permission-reject",
+			"event": {
+				"id": "evt_1bf65153e00234Mwp1f73g53xl",
+				"type": "session.idle",
+				"properties": {
+					"sessionID": "ses_e409af519ffeAgKvL1z8eZp1j2"
+				}
+			}
+		},
+		{
+			"kind": "process.exit",
+			"t": 2732,
+			"tag": "A"
+		}
+	]
+}

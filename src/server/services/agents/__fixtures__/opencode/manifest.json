@@ -1,0 +1,130 @@
+{
+	"fixtures": [
+		{
+			"line": "v1",
+			"name": "plain",
+			"status": "captured",
+			"file": "captures/v1/plain.json"
+		},
+		{
+			"line": "v1",
+			"name": "shell-tool",
+			"status": "captured",
+			"file": "captures/v1/shell-tool.json"
+		},
+		{
+			"line": "v1",
+			"name": "write-tool",
+			"status": "captured",
+			"file": "captures/v1/write-tool.json"
+		},
+		{
+			"line": "v1",
+			"name": "failed-tool-exit",
+			"status": "captured",
+			"file": "captures/v1/failed-tool-exit.json"
+		},
+		{
+			"line": "v1",
+			"name": "failed-tool-error",
+			"status": "captured",
+			"file": "captures/v1/failed-tool-error.json"
+		},
+		{
+			"line": "v1",
+			"name": "child-session",
+			"status": "captured",
+			"file": "captures/v1/child-session.json"
+		},
+		{
+			"line": "v1",
+			"name": "assistant-text-parts",
+			"status": "captured",
+			"file": "captures/v1/assistant-text-parts.json"
+		},
+		{
+			"line": "v1",
+			"name": "permission-reject",
+			"status": "captured",
+			"file": "captures/v1/permission-reject.json"
+		},
+		{
+			"line": "v1",
+			"name": "permission-accept",
+			"status": "captured",
+			"file": "captures/v1/permission-accept.json"
+		},
+		{
+			"line": "v1",
+			"name": "forced-400",
+			"status": "captured",
+			"file": "captures/v1/forced-400.json"
+		},
+		{
+			"line": "v1",
+			"name": "abort",
+			"status": "captured",
+			"file": "captures/v1/abort.json"
+		},
+		{
+			"line": "v2",
+			"name": "plain",
+			"status": "captured",
+			"file": "captures/v2/plain.json"
+		},
+		{
+			"line": "v2",
+			"name": "shell-tool",
+			"status": "captured",
+			"file": "captures/v2/shell-tool.json"
+		},
+		{
+			"line": "v2",
+			"name": "write-tool",
+			"status": "captured",
+			"file": "captures/v2/write-tool.json"
+		},
+		{
+			"line": "v2",
+			"name": "failed-tool-exit",
+			"status": "captured",
+			"file": "captures/v2/failed-tool-exit.json"
+		},
+		{
+			"line": "v2",
+			"name": "failed-tool-error",
+			"status": "captured",
+			"file": "captures/v2/failed-tool-error.json"
+		},
+		{
+			"line": "v2",
+			"name": "child-session",
+			"status": "captured",
+			"file": "captures/v2/child-session.json"
+		},
+		{
+			"line": "v2",
+			"name": "permission-reject",
+			"status": "captured",
+			"file": "captures/v2/permission-reject.json"
+		},
+		{
+			"line": "v2",
+			"name": "permission-accept",
+			"status": "captured",
+			"file": "captures/v2/permission-accept.json"
+		},
+		{
+			"line": "v2",
+			"name": "forced-400",
+			"status": "captured",
+			"file": "captures/v2/forced-400.json"
+		},
+		{
+			"line": "v2",
+			"name": "abort",
+			"status": "captured",
+			"file": "captures/v2/abort.json"
+		}
+	]
+}

@@ -279,4 +279,69 @@ describe("P2-23 the stub answers an OpenAI stream request as server-sent events"
 		const answers = await Promise.all(calls);
 		expect(answers.map((r) => r.status)).toEqual([200, 200]);
 	});
+
+	test("AGEN-141 toolCalls: a plain answer carries message.tool_calls and finishes with tool_calls", async () => {
+		const s = start();
+		s.script("openai", {
+			text: "",
+			toolCalls: [{ id: "call_1", name: "shell", arguments: { command: "printf ok" } }],
+		});
+		const res = await post(`${s.baseUrl("openai")}/chat/completions`, {});
+		const choice = (await res.json()).choices[0];
+		expect(choice.finish_reason).toBe("tool_calls");
+		expect(choice.message.content).toBeNull();
+		expect(choice.message.tool_calls).toEqual([
+			{
+				id: "call_1",
+				type: "function",
+				function: { name: "shell", arguments: '{"command":"printf ok"}' },
+			},
+		]);
+	});
+
+	test("AGEN-141 toolCalls: a streamed answer sends the name first, then the arguments, then the finish", async () => {
+		const s = start();
+		s.script("openai", {
+			text: "",
+			usage: { input: 3, output: 2 },
+			toolCalls: [
+				{ id: "call_a", name: "write", arguments: '{"path":"/x"}' },
+				{ id: "call_b", name: "shell", arguments: { command: "exit 3" } },
+			],
+		});
+		const res = await post(`${s.baseUrl("openai")}/chat/completions`, { stream: true });
+		const chunks = (await res.text())
+			.split("\n\n")
+			.filter((f) => f.startsWith("data: ") && !f.includes("[DONE]"))
+			.map((f) => JSON.parse(f.slice(6)));
+		const calls = chunks.flatMap((c) => c.choices[0]?.delta?.tool_calls ?? []);
+		expect(calls[0]).toEqual({
+			index: 0,
+			id: "call_a",
+			type: "function",
+			function: { name: "write", arguments: "" },
+		});
+		expect(calls[1]).toEqual({ index: 0, function: { arguments: '{"path":"/x"}' } });
+		expect(calls[2].id).toBe("call_b");
+		expect(calls[3].function.arguments).toBe('{"command":"exit 3"}');
+		expect(chunks.find((c) => c.choices[0]?.finish_reason)?.choices[0].finish_reason).toBe(
+			"tool_calls",
+		);
+		expect(chunks.at(-1).usage).toEqual({ prompt_tokens: 3, completion_tokens: 2 });
+	});
+
+	test("AGEN-141 rules: a rule answers without a queued script, and an unmatched request is still unscripted", async () => {
+		const rulesStub = startLlmStubServer({
+			rules: (body) =>
+				JSON.stringify(body).includes("PING") ? { text: "pong", stop: "stop" } : undefined,
+		});
+		started.push(rulesStub);
+		const hit = await post(`${rulesStub.baseUrl("openai")}/chat/completions`, { m: "PING" });
+		expect((await hit.json()).choices[0].message.content).toBe("pong");
+		expect(rulesStub.requests("openai")).toHaveLength(1);
+		const miss = await post(`${rulesStub.baseUrl("openai")}/chat/completions`, { m: "other" });
+		expect(miss.status).toBe(UNSCRIPTED_STATUS);
+		expect(() => rulesStub.verify()).toThrow(/unscripted/);
+		rulesStub.reset();
+	});
 });

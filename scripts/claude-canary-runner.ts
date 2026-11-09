@@ -21,18 +21,21 @@ import { T120_MUTATIONS } from "./claude-canary-scenarios/t120-mutations.js";
 import { T121_MUTATIONS } from "./claude-canary-scenarios/t121-mutations.js";
 import { T122_MUTATIONS } from "./claude-canary-scenarios/t122-mutations.js";
 import { T123_MUTATIONS } from "./claude-canary-scenarios/t123-mutations.js";
+import {
+	type Expectation,
+	type MutationTarget as NeutralTarget,
+	type Verdict,
+	classifyScenarioWith,
+} from "./lib/canary-verdict.js";
 
-export type ExpectationKind = "instrument" | "precondition" | "claim";
-
-export interface Expectation {
-	name: string;
-	kind: ExpectationKind;
-	/** `null` is "not reached": an earlier expectation stopped the scenario. */
-	ok: boolean | null;
-	detail?: unknown;
-}
+export type { Expectation, ExpectationKind, Verdict } from "./lib/canary-verdict.js";
+export { EXIT, exitCodeFor } from "./lib/canary-verdict.js";
 
 export type Login = "key" | "helper";
+
+export interface MutationTarget extends NeutralTarget {
+	login?: Login;
+}
 
 export interface ScenarioResult {
 	scenario: string;
@@ -45,15 +48,6 @@ export interface ScenarioResult {
 	notRun?: string;
 }
 
-export type Verdict =
-	| "pass"
-	| "fail"
-	| "instrumentInvalid"
-	| "notRun"
-	| "mutationCaught"
-	| "mutationSurvived"
-	| "mutationInvalid";
-
 export interface Mutation {
 	scenario: string;
 	/** What it breaks, every layer, for the report. */
@@ -64,12 +58,6 @@ export interface Mutation {
 	login?: Login;
 	/** The same break applied to another scenario, with that scenario's own named expectation. */
 	also?: Array<{ scenario: string; expectation: string; login?: Login }>;
-}
-
-export interface MutationTarget {
-	scenario: string;
-	expectation: string;
-	login?: Login;
 }
 
 /** Every scenario a mutation applies to, with the one expectation it must fail there. */
@@ -247,42 +235,7 @@ export const MUTATIONS: Record<string, Mutation> = {
 };
 
 export function classifyScenario(result: ScenarioResult): Verdict {
-	if (result.notRun) return "notRun";
-	const { expectations } = result;
-	const failed = (e: Expectation) => e.ok === false;
-	if (expectations.some((e) => e.kind === "instrument" && failed(e))) return "instrumentInvalid";
-	if (result.mutation === null) {
-		return expectations.some(failed) ? "fail" : "pass";
-	}
-	const target = mutationTargets(result.mutation).find((t) => t.scenario === result.scenario);
-	if (!target) return "mutationInvalid";
-	const named = expectations.find((e) => e.name === target.expectation);
-	if (!named || named.ok === null) return "mutationInvalid";
-	if (named.ok === true) return "mutationSurvived";
-	// The named expectation failed. Every precondition must hold, or the failure can't be attributed.
-	const brokenPrecondition = expectations.some(
-		(e) => e.kind === "precondition" && e !== named && failed(e),
-	);
-	return brokenPrecondition ? "mutationInvalid" : "mutationCaught";
-}
-
-/** Exit codes: 0 all good; 1 a real failure; 2 usage (the caller exits before anything runs); 3 and up are of their own kind. */
-export const EXIT = {
-	ok: 0,
-	fail: 1,
-	usage: 2,
-	instrumentInvalid: 3,
-	mutationSurvived: 4,
-	mutationInvalid: 5,
-} as const;
-
-/** The strongest signal wins: a product failure over a mutation that survived over an invalid instrument. */
-export function exitCodeFor(verdicts: readonly Verdict[]): number {
-	if (verdicts.includes("fail")) return EXIT.fail;
-	if (verdicts.includes("mutationSurvived")) return EXIT.mutationSurvived;
-	if (verdicts.includes("mutationInvalid")) return EXIT.mutationInvalid;
-	if (verdicts.includes("instrumentInvalid")) return EXIT.instrumentInvalid;
-	return EXIT.ok;
+	return classifyScenarioWith(result, mutationTargets);
 }
 
 /** The total spend ledger: a hard cap, checked before each scenario starts, written to a file by the caller. */

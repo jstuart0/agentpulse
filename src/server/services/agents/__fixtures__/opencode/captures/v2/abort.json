@@ -1,0 +1,553 @@
+{
+	"line": "v2",
+	"version": "2.2.6",
+	"scenario": "serve",
+	"prompt": "SLOWCALL abort me",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"counter": 1,
+			"ctxKeys": [
+				"app",
+				"location",
+				"options",
+				"agent",
+				"aisdk",
+				"command",
+				"credential",
+				"event",
+				"experimental",
+				"generate",
+				"model",
+				"provider",
+				"integration",
+				"mcp",
+				"permission",
+				"plugin",
+				"reference",
+				"rpc",
+				"skill",
+				"storage",
+				"tool",
+				"vcs",
+				"websearch",
+				"worktree",
+				"session",
+				"shell"
+			],
+			"location": {
+				"directory": "/scratch/proj/v2-abort",
+				"project": {
+					"id": "cb60e36110d46f0d5983513f101132d73c849b1c",
+					"directory": "/scratch/proj/v2-abort",
+					"canonical": "/scratch/proj/v2-abort"
+				}
+			},
+			"app": {
+				"name": "cli",
+				"version": "2.2.6",
+				"channel": "latest"
+			},
+			"skip": null,
+			"argv": [
+				"bun",
+				"/$bunfs/root/opencode",
+				"serve",
+				"--port",
+				"25358",
+				"--hostname",
+				"127.0.0.1"
+			],
+			"cwd": "/scratch/proj/v2-abort"
+		},
+		{
+			"kind": "event",
+			"t": 40,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66b685002D9FpfTIPwQoC6M",
+				"created": 1794212542085,
+				"type": "session.inbox.enqueued",
+				"durable": {
+					"aggregateID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"seq": 1,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"inboxID": "msg_1bf66b577001RjWYH6IHoCfZGh",
+					"item": {
+						"type": "user",
+						"payload": {
+							"text": "SLOWCALL abort me"
+						},
+						"delivery": "steer"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 60,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66b688001r1j1pBwn8ix517",
+				"created": 1794212542088,
+				"type": "session.execution.started",
+				"durable": {
+					"aggregateID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"seq": 2,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 62,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66b698001dlch4QUAzwPKqr",
+				"created": 1794212542104,
+				"type": "session.inbox.delivered",
+				"durable": {
+					"aggregateID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"seq": 4,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"inboxID": "msg_1bf66b577001RjWYH6IHoCfZGh"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2385,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66bfa90015mQNJ08VPZ6LUY",
+				"created": 1794212544425,
+				"type": "session.step.started",
+				"durable": {
+					"aggregateID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"seq": 5,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"assistantMessageID": "msg_1bf66b6a1001ng67Ec4AwbXAEc",
+					"agent": "build",
+					"model": {
+						"id": "stub-model",
+						"providerID": "stub"
+					},
+					"started": 1794212542117
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2385,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66bfab001uivzR4rn5crZ4G",
+				"created": 1794212544427,
+				"type": "session.tool.input.started",
+				"durable": {
+					"aggregateID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"seq": 6,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"assistantMessageID": "msg_1bf66b6a1001ng67Ec4AwbXAEc",
+					"id": "call_stub_slow_1",
+					"name": "shell"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2385,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66bfae0015sE13zmQpjoSQd",
+				"created": 1794212544430,
+				"type": "session.tool.input.ended",
+				"durable": {
+					"aggregateID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"seq": 7,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"assistantMessageID": "msg_1bf66b6a1001ng67Ec4AwbXAEc",
+					"id": "call_stub_slow_1",
+					"text": "{\"command\":\"sleep 4; echo slow-done\"}"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2385,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66bfaf001p0ryV7VJGMhsCd",
+				"created": 1794212544431,
+				"type": "session.tool.called",
+				"durable": {
+					"aggregateID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"seq": 8,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"assistantMessageID": "msg_1bf66b6a1001ng67Ec4AwbXAEc",
+					"id": "call_stub_slow_1",
+					"input": {
+						"command": "sleep 4; echo slow-done"
+					},
+					"executed": false
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2386,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66bfb0001oWA90FGKsD4CNg",
+				"created": 1794212544432,
+				"type": "session.step.streamed",
+				"durable": {
+					"aggregateID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"seq": 9,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"assistantMessageID": "msg_1bf66b6a1001ng67Ec4AwbXAEc"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2388,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66bfb3002JGKJyEnXpP5NEH",
+				"created": 1794212544435,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"cost": 0,
+					"tokens": {
+						"input": 0,
+						"output": 0,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2388,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66bfb4001SblmmrLsqAmR8Y",
+				"created": 1794212544436,
+				"type": "session.renamed",
+				"durable": {
+					"aggregateID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"seq": 11,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"title": "Stub title"
+				}
+			}
+		},
+		{
+			"kind": "tool.before",
+			"t": 2389,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"skip": null,
+			"event": {
+				"tool": "shell",
+				"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+				"agent": "build",
+				"messageID": "msg_1bf66b6a1001ng67Ec4AwbXAEc",
+				"id": "call_stub_slow_1",
+				"input": {
+					"command": "sleep 4; echo slow-done"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2393,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66bfb9001NrMKGmw7ebPbik",
+				"created": 1794212544441,
+				"type": "shell.created",
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"info": {
+						"id": "sh_1bf66bfb6001KHJE6gJfEhz0iy",
+						"status": "running",
+						"command": "sleep 4; echo slow-done",
+						"cwd": "/scratch/proj/v2-abort",
+						"shell": "/bin/zsh",
+						"file": "/scratch/state/v2-abort/xdg-data/opencode/shell/cb60e36110d46f0d5983513f101132d73c849b1c/sh_1bf66bfb6001KHJE6gJfEhz0iy.out",
+						"metadata": {
+							"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc"
+						},
+						"time": {
+							"started": 1794212544438
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2393,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66bfb9002DyjuGGgfuQM73z",
+				"created": 1794212544441,
+				"type": "session.tool.progress",
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"assistantMessageID": "msg_1bf66b6a1001ng67Ec4AwbXAEc",
+					"id": "call_stub_slow_1",
+					"metadata": {
+						"shellID": "sh_1bf66bfb6001KHJE6gJfEhz0iy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3892,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66c590001CFU3osTICkSibw",
+				"created": 1794212545936,
+				"type": "shell.exited",
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"id": "sh_1bf66bfb6001KHJE6gJfEhz0iy",
+					"status": "killed"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3893,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66c590002IVH0o6NYfHE7R0",
+				"created": 1794212545936,
+				"type": "shell.deleted",
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"id": "sh_1bf66bfb6001KHJE6gJfEhz0iy"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3893,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66c5900036fVw38fs44gdqi",
+				"created": 1794212545936,
+				"type": "session.tool.failed",
+				"durable": {
+					"aggregateID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"seq": 12,
+					"version": 2
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"assistantMessageID": "msg_1bf66b6a1001ng67Ec4AwbXAEc",
+					"id": "call_stub_slow_1",
+					"error": {
+						"type": "aborted",
+						"message": "Tool execution interrupted"
+					},
+					"metadata": {
+						"shellID": "sh_1bf66bfb6001KHJE6gJfEhz0iy"
+					},
+					"executed": false
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3893,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66c592001OzeFyPsjPFvcMY",
+				"created": 1794212545938,
+				"type": "session.step.failed",
+				"durable": {
+					"aggregateID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"seq": 13,
+					"version": 1
+				},
+				"location": {
+					"directory": "/scratch/proj/v2-abort"
+				},
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"assistantMessageID": "msg_1bf66b6a1001ng67Ec4AwbXAEc",
+					"error": {
+						"type": "aborted",
+						"message": "Step interrupted"
+					},
+					"rawFinish": "tool_calls",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3893,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66c593001PI35o9O8nHDyaH",
+				"created": 1794212545939,
+				"type": "session.usage.updated",
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"cost": 0,
+					"tokens": {
+						"input": 10,
+						"output": 5,
+						"reasoning": 0,
+						"cache": {
+							"read": 0,
+							"write": 0
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 3893,
+			"tag": "A",
+			"instance": "bwmsj5",
+			"directory": "/scratch/proj/v2-abort",
+			"event": {
+				"id": "evt_1bf66c5930020sJBWT33M5SRvw",
+				"created": 1794212545939,
+				"type": "session.execution.interrupted",
+				"durable": {
+					"aggregateID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"seq": 14,
+					"version": 1
+				},
+				"data": {
+					"sessionID": "ses_e40995238ffewJFQAEVMiTZ4Qc",
+					"reason": "user"
+				}
+			}
+		}
+	]
+}

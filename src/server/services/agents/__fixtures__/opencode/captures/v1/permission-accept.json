@@ -1,0 +1,1329 @@
+{
+	"line": "v1",
+	"version": "1.19.5",
+	"scenario": "serve",
+	"prompt": "PERMASK please",
+	"records": [
+		{
+			"kind": "load",
+			"t": 0,
+			"tag": "A",
+			"instance": "bgz62z",
+			"counter": 1,
+			"ctxKeys": [
+				"client",
+				"project",
+				"worktree",
+				"directory",
+				"experimental_workspace",
+				"serverUrl",
+				"$"
+			],
+			"directory": "/scratch/proj/v1-perm",
+			"worktree": "/",
+			"serverUrl": "http://127.0.0.1:PORT/",
+			"skip": null,
+			"argv": [
+				"bun",
+				"/$bunfs/root/opencode",
+				"serve",
+				"--port",
+				"25355",
+				"--hostname",
+				"127.0.0.1"
+			],
+			"cwd": "/scratch/proj/v1-perm"
+		},
+		{
+			"kind": "event",
+			"t": 7,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65d9720017Cjy60wXmn5zhI",
+				"type": "session.created",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"slug": "neon-otter",
+						"version": "1.19.5",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-perm",
+						"path": "scratch/proj/v1-perm",
+						"title": "New session - 2026-11-09T08:21:25.489Z",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212485489,
+							"updated": 1794212485489
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1394,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65dede0013Yf9UOOTyCL37P",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"slug": "neon-otter",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-perm",
+						"path": "scratch/proj/v1-perm",
+						"title": "New session - 2026-11-09T08:21:25.489Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212485489,
+							"updated": 1794212486878
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "chat.message",
+			"t": 1395,
+			"tag": "A",
+			"instance": "bgz62z",
+			"skip": null,
+			"i": {
+				"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa"
+			},
+			"o": {
+				"message": {
+					"id": "msg_1bf65dede001soMZLDz05xjYoq",
+					"role": "user",
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"time": {
+						"created": 1794212486878
+					},
+					"agent": "build",
+					"model": {
+						"providerID": "stub",
+						"modelID": "stub-model"
+					}
+				},
+				"parts": [
+					{
+						"type": "text",
+						"text": "PERMASK please",
+						"messageID": "msg_1bf65dede001soMZLDz05xjYoq",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"id": "prt_1bf65dee1001fcPlOEze2jyfLW"
+					}
+				]
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1397,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65dee20018c9vM3ucfl9ZsU",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "msg_1bf65dede001soMZLDz05xjYoq",
+						"role": "user",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"time": {
+							"created": 1794212486878
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1399,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65dee3001JXntUzXIMbOaFT",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"part": {
+						"type": "text",
+						"text": "PERMASK please",
+						"messageID": "msg_1bf65dede001soMZLDz05xjYoq",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"id": "prt_1bf65dee1001fcPlOEze2jyfLW"
+					},
+					"time": 1794212486883
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1400,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65dee5001Pg1I2SZNM5Vgm4",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"slug": "neon-otter",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-perm",
+						"path": "scratch/proj/v1-perm",
+						"title": "New session - 2026-11-09T08:21:25.489Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212485489,
+							"updated": 1794212486885
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1403,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65dee80014NBAHR8AWE2hFI",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1761,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65e04e001wbk2tTaZWe8dYP",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "msg_1bf65e04e001lLEuSS48W9l19s",
+						"parentID": "msg_1bf65dede001soMZLDz05xjYoq",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-perm",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212487246
+						},
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1785,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65e066001Qt8JFdzPhWvBlJ",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"slug": "neon-otter",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-perm",
+						"path": "scratch/proj/v1-perm",
+						"title": "New session - 2026-11-09T08:21:25.489Z",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212485489,
+							"updated": 1794212487270
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1786,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65e068001LXqEXorZf7NkaS",
+				"type": "session.diff",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"diff": []
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 1787,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65e069001zY3g8tANt8iA4N",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"role": "user",
+						"time": {
+							"created": 1794212486878
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						},
+						"id": "msg_1bf65dede001soMZLDz05xjYoq",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"summary": {
+							"diffs": []
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 2409,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65e2d7001XtdMKu25q66wyv",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4199,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65e9d4001fWca0z1DKAuVA7",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"slug": "neon-otter",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-perm",
+						"path": "scratch/proj/v1-perm",
+						"title": "Stub title",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212485489,
+							"updated": 1794212487270
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4202,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65e9d7001eCPPp6CJibKOGJ",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"part": {
+						"id": "prt_1bf65e9d7001ciWiUYLSDgZL1h",
+						"messageID": "msg_1bf65e04e001lLEuSS48W9l19s",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"type": "step-start"
+					},
+					"time": 1794212489687
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4204,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65e9d8001BJLQ1Z8cnZ0ybX",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"part": {
+						"id": "prt_1bf65e9d8001zdMrTh4wtX1Bam",
+						"messageID": "msg_1bf65e04e001lLEuSS48W9l19s",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"type": "tool",
+						"tool": "write",
+						"callID": "call_stub_perm_1",
+						"state": {
+							"status": "pending",
+							"input": {},
+							"raw": ""
+						}
+					},
+					"time": 1794212489688
+				}
+			}
+		},
+		{
+			"kind": "tool.execute.before",
+			"t": 4206,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"skip": null,
+			"i": {
+				"tool": "write",
+				"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+				"callID": "call_stub_perm_1"
+			},
+			"o": {
+				"args": {
+					"filePath": "/scratch/proj/v1-perm/perm.txt",
+					"path": "/scratch/proj/v1-perm/perm.txt",
+					"content": "perm\n"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4208,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65e9de001go2fc0LAVc4mSF",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"part": {
+						"type": "tool",
+						"tool": "write",
+						"callID": "call_stub_perm_1",
+						"state": {
+							"status": "running",
+							"input": {
+								"filePath": "/scratch/proj/v1-perm/perm.txt",
+								"path": "/scratch/proj/v1-perm/perm.txt",
+								"content": "perm\n"
+							},
+							"time": {
+								"start": 1794212489694
+							}
+						},
+						"id": "prt_1bf65e9d8001zdMrTh4wtX1Bam",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"messageID": "msg_1bf65e04e001lLEuSS48W9l19s"
+					},
+					"time": 1794212489694
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 4210,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65e9e0002J1546L0W8wBcMa",
+				"type": "permission.asked",
+				"properties": {
+					"id": "per_1bf65e9e0001aJ00VUCQNGho5c",
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"permission": "edit",
+					"patterns": ["scratch/proj/v1-perm/perm.txt"],
+					"metadata": {
+						"filepath": "/scratch/proj/v1-perm/perm.txt",
+						"diff": "Index: /scratch/proj/v1-perm/perm.txt\n===================================================================\n--- /scratch/proj/v1-perm/perm.txt\n+++ /scratch/proj/v1-perm/perm.txt\n@@ -0,0 +1,1 @@\n+perm\n"
+					},
+					"always": ["*"],
+					"tool": {
+						"messageID": "msg_1bf65e04e001lLEuSS48W9l19s",
+						"callID": "call_stub_perm_1"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 7005,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65f4cb0015rUWy9hYZGKrCN",
+				"type": "permission.replied",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"requestID": "per_1bf65e9e0001aJ00VUCQNGho5c",
+					"reply": "once"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 7007,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65f4cd001Z7FLP5s361Mmq6",
+				"type": "file.edited",
+				"properties": {
+					"file": "/scratch/proj/v1-perm/perm.txt"
+				}
+			}
+		},
+		{
+			"kind": "tool.execute.after",
+			"t": 7008,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"skip": null,
+			"i": {
+				"tool": "write",
+				"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+				"callID": "call_stub_perm_1",
+				"args": {
+					"filePath": "/scratch/proj/v1-perm/perm.txt",
+					"path": "/scratch/proj/v1-perm/perm.txt",
+					"content": "perm\n"
+				}
+			},
+			"o": {
+				"title": "scratch/proj/v1-perm/perm.txt",
+				"metadata": {
+					"diagnostics": {},
+					"filepath": "/scratch/proj/v1-perm/perm.txt",
+					"exists": false,
+					"truncated": false
+				},
+				"output": "Wrote file successfully."
+			}
+		},
+		{
+			"kind": "event",
+			"t": 7009,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65f4cf001G9SjA1tAwxWjzG",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"part": {
+						"type": "tool",
+						"tool": "write",
+						"callID": "call_stub_perm_1",
+						"state": {
+							"status": "completed",
+							"input": {
+								"filePath": "/scratch/proj/v1-perm/perm.txt",
+								"path": "/scratch/proj/v1-perm/perm.txt",
+								"content": "perm\n"
+							},
+							"output": "Wrote file successfully.",
+							"metadata": {
+								"diagnostics": {},
+								"filepath": "/scratch/proj/v1-perm/perm.txt",
+								"exists": false,
+								"truncated": false
+							},
+							"title": "scratch/proj/v1-perm/perm.txt",
+							"time": {
+								"start": 1794212489694,
+								"end": 1794212492495
+							}
+						},
+						"id": "prt_1bf65e9d8001zdMrTh4wtX1Bam",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"messageID": "msg_1bf65e04e001lLEuSS48W9l19s"
+					},
+					"time": 1794212492495
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 7012,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65f4d1001zsRXQ37G1I6Nj1",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"part": {
+						"id": "prt_1bf65f4d1001W5DJmdYAgeYKp1",
+						"reason": "tool-calls",
+						"messageID": "msg_1bf65e04e001lLEuSS48W9l19s",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"type": "step-finish",
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"cost": 0
+					},
+					"time": 1794212492497
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 7012,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65f4d2001UaJ06wiTl47C2M",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "msg_1bf65e04e001lLEuSS48W9l19s",
+						"parentID": "msg_1bf65dede001soMZLDz05xjYoq",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-perm",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212487246
+						},
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"finish": "tool-calls"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 7014,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65f4d30018cO5PyIwFEy5Tv",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "msg_1bf65e04e001lLEuSS48W9l19s",
+						"parentID": "msg_1bf65dede001soMZLDz05xjYoq",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-perm",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212487246,
+							"completed": 1794212492499
+						},
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"finish": "tool-calls"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 7014,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65f4d40015g80QnqY13w3Lu",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 7015,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65f4d5001TjxPPKE0Zv6aUt",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "msg_1bf65f4d5001gpzGhL3lvhj4zt",
+						"parentID": "msg_1bf65dede001soMZLDz05xjYoq",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-perm",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 0,
+							"output": 0,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212492501
+						},
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 7018,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65f4d7001J9mn7zXOGC2hu3",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"slug": "neon-otter",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-perm",
+						"path": "scratch/proj/v1-perm",
+						"title": "Stub title",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212485489,
+							"updated": 1794212492503
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 7018,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65f4d80012IxIgMAM0uESuJ",
+				"type": "session.diff",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"diff": []
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 7019,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65f4d8002AaDMjRHS6oLyIE",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"role": "user",
+						"time": {
+							"created": 1794212486878
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						},
+						"summary": {
+							"diffs": []
+						},
+						"id": "msg_1bf65dede001soMZLDz05xjYoq",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 7021,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65f4db001zQpWbCQ8Yf0qnT",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 8434,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65fa5f001tWMk9r0mm7tMUP",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"part": {
+						"id": "prt_1bf65fa5f001S8kieFhJwIf1dz",
+						"messageID": "msg_1bf65f4d5001gpzGhL3lvhj4zt",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"type": "step-start"
+					},
+					"time": 1794212493919
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 8435,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65fa60001g2FUJ21iH3hpaz",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"part": {
+						"id": "prt_1bf65fa60001rw5vV02xnooQJW",
+						"messageID": "msg_1bf65f4d5001gpzGhL3lvhj4zt",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"type": "text",
+						"text": "",
+						"time": {
+							"start": 1794212493920
+						}
+					},
+					"time": 1794212493920
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 8435,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65fa61001I4y4jkjRNL3gKS",
+				"type": "message.part.delta",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"messageID": "msg_1bf65f4d5001gpzGhL3lvhj4zt",
+					"partID": "prt_1bf65fa60001rw5vV02xnooQJW",
+					"field": "text",
+					"delta": "STUB-DONE after tool"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 8436,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65fa61002buNXrFpWxjE1u3",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"part": {
+						"id": "prt_1bf65fa60001rw5vV02xnooQJW",
+						"messageID": "msg_1bf65f4d5001gpzGhL3lvhj4zt",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"type": "text",
+						"text": "STUB-DONE after tool",
+						"time": {
+							"start": 1794212493920,
+							"end": 1794212493921
+						}
+					},
+					"time": 1794212493921
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 8437,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65fa62001770QDIdSx57bQc",
+				"type": "message.part.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"part": {
+						"id": "prt_1bf65fa62001DpJkWi8na3whnK",
+						"reason": "stop",
+						"messageID": "msg_1bf65f4d5001gpzGhL3lvhj4zt",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"type": "step-finish",
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"cost": 0
+					},
+					"time": 1794212493922
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 8438,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65fa63001Xp1t7wA4ABYUZN",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "msg_1bf65f4d5001gpzGhL3lvhj4zt",
+						"parentID": "msg_1bf65dede001soMZLDz05xjYoq",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-perm",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212492501
+						},
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"finish": "stop"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 8438,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65fa640019dlpr8Kgb0a134",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "msg_1bf65f4d5001gpzGhL3lvhj4zt",
+						"parentID": "msg_1bf65dede001soMZLDz05xjYoq",
+						"role": "assistant",
+						"mode": "build",
+						"agent": "build",
+						"path": {
+							"cwd": "/scratch/proj/v1-perm",
+							"root": "/"
+						},
+						"cost": 0,
+						"tokens": {
+							"total": 15,
+							"input": 10,
+							"output": 5,
+							"reasoning": 0,
+							"cache": {
+								"write": 0,
+								"read": 0
+							}
+						},
+						"modelID": "stub-model",
+						"providerID": "stub",
+						"time": {
+							"created": 1794212492501,
+							"completed": 1794212493924
+						},
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"finish": "stop"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 8439,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65fa65001GDVycUgSoe52SK",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"status": {
+						"type": "busy"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 8440,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65fa66001FltppweO8K2irI",
+				"type": "session.status",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"status": {
+						"type": "idle"
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 8440,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65fa66002LRAj4RZrnNtf1O",
+				"type": "session.idle",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa"
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 8441,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65fa66003qFEMIXKow1WJix",
+				"type": "session.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"id": "ses_e409a268effe1H6n49ViXfJ0oa",
+						"slug": "neon-otter",
+						"projectID": "global",
+						"directory": "/scratch/proj/v1-perm",
+						"path": "scratch/proj/v1-perm",
+						"title": "Stub title",
+						"agent": "build",
+						"model": {
+							"id": "stub-model",
+							"providerID": "stub",
+							"variant": "default"
+						},
+						"version": "1.19.5",
+						"summary": {
+							"additions": 0,
+							"deletions": 0,
+							"files": 0
+						},
+						"cost": 0,
+						"tokens": {
+							"input": 20,
+							"output": 10,
+							"reasoning": 0,
+							"cache": {
+								"read": 0,
+								"write": 0
+							}
+						},
+						"time": {
+							"created": 1794212485489,
+							"updated": 1794212493926
+						}
+					}
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 8441,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65fa67001QMCrV4vXM2VsC7",
+				"type": "session.diff",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"diff": []
+				}
+			}
+		},
+		{
+			"kind": "event",
+			"t": 8442,
+			"tag": "A",
+			"instance": "bgz62z",
+			"directory": "/scratch/proj/v1-perm",
+			"event": {
+				"id": "evt_1bf65fa68001bb6lMdBC3isfYy",
+				"type": "message.updated",
+				"properties": {
+					"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa",
+					"info": {
+						"role": "user",
+						"time": {
+							"created": 1794212486878
+						},
+						"agent": "build",
+						"model": {
+							"providerID": "stub",
+							"modelID": "stub-model"
+						},
+						"summary": {
+							"diffs": []
+						},
+						"id": "msg_1bf65dede001soMZLDz05xjYoq",
+						"sessionID": "ses_e409a268effe1H6n49ViXfJ0oa"
+					}
+				}
+			}
+		}
+	]
+}

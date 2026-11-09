@@ -42,6 +42,33 @@ export interface ScriptedAnswer {
 	 * `choices: []` follows when `usage` is set, then `[DONE]`.
 	 */
 	streamPieces?: string[];
+	/**
+	 * OpenAI only: tool calls the model "makes" (AGEN-141). The answer then ends with
+	 * `finish_reason: "tool_calls"` (unless `stop` says otherwise) and `text` is sent as content when non-empty.
+	 * `arguments` is the JSON the provider sends, as an object or an already-serialized string.
+	 */
+	toolCalls?: ScriptedToolCall[];
+}
+
+export interface ScriptedToolCall {
+	id: string;
+	name: string;
+	arguments: Record<string, unknown> | string;
+}
+
+/** What a rule sees of one OpenAI request: the parsed body and what the stub recorded. */
+export type StubRule = (
+	body: Record<string, unknown>,
+	request: RecordedRequest,
+) => ScriptedAnswer | undefined;
+
+export interface LlmStubOptions {
+	/**
+	 * Consulted first for an OpenAI request; an answer it returns is used (and recorded) without taking one from
+	 * the queue. A rule-driven stub is for a client that makes an unpredictable number of calls (an agent that
+	 * also asks for a title); a scripted queue is for a test that counts them.
+	 */
+	rules?: StubRule;
 }
 
 export interface RecordedRequest {
@@ -85,16 +112,37 @@ const PATHS: Record<string, WireShape> = {
 	"/v1/chat": "cohere",
 };
 
+const argumentsText = (call: ScriptedToolCall): string =>
+	typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments);
+
 function successBody(shape: WireShape, a: ScriptedAnswer): unknown {
 	const hasStop = a.stop !== undefined;
 	switch (shape) {
-		case "openai":
+		case "openai": {
+			const finish = a.toolCalls?.length && !hasStop ? "tool_calls" : a.stop;
 			return {
-				choices: [{ message: { content: a.text }, ...(hasStop ? { finish_reason: a.stop } : {}) }],
+				choices: [
+					{
+						message: {
+							content: a.toolCalls?.length && a.text === "" ? null : a.text,
+							...(a.toolCalls?.length
+								? {
+										tool_calls: a.toolCalls.map((call) => ({
+											id: call.id,
+											type: "function",
+											function: { name: call.name, arguments: argumentsText(call) },
+										})),
+									}
+								: {}),
+						},
+						...(finish !== undefined ? { finish_reason: finish } : {}),
+					},
+				],
 				...(a.usage
 					? { usage: { prompt_tokens: a.usage.input, completion_tokens: a.usage.output } }
 					: {}),
 			};
+		}
 		case "anthropic":
 			return {
 				content: [{ type: "text", text: a.text }],
@@ -115,6 +163,7 @@ function successBody(shape: WireShape, a: ScriptedAnswer): unknown {
 }
 
 function streamBody(a: ScriptedAnswer): string {
+	if (a.toolCalls?.length) return streamToolCallBody(a, a.toolCalls);
 	const pieces = a.streamPieces ?? [a.text];
 	const frames: unknown[] = pieces.map((piece, i) => {
 		const last = i === pieces.length - 1;
@@ -134,6 +183,53 @@ function streamBody(a: ScriptedAnswer): string {
 		});
 	}
 	return `${frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("")}data: [DONE]\n\n`;
+}
+
+/** The streamed form of a tool-call answer: the call's name and id first, then its arguments, then the finish. */
+function streamToolCallBody(a: ScriptedAnswer, calls: ScriptedToolCall[]): string {
+	const frames: unknown[] = [
+		{ choices: [{ delta: { role: "assistant", content: a.text === "" ? null : a.text } }] },
+		...calls.flatMap((call, index) => [
+			{
+				choices: [
+					{
+						delta: {
+							tool_calls: [
+								{
+									index,
+									id: call.id,
+									type: "function",
+									function: { name: call.name, arguments: "" },
+								},
+							],
+						},
+					},
+				],
+			},
+			{
+				choices: [
+					{ delta: { tool_calls: [{ index, function: { arguments: argumentsText(call) } }] } },
+				],
+			},
+		]),
+		{ choices: [{ delta: {}, finish_reason: a.stop ?? "tool_calls" }] },
+	];
+	if (a.usage) {
+		frames.push({
+			choices: [],
+			usage: { prompt_tokens: a.usage.input, completion_tokens: a.usage.output },
+		});
+	}
+	return `${frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("")}data: [DONE]\n\n`;
+}
+
+function parseBody(body: string): Record<string, unknown> {
+	try {
+		const parsed: unknown = JSON.parse(body);
+		return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+	} catch {
+		return {};
+	}
 }
 
 function wantsStream(body: string): boolean {
@@ -159,7 +255,7 @@ function createGate(): StubGate & { wait(): Promise<void>; markArrived(): void }
 	return { arrived, release, wait: () => released, markArrived };
 }
 
-export function startLlmStubServer(): LlmStubServer {
+export function startLlmStubServer(options: LlmStubOptions = {}): LlmStubServer {
 	const scripts: Record<WireShape, ScriptedAnswer[]> = { openai: [], anthropic: [], cohere: [] };
 	let recorded: RecordedRequest[] = [];
 	let unscripted: RecordedRequest[] = [];
@@ -186,7 +282,9 @@ export function startLlmStubServer(): LlmStubServer {
 			// Only the OpenAI shape streams: a stream request for another shape is
 			// unscripted, so it cannot be answered with a body the adapter did not ask for.
 			const unstreamable = record.stream && shape !== "openai";
-			const answer = shape && !unstreamable ? scripts[shape].shift() : undefined;
+			const ruled =
+				shape === "openai" && options.rules ? options.rules(parseBody(body), record) : undefined;
+			const answer = ruled ?? (shape && !unstreamable ? scripts[shape].shift() : undefined);
 			if (!shape || !answer) {
 				unscripted.push(record);
 				return new Response(`llm-stub: unscripted ${req.method} ${path}`, {
