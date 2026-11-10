@@ -50,6 +50,17 @@ import {
 	normalizeStatusEvents,
 } from "./event-normalizer.js";
 import { isForkRowEvent } from "./fork-call-row.js";
+import {
+	type PreparedHookPayload,
+	type StorableEvents,
+	isStorableEvents,
+	prepareHookPayloadForStorage,
+	redactEventsForStorage,
+	redactShortForStorage,
+	redactTextForStorage,
+	refuseSessionIdForStorage,
+	storableFromPrepared,
+} from "./ingest-redaction.js";
 import { getMode } from "./instance-mode.js";
 import { associateObservedSession } from "./launch-dispatch.js";
 import { generateSessionName } from "./name-generator.js";
@@ -258,14 +269,20 @@ async function persistEventsOn(
  */
 export async function insertNormalizedEvents(
 	sessionId: string,
-	normalizedEvents: NormalizedEvent[],
+	normalizedEvents: NormalizedEvent[] | StorableEvents,
+	options: { sender?: string } = {},
 ): Promise<SessionEvent[]> {
 	if (normalizedEvents.length === 0) return [];
 
+	// Redacted before anything is read or opened: a caller that already did it (the legacy
+	// observer branch, from a prepared payload) passes the branded value and pays nothing twice.
+	const incoming = isStorableEvents(normalizedEvents)
+		? normalizedEvents
+		: await redactEventsForStorage(options.sender ?? `session:${sessionId}`, normalizedEvents);
 	const plan = planEventInsert({
 		policy: { kind: "content_window" },
 		recent: await loadRecentRows(sessionId),
-		incoming: normalizedEvents,
+		incoming,
 		nowIso: new Date().toISOString(),
 	});
 
@@ -279,15 +296,23 @@ export async function insertNormalizedEvents(
  */
 export async function insertHookEvents(
 	sessionId: string,
-	normalizedEvents: NormalizedEvent[],
+	normalizedEvents: NormalizedEvent[] | StorableEvents,
 	policy: DedupPolicy,
 ): Promise<SessionEvent[]> {
 	if (normalizedEvents.length === 0) return [];
 
+	// The hook path passes events built from a prepared payload (branded). Anything else is
+	// redacted here, charged to the posting key, so no unredacted event reaches the planner.
+	const incoming = isStorableEvents(normalizedEvents)
+		? normalizedEvents
+		: await redactEventsForStorage(
+				policy.kind === "hook_delivery" ? `k:${policy.ctx.keyId}` : `session:${sessionId}`,
+				normalizedEvents,
+			);
 	const plan = planEventInsert({
 		policy,
 		recent: await loadRecentRows(sessionId),
-		incoming: normalizedEvents,
+		incoming,
 		nowIso: new Date().toISOString(),
 	});
 
@@ -384,6 +409,24 @@ export async function insertManagedEvents(
 	const deps: ManagedInsertDeps = { ...DEFAULT_MANAGED_INSERT_DEPS, ...seams };
 
 	const receiptKey = computeManagedReceiptKey(delivery);
+	// A delivery already received is answered before any text is scanned. The receipt insert below
+	// stays the authority (two requests can race past this read); this only keeps a retry cheap.
+	const known = await getDb()
+		.select({ id: managedDeliveryReceipts.id })
+		.from(managedDeliveryReceipts)
+		.where(
+			and(
+				eq(managedDeliveryReceipts.sessionId, sessionId),
+				eq(managedDeliveryReceipts.receiptKey, receiptKey),
+			),
+		)
+		.limit(1);
+	if (known.length > 0) {
+		recordDrops({ deliveryRetry: 1 });
+		return { events: [], replay: true };
+	}
+	// Outside the transaction: scanning must not hold SQLite's write lock.
+	const storable = await redactEventsForStorage(`s:${delivery.senderId}`, normalizedEvents);
 	return withTransaction(async (tx) => {
 		const now = new Date();
 		const fresh = await deps.insertReceipt(tx, sessionId, receiptKey, toDbTimestamp(now));
@@ -398,7 +441,7 @@ export async function insertManagedEvents(
 				keepEvent: isForkRowEvent,
 			},
 			recent: await loadRecentRows(sessionId, tx),
-			incoming: normalizedEvents,
+			incoming: storable,
 			nowIso: now.toISOString(),
 		});
 		const stored = await deps.persist(sessionId, plan, tx);
@@ -1088,6 +1131,12 @@ export async function processHookEvent(
 		return { sessionId, isNew: false, session: null, events: [] };
 	}
 
+	// A session id that is itself a secret creates nothing: the row is keyed by the id, so storing
+	// the row would store the secret. Still 200 for the sender; counted on /health.
+	if (refuseSessionIdForStorage(sessionId)) {
+		return { sessionId: "[refused]", isNew: false, session: null, events: [] };
+	}
+
 	// Check if session exists
 	const existing = await getDb()
 		.select()
@@ -1159,13 +1208,21 @@ export async function processHookEvent(
 			incrementIngestOwnerMismatch();
 			return { sessionId, isNew: false, session: null, events: [] };
 		}
+		// Before the session write: the redacted copy is built after the cheap refusals above and
+		// before anything is changed.
+		const preparedAck = await prepareHookPayloadForStorage(payload, ctx);
+		if ("refused" in preparedAck) return { sessionId, isNew: false, session: null, events: [] };
 		const ackUpdates: Record<string, unknown> = { lastUserAcknowledgedAt: now };
 		await getDb().update(sessions).set(ackUpdates).where(eq(sessions.sessionId, sessionId));
-		const storedEvents = await insertHookEvents(sessionId, normalizeHookEvent(payload, agentType), {
-			kind: "hook_delivery",
-			ctx,
-			rawPayload: payload,
-		});
+		const storedEvents = await insertHookEvents(
+			sessionId,
+			storableFromPrepared(preparedAck, normalizeHookEvent(preparedAck.payload, agentType)),
+			{
+				kind: "hook_delivery",
+				ctx,
+				rawPayload: payload,
+			},
+		);
 		const [ackSession] = await getDb()
 			.select()
 			.from(sessions)
@@ -1246,7 +1303,7 @@ export async function processHookEvent(
 				status: "active",
 				cwd: payload.cwd || null,
 				transcriptPath: payload.transcript_path || null,
-				model: payload.model || null,
+				model: payload.model ? redactShortForStorage(payload.model) : null,
 				startedAt: now,
 				lastActivityAt: now,
 				metadata: {},
@@ -1321,6 +1378,20 @@ export async function processHookEvent(
 		}
 	}
 
+	// The redacted copy of the payload, built after every cheap refusal and before any change to
+	// the session row. Normalization, the model, the task and the permission-wait id read the copy;
+	// every other decision reads `payload`, and the dedup digest hashes it as it arrived.
+	const prepared = await prepareHookPayloadForStorage(payload, ctx);
+	if ("refused" in prepared) return { sessionId, isNew: false, session: null, events: [] };
+	const stored: PreparedHookPayload = prepared;
+	// A turn id or tool-use id a rule would change is absent from the copy, and is never written to
+	// the session's metadata either: the ids the metadata keeps are the copy's.
+	const idPayload = {
+		...payload,
+		turn_id: stored.payload.turn_id,
+		tool_use_id: stored.payload.tool_use_id,
+	} as HookEventPayload;
+
 	// D21: compute the terminal-latch/closed-turn state from the metadata as
 	// it stood *before* this event, then fold this event's own effects
 	// (SessionEnd sets endedByEvent; a turn-scoped Stop/Interrupt records
@@ -1328,8 +1399,8 @@ export async function processHookEvent(
 	// no prior metadata, so d21 is trivially {latched:false, closedTurn:false}.
 	const priorMetadata = (priorRow?.metadata ?? {}) as Record<string, unknown>;
 	const nowMs = Date.parse(now);
-	const d21 = computeD21State(priorMetadata, payload, nowMs);
-	const metadataUpdate = computeD21MetadataUpdate(priorMetadata, payload, now);
+	const d21 = computeD21State(priorMetadata, idPayload, nowMs);
+	const metadataUpdate = computeD21MetadataUpdate(priorMetadata, idPayload, now);
 
 	// Update session based on event type. Any event other than SessionEnd
 	// reanimates the session back to "active" — including events that
@@ -1346,7 +1417,7 @@ export async function processHookEvent(
 	if (metadataUpdate) updates.metadata = metadataUpdate;
 
 	if (payload.cwd) updates.cwd = payload.cwd;
-	if (payload.model) updates.model = payload.model;
+	if (stored.payload.model) updates.model = stored.payload.model;
 
 	// The machine the sender reported (display only, unauthenticated: nothing
 	// here or anywhere else decides on it). Folded into this same UPDATE, and
@@ -1408,8 +1479,8 @@ export async function processHookEvent(
 	}
 
 	// Extract current task from task events
-	if (eventType === "TaskCreated" && payload.task_subject) {
-		updates.currentTask = payload.task_subject;
+	if (eventType === "TaskCreated" && stored.payload.task_subject) {
+		updates.currentTask = stored.payload.task_subject;
 	}
 
 	// Try to extract git branch from tool responses
@@ -1425,7 +1496,7 @@ export async function processHookEvent(
 		) {
 			const branchMatch = response.match(/(?:On branch |^\* |HEAD -> )([^\s,)]+)/m);
 			if (branchMatch) {
-				updates.gitBranch = branchMatch[1];
+				updates.gitBranch = redactShortForStorage(branchMatch[1] as string);
 			}
 		}
 	}
@@ -1461,7 +1532,7 @@ export async function processHookEvent(
 				await tx.update(sessions).set(kept).where(eq(sessions.sessionId, sessionId));
 				return true;
 			}
-			const merged = computeD21MetadataUpdate(freshMetadata, payload, now);
+			const merged = computeD21MetadataUpdate(freshMetadata, idPayload, now);
 			await tx
 				.update(sessions)
 				.set(merged ? { ...updates, metadata: merged } : updates)
@@ -1479,7 +1550,7 @@ export async function processHookEvent(
 	// folded into the early-snapshot `updates` object above) via its own late
 	// read-modify-write transaction — see applyPermissionWaitTransition. D21:
 	// gated by the same { latched, closedTurn } computed above for this event.
-	await applyPermissionWaitTransition(sessionId, payload, d21, pushOrigin);
+	await applyPermissionWaitTransition(sessionId, idPayload, d21, pushOrigin);
 
 	// Resolve project_id based on cwd. Compare against the persisted value
 	// so we only write when it actually changed.
@@ -1504,7 +1575,12 @@ export async function processHookEvent(
 
 	// Store normalized timeline events. F140 (D21): oversize-stub semantics
 	// come only from ctx.oversizeStub (server-set), never from the payload.
-	const normalizedEvents = normalizeHookEvent(payload, agentType, ctx.oversizeStub === true);
+	const normalizedEvents = storableFromPrepared(
+		stored,
+		normalizeHookEvent(stored.payload, agentType, ctx.oversizeStub === true, {
+			originalToolResponseChars: stored.originalToolResponseChars,
+		}),
+	);
 	const isLegacyObserver =
 		agentType === "codex_cli" && ctx.origin === "native" && !payload.transcript_path;
 	let storedEvents: SessionEvent[];
@@ -1640,14 +1716,23 @@ export async function processStatusUpdate(
 		status: "active",
 	};
 
+	// Charged to the posting key, like a hook event. The session's task and plan are redacted
+	// before they are written; the timeline rows are redacted by the insert.
+	const sender = `k:${attribution.ingestKeyId ?? "anonymous"}`;
 	if (update.status) updates.semanticStatus = update.status;
-	if (update.task) updates.currentTask = update.task;
-	if (update.plan) updates.planSummary = update.plan;
+	if (update.task) updates.currentTask = await redactTextForStorage(update.task, sender);
+	if (update.plan) {
+		updates.planSummary = await Promise.all(
+			update.plan.map((line) =>
+				typeof line === "string" ? redactTextForStorage(line, sender) : line,
+			),
+		);
+	}
 
 	await getDb().update(sessions).set(updates).where(eq(sessions.sessionId, update.session_id));
 
 	const normalizedEvents = normalizeStatusEvents(update);
-	await insertNormalizedEvents(update.session_id, normalizedEvents);
+	await insertNormalizedEvents(update.session_id, normalizedEvents, { sender });
 
 	return true;
 }

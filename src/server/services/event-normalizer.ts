@@ -169,6 +169,7 @@ function shapeUserAcknowledgeRawPayload(payload: HookEventPayload): Record<strin
 export function shapeHookRawPayload(
 	payload: HookEventPayload,
 	eventType: string,
+	originalToolResponseChars?: number,
 ): Record<string, unknown> {
 	const shaped: Record<string, unknown> = { ...(payload as unknown as Record<string, unknown>) };
 
@@ -182,7 +183,16 @@ export function shapeHookRawPayload(
 
 	if (eventType === "PostToolUse" || eventType === "PostToolUseFailure") {
 		const serialized = serializeToolResponse(payload.tool_response);
-		if (serialized !== null) {
+		if (serialized !== null && originalToolResponseChars !== undefined) {
+			// The ingest redaction step cut the response before scanning it and says how long it was.
+			if (originalToolResponseChars > TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP) {
+				shaped.tool_response = serialized.slice(0, TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP);
+				shaped.tool_response_truncated = true;
+				shaped.tool_response_chars = originalToolResponseChars;
+			} else {
+				shaped.tool_response = serialized;
+			}
+		} else if (serialized !== null) {
 			if (serialized.length > TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP) {
 				shaped.tool_response = serialized.slice(0, TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP);
 				shaped.tool_response_truncated = true;
@@ -351,6 +361,7 @@ export function normalizeHookEvent(
 	payload: HookEventPayload,
 	agentType: AgentType,
 	isOversizeStub = false,
+	options: { originalToolResponseChars?: number } = {},
 ): NormalizedEvent[] {
 	// First of all, before the oversize stub below: a hook may not be named like one
 	// of the watcher's events. Those rows are written only by the watcher itself, and a
@@ -435,7 +446,7 @@ export function normalizeHookEvent(
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
-			rawPayload: shapeHookRawPayload(payload, eventType),
+			rawPayload: shapeHookRawPayload(payload, eventType, options.originalToolResponseChars),
 		});
 	} else if (eventType === "UserAcknowledge" || eventType === "UserUnacknowledge") {
 		// Synthetic acknowledgement/unacknowledgement (see
@@ -484,7 +495,7 @@ export function normalizeHookEvent(
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
-			rawPayload: shapeHookRawPayload(payload, eventType),
+			rawPayload: shapeHookRawPayload(payload, eventType, options.originalToolResponseChars),
 		});
 	} else {
 		normalized.push({

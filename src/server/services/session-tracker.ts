@@ -71,6 +71,7 @@ import {
 } from "./effective-machine.js";
 import { normalizeHookEvent } from "./event-normalizer.js";
 import { insertNormalizedEvents } from "./event-processor.js";
+import { redactShortForStorage } from "./ingest-redaction.js";
 import { getManagedSession, mapManagedSession } from "./managed-session-state.js";
 import { sanitizeNativeName } from "./name-sanitizer.js";
 import { notifySessionUpdated } from "./notifier.js";
@@ -178,7 +179,8 @@ export async function applyNativeName(
 	applied: boolean;
 	reason?: "manual_rename" | "empty_after_sanitize";
 }> {
-	const sanitized = sanitizeNativeName(nativeName);
+	// A name an agent reports can carry a pasted key: masked before it is compared or stored.
+	const sanitized = redactShortForStorage(sanitizeNativeName(nativeName));
 	if (sanitized.length === 0) {
 		return { found: false, applied: false, reason: "empty_after_sanitize" };
 	}

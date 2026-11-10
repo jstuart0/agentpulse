@@ -341,7 +341,7 @@ describe("text over the content cap (D4)", () => {
 	test("a lone surrogate is never produced by the cut", async () => {
 		const text = `${"😀".repeat(HEAD_CHARS)}${"x".repeat(1000)}${"😀".repeat(TAIL_CHARS)}`;
 		const out = await redactTextForStorage(text, "t");
-		expect(out.isWellFormed()).toBe(true);
+		expect((out as string & { isWellFormed(): boolean }).isWellFormed()).toBe(true);
 	}, 60_000);
 });
 
@@ -388,7 +388,7 @@ describe("redactEventsForStorage", () => {
 	test("the brand: events from a prepared payload need the witness", async () => {
 		const prepared = await prepare(hook({ prompt: "x" }));
 		expect(() => storableFromPrepared({ ...prepared } as PreparedHookPayload, [])).toThrow();
-		expect(storableFromPrepared(prepared, [])).toEqual([]);
+		expect([...storableFromPrepared(prepared, [])]).toEqual([]);
 	});
 });
 

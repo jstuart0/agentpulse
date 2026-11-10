@@ -10,6 +10,7 @@
  * Any of them sends the turn to a person. Pure: it reads the events it is given.
  */
 import type { SessionEvent } from "../../../shared/types.js";
+import { FAIL_CLOSED_MARKER_PATTERN } from "./redactor.js";
 import { type RiskClassesConfig, evaluateRisk } from "./risk-classes.js";
 import { boundaryOf } from "./turn-identity.js";
 
@@ -27,6 +28,7 @@ export type HumanGateResult = { hold: false } | { hold: true; why: string };
 
 export const ASKING_WHY = "The agent is asking you something.";
 export const PERMISSION_WHY = "A permission prompt is open.";
+export const WITHHELD_WHY = "Part of this turn's text was withheld, so it can't be judged.";
 
 /**
  * The events of the turn that ended at `trigger`: everything after the newest
@@ -106,6 +108,9 @@ export function needsHuman(
 ): HumanGateResult {
 	const last = lastAssistantMessage(turn);
 	if (asksSomething(last)) return { hold: true, why: ASKING_WHY };
+	// Text the ingest step withheld (too long to scan, over a sender's share, a failed rule) can't be
+	// shown to be harmless: it goes to a person.
+	if (FAIL_CLOSED_MARKER_PATTERN.test(last)) return { hold: true, why: WITHHELD_WHY };
 
 	if (
 		turn.some(
@@ -119,6 +124,9 @@ export function needsHuman(
 	}
 
 	const pending = pendingAction(turn);
+	if (pending !== null && FAIL_CLOSED_MARKER_PATTERN.test(pending)) {
+		return { hold: true, why: WITHHELD_WHY };
+	}
 	const texts = [last, pending].filter((t): t is string => t !== null && t !== "");
 	const labels = new Set<string>();
 	for (const proposedPrompt of texts) {

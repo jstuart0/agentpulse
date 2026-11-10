@@ -1,13 +1,3 @@
-/**
- * The server's half of a Claude takeover (AGEN-117 T5, T6): the host has forked the observed session S into a
- * new conversation N, verified it, and reports success. Nothing about N exists until this runs. In the
- * caller's transaction it re-judges every fact the bind judged (the binder's authority, the host, S's owner,
- * the intended owner, the directory the host proved, the mode it reports) and only then writes N's session
- * row, the carrier launch and the managed row, and N's first timeline row. Any failed judgement or conflict
- * returns a failure kind and writes nothing; the caller fails the action (the host then kills the child).
- *
- * S's row is never written. A leaf of the control-action settle: it flips no action and announces nothing.
- */
 import { and, eq, ne, sql } from "drizzle-orm";
 import { forkFirstRowContent } from "../../shared/claude-fork-copy.js";
 import {
@@ -32,6 +22,17 @@ import { config } from "../config.js";
 import { events, apiKeys, controlActions, sessions, users } from "../db/schema/index.js";
 import { jsonExtractText } from "../db/sql-helpers.js";
 import { mayBindSession, mayBindToHost, mayUseForkOptionsOnHost } from "./authorization.js";
+/**
+ * The server's half of a Claude takeover (AGEN-117 T5, T6): the host has forked the observed session S into a
+ * new conversation N, verified it, and reports success. Nothing about N exists until this runs. In the
+ * caller's transaction it re-judges every fact the bind judged (the binder's authority, the host, S's owner,
+ * the intended owner, the directory the host proved, the mode it reports) and only then writes N's session
+ * row, the carrier launch and the managed row, and N's first timeline row. Any failed judgement or conflict
+ * returns a failure kind and writes nothing; the caller fails the action (the host then kills the child).
+ *
+ * S's row is never written. A leaf of the control-action settle: it flips no action and announces nothing.
+ */
+import { redactShortForStorage } from "./ingest-redaction.js";
 import { getModeOn } from "./instance-mode.js";
 import { buildLaunchSpec, isWithinTrustedRoot } from "./launch-compatibility.js";
 import {
@@ -253,7 +254,7 @@ export async function settleClaudeTakeover(
 	const name = await forkDisplayName(
 		tx,
 		sourceId,
-		source.displayName?.trim() || `session ${sourceId.slice(0, 8)}`,
+		redactShortForStorage(source.displayName?.trim() || `session ${sourceId.slice(0, 8)}`),
 		action.id,
 	);
 	const inserted = await tx
@@ -352,7 +353,12 @@ export async function settleClaudeTakeover(
 		eventType: SESSION_RESUMED_EVENT_TYPE,
 		category: "system_event",
 		source: "managed_control",
-		content: forkFirstRowContent(mode, str(meta.hostName), source.displayName),
+		// The source's name came from the agent (or a person); a key in it is masked before it is copied.
+		content: forkFirstRowContent(
+			mode,
+			str(meta.hostName),
+			source.displayName ? redactShortForStorage(source.displayName) : source.displayName,
+		),
 		isNoise: false,
 		rawPayload: { resume_kind: "takeover", forked_from: sourceId },
 		createdAt: timestamp,

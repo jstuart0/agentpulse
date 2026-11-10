@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
 import { settings } from "../../db/schema/index.js";
+import { FAIL_CLOSED_MARKER_PATTERN } from "./redactor.js";
 
 /**
  * Phase 7 risk class configuration. The watcher consults this list at
@@ -11,6 +12,8 @@ import { settings } from "../../db/schema/index.js";
  */
 
 export const AI_RISK_CLASSES_KEY = "ai.riskClasses";
+
+export const WITHHELD_TEXT_CLASS_ID = "withheld_text";
 
 export type RiskMatchRule =
 	| { type: "regex"; pattern: string; flags?: string }
@@ -105,6 +108,15 @@ export interface RiskHit {
  */
 export function evaluateRisk(config: RiskClassesConfig, input: RiskEvaluationInput): RiskHit[] {
 	const hits: RiskHit[] = [];
+	// Not a configured class: text the ingest redaction step withheld can't be judged, so it is risky.
+	if (input.proposedPrompt && FAIL_CLOSED_MARKER_PATTERN.test(input.proposedPrompt)) {
+		hits.push({
+			classId: WITHHELD_TEXT_CLASS_ID,
+			label: "Withheld text",
+			policyOverride: "ask",
+			reason: "Part of the text was withheld by redaction",
+		});
+	}
 	for (const cls of config.classes) {
 		const hit = evaluateOne(cls, input);
 		if (hit) hits.push(hit);

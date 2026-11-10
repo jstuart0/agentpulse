@@ -1,6 +1,7 @@
 import { MAX_EVENT_CONTENT_CHARS } from "../../shared/managed-report-limits.js";
 import type { HookEventPayload } from "../../shared/types.js";
 import {
+	FAIL_CLOSED_MARKER_PATTERN,
 	type RedactionJob,
 	createRedactionJob,
 	isPlaceholderValue,
@@ -68,10 +69,6 @@ export const TOO_DEEP_MARKER = "[REDACTED:too_deep]";
 export const TOO_LARGE_MARKER = "[REDACTED:too_large]";
 export const MASK = "[REDACTED]";
 
-/** Every marker this module (or the run cutter) writes that stands for text a person never saw. */
-export const FAIL_CLOSED_MARKER_PATTERN =
-	/\[REDACTED:(?:redaction_backlog|redaction_error|over_limit|run_too_long|too_deep|too_large)\]/;
-
 /** Top-level keys that carry identity: kept only when they are a plain id that no rule would change. */
 const ID_KEYS: ReadonlySet<string> = new Set([
 	"tool_use_id",
@@ -82,7 +79,7 @@ const ID_KEYS: ReadonlySet<string> = new Set([
 	"transcript_uuid",
 	"transcript_timestamp",
 ]);
-const ID_GRAMMAR = /^[A-Za-z0-9_.:-]{1,200}$/;
+const ID_GRAMMAR = /^[A-Za-z0-9_.:#-]{1,200}$/;
 
 /** Top-level keys that carry a name, for a hook payload and for a stored event's raw payload. */
 const HOOK_NAME_KEYS: ReadonlySet<string> = new Set([
@@ -736,6 +733,17 @@ function senderOfKey(keyId: string): string {
 }
 
 /**
+ * True when a session id is itself a secret a rule would mask. Such a delivery is refused before
+ * anything is created from it: a session row is keyed by the id, so storing it would store the secret.
+ * Counted on /health as `sessionIdRefused`.
+ */
+export function refuseSessionIdForStorage(sessionId: unknown): boolean {
+	if (typeof sessionId !== "string" || unchangedByRedaction(sessionId)) return false;
+	counters.sessionIdRefused++;
+	return true;
+}
+
+/**
  * A copy of a hook payload that is safe to store, or a refusal when its session id is itself
  * a secret. Nothing in `payload` changes. Built after the cheap rejection gates and before
  * any session write, so a refusal or a marker never follows a mutation.
@@ -962,3 +970,5 @@ export const __testing = {
 		return { units: counters.pendingUnits, jobs: counters.pendingJobs, waiters: waiters.length };
 	},
 };
+
+export { FAIL_CLOSED_MARKER_PATTERN };

@@ -43,6 +43,7 @@ import {
 	insertNormalizedEvents,
 } from "./event-processor.js";
 import { constrainForkRowContent, normalizeForkRowPayload } from "./fork-call-row.js";
+import { redactShortForStorage } from "./ingest-redaction.js";
 import { cleanMachineName } from "./machine-name.js";
 import { generateSessionName } from "./name-generator.js";
 import { ownerForNewSession } from "./session-attribution.js";
@@ -508,9 +509,32 @@ async function writeManagedSessionState(
 	return { currentSession, managedRow };
 }
 
+/** What a title may hold: more than a model name, still short. */
+const TITLE_MAX_CHARS = 512;
+
+/**
+ * The report with the text fields that name things redacted: a thread title (and the session name
+ * derived from it) or a model name can carry a pasted key. The two titles are redacted the same way,
+ * so the title sync's comparison of them is unchanged.
+ */
+function withRedactedNames(input: ManagedSessionStateInput): ManagedSessionStateInput {
+	const redacted = { ...input };
+	if (typeof input.desiredThreadTitle === "string") {
+		redacted.desiredThreadTitle = redactShortForStorage(input.desiredThreadTitle, TITLE_MAX_CHARS);
+	}
+	if (typeof input.providerThreadTitle === "string") {
+		redacted.providerThreadTitle = redactShortForStorage(
+			input.providerThreadTitle,
+			TITLE_MAX_CHARS,
+		);
+	}
+	if (typeof input.model === "string") redacted.model = redactShortForStorage(input.model);
+	return redacted;
+}
+
 export async function upsertManagedSessionState(
 	supervisorId: string,
-	input: ManagedSessionStateInput,
+	reported: ManagedSessionStateInput,
 	options: {
 		/**
 		 * The report is a replay from the supervisor's outbox, or a late one. It can be
@@ -519,6 +543,7 @@ export async function upsertManagedSessionState(
 		replay?: boolean;
 	} = {},
 ): Promise<{ session: Session; managedSession: ManagedSession }> {
+	const input = withRedactedNames(reported);
 	const resumeActionId =
 		typeof input.resumeActionId === "string" && input.resumeActionId !== ""
 			? input.resumeActionId
@@ -651,7 +676,7 @@ export async function appendManagedSessionEvents(
 	options: { late?: boolean } = {},
 ) {
 	const prepared = await prepareManagedEvents(supervisorId, sessionId, events);
-	const stored = await insertNormalizedEvents(sessionId, prepared);
+	const stored = await insertNormalizedEvents(sessionId, prepared, { sender: `s:${supervisorId}` });
 	// No delivery id means no receipt transaction to ride: the update follows the insert.
 	await applyManagedTurnBoundaries(getDb(), sessionId, prepared, { late: options.late === true });
 	return stored;

@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { and, eq, isNotNull, ne } from "drizzle-orm";
-import type { AgentType, Session } from "../../shared/types.js";
+import type { AgentType, Session, SessionEvent } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { sessions } from "../db/schema/index.js";
 import { type NormalizedEvent, createAssistantTranscriptEvent } from "./event-normalizer.js";
@@ -153,7 +153,20 @@ async function syncTranscriptForSession(session: SessionWithMetadata): Promise<v
 	}
 
 	const normalizedEvents = parseTranscriptDelta(session.agentType, lines);
-	const insertedEvents = await insertNormalizedEvents(session.sessionId, normalizedEvents);
+	let insertedEvents: SessionEvent[] = [];
+	try {
+		insertedEvents = await insertNormalizedEvents(session.sessionId, normalizedEvents);
+	} catch (error) {
+		// One bad batch must not hold the cursor back for ever: the lines are skipped, counted, and
+		// the sync goes on from the end of the file.
+		console.error(
+			JSON.stringify({
+				kind: "transcript_sync_insert_failed",
+				level: "error",
+				error: error instanceof Error ? error.message : String(error),
+			}),
+		);
+	}
 
 	if (insertedEvents.length > 0) {
 		notifySessionEvents(session.sessionId, insertedEvents);

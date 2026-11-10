@@ -613,6 +613,14 @@ export const REDACTION_MAX_EXTENSION = 64 * 1024;
 /** What replaces a run no rule could finish within `REDACTION_MAX_EXTENSION`. */
 export const RUN_TOO_LONG_MARKER = "[REDACTED:run_too_long]";
 
+/**
+ * Markers that stand for text nobody scanned or could show (a run too long, an event the
+ * ingest step could not afford to scan, a cut leaf, a failed rule). A reader that decides
+ * something from text must treat the text next to one as unknown, not as clean.
+ */
+export const FAIL_CLOSED_MARKER_PATTERN =
+	/\[REDACTED:(?:redaction_backlog|redaction_error|over_limit|run_too_long|too_deep|too_large)\]/;
+
 // Neither a newline nor a word character: stands in for the text before a window so
 // `^` (with the `m` flag) and `\b` don't read the window's edge as a line or word start.
 const WINDOW_SENTINEL = "\u0001";
