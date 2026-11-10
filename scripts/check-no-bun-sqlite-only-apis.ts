@@ -39,6 +39,8 @@ const ROOT = new URL("..", import.meta.url).pathname;
 const ALLOWLISTED_SUFFIXES = [
 	// Core DB adapter and test helpers
 	"src/server/db/client.ts",
+	// AGEN-67: reads and writes drizzle's SQLite ledger table with raw bun:sqlite.
+	"src/server/db/sqlite-migration-ledger.ts",
 	// The withTransaction helper is the canonical DB-layer file for sync-tx
 	// semantics. Its docstring documents the .run()/.all()/.get() patterns by
 	// design; its implementation uses them to bridge the bun-sqlite sync path.

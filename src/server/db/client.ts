@@ -19,6 +19,7 @@ import {
 	FTS_INDEXED_EVENT_TYPES_SQL_LIST,
 } from "./fts-ddl.js";
 import * as schema from "./schema/index.js";
+import { SESSION_CHILD_FK_TARGETS } from "./session-child-fks.js";
 import { AI_DISPATCH_AUDIT_TRIGGERS_SQLITE, DEDUPE_OPEN_RUNS_SQL } from "./watcher-modes-ddl.js";
 
 // Hand-written DDL shared with drizzle/sqlite/0012 (see watcher-modes-ddl.ts).
@@ -1395,20 +1396,24 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		"CREATE UNIQUE INDEX IF NOT EXISTS launch_requests_idempotency_key_unique ON launch_requests(idempotency_key)",
 	];
 
-	// Vector search opt-in. The embeddings table only materializes when
-	// the build flag is on so installs that don't need this feature stay
-	// lean (no extra column, no extra writes, no boot-time backfill).
+	// The embeddings table and its scan index (migrations 0000 and 0010) are created whatever the
+	// vector flag says: a Drizzle-born install already has both, and the migration ledger reconcile
+	// (sqlite-migration-ledger.ts) only records 0000 and 0010 when they are present, so they must
+	// exist here. Only the delete trigger and the model index stay opt-in: they cost writes, and
+	// no migration creates them.
+	migrations.push(
+		"CREATE TABLE IF NOT EXISTS event_embeddings (event_id INTEGER PRIMARY KEY, model TEXT NOT NULL, dim INTEGER NOT NULL, vector BLOB NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))",
+		// Serves the bounded Ask scan (services/ai/embeddings/vector-scan.ts).
+		// Mirrors the drizzle migration for installs on the legacy init path.
+		"CREATE INDEX IF NOT EXISTS idx_event_embeddings_model_dim_event ON event_embeddings(model, dim, event_id)",
+	);
 	if (config.vectorSearchEnabled) {
 		migrations.push(
-			"CREATE TABLE IF NOT EXISTS event_embeddings (event_id INTEGER PRIMARY KEY, model TEXT NOT NULL, dim INTEGER NOT NULL, vector BLOB NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))",
 			// FK-style cascade via trigger (we don't define a real FK on
 			// events.id because the events table doesn't have ON DELETE
 			// cascade configured and we don't want to retrofit one here).
 			"CREATE TRIGGER IF NOT EXISTS trg_events_ad_embeddings AFTER DELETE ON events BEGIN DELETE FROM event_embeddings WHERE event_id = OLD.id; END",
 			"CREATE INDEX IF NOT EXISTS idx_event_embeddings_model ON event_embeddings(model)",
-			// Serves the bounded Ask scan (services/ai/embeddings/vector-scan.ts).
-			// Mirrors the drizzle migration for installs on the legacy init path.
-			"CREATE INDEX IF NOT EXISTS idx_event_embeddings_model_dim_event ON event_embeddings(model, dim, event_id)",
 		);
 	}
 
@@ -1676,17 +1681,7 @@ async function runFtsBootstrap(sqlite: Database): Promise<void> {
  * row count without aborting boot — operators can clean up stragglers.
  */
 function rebuildSessionChildFks(sqlite: Database): void {
-	const targets: ReadonlyArray<{ table: string; column: string }> = [
-		{ table: "events", column: "session_id" },
-		{ table: "managed_sessions", column: "session_id" },
-		{ table: "control_actions", column: "session_id" },
-		{ table: "watcher_proposals", column: "session_id" },
-		{ table: "ai_hitl_requests", column: "session_id" },
-		{ table: "ai_watcher_runs", column: "session_id" },
-		{ table: "watcher_configs", column: "session_id" },
-	];
-
-	for (const { table, column } of targets) {
+	for (const { table, column } of SESSION_CHILD_FK_TARGETS) {
 		try {
 			const exists = sqlite
 				.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")

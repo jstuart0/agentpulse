@@ -18,8 +18,8 @@ const { initializeDatabase } = await import("./client.js");
 const MIGRATIONS = resolve(import.meta.dir, "../../../drizzle/sqlite");
 const TMP = mkdtempSync(join(tmpdir(), "ap-legacy-parity-"));
 
-/** What the opt-in vector table adds only when vector search is built in, and Drizzle's own bookkeeping. */
-const NOT_ON_LEGACY = new Set(["event_embeddings", "__drizzle_migrations"]);
+/** Drizzle's own bookkeeping (the legacy path writes the ledger too since AGEN-67, but its rows are checked elsewhere). */
+const NOT_ON_LEGACY = new Set(["__drizzle_migrations"]);
 
 async function drizzleBorn(): Promise<Database> {
 	const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
