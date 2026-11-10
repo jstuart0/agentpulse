@@ -7,6 +7,22 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Changed
+
+- **Secrets in stored event and session text are masked (AGEN-146).** Agent text used to be stored exactly as sent, then indexed,
+  shared in team mode and served over REST, WebSocket and MCP. It is now masked before it is written, for every agent type: a
+  key in a prompt, a command or a tool's output becomes a marker in `events` (content, tool input, tool response, raw payload)
+  and in a session's native name, model, branch, task, plan and managed thread titles. Text over 1,000,000 characters keeps its
+  head and tail around a marker. Work is sliced and capped per sender, and an event that can't be scanned in time is stored as
+  a marker, never in the clear. `GET /api/v1/health` gains `ingestRedaction` counters. Rows written before the upgrade are not
+  rewritten. Limits are listed in the README (*Secrets in stored text*).
+- **Redaction rules.** The built-in rules now see a token glued to a literal `\n`/`\r`/`\t`, an ANSI colour sequence or a `%xx`
+  escape, and `API_KEY_sk-ant-...` (a long distinctive prefix after an underscore or digit). A value that only starts with
+  `[REDACTED]` is masked, so a marker can't be used to hide the rest of a secret. These also apply to the watcher, the summary,
+  Telegram and push, which redact on the way out.
+- **Hook-event watcher gate.** Text next to a marker that stands for withheld text (`redaction_backlog`, `redaction_error`,
+  `over_limit`) is never read as clean: the human gate sends the turn to a person and the risk classes count it as risky.
+
 ### Added
 
 - **OpenCode is observed (AGEN-141).** OpenCode 1.x and 2.x sessions appear on the dashboard with an "OpenCode" badge and an
@@ -22,8 +38,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   - The plugin applies your exclude rules and sends nothing while they're invalid. A running OpenCode 2 background service
     doesn't see `AGENTPULSE_SKIP` set in a shell: use a rule, or `opencode service stop`. With a rules file present, a one-shot
     `opencode run` sends nothing at exit, so a turn end whose POST hadn't started can be lost.
-  - Prompts, tool arguments and output are stored as the other agents' are (no redaction before the server); error rows carry
-    only the error's name and HTTP status. The exit-time send uses `/usr/bin/curl`. PowerShell has never been executed.
+  - Prompts, tool arguments and output are stored as the other agents' are (masked at ingest since AGEN-146; before that, with no
+    redaction before the server); error rows carry only the error's name and HTTP status. The exit-time send uses `/usr/bin/curl`. PowerShell has never been executed.
 - **Stop turn on a continued Claude session (AGEN-119).** While a continued session's turn runs, the prompt box shows **Stop turn**
   in place of Send (on a phone the overflow menu has it too, above End session). It ends what Claude is doing and the session
   stays open: the process, the conversation and the session keep going and the next prompt runs. Nothing is signalled (Claude's
