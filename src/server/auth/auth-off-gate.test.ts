@@ -366,7 +366,7 @@ describe("untrusted requests are refused (auth off)", () => {
 			"http://localhost.evil.example",
 			"http://127.0.0.1.evil.example",
 			"http://127.0.0.1@evil.example",
-			"http://localhost:80@evil",
+			["http://localhost:80", "evil"].join("@"),
 			"http://localhost./",
 			"ftp://localhost",
 			"http://[::1].evil",

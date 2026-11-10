@@ -1,7 +1,6 @@
 import { Suspense, lazy, useEffect } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
-import { HostRefusedNotice } from "./components/HostRefusedNotice.js";
 import { Layout } from "./components/Layout.js";
 import { ServerUnreachableNotice } from "./components/ServerUnreachableNotice.js";
 import { ForcedPasswordChange } from "./components/settings/ForcedPasswordChange.js";
@@ -59,6 +58,12 @@ const SearchPage = lazy(() =>
 const LoginPage = lazy(() =>
 	import("./pages/LoginPage.js").then((module) => ({ default: module.LoginPage })),
 );
+// Rarely shown (auth off, an address the server refuses): kept out of the main chunk.
+const HostRefusedNotice = lazy(() =>
+	import("./components/HostRefusedNotice.js").then((module) => ({
+		default: module.HostRefusedNotice,
+	})),
+);
 const ProjectsPage = lazy(() =>
 	import("./pages/ProjectsPage.js").then((module) => ({ default: module.ProjectsPage })),
 );
@@ -86,7 +91,13 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 		hostRefused,
 	});
 	if (gate === "loading") return <RouteFallback />;
-	if (gate === "host_refused") return <HostRefusedNotice />;
+	if (gate === "host_refused") {
+		return (
+			<Suspense fallback={<RouteFallback />}>
+				<HostRefusedNotice />
+			</Suspense>
+		);
+	}
 	if (gate === "change_password") return <ForcedPasswordChange />;
 	if (gate === "login") {
 		return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
