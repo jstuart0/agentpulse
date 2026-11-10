@@ -141,6 +141,28 @@ describe("claude_code", () => {
 		expect(getIngestRedactionCounters().hits).toBeGreaterThan(0);
 	});
 
+	test("a long tool response is cut for storage, and its true length and truncation are still reported", async () => {
+		const sessionId = `claude-long-${Date.now()}`;
+		const response = `${"line of output\n".repeat(2000)}token ${KEY}\n`;
+		await post(
+			{
+				session_id: sessionId,
+				hook_event_name: "PostToolUse",
+				tool_name: "Bash",
+				tool_use_id: "toolu_long",
+				tool_input: { command: "run" },
+				tool_response: response,
+			},
+			"claude_code",
+		);
+		const { rows } = await storedFor(sessionId);
+		const raw = rows[0]?.rawPayload as Raw;
+		expect(raw.tool_response_truncated).toBe(true);
+		expect(raw.tool_response_chars).toBe(response.length);
+		expect((raw.tool_response as string).length).toBe(4096);
+		expectMasked(rows, false);
+	});
+
 	test("a model name and a git branch carrying a key are masked and cut", async () => {
 		const sessionId = `claude-meta-${Date.now()}`;
 		await post(

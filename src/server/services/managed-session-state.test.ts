@@ -405,7 +405,7 @@ describe("managed reports are redacted (AGEN-146)", () => {
 	const PROOF = "AAAAAAAAAAAAAAAA";
 	const message = (content: string) => ({
 		eventType: "ManagedAgentMessage",
-		category: "assistant_message",
+		category: "assistant_message" as const,
 		content,
 	});
 

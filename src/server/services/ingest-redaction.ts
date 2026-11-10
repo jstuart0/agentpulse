@@ -151,10 +151,20 @@ export interface RedactionStats {
 	errors: number;
 	idsDropped: number;
 	backlog: boolean;
+	/** Characters this call scanned in place; past one slice's worth the rest goes through the scheduler. */
+	inlineUnits: number;
 }
 
 function newStats(): RedactionStats {
-	return { units: 0, hits: 0, cutLeaves: 0, errors: 0, idsDropped: 0, backlog: false };
+	return {
+		units: 0,
+		hits: 0,
+		cutLeaves: 0,
+		errors: 0,
+		idsDropped: 0,
+		backlog: false,
+		inlineUnits: 0,
+	};
 }
 
 // ── The scheduler ───────────────────────────────────────────────────────────
@@ -334,7 +344,14 @@ function redactBounded(
 	stats: RedactionStats,
 ): string | Promise<string> {
 	stats.units += text.length;
-	if (text.length <= INLINE_MAX_UNITS && counters.pendingJobs === 0) {
+	// In place only while this call has not yet used a slice's worth of the loop: a batch of many
+	// small texts is paced by the scheduler like one large text.
+	if (
+		text.length <= INLINE_MAX_UNITS &&
+		counters.pendingJobs === 0 &&
+		stats.inlineUnits + text.length <= INLINE_MAX_UNITS
+	) {
+		stats.inlineUnits += text.length;
 		const started = performance.now();
 		const result = redact(text);
 		counters.unitsScanned += text.length;
@@ -397,9 +414,11 @@ async function redactLeaf(text: string, sender: string, stats: RedactionStats): 
 interface WalkState {
 	sender: string;
 	stats: RedactionStats;
-	/** Identical strings in one event cost once; the secret-key form is a different answer. */
+	/**
+	 * Identical strings in one event cost once. A string under a secret key is masked before this is
+	 * consulted, so a memoized answer is never one the key context would have changed.
+	 */
 	plain: Map<string, string>;
-	secret: Map<string, string>;
 	keys: Map<string, string>;
 	nodes: number;
 	/** Cut each string leaf to this many characters before it is scanned (a tool response). */
@@ -415,7 +434,6 @@ function newWalkState(
 		sender,
 		stats,
 		plain: new Map(),
-		secret: new Map(),
 		keys: new Map(),
 		nodes: 0,
 		leafCap,
@@ -464,12 +482,11 @@ async function leafFor(text: string, underSecretKey: boolean, ws: WalkState): Pr
 	if (underSecretKey && text.length >= SECRET_VALUE_MIN_CHARS && !isPlaceholderValue(text)) {
 		return MASK;
 	}
-	const memo = underSecretKey ? ws.secret : ws.plain;
-	const known = memo.get(text);
+	const known = ws.plain.get(text);
 	if (known !== undefined) return known;
 	const input = ws.leafCap !== null ? cutHead(text, ws.leafCap) : text;
 	const out = await redactLeaf(input, ws.sender, ws.stats);
-	memo.set(text, out);
+	ws.plain.set(text, out);
 	return out;
 }
 

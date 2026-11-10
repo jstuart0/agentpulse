@@ -131,9 +131,13 @@ await timed("hook event, 8 KiB prompt", () =>
 	),
 );
 await timed("hook event, 256 Ki single line", () =>
-	prepareHookPayloadForStorage(hook({ tool_response: shapes["single-line"]!.slice(0, 262_144) }), {
-		keyId: "k",
-	}),
+	prepareHookPayloadForStorage(
+		hook({
+			hook_event_name: "UserPromptSubmit",
+			prompt: fit(shapes["single-line"] as string, 262_144),
+		}),
+		{ keyId: "k" },
+	),
 );
 await timed("hook event, 5 MB Read response", () =>
 	prepareHookPayloadForStorage(hook({ tool_response: fit(code, 5_000_000) }), { keyId: "k" }),

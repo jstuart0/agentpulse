@@ -318,12 +318,17 @@ describe("text over the content cap (D4)", () => {
 		}
 	}, 120_000);
 
-	test("a PEM block whose BEGIN is before the kept tail loses its body and END line", async () => {
-		const pem = `-----BEGIN PRIVATE KEY-----\n${`${"QUJD".repeat(15)}\n`.repeat(40)}-----END PRIVATE KEY-----\n`;
-		const total = MAX_EVENT_CONTENT_CHARS + 20_000;
+	test("a PEM block whose BEGIN is before the scanned tail loses its body and END line", async () => {
+		// The rule never sees the BEGIN (it is before the margin), so the tail edge pass has to drop
+		// the orphaned body and the END line.
+		const body = `${"QUJD".repeat(16)}\n`.repeat(400);
+		const pem = `-----BEGIN PRIVATE KEY-----\n${body}-----END PRIVATE KEY-----\n`;
+		// Far enough from the head that the two scanned ends don't overlap.
+		const total = 2 * MAX_EVENT_CONTENT_CHARS;
 		const startOfKept = total - TAIL_CHARS;
-		const at = startOfKept - 400;
+		const at = startOfKept - CUT_MARGIN_CHARS - 100;
 		const text = `${filler(at)}\n${pem}${filler(total - at - pem.length - 1)}`;
+		expect(text.indexOf("-----END") - startOfKept).toBeGreaterThan(1000);
 		const out = await redactTextForStorage(text, "t");
 		expect(out).not.toContain("QUJDQUJD");
 		expect(out).not.toContain("-----END");
@@ -415,6 +420,29 @@ describe("backpressure (D8)", () => {
 		expect(getIngestRedactionCounters().backlogMarkers).toBe(1);
 	}, 60_000);
 
+	test("an event batch over the sender's share is marker-only, keeping valid ids and names", async () => {
+		const big = "y".repeat(MAX_EVENT_CONTENT_CHARS);
+		const batch = Array.from({ length: 9 }, (_, i) =>
+			ev({
+				content: big,
+				toolInput: { command: ghp },
+				toolName: "Bash",
+				providerEventType: "prompt",
+				rawPayload: { tool_use_id: `toolu_${i}`, kind: "call", message: ghp },
+			}),
+		);
+		const out = await redactEventsForStorage("s:greedy", batch);
+		expect(out).toHaveLength(9);
+		out.forEach((event, i) => {
+			expect(event.content).toBe(BACKLOG_MARKER);
+			expect(event.toolInput).toBeNull();
+			expect(event.toolResponse).toBeNull();
+			expect(event.toolName).toBe("Bash");
+			expect(event.rawPayload).toEqual({ tool_use_id: `toolu_${i}`, kind: "call" });
+		});
+		expect(JSON.stringify(out)).not.toContain("dddddddd");
+	}, 60_000);
+
 	test("an event waits for capacity, bounded, and then falls back to the marker", async () => {
 		const a = "z ".repeat(2_000_000);
 		const hold = (key: string) =>
@@ -478,6 +506,28 @@ describe("scheduler", () => {
 			longest = Math.max(longest, run);
 		}
 		expect(longest).toBeLessThanOrEqual(2);
+	});
+
+	test("a batch of many small events is paced by the scheduler, not run in one stretch", async () => {
+		const batch = Array.from({ length: 200 }, () =>
+			ev({ content: `${"word ".repeat(800)}${ghp}` }),
+		);
+		let turns = 0;
+		let running = true;
+		const tick = () => {
+			turns++;
+			if (running) setImmediate(tick);
+		};
+		setImmediate(tick);
+		const slices: number[] = [];
+		__testing.setSliceObserver((info) => slices.push(info.units));
+		const out = await redactEventsForStorage("s:batch", batch);
+		running = false;
+		expect(JSON.stringify(out)).not.toContain("dddddddd");
+		// Only the first slice's worth ran in place; everything else took turns.
+		expect(slices.length).toBeGreaterThan(150);
+		expect(turns).toBeGreaterThan(150);
+		expect(Math.max(...slices)).toBeLessThanOrEqual(SLICE_UNITS + 64);
 	});
 
 	test("a small event with nothing queued is redacted with no turn at all", async () => {

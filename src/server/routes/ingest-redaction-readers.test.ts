@@ -249,6 +249,17 @@ describe("a continued Claude session's call rows", () => {
 		};
 		const [out] = await redactEventsForStorage("s:sup", [call]);
 		expect(out).toEqual(call);
+		// The web's Details lookup finds the same call by the id the row still carries.
+		const { callRowToolUseId } = await import(
+			"../../web/components/session-detail/fork-detail-availability.js"
+		);
+		expect(
+			callRowToolUseId({
+				eventType: "HeadlessStatus",
+				createdAt: "2026-01-01T00:00:00Z",
+				rawPayload: out?.rawPayload,
+			}),
+		).toBe("toolu_01abcDEF-ghi_2");
 		expect(JSON.stringify(out)).toBe(JSON.stringify(call));
 	});
 });
