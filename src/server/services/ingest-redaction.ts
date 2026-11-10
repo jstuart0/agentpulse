@@ -48,8 +48,6 @@ export const HEAD_CHARS = 499_968;
 export const TAIL_CHARS = 499_968;
 /** Extra text scanned past each kept end so a match straddling the cut is already a marker. */
 export const CUT_MARGIN_CHARS = 20 * 1024;
-/** The longest run at the kept tail's start that is dropped as a token's suffix. */
-const TAIL_LEAD_RUN_MAX = 4 * 1024;
 /** Extra characters of a tool response scanned beyond the part that is stored. */
 const TOOL_RESPONSE_SCAN_MARGIN = 4 * 1024;
 /** What an unrecognised leaf costs at minimum, and the walk's limits. */
@@ -59,6 +57,7 @@ export const MAX_WALK_NODES = 200_000;
 /** The longest model name or branch kept. */
 export const SHORT_FIELD_MAX_CHARS = 256;
 const KEY_MAX_CHARS = 256;
+export const MAX_DISTINCT_KEYS = 10_000;
 
 export const OVER_LIMIT_MARKER = " [REDACTED:over_limit] ";
 export const BACKLOG_MARKER = "[REDACTED:redaction_backlog]";
@@ -109,6 +108,8 @@ const VERBATIM_KEYS: ReadonlySet<string> = new Set(["cwd", "transcript_path"]);
 const PAIR_NAME_KEYS = ["name", "key", "header", "Name", "Key"] as const;
 const PAIR_VALUE_KEYS = ["value", "Value"] as const;
 const PAIR_VALUE_MIN_CHARS = 4;
+const SECRET_FLAG =
+	/^--(?:(?:client|access|auth|api|refresh|bearer)-)?(?:password|token|secret|api-key)(?:-file|-path)?$/;
 const SECRET_VALUE_MIN_CHARS = 6;
 
 // ── Counters ────────────────────────────────────────────────────────────────
@@ -153,6 +154,8 @@ export interface RedactionStats {
 	backlog: boolean;
 	/** Characters this call scanned in place; past one slice's worth the rest goes through the scheduler. */
 	inlineUnits: number;
+	/** True when this call changed or withheld any text. */
+	changed: boolean;
 }
 
 function newStats(): RedactionStats {
@@ -164,6 +167,7 @@ function newStats(): RedactionStats {
 		idsDropped: 0,
 		backlog: false,
 		inlineUnits: 0,
+		changed: false,
 	};
 }
 
@@ -252,10 +256,15 @@ interface Ticket {
 const pendingBySender = new Map<string, number>();
 const waiters: Waiter[] = [];
 
+let senderCap = SENDER_PENDING_CAP_UNITS;
+let globalCap = GLOBAL_PENDING_CAP_UNITS;
+/** Events waiting for room at once; past this a new one is stored as a marker without waiting. */
+export const MAX_ADMISSION_WAITERS = 256;
+
 function fits(sender: string, units: number): boolean {
 	return (
-		(pendingBySender.get(sender) ?? 0) + units <= SENDER_PENDING_CAP_UNITS &&
-		counters.pendingUnits + units <= GLOBAL_PENDING_CAP_UNITS
+		(pendingBySender.get(sender) ?? 0) + units <= senderCap &&
+		counters.pendingUnits + units <= globalCap
 	);
 }
 
@@ -276,10 +285,13 @@ function reserve(sender: string, units: number): Ticket {
 	};
 }
 
+/** Admits every waiter that fits now, oldest first; a sender's later events never pass its earlier one. */
 function drainWaiters(): void {
+	const blocked = new Set<string>();
 	for (let i = 0; i < waiters.length; ) {
 		const waiter = waiters[i] as Waiter;
-		if (!fits(waiter.sender, waiter.units)) {
+		if (blocked.has(waiter.sender) || !fits(waiter.sender, waiter.units)) {
+			blocked.add(waiter.sender);
 			i++;
 			continue;
 		}
@@ -292,11 +304,16 @@ function drainWaiters(): void {
 /**
  * Reserves `units` for `sender`, waiting up to `ADMISSION_WAIT_MS` for room. Null means the
  * event cannot be scanned now: the caller stores a marker alone. An event larger than one
- * sender may ever hold is refused at once; waiting could never help it.
+ * sender may ever hold is refused at once; waiting could never help it. An event waits only
+ * behind earlier events of its own sender, so one sender's backlog never turns another
+ * sender's small event into a marker. (Many ingest keys can still fill the shared 32 Mi
+ * together; that is a stated residual: keys are minted by a manage-level caller.)
  */
 function admit(sender: string, units: number): Ticket | Promise<Ticket | null> | null {
-	if (units > SENDER_PENDING_CAP_UNITS) return null;
-	if (fits(sender, units) && waiters.length === 0) return reserve(sender, units);
+	if (units > senderCap) return null;
+	const behindOwn = waiters.some((w) => w.sender === sender);
+	if (!behindOwn && fits(sender, units)) return reserve(sender, units);
+	if (waiters.length >= MAX_ADMISSION_WAITERS) return null;
 	return new Promise<Ticket | null>((resolve) => {
 		const waiter: Waiter = {
 			sender,
@@ -306,6 +323,8 @@ function admit(sender: string, units: number): Ticket | Promise<Ticket | null> |
 				const at = waiters.indexOf(waiter);
 				if (at !== -1) waiters.splice(at, 1);
 				resolve(null);
+				// Its leaving may free the events queued behind it.
+				drainWaiters();
 			}, ADMISSION_WAIT_MS),
 		};
 		waiters.push(waiter);
@@ -369,7 +388,9 @@ function redactBounded(
 /** What remains of a kept tail after its first token fragment and any orphaned key block are dropped. */
 function trimTailEdge(tail: string): string {
 	let text = tail;
-	const lead = new RegExp(`^\\S{1,${TAIL_LEAD_RUN_MAX}}`).exec(text);
+	// The whole leading run, however long: a token that began before the scanned part has lost its
+	// prefix, so no rule can recognise what is left of it.
+	const lead = /^\S+/.exec(text);
 	if (lead) text = text.slice(lead[0].length);
 	const end = /-----END [A-Z ]{0,40}PRIVATE KEY(?: BLOCK)?-----/.exec(text);
 	if (end && !text.slice(0, end.index).includes("-----BEGIN")) {
@@ -446,7 +467,11 @@ function estimateUnits(value: unknown, depth = 0, budget = { nodes: 0 }): number
 	if (value === null || typeof value !== "object") return 1;
 	if (depth >= MAX_WALK_DEPTH || ++budget.nodes > MAX_WALK_NODES) return 1;
 	let total = 1;
-	for (const child of Array.isArray(value) ? value : Object.values(value)) {
+	const members = Array.isArray(value) ? [value] : [Object.keys(value), Object.values(value)];
+	// An object's keys are scanned too, so they cost what their text costs.
+	if (!Array.isArray(value))
+		for (const key of members[0] as string[]) total += Math.max(key.length, 1);
+	for (const child of (Array.isArray(value) ? value : members[1]) as unknown[]) {
 		total += estimateUnits(child, depth + 1, budget);
 		if (total > GLOBAL_PENDING_CAP_UNITS) break;
 	}
@@ -456,6 +481,11 @@ function estimateUnits(value: unknown, depth = 0, budget = { nodes: 0 }): number
 function redactKey(key: string, ws: WalkState): string {
 	const known = ws.keys.get(key);
 	if (known !== undefined) return known;
+	// Distinct keys are bounded: past the cap a new key is stored as a marker.
+	if (ws.keys.size >= MAX_DISTINCT_KEYS) {
+		ws.stats.changed = true;
+		return KEY_MARKER;
+	}
 	let out: string;
 	try {
 		out = key.length > KEY_MAX_CHARS ? KEY_MARKER : redact(key).text;
@@ -464,6 +494,7 @@ function redactKey(key: string, ws: WalkState): string {
 		ws.stats.errors++;
 		out = KEY_MARKER;
 	}
+	if (out !== key) ws.stats.changed = true;
 	ws.keys.set(key, out);
 	return out;
 }
@@ -480,12 +511,14 @@ function setOwn(target: Record<string, unknown>, key: string, value: unknown): v
 
 async function leafFor(text: string, underSecretKey: boolean, ws: WalkState): Promise<string> {
 	if (underSecretKey && text.length >= SECRET_VALUE_MIN_CHARS && !isPlaceholderValue(text)) {
+		ws.stats.changed = true;
 		return MASK;
 	}
 	const known = ws.plain.get(text);
 	if (known !== undefined) return known;
 	const input = ws.leafCap !== null ? cutHead(text, ws.leafCap) : text;
 	const out = await redactLeaf(input, ws.sender, ws.stats);
+	if (out !== text) ws.stats.changed = true;
 	ws.plain.set(text, out);
 	return out;
 }
@@ -521,15 +554,25 @@ async function walkValue(
 			isSecretKeyName(value[0]);
 		for (let i = 0; i < value.length; i++) {
 			const item = value[i];
+			const prev = value[i - 1];
 			if (pairMask && i === 1) {
 				out.push(maskIfValue(item as string, PAIR_VALUE_MIN_CHARS));
+			} else if (
+				typeof item === "string" &&
+				typeof prev === "string" &&
+				SECRET_FLAG.test(prev) &&
+				!item.startsWith("-")
+			) {
+				// argv as an array: `["--token", "abc"]` is the flag and its value.
+				ws.stats.changed = true;
+				out.push(MASK);
 			} else {
 				out.push(await walkValue(item, inheritSecret, depth + 1, ws));
 			}
 		}
 		return out;
 	}
-	return walkObject(value as Record<string, unknown>, depth, ws);
+	return walkObject(value as Record<string, unknown>, depth, ws, inheritSecret);
 }
 
 function maskIfValue(text: string, minChars: number): string {
@@ -540,23 +583,23 @@ async function walkObject(
 	obj: Record<string, unknown>,
 	depth: number,
 	ws: WalkState,
-	skip?: (key: string) => boolean,
+	inheritSecret = false,
 ): Promise<Record<string, unknown>> {
 	const out: Record<string, unknown> = {};
 	const paired = pairedValueKeys(obj);
 	for (const key of Object.keys(obj)) {
-		if (skip?.(key)) continue;
 		const value = obj[key];
 		const outKey = redactKey(key, ws);
 		let child: unknown;
 		if (typeof value === "string") {
 			child = paired.includes(key)
 				? maskIfValue(value, PAIR_VALUE_MIN_CHARS)
-				: await leafFor(value, isSecretKeyName(key), ws);
+				: await leafFor(value, inheritSecret || isSecretKeyName(key), ws);
 		} else if (Array.isArray(value)) {
-			child = await walkValue(value, isSecretKeyName(key), depth + 1, ws);
+			child = await walkValue(value, inheritSecret || isSecretKeyName(key), depth + 1, ws);
 		} else {
-			child = await walkValue(value, false, depth + 1, ws);
+			// Strings anywhere under a secret-named key are that secret, not only direct children.
+			child = await walkValue(value, inheritSecret || isSecretKeyName(key), depth + 1, ws);
 		}
 		setOwn(out, outKey, child);
 	}
@@ -612,13 +655,16 @@ async function walkTopLevel(
 				setOwn(out, key, value);
 			} else {
 				ws.stats.idsDropped++;
+				ws.stats.changed = true;
 				counters.idsDropped++;
 				setOwn(out, `${key}_redacted`, true);
 			}
 			continue;
 		}
 		if (nameKeys.has(key) && typeof value === "string") {
-			setOwn(out, key, isCleanName(value) || keepReservedName(key, value) ? value : NAME_MARKER);
+			const keep = isCleanName(value) || keepReservedName(key, value);
+			if (!keep) ws.stats.changed = true;
+			setOwn(out, key, keep ? value : NAME_MARKER);
 			continue;
 		}
 		if (VERBATIM_KEYS.has(key)) {
@@ -633,13 +679,14 @@ async function walkTopLevel(
 		const outKey = redactKey(key, ws);
 		let child: unknown;
 		if (typeof value === "string") {
+			if (paired.includes(key)) ws.stats.changed = true;
 			child = paired.includes(key)
 				? maskIfValue(value, PAIR_VALUE_MIN_CHARS)
 				: await leafFor(value, isSecretKeyName(key), ws);
 		} else if (Array.isArray(value)) {
 			child = await walkValue(value, isSecretKeyName(key), 1, ws);
 		} else {
-			child = await walkValue(value, false, 1, ws);
+			child = await walkValue(value, isSecretKeyName(key), 1, ws);
 		}
 		setOwn(out, outKey, child);
 	}
@@ -779,7 +826,9 @@ export async function prepareHookPayloadForStorage(
 	const sender = senderOfKey(ctx.keyId);
 	const isToolResult =
 		raw.hook_event_name === "PostToolUse" || raw.hook_event_name === "PostToolUseFailure";
-	let units = estimateUnits({ ...raw, tool_response: undefined, tool_input: raw.tool_input });
+	// A tool result is scanned by its own path (cut first); on any other event a `tool_response` is
+	// an ordinary leaf and is counted like one.
+	let units = estimateUnits(isToolResult ? { ...raw, tool_response: undefined } : raw);
 	if (isToolResult) units += estimateToolResponseUnits(raw.tool_response);
 
 	const ticket = await admit(sender, units);
@@ -793,6 +842,12 @@ export async function prepareHookPayloadForStorage(
 		if (typeof raw.last_assistant_message === "string" && raw.last_assistant_message.trim()) {
 			setOwn(copy, "last_assistant_message", BACKLOG_MARKER);
 		}
+		// What a reader would judge a call or a task by says "withheld", never "empty".
+		if (raw.tool_input) setOwn(copy, "tool_input", { _withheld: BACKLOG_MARKER });
+		if (raw.tool_response) setOwn(copy, "tool_response", BACKLOG_MARKER);
+		if (raw.task_subject) setOwn(copy, "task_subject", BACKLOG_MARKER);
+		if (raw.message) setOwn(copy, "message", BACKLOG_MARKER);
+		stats.changed = true;
 	} else {
 		try {
 			const ws = newWalkState(sender, stats);
@@ -813,6 +868,7 @@ export async function prepareHookPayloadForStorage(
 		} catch {
 			counters.errors++;
 			stats.errors++;
+			stats.changed = true;
 			noteBacklog(stats);
 			copy = idsAndNamesOnly(raw, HOOK_NAME_KEYS, { stats });
 		} finally {
@@ -881,6 +937,8 @@ export function storableFromPrepared(
 	events: NormalizedEvent[],
 ): StorableEvents {
 	if (!isPreparedHookPayload(prepared)) throw new Error("not a prepared hook payload");
+	// Text the step changed or withheld is not compared with other text by the dedup (see NormalizedEvent).
+	if (prepared.stats.changed) for (const event of events) event.redactionChanged = true;
 	storableArrays.add(events);
 	return events as StorableEvents;
 }
@@ -894,9 +952,59 @@ function eventUnits(event: NormalizedEvent): number {
 	);
 }
 
-function redactName(value: string | null): string | null {
+function redactName(value: string | null, stats: RedactionStats): string | null {
 	if (value === null) return null;
-	return isCleanName(value) ? value : NAME_MARKER;
+	if (isCleanName(value)) return value;
+	stats.changed = true;
+	return NAME_MARKER;
+}
+
+/** The categories and sources a stored event may carry; anything else is not one of ours. */
+const EVENT_CATEGORIES: ReadonlySet<string> = new Set([
+	"prompt",
+	"assistant_message",
+	"progress_update",
+	"plan_update",
+	"tool_event",
+	"status_update",
+	"system_event",
+	"permission_event",
+	"user_ack",
+	"ai_proposal_pending",
+	"ai_proposal",
+	"ai_report",
+	"ai_hitl_request",
+	"ai_hitl_response",
+	"ai_continue_sent",
+	"ai_continue_blocked",
+	"ai_error",
+]);
+const EVENT_SOURCES: ReadonlySet<string> = new Set([
+	"observed_hook",
+	"observed_status",
+	"observed_transcript",
+	"managed_control",
+	"launch_system",
+]);
+const FALLBACK_CATEGORY = "system_event";
+const FALLBACK_SOURCE = "launch_system";
+
+/** `eventType`, `category` and `source`: a name, and two members of a closed set. */
+function checkedLabels(
+	event: NormalizedEvent,
+	stats: RedactionStats,
+): Pick<NormalizedEvent, "eventType" | "category" | "source"> {
+	const eventType = isCleanName(event.eventType) ? event.eventType : NAME_MARKER;
+	const category = EVENT_CATEGORIES.has(event.category) ? event.category : FALLBACK_CATEGORY;
+	const source = EVENT_SOURCES.has(event.source) ? event.source : FALLBACK_SOURCE;
+	if (eventType !== event.eventType || category !== event.category || source !== event.source) {
+		stats.changed = true;
+	}
+	return {
+		eventType,
+		category: category as NormalizedEvent["category"],
+		source: source as NormalizedEvent["source"],
+	};
 }
 
 async function redactOneEvent(
@@ -904,6 +1012,8 @@ async function redactOneEvent(
 	sender: string,
 	stats: RedactionStats,
 ): Promise<NormalizedEvent> {
+	const before = stats.changed;
+	stats.changed = false;
 	const ws = newWalkState(sender, stats);
 	const content = event.content === null ? null : await leafFor(event.content, false, ws);
 	const toolResponse =
@@ -912,26 +1022,37 @@ async function redactOneEvent(
 		? ((await walkValue(event.toolInput, false, 0, ws)) as Record<string, unknown>)
 		: null;
 	const rawPayload = await walkTopLevel(event.rawPayload, RAW_NAME_KEYS, ws);
+	const labels = checkedLabels(event, stats);
+	const toolName = redactName(event.toolName, stats);
+	const providerEventType = redactName(event.providerEventType, stats);
+	const changed = stats.changed;
+	stats.changed = before || changed;
 	return {
 		...event,
+		...labels,
 		content,
-		toolName: redactName(event.toolName),
-		providerEventType: redactName(event.providerEventType),
+		toolName,
+		providerEventType,
 		toolInput,
 		toolResponse,
 		rawPayload,
+		...(changed ? { redactionChanged: true } : {}),
 	};
 }
 
 function markerOnlyEvent(event: NormalizedEvent, stats: RedactionStats): NormalizedEvent {
+	const labels = checkedLabels(event, stats);
 	return {
 		...event,
+		...labels,
 		content: event.content === null ? null : BACKLOG_MARKER,
-		toolInput: null,
-		toolResponse: null,
+		// A call or a result is withheld, never empty: readers must not take it for harmless.
+		toolInput: event.toolInput ? { _withheld: BACKLOG_MARKER } : null,
+		toolResponse: event.toolResponse === null ? null : BACKLOG_MARKER,
 		toolName: isCleanName(event.toolName) ? event.toolName : null,
 		providerEventType: isCleanName(event.providerEventType) ? event.providerEventType : null,
 		rawPayload: idsAndNamesOnly(event.rawPayload, RAW_NAME_KEYS, { stats }),
+		redactionChanged: true,
 	};
 }
 
@@ -982,6 +1103,11 @@ export const __testing = {
 		for (const key of Object.keys(counters) as Array<keyof IngestRedactionCounters>) {
 			if (key !== "pendingUnits" && key !== "pendingJobs") counters[key] = 0;
 		}
+	},
+	/** Lower (or restore, with no arguments) the pending-work caps, so a test can fill them cheaply. */
+	setCaps(sender = SENDER_PENDING_CAP_UNITS, all = GLOBAL_PENDING_CAP_UNITS): void {
+		senderCap = sender;
+		globalCap = all;
 	},
 	pending(): { units: number; jobs: number; waiters: number } {
 		return { units: counters.pendingUnits, jobs: counters.pendingJobs, waiters: waiters.length };

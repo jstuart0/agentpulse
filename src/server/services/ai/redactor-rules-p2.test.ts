@@ -257,14 +257,14 @@ describe("P2-7 authorization_header", () => {
 		const sig = fake("", "0a1b2c3d", 64);
 		const header = `Authorization: AWS4-HMAC-SHA256 Credential=${key}/20230101/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=${sig}`;
 		const text = masked(header, [key, sig, "20230101"]);
-		expect(text).toBe("Authorization: [REDACTED]");
+		expect(text).toBe("Authorization: [REDACTED:authorization_params]");
 	});
 
 	test("P2-7 a Digest header is masked through its quoted parameters", () => {
 		const header =
 			'Authorization: Digest username="svc", realm="api", nonce="n0nce12345678", uri="/x", response="r3sponse0123456789abcdef"';
 		const text = masked(header, ["n0nce12345678", "r3sponse0123456789abcdef", "svc"]);
-		expect(text).toBe("Authorization: [REDACTED]");
+		expect(text).toBe("Authorization: [REDACTED:authorization_params]");
 	});
 
 	test("P2-7 the JSON form is masked and the rest of the object survives", () => {
@@ -781,6 +781,8 @@ const SELF_SCAN_FILES_ABOUT_REDACTION = new Set([
 	"src/server/services/ingest-redaction.test.ts",
 	"src/server/services/ingest-redaction.guard.test.ts",
 	"src/server/routes/ingest-redaction.test.ts",
+	"src/server/routes/ingest-redaction-fixes.test.ts",
+	"src/server/routes/ingest-redaction-readers.test.ts",
 	"scripts/bench-ingest-redaction.ts",
 	"src/server/services/ai/__fixtures__/redaction-benign.json",
 	"src/server/services/ai/__fixtures__/redactor-old-rules.ts",

@@ -29,6 +29,12 @@ export interface NormalizedEvent {
 	 * checked against the accepted window; display only, never used for a decision.
 	 */
 	occurredAt?: string | null;
+	/**
+	 * Set by the ingest redaction step when it changed or withheld text of this event. Such an event
+	 * takes no part in content-window or authority dedup: two different secrets redact to the same
+	 * text, and a possible duplicate row beats a certain lost one.
+	 */
+	redactionChanged?: boolean;
 }
 
 // Hook-body char caps (F29, F40, F56, F76). The stored `toolResponse`

@@ -415,7 +415,7 @@ describe("backpressure (D8)", () => {
 		expect(payload.prompt).toBe(BACKLOG_MARKER);
 		expect(payload.tool_use_id).toBe("toolu_keep");
 		expect(payload.tool_name).toBe("Bash");
-		expect(payload.tool_input).toBeUndefined();
+		expect(payload.tool_input).toEqual({ _withheld: BACKLOG_MARKER });
 		expect(JSON.stringify(payload)).not.toContain("dddddddd");
 		expect(getIngestRedactionCounters().backlogMarkers).toBe(1);
 	}, 60_000);
@@ -435,7 +435,7 @@ describe("backpressure (D8)", () => {
 		expect(out).toHaveLength(9);
 		out.forEach((event, i) => {
 			expect(event.content).toBe(BACKLOG_MARKER);
-			expect(event.toolInput).toBeNull();
+			expect(event.toolInput).toEqual({ _withheld: BACKLOG_MARKER });
 			expect(event.toolResponse).toBeNull();
 			expect(event.toolName).toBe("Bash");
 			expect(event.rawPayload).toEqual({ tool_use_id: `toolu_${i}`, kind: "call" });

@@ -113,6 +113,15 @@ describe("the sliced engine equals redact()", () => {
 		for (const chunk of [64, 300, 1000]) expect(runJob(text, { chunk }).text).toBe(expected);
 	});
 
+	test("the blank-run look-behind is bounded, so whole-text and windowed output agree", () => {
+		for (const blanks of [100, 400, 700]) {
+			const text = `{${" ".repeat(blanks)}"password":"hunter2hunter2"}`;
+			const expected = redact(text).text;
+			for (const chunk of [64, 300, 1000]) expect(runJob(text, { chunk }).text).toBe(expected);
+			expect(expected.includes("hunter2hunter2")).toBe(blanks > 500);
+		}
+	});
+
 	test("a cookie line, a yaml value and a JSON value that run past a window", () => {
 		const samples = [
 			`Cookie: ${Array.from({ length: 80 }, (_, i) => `n${i}=v${i}`).join("; ")}`,
@@ -179,9 +188,9 @@ describe("window limits", () => {
 		expect(r.text).toContain(RUN_TOO_LONG_MARKER);
 		expect(r.text).not.toContain("AAAAAAAA");
 		expect(r.runsCut).toBeGreaterThan(0);
-		// A slice is one window (16 KiB) or one regrowth of it, which is capped at 64 KiB plus the margins.
+		// A slice is one window (16 KiB) or one rescan of a grown window: at most about 33 KiB.
 		expect(r.maxSliceUnits).toBeLessThanOrEqual(
-			REDACTION_MAX_EXTENSION + REDACTION_CHUNK + REDACTION_AFTER + REDACTION_BEFORE + 8,
+			REDACTION_MAX_EXTENSION + REDACTION_CHUNK + 2 * REDACTION_AFTER + REDACTION_BEFORE + 8,
 		);
 		expect(r.steps).toBeGreaterThan(3);
 	});

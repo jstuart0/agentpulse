@@ -529,6 +529,10 @@ function withRedactedNames(input: ManagedSessionStateInput): ManagedSessionState
 		);
 	}
 	if (typeof input.model === "string") redacted.model = redactShortForStorage(input.model);
+	// Host-reported error text can carry a path or a pasted value.
+	if (typeof input.providerSyncError === "string") {
+		redacted.providerSyncError = redactShortForStorage(input.providerSyncError, TITLE_MAX_CHARS);
+	}
 	return redacted;
 }
 

@@ -1309,7 +1309,7 @@ export async function processHookEvent(
 				metadata: {},
 				ownerUserId: owner.ownerUserId,
 				ingestKeyId: owner.ingestKeyId,
-				reportedHost: ctx.reportedHost ?? null,
+				reportedHost: ctx.reportedHost ? redactShortForStorage(ctx.reportedHost, 128) : null,
 			})
 			.onConflictDoNothing({ target: sessions.sessionId })
 			.returning();
@@ -1423,8 +1423,9 @@ export async function processHookEvent(
 	// here or anywhere else decides on it). Folded into this same UPDATE, and
 	// only when it differs from the row already read above, so an unchanged
 	// host costs no statement at all and a changed one costs none extra.
-	if (ctx.reportedHost && priorRow && ctx.reportedHost !== priorRow.reportedHost) {
-		updates.reportedHost = ctx.reportedHost;
+	const reportedHost = ctx.reportedHost ? redactShortForStorage(ctx.reportedHost, 128) : null;
+	if (reportedHost && priorRow && reportedHost !== priorRow.reportedHost) {
+		updates.reportedHost = reportedHost;
 	}
 
 	// Handle session end events
@@ -1722,10 +1723,11 @@ export async function processStatusUpdate(
 	if (update.status) updates.semanticStatus = update.status;
 	if (update.task) updates.currentTask = await redactTextForStorage(update.task, sender);
 	if (update.plan) {
+		// Only strings are kept: anything else in a plan is not text this step could vouch for.
 		updates.planSummary = await Promise.all(
-			update.plan.map((line) =>
-				typeof line === "string" ? redactTextForStorage(line, sender) : line,
-			),
+			update.plan
+				.filter((line): line is string => typeof line === "string")
+				.map((line) => redactTextForStorage(line, sender)),
 		);
 	}
 

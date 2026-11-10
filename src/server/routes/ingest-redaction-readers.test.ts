@@ -88,22 +88,20 @@ describe("dedup", () => {
 		expect(getEventsDeduplicatedCounts().deliveryRetry).toBe(1);
 	});
 
-	test("the content window still drops a repeat of redacted text from a source with no delivery id", async () => {
+	test("text the redaction step changed takes no part in content-window or authority dedup", async () => {
+		// Two different secrets redact to the same text: both rows are stored, because a possible
+		// duplicate beats a certain lost row.
 		const sessionId = `window-${Date.now()}`;
 		await post(
 			{ session_id: sessionId, hook_event_name: "UserPromptSubmit", prompt: "hi" },
 			"claude_code",
 		);
-		const make = () => [createAssistantTranscriptEvent(`answer ${KEY}`, {}, "assistant")];
-		await insertNormalizedEvents(sessionId, make());
-		await insertNormalizedEvents(sessionId, make());
-		const rows = (await rowsOf(sessionId)).filter((r) => r.category === "assistant_message");
-		expect(rows).toHaveLength(1);
-		expect(JSON.stringify(rows)).not.toContain(PROOF);
-	});
-
-	test("hook-vs-transcript authority still collapses the same secret-bearing message to one row", async () => {
-		const sessionId = `authority-${Date.now()}`;
+		const other = `sk-ant-${"api03-"}${"B".repeat(40)}`;
+		const make = (secret: string) => [
+			createAssistantTranscriptEvent(`answer ${secret}`, {}, "assistant"),
+		];
+		await insertNormalizedEvents(sessionId, make(KEY));
+		await insertNormalizedEvents(sessionId, make(other));
 		const text = `Done. Used ${KEY} to deploy.`;
 		await post(
 			{ session_id: sessionId, hook_event_name: "Stop", last_assistant_message: text },
@@ -113,8 +111,23 @@ describe("dedup", () => {
 			createAssistantTranscriptEvent(text, {}, "assistant"),
 		]);
 		const rows = (await rowsOf(sessionId)).filter((r) => r.category === "assistant_message");
-		expect(rows).toHaveLength(1);
+		expect(rows.length).toBeGreaterThanOrEqual(4);
 		expect(JSON.stringify(rows)).not.toContain(PROOF);
+		expect(JSON.stringify(rows)).not.toContain("BBBBBBBB");
+	});
+
+	test("unchanged text still dedups in the content window", async () => {
+		const sessionId = `window-plain-${Date.now()}`;
+		await post(
+			{ session_id: sessionId, hook_event_name: "UserPromptSubmit", prompt: "hi" },
+			"claude_code",
+		);
+		const make = () => [createAssistantTranscriptEvent("plain answer", {}, "assistant")];
+		await insertNormalizedEvents(sessionId, make());
+		await insertNormalizedEvents(sessionId, make());
+		expect(
+			(await rowsOf(sessionId)).filter((r) => r.category === "assistant_message"),
+		).toHaveLength(1);
 	});
 
 	test("a managed delivery replay stores nothing and scans nothing", async () => {

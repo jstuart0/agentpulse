@@ -63,7 +63,7 @@ const JSON_NOT_A_SECRET = String.raw`(?:string|number|boolean|object|array|integ
  * first so the look-behind only runs where a quote starts.
  */
 const JSON_SECRET_VALUE_PATTERN = new RegExp(
-	String.raw`(?=\\?")(?<=(?:^|[{,\[])\s*)(?:"(?:${JSON_SECRET_KEY})"\s*:\s*"(?!${MARKER}")(?!${JSON_NOT_A_SECRET}")(?:[^"\\\n]|\\.){6,}"|\\"(?:${JSON_SECRET_KEY})\\"\s*:\s*\\"(?!${MARKER}\\")(?!${JSON_NOT_A_SECRET}\\")(?:[^"\\\n]|\\(?!")){6,}\\")`,
+	String.raw`(?=\\?")(?<=(?:^|[{,\[])\s{0,500})(?:"(?:${JSON_SECRET_KEY})"\s*:\s*"(?!${MARKER}")(?!${JSON_NOT_A_SECRET}")(?:[^"\\\n]|\\.){6,}"|\\"(?:${JSON_SECRET_KEY})\\"\s*:\s*\\"(?!${MARKER}\\")(?!${JSON_NOT_A_SECRET}\\")(?:[^"\\\n]|\\(?!")){6,}\\")`,
 	"gim",
 );
 
@@ -309,7 +309,12 @@ export const DEFAULT_RULES: RedactionRule[] = [
 			/(?=authorization)authorization["']?[ \t]*:[ \t]*["']?(?:(?:Digest|AWS4-[A-Z0-9-]+)[ \t]+(?:\\.|="[^"\r\n]*"|[^\r\n'"\\]){8,}|(?:Bearer|Basic|Token|Negotiate|NTLM|Hawk|OAuth|Bot)[ \t]+[A-Za-z0-9_\-.+/=~]{8,}|[A-Za-z0-9_\-.+/=~]{12,})/gi,
 			STD_START,
 		),
-		replacement: "Authorization: [REDACTED]",
+		// Digest and AWS4 take the whole rest of the line, which can hold a command after the
+		// parameters: that form says so with a marker readers treat as withheld text.
+		replacement: (match) =>
+			/^authorization["']?[ \t]*:[ \t]*["']?(?:Digest|AWS4-)/i.test(match)
+				? "Authorization: [REDACTED:authorization_params]"
+				: "Authorization: [REDACTED]",
 		gate: (_text, lower) => lower().includes("authorization"),
 	},
 	{
@@ -349,7 +354,8 @@ export const DEFAULT_RULES: RedactionRule[] = [
 			/(^|[^A-Za-z0-9])((?:[A-Z][A-Z0-9]*_){0,8}(?:PASSWORD|PASSWD|PASS(?==)|SECRET_KEY|SECRET|SIGNING_KEY|ENCRYPTION_KEY|API_KEY|APIKEY|TOKEN|ACCESS_KEY|PRIVATE_KEY|AUTH_TOKEN|CREDENTIALS))[ \t]*=[ \t]*(?:"(?=[^"\n]*[ \t])[^"\n]{4,}"|'(?=[^'\n]*[ \t])[^'\n]{4,}'|["']?[^\s"'\n]{4,})/gi,
 		replacement: (match) => {
 			const eq = match.indexOf("=");
-			return `${match.slice(0, eq + 1)} [REDACTED]`;
+			// A trailing question mark is kept: a reader that asks "does this end in a question" must still see it.
+			return `${match.slice(0, eq + 1)} [REDACTED]${/\?+$/.exec(match)?.[0] ?? ""}`;
 		},
 		gate: (_text, lower) => ENV_KEY_GATE.test(lower()),
 	},
@@ -460,7 +466,8 @@ export const DEFAULT_RULES: RedactionRule[] = [
 		// ACCEPTED over-match: prose after a flag (`no --api-key was provided`).
 		pattern:
 			/--(?:(?:client|access|auth|api|refresh|bearer)-)?(?:password|token|secret|api-key)(?:-file|-path)?(?:=|[ \t]+)(?!\[REDACTED(?::[a-z_]+)?\](?:\s|$))\S+/g,
-		replacement: (match) => `${match.slice(0, match.search(/[=\s]/) + 1)}[REDACTED]`,
+		replacement: (match) =>
+			`${match.slice(0, match.search(/[=\s]/) + 1)}[REDACTED]${/\?+$/.exec(match)?.[0] ?? ""}`,
 		gate: (text) => CLI_FLAG_GATE.test(text),
 	},
 	{
@@ -609,7 +616,7 @@ export const REDACTION_BEFORE = 600;
  */
 export const REDACTION_AFTER = 4096;
 /** The most a window may grow for one match; a match still touching the edge then is cut. */
-export const REDACTION_MAX_EXTENSION = 64 * 1024;
+export const REDACTION_MAX_EXTENSION = 8 * 1024;
 /** What replaces a run no rule could finish within `REDACTION_MAX_EXTENSION`. */
 export const RUN_TOO_LONG_MARKER = "[REDACTED:run_too_long]";
 
@@ -619,7 +626,7 @@ export const RUN_TOO_LONG_MARKER = "[REDACTED:run_too_long]";
  * something from text must treat the text next to one as unknown, not as clean.
  */
 export const FAIL_CLOSED_MARKER_PATTERN =
-	/\[REDACTED:(?:redaction_backlog|redaction_error|over_limit|run_too_long|too_deep|too_large)\]/;
+	/\[REDACTED:(?:redaction_backlog|redaction_error|over_limit|run_too_long|too_deep|too_large|cookie_header|authorization_params)\]/;
 
 // Neither a newline nor a word character: stands in for the text before a window so
 // `^` (with the `m` flag) and `\b` don't read the window's edge as a line or word start.
@@ -757,6 +764,8 @@ export function createRedactionJob(input: string, options: RedactionJobOptions =
 			scanned = limit - pos;
 		}
 		const cur = w;
+		// A window resumed after growing is rescanned from its match: that pass is charged now.
+		if (scanned === 0) scanned = cur.win.length;
 		const re = rule.pattern;
 		re.lastIndex = cur.resumeAt - cur.offset;
 		for (;;) {
@@ -770,12 +779,19 @@ export function createRedactionJob(input: string, options: RedactionJobOptions =
 					cur.winEnd = Math.min(n, cur.cap, cur.winEnd + Math.max(after, cur.winEnd - cur.limit));
 					cur.win = cur.prefix + src.slice(cur.winStart, cur.winEnd);
 					cur.resumeAt = start;
-					return scanned + cur.win.length;
+					return scanned;
 				}
 				// Still too near the edge at the cap: mask the rest of the line.
-				LINE_REST.lastIndex = end;
-				const rest = LINE_REST.exec(src);
-				end = rest ? end + rest[0].length : n;
+				if (src.startsWith("-----BEGIN", start)) {
+					// An open key block: through its END line, or the rest of the text.
+					const stop = src.indexOf("-----END", end);
+					const lineEnd = stop === -1 ? -1 : src.indexOf("\n", stop);
+					end = stop === -1 ? n : lineEnd === -1 ? n : lineEnd;
+				} else {
+					LINE_REST.lastIndex = end;
+					const rest = LINE_REST.exec(src);
+					end = rest ? end + rest[0].length : n;
+				}
 				out.push(src.slice(emitted, start), RUN_TOO_LONG_MARKER);
 				emitted = end;
 				passHit = true;

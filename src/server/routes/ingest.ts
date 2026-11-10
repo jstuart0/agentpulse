@@ -21,6 +21,7 @@ import {
 	processHookEvent,
 	processStatusUpdate,
 } from "../services/event-processor.js";
+import { redactShortForStorage } from "../services/ingest-redaction.js";
 import {
 	notifyChannel,
 	notifySessionCreated,
@@ -623,8 +624,9 @@ function enqueueHookProcessingReal(
 					// Sanitize user-controlled fields to prevent log injection.
 					session_id: sanitizeLogField(payload.session_id),
 					event_type: sanitizeLogField(payload.hook_event_name),
-					error: err instanceof Error ? err.message : String(err),
-					stack: err instanceof Error ? err.stack : undefined,
+					// Error text can carry a path or a pasted value from the payload: masked and cut.
+					error: redactShortForStorage(err instanceof Error ? err.message : String(err), 500),
+					stack: err instanceof Error ? redactShortForStorage(err.stack ?? "", 2000) : undefined,
 				}),
 			);
 		} finally {
@@ -747,8 +749,8 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c: Context) => {
 			JSON.stringify({
 				kind: "ingest_missing_fields",
 				level: "warn",
-				session_id: parsed.session_id,
-				hook_event_name: parsed.hook_event_name,
+				session_id: redactShortForStorage(sanitizeLogField(parsed.session_id)),
+				hook_event_name: redactShortForStorage(sanitizeLogField(parsed.hook_event_name)),
 			}),
 		);
 		return c.json({ ok: true });
@@ -836,9 +838,9 @@ ingest.post("/hooks/status", requireApiKey(), hookRateLimit(), async (c: Context
 					kind: "ingest_status_bg_error",
 					level: "error",
 					// Sanitize user-controlled session_id to prevent log injection.
-					session_id: sanitizeLogField(update.session_id),
-					error: err instanceof Error ? err.message : String(err),
-					stack: err instanceof Error ? err.stack : undefined,
+					session_id: redactShortForStorage(sanitizeLogField(update.session_id)),
+					error: redactShortForStorage(err instanceof Error ? err.message : String(err), 500),
+					stack: err instanceof Error ? redactShortForStorage(err.stack ?? "", 2000) : undefined,
 				}),
 			);
 		} finally {
