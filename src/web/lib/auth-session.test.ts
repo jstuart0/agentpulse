@@ -208,7 +208,9 @@ describe("shouldRecheckAuth", () => {
 	});
 
 	test("other refusals are the caller's business", () => {
-		expect(shouldRecheckAuth({ status: 403, code: "insufficient_scope", path: "/sessions/1" })).toBe(false);
+		expect(
+			shouldRecheckAuth({ status: 403, code: "insufficient_scope", path: "/sessions/1" }),
+		).toBe(false);
 		expect(shouldRecheckAuth({ status: 403, code: null, path: "/sessions/1" })).toBe(false);
 		expect(shouldRecheckAuth({ status: 404, code: null, path: "/sessions/1" })).toBe(false);
 	});
