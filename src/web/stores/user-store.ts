@@ -1,11 +1,12 @@
 import { create } from "zustand";
-import { api, setRequestFailureHandler, setRequestSuccessHandler } from "../lib/api.js";
+import { ApiError, api, setRequestFailureHandler, setRequestSuccessHandler } from "../lib/api.js";
 import {
 	type AuthLoadOutcome,
 	FRESH_WATCH,
 	type SignInEvent,
 	createRecheckGate,
 	createSingleFlight,
+	isHostRefusal,
 	isNetworkFailure,
 	isRoleRefusal,
 	loadedAfter,
@@ -86,6 +87,8 @@ export const useUserStore = create<UserState>((set, get) => {
 				kind: "failed",
 				network: isNetworkFailure(err),
 				message: err instanceof Error ? err.message : String(err),
+				status: err instanceof ApiError ? err.status : null,
+				code: err instanceof ApiError ? err.code : null,
 			};
 		}
 		noteSignIn(
@@ -124,7 +127,7 @@ export const useUserStore = create<UserState>((set, get) => {
 setRequestFailureHandler((failure) => {
 	if (failure.status === 401 && failure.path !== IDENTITY_PATH) signInWatchSink?.("refused");
 	if (!shouldRecheckAuth(failure)) return;
-	if (isRoleRefusal(failure)) useUserStore.getState().recheck();
+	if (isRoleRefusal(failure) || isHostRefusal(failure)) useUserStore.getState().recheck();
 	else void useUserStore.getState().load();
 });
 setRequestSuccessHandler(() => signInWatchSink?.("answered"));

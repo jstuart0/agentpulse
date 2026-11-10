@@ -141,6 +141,21 @@ async function setup() {
 	console.log("  ────────────────");
 	console.log("");
 
+	// AGEN-92: with auth off the server refuses an address it doesn't accept (403 bad_origin), key or
+	// no key, and every hook fire would then be dropped silently. Say so before writing anything.
+	try {
+		const probe = await fetch(`${url}/api/v1/auth/me`);
+		const probeBody = (await probe.json()) as { error?: string };
+		if (probe.status === 403 && probeBody.error === "bad_origin") {
+			console.error(
+				`  ✗ The server refuses this address while authentication is off. Use an IP address or localhost, or add ${url} to PUBLIC_URL on the server.`,
+			);
+			process.exit(1);
+		}
+	} catch {
+		// Unreachable or not JSON: not this refusal. The later checks report it.
+	}
+
 	// ── Claude Code ──
 
 	const claudeSettingsPath = join(home, ".claude", "settings.json");

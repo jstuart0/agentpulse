@@ -13,6 +13,10 @@ import {
 } from "./log-sanitize.js";
 
 describe("sanitizeForLog", () => {
+	test("line and paragraph separators are removed", () => {
+		expect(sanitizeForLog("a\u2028b\u2029c")).toBe("abc");
+	});
+
 	test("strips ANSI CSI escape sequences", () => {
 		expect(sanitizeForLog("\u001b[31mred text\u001b[0m")).toBe("red text");
 	});

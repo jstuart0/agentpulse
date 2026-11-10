@@ -1,6 +1,8 @@
 import packageJson from "../../package.json" with { type: "json" };
+import { logAuthOffBootRule } from "./auth/request-origin.js";
 import { config } from "./config.js";
 import { initializeDatabase } from "./db/client.js";
+import { MigrationLedgerError } from "./db/sqlite-migration-ledger.js";
 import { setShuttingDown } from "./drain-state.js";
 import { handleTelegramUpdate } from "./routes/channels.js";
 import { markDbReady } from "./routes/health.js";
@@ -159,7 +161,16 @@ if (config.forwardauthTrustSecret && !config.allowSignup) {
 // initializeDatabase() is async since Phase 1 (Decision 15). The await here
 // ensures markDbReady() only fires after all migrations complete, preserving
 // the synchronous-assumption guarantee that previously held (codex C3).
-await initializeDatabase();
+try {
+	await initializeDatabase();
+} catch (err) {
+	// A ledger the migrations can't safely run on (AGEN-67): the message says what to do. Exit cleanly.
+	if (err instanceof MigrationLedgerError) {
+		console.error(`[boot] ${err.message}`);
+		process.exit(1);
+	}
+	throw err;
+}
 await normalizeStoredMachineNamesSafely();
 
 // Refuse to start in a mode configuration that can't work (see
@@ -324,6 +335,7 @@ if (config.disableAuth) {
 	console.warn(
 		"[auth] DISABLE_AUTH=true — scope enforcement is bypassed. All API routes are open.",
 	);
+	logAuthOffBootRule();
 }
 
 // hosts-visibility fix: best-effort advisory. SQLite only supports a single

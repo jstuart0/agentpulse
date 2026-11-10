@@ -4,18 +4,20 @@
  * onFatal callback and stops. A 403 (session_not_owned) or any 5xx must
  * log and continue, exactly like before D7.
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
 	BACKOFF_BUDGET_MS,
 	MIN_RETRY_AFTER_MS,
 	type ReportFailureClass,
 	SupervisorNetworkError,
 	SupervisorRequestError,
+	__resetHostRefusalNoteForTests,
 	classifyReportFailure,
 	createCredentialTripwire,
 	credentialRejectionMayConfirm,
 	isCredentialRejected,
 	markCredentialHandled,
+	noteHostRefusal,
 	parseRetryAfterMs,
 	reportInSessionSafely,
 	sessionBackoffMs,
@@ -559,5 +561,38 @@ describe("sessionBackoffMs", () => {
 
 	test("the cumulative budget is six hours", () => {
 		expect(BACKOFF_BUDGET_MS).toBe(6 * 3_600_000);
+	});
+});
+
+describe("noteHostRefusal (AGEN-92)", () => {
+	afterEach(() => __resetHostRefusalNoteForTests());
+	const refused = (message?: string) =>
+		new SupervisorRequestError(403, "Forbidden", "bad_origin", undefined, message);
+
+	test("a 403 bad_origin is logged once per process, in the server's words", () => {
+		__resetHostRefusalNoteForTests();
+		const log = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			noteHostRefusal(refused("Only localhost."));
+			noteHostRefusal(refused("Only localhost."));
+			expect(log).toHaveBeenCalledTimes(1);
+			expect(String(log.mock.calls[0]?.[0])).toContain("Only localhost.");
+		} finally {
+			log.mockRestore();
+		}
+	});
+
+	test("other refusals say nothing, and it is still back-pressure, never the credential tripwire", () => {
+		__resetHostRefusalNoteForTests();
+		const log = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			noteHostRefusal(new SupervisorRequestError(403, "Forbidden", "session_not_owned"));
+			noteHostRefusal(new SupervisorRequestError(401, "Unauthorized", "bad_origin"));
+			noteHostRefusal(new Error("x"));
+			expect(log).not.toHaveBeenCalled();
+			expect(classifyReportFailure(refused("m"))).not.toBe("credential");
+		} finally {
+			log.mockRestore();
+		}
 	});
 });

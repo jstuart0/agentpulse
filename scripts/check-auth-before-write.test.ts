@@ -142,6 +142,46 @@ for (const site of SITES) {
 			expect(result.code).toBe(0);
 		});
 
+		test("AGEN-92: a 403 bad_origin refuses, with or without a key, and names the fix", async () => {
+			const stub = startStub((req) => {
+				const url = new URL(req.url);
+				if (url.pathname === "/api/v1/auth/me") {
+					return Response.json({ error: "bad_origin", message: "refused" }, { status: 403 });
+				}
+				return new Response("not found", { status: 404 });
+			});
+			try {
+				const block = await site.block();
+				for (const key of ["", "ap_some_key"]) {
+					const result = await runCheck(block, stub.url, key);
+					expect(result.code).not.toBe(0);
+					expect(result.stderr).toContain("refuses this address while authentication is off");
+					expect(result.stderr).toContain(`add ${stub.url} to PUBLIC_URL`);
+				}
+				// the escape hatch still skips the probe
+				expect((await runCheck(block, stub.url, "", "1")).code).toBe(0);
+			} finally {
+				stub.stop();
+			}
+		});
+
+		test("AGEN-92: with a key, any other answer still passes (a 401, an HTML page, a different 403)", async () => {
+			const answers = [
+				() => Response.json({ error: "Unauthorized" }, { status: 401 }),
+				() => new Response("<html>502</html>", { status: 502 }),
+				() => Response.json({ error: "insufficient_scope" }, { status: 403 }),
+			];
+			for (const answer of answers) {
+				const stub = startStub(() => answer());
+				try {
+					const block = await site.block();
+					expect((await runCheck(block, stub.url, "ap_some_key")).code).toBe(0);
+				} finally {
+					stub.stop();
+				}
+			}
+		});
+
 		test("D39: --no-auth-check proceeds regardless of key or server reachability", async () => {
 			const block = await site.block();
 			const result = await runCheck(block, "http://127.0.0.1:1", "", "1");

@@ -290,8 +290,11 @@ const ERROR_TABLE: ReadonlyArray<{
 	{
 		status: 403,
 		error: "bad_origin",
-		message:
-			"AgentPulse refused: the request isn't from a place this instance trusts. Either it carried a browser Origin that isn't this instance's, or, with authentication off, its Host isn't a loopback address or an allowed name. Send it from the AgentPulse dashboard, or from a client on the same machine without an Origin header.",
+		message: (body) =>
+			`AgentPulse refused: ${
+				bodyMessage(body) ??
+				"the request isn't from a place this instance trusts (a browser Origin that isn't this instance's, or, with authentication off, a Host that isn't localhost, an IP address or a name in PUBLIC_URL)."
+			} Set AGENTPULSE_URL to localhost or an IP address, or add the name you use to PUBLIC_URL on the AgentPulse server and restart it.`,
 	},
 	{
 		status: 415,

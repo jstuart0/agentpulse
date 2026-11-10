@@ -573,6 +573,25 @@ Works in dash, bash and zsh. For a scripted/non-interactive install, `AGENTPULSE
 
 For local use where you don't need auth, set `DISABLE_AUTH=true` (as shown in quick start).
 
+### Opening an auth-off server by name
+
+With `DISABLE_AUTH=true` the server answers `403 bad_origin` to any `/api` request whose Host isn't `localhost`, an IP address (for example `192.168.1.5:3000`), or a name listed in `PUBLIC_URL`, and to any request a browser marks as cross-site. Both refusals carry a message ("AgentPulse refuses requests from other websites." for the second). Opening it by a name such as `http://mybox.local:3000` therefore shows a "This address isn't allowed" page until you fix it:
+
+- Put the name in `PUBLIC_URL` on the server and restart it: `PUBLIC_URL=http://mybox.local:3000`. Separate several with commas.
+- Or open it by IP address or `localhost`.
+
+Things that stop working until then, because they reach the server by a name:
+
+- Hook shims, the OpenCode plugin, the relay and the supervisor with a `--url` or `AGENTPULSE_SERVER_URL` that uses the name. The installers and `agentpulse setup` check this and say so. A relay keeps events queued but drops a queued file after 24 hours or 10,000 files; a supervisor's offline outbox ages out after 24 hours.
+- Monitors that probe by service name (`http://agentpulse:3000/api/v1/health`). Probe by IP or `localhost`, or add the name to `PUBLIC_URL`. `/health` is gated too.
+- The Telegram webhook, if you set it through a name that is now refused. Add the name to `PUBLIC_URL`, or open the dashboard at an accepted address and press **Set webhook** again.
+- An address with an IPv6 zone (`[fe80::1%25en0]`) is refused. Use a global or unique-local address.
+- Requests with `Origin: null` (a `file://` page, a sandboxed or `data:` frame, a redirect-tainted request, some browser extensions) are refused.
+
+Running the Vite dev server? Its own `allowedHosts` setting is the rebinding protection on port 5173. Never set it to `true`.
+
+This is for servers on a network you control. A page on your own machine (`localhost`, `127.x.x.x`, `[::1]`) is accepted only on the server's own port, or on the Vite dev server's port 5173 when `NODE_ENV` isn't `production`. For another local dev origin, list it in `PUBLIC_URL`. The Origin's scheme must also match the request's: an `http://` Origin against an `https://` request URL is refused. The scheme is read from the request URL, never from `X-Forwarded-Proto`, so a server behind a TLS-terminating proxy should list its public `https://` name in `PUBLIC_URL`.
+
 ### Remote server
 
 If AgentPulse runs on a different machine, install the relay (see [Option B](#advanced-remote-dashboard--local-hooks)). It runs on that machine, keeps your key out of agent config, queues events on disk when the server is unreachable, and applies your [exclude rules](#excluding-directories-from-agentpulse) before anything is sent:
@@ -601,10 +620,10 @@ AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). T
 |----------|---------|-------------|
 | `PORT` | `3000` | Server port |
 | `HOST` | `127.0.0.1` | Bind address. The published Docker image overrides this to `0.0.0.0` via `ENV HOST=0.0.0.0`; bare `bun run start` binds localhost only. |
-| `PUBLIC_URL` | `http://localhost:3000` | Public URL (used in setup script) |
+| `PUBLIC_URL` | `http://localhost:3000` | Public URL (used in setup script). Comma-separated. With `DISABLE_AUTH=true` its names are also the only non-IP names the API answers on, and its origins the only ones accepted for live updates beyond the request's own. |
 | `DATA_DIR` | `./data` | Base directory for local SQLite storage |
 | `SQLITE_PATH` | `${DATA_DIR}/agentpulse.db` | Override the SQLite database file path |
-| `DISABLE_AUTH` | `false` | Skip all authentication |
+| `DISABLE_AUTH` | `false` | Skip all authentication. The API still refuses Hosts other than localhost, an IP address or a `PUBLIC_URL` name, and cross-site browser requests (`403 bad_origin`). |
 | `AGENTPULSE_ALLOW_SIGNUP` | `false` | Allow open signup on an empty instance. Set `true` to enable the first-run signup flow. Once any user exists, signup is blocked regardless. |
 | `AGENTPULSE_MODE` | (unset) | `solo` or `team`. Fixes the instance mode and stops the UI changing it; any other value stops boot. Unset: the mode is chosen in Settings (solo until an admin switches). See [Teams](#teams). |
 | `AGENTPULSE_ADMIN_SSO_SUBJECTS` | (unset) | Comma-separated identity-provider subjects (stable uids, never usernames) that are admins. Needs the uid header configured; see `deploy/k8s/FORWARDAUTH.md`. |
@@ -643,7 +662,7 @@ AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). T
 | `AGENTPULSE_MANAGED_SESSION_MAX_SILENCE_HOURS` | `72` | Hours of silence after which a supervisor-launched session stops being exempt from the inactivity sweep, even while its host is heartbeating, and completes. The next hook reopens it. Range 1 to 720. |
 | `DATABASE_URL` | `""` (SQLite) | Postgres connection string. When set to a `postgres://...` URL, AgentPulse uses PostgreSQL instead of SQLite. Example: `postgres://agentpulse:password@host:5432/agentpulse?sslmode=require`. Leave unset or empty for SQLite. |
 | `AGENTPULSE_PG_POOL_MAX` | `10` | Maximum Postgres connection pool size. Integer in [1, 100]. Tune based on your Postgres server's `max_connections` and replica count. |
-| `AGENTPULSE_LEGACY_INIT` | (unset) | SQLite existing-install migration behaviour. Set to `"false"` to force a fresh Drizzle migrate on an existing SQLite install (opt-in, non-destructive if schema is already current). Unset keeps the legacy `initializeDatabase()` path for existing SQLite installs. |
+| `AGENTPULSE_LEGACY_INIT` | (unset) | SQLite existing-install migration behaviour. Set to `"false"` to boot an existing SQLite install through Drizzle `migrate()` (opt-in; it reconciles the migration ledger first and refuses to start, with a message, if the schema and the ledger disagree). Unset keeps the legacy `initializeDatabase()` path for existing SQLite installs, which also records the ledger. See `deploy/k8s/README.md`, "Moving an existing SQLite install to Drizzle migrate". |
 | `TELEGRAM_BOT_TOKEN` | | Instance-wide Telegram bot token (get one from @BotFather). Required to enable the Telegram HITL channel. |
 | `TELEGRAM_WEBHOOK_SECRET` | | Shared secret Telegram echoes back on every webhook callback. ≥24 random chars. Required when `TELEGRAM_BOT_TOKEN` is set. |
 
@@ -714,7 +733,7 @@ Disable the person in AgentPulse (**Settings → Team**, the person's row). Remo
 
 In team mode one person (or, for a key with no owner, one key) may create at most 120 new sessions a minute (`AGENTPULSE_SESSION_CREATE_LIMIT`). The rest are dropped with the usual `200` and counted as `sessionCreationLimited` on `/health`. Minting API keys is limited to 10 a minute per person. Solo mode has no creation limit.
 
-With `DISABLE_AUTH=true`, live updates connect only from a loopback address or from the configured `PUBLIC_URL` (a protection against pages that resolve to your machine). Reach such an instance on another address and the dashboard falls back to polling until you set `PUBLIC_URL`.
+With `DISABLE_AUTH=true`, the whole API (and live updates) answer only on `localhost`, an IP address, or a name listed in `PUBLIC_URL`, and refuse requests that a browser marks as coming from another website. This protects against pages that resolve to your machine (DNS rebinding) and against any site posting to your local server. See [Opening an auth-off server by name](#opening-an-auth-off-server-by-name).
 
 ### Counters on `/health`
 

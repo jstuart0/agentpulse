@@ -7,8 +7,42 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Security
+
+- **With `DISABLE_AUTH=true`, the whole API now refuses DNS-rebinding pages and cross-site requests (AGEN-92).** Until now only a
+  few routes (stop turn, prompt, tool calls, approval decisions, take over) judged the Host, so a page on a name that resolves to
+  your machine could read every session and start a launch, and any website could post to `http://127.0.0.1:3000/api/v1/launches`
+  or `/hooks` with a `text/plain` body. One gate now runs first on every `/api` and `/app-api` request and answers
+  `403 { error: "bad_origin", message }` when the Host isn't `localhost`, an IP address or a `PUBLIC_URL` name, or when a browser
+  marks the request cross-site (`Sec-Fetch-Site: cross-site`, or an Origin that isn't allowlisted, the request's own, or a
+  loopback origin on the server's own port, or on Vite's 5173 outside production; the Origin's scheme must match the request's). Requests with no Origin and no `Sec-Fetch-Site` (curl, the relay, the supervisor, MCP, hooks) are judged by
+  Host only. Auth-on behaviour is unchanged. Still open, filed separately: outside production, a page on Vite's port 5173
+  is accepted as a loopback origin (AGEN-152); auth on, `POST /internal/drain` checks no Origin (AGEN-151); `/setup.sh` and the other install scripts are readable
+  by rebinding (AGEN-153). On a plain-http LAN server a cross-site GET sends no `Sec-Fetch-Site` or Origin and passes.
+
 ### Changed
 
+- **⚠ breaking (auth off only): a server run with `DISABLE_AUTH=true` refuses every Host that isn't `localhost`, an IP address or
+  a name in `PUBLIC_URL`, and every cross-site browser request.** Opening the dashboard at `http://mybox.local:3000` now shows a
+  "This address isn't allowed" page. Fix: add the name to `PUBLIC_URL` and restart, or use an IP or `localhost` (README, "Opening
+  an auth-off server by name"). What else reaches the server by a name and stops until then:
+  - Claude HTTP hooks, Codex and Copilot hook shims and the OpenCode plugin installed with `--url http://<name>`. Events are
+    dropped silently. `agentpulse setup`, `setup-hooks.sh` and the `/setup.sh` script now check for this before writing anything.
+  - The relay with a `--url` by name: events stay queued, but a queued file is dropped after 24 hours or 10,000 files.
+    `setup-relay.sh` checks, and the relay logs the fix once.
+  - The supervisor with `AGENTPULSE_SERVER_URL` by name: registration retries forever, and its offline outbox ages out after 24
+    hours. It logs the server's message once.
+  - MCP with `AGENTPULSE_URL` by name (the error now says what to set).
+  - The Telegram webhook, if you set it through a name that is now refused: add the name to `PUBLIC_URL`, or open the dashboard at
+    an accepted address and press **Set webhook** again.
+  - Monitors that probe `/health` by service name (`http://agentpulse:3000/...`): probe by IP or `localhost`, or add the name.
+  - An IPv6 address with a zone id (`[fe80::1%25en0]`) is refused.
+  - A browser page on any other loopback port (`http://localhost:8080`, or Vite moved off 5173) is refused: list that origin in
+    `PUBLIC_URL`.
+  - A request with `Origin: null` (a `file://` page, a sandboxed or `data:` frame, a redirect-tainted request, some browser
+    extensions) is refused.
+  - By-IP and `localhost` setups, the Vite dev server (`http://localhost:5173`), and the dashboard on an accepted address are
+    unchanged. The Vite dev server's own `allowedHosts` must never be set to `true`.
 - **Secrets in stored event and session text are masked (AGEN-146).** Agent text used to be stored exactly as sent, then indexed,
   shared in team mode and served over REST, WebSocket and MCP. It is now masked before it is written, for every agent type: a
   key in a prompt, a command or a tool's output becomes a marker in `events` (content, tool input, tool response, raw payload)
@@ -88,6 +122,13 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Upgrade notes
 
+- **SQLite installs: this release records the migration ledger, and it is a required stop before the legacy init goes
+  away (AGEN-67).** Boot once on this release with `AGENTPULSE_LEGACY_INIT` unset. The legacy init now writes
+  `__drizzle_migrations` for every migration its schema really has, so `AGENTPULSE_LEGACY_INIT=false` works afterwards
+  instead of failing with `duplicate column name` or `table ... already exists`. With the flag set to `false`, boot checks
+  the ledger first and stops with a message (exit 1, nothing written) when it can't safely run `migrate()`. Back up the
+  database file with its `-wal` and `-shm` files before switching. The procedure and recovery steps are in
+  `deploy/k8s/README.md`, "Moving an existing SQLite install to Drizzle migrate". Postgres is unchanged.
 - **Fork follow-ups: server first, then supervisors.** A host that doesn't advertise `claude_turn_interrupt` (Stop turn),
   `claude_fork_mcp` or `claude_fork_subagents` is refused (`409 host_upgrade_required`) or shown the option disabled with a
   reason, and a queued interrupt that reaches an old host fails at claim. `GET /capabilities` advertises `claudeStopTurn`,
@@ -148,6 +189,11 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Fixed
 
+- **`AGENTPULSE_LEGACY_INIT=false` no longer replays migrations on an existing SQLite install** (AGEN-67). A database born
+  by Drizzle and later topped up by the legacy init failed with `duplicate column name: dedup_key`, and a legacy-born one
+  with ``table `ai_action_requests` already exists``, because the ledger drifted from the schema. Both paths now reconcile
+  the ledger by comparing the schema with what each migration creates. The legacy init also creates `event_embeddings` and
+  its scan index whether or not vector search is on.
 - **A follow-up prompt to a managed Codex session now runs on that session's Codex thread** (AGEN-91). It was sent down the
   Claude path: a launch with an explicit approval policy failed with a misleading "policy isn't recognised" error, and one with
   the agent's defaults ran `claude --resume` on the Codex session id in the launch directory. The prompt box, a watcher request's Approve,

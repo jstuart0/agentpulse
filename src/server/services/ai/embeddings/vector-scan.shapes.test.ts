@@ -62,7 +62,8 @@ describeSqliteOnly("scan against both install shapes", () => {
 
 			expect(report).not.toBeNull();
 			expect(report?.shape).toBe(shape);
-			expect(report?.hasDrizzleMigrations).toBe(shape === "drizzle");
+			// Both shapes carry the ledger: the legacy path writes it too (AGEN-67), and both have the scan index.
+			expect(report?.hasDrizzleMigrations).toBe(true);
 			expect(report?.hasLegacyModelIndex).toBe(shape === "legacy");
 			expect(report?.hasDeleteTrigger).toBe(shape === "legacy");
 			expect(report?.hasScanIndex).toBe(true);

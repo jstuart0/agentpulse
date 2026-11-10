@@ -96,7 +96,7 @@ Agent (Claude Code / Codex / Copilot CLI / OpenCode)
 ```
 
 ### Auth (two modes)
-- `DISABLE_AUTH=true` — No auth, all endpoints open (default for local use)
+- `DISABLE_AUTH=true` — No auth, all endpoints open (default for local use). The API still answers `403 bad_origin` to a Host that isn't localhost, an IP address or a `PUBLIC_URL` name, and to cross-site browser requests (AGEN-92)
 - Auth enabled — API key for hooks, forwardauth SSO for dashboard (k8s deployment).
   Works with any forwardauth-capable IdP (Authentik by default, or Authelia,
   oauth2-proxy, Pomerium, Cloudflare Access via env config).
@@ -170,7 +170,7 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 - `POST /api/v1/sessions/:id/bind` — `{ targetSupervisorId, sameMachineConfirmed: true }`; takes an observed Codex session over on that host, or forks an observed Claude Code session there (the original is never written; the fork is a new session, `<name> (continued)`). A signed-in person only, never an API key (`human_required`). Refusal codes are in `src/shared/session-resume.ts`
 - `POST /api/v1/sessions/:id/resume` — no body; resumes a managed Codex session or a Claude fork whose process is gone (`degraded`), under the mode the fork started with
 - `POST /api/v1/sessions/:id/interrupt` — Stop turn: ends a continued Claude session's running turn and keeps the session open (`manage` key or a signed-in person, never a `respond` key; owner or admin in team mode; 6 a minute per caller). MCP: `stop_session_turn`
-- `GET /api/v1/sessions/:id/tool-calls` and `GET /api/v1/sessions/:id/tool-calls/:toolUseId` — what a continued Claude session's tool calls ran, kept 7 days and encrypted with `AGENTPULSE_SECRETS_KEY`: a signed-in person only (the session's owner or an admin in team mode), every API key refused `human_required`; `view=index` omits the `input` and `output` keys (absent, not null); with `DISABLE_AUTH=true` the Host must be loopback or allowlisted (`bad_origin`); each read is audit-logged (actor, session, count; no content). No MCP tool
+- `GET /api/v1/sessions/:id/tool-calls` and `GET /api/v1/sessions/:id/tool-calls/:toolUseId` — what a continued Claude session's tool calls ran, kept 7 days and encrypted with `AGENTPULSE_SECRETS_KEY`: a signed-in person only (the session's owner or an admin in team mode), every API key refused `human_required`; `view=index` omits the `input` and `output` keys (absent, not null); with `DISABLE_AUTH=true` the Host must be loopback, an IP address or allowlisted (`bad_origin`); each read is audit-logged (actor, session, count; no content). No MCP tool
 - `POST /api/v1/supervisors/:id/managed-sessions/:sessionId/tool-calls` — supervisor credential only: report what a fork's calls ran
 
 **Projects:**

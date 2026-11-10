@@ -170,14 +170,25 @@ describe("refused origins", () => {
 		}
 	});
 
-	test("with authentication off, a same-origin request on any other name or address", async () => {
+	test("with authentication off, an IP-literal Host with its own origin is accepted (AGEN-92, D2)", async () => {
 		for (const [origin, host] of [
 			["http://198.51.100.20:3000", "198.51.100.20:3000"],
+			["http://128.0.0.1:3000", "128.0.0.1:3000"],
+		] as const) {
+			expect({ origin, host, status: await verdict(origin, host) }).not.toEqual({
+				origin,
+				host,
+				status: 403,
+			});
+		}
+	});
+
+	test("with authentication off, a same-origin request on any other name", async () => {
+		for (const [origin, host] of [
 			["http://dash.example", "dash.example"],
 			["https://evil.example", "evil.example"],
 			["http://localhost.evil.example:3000", "localhost.evil.example:3000"],
 			["http://127.0.0.1.evil.example:3000", "127.0.0.1.evil.example:3000"],
-			["http://128.0.0.1:3000", "128.0.0.1:3000"],
 		] as const) {
 			expect({ origin, host, status: await verdict(origin, host) }).toEqual({
 				origin,
@@ -248,5 +259,63 @@ describe("an uppercase Host header", () => {
 		expect(
 			await throughHandler("http://dash.example:8080", "DASH.Example:8080", "/app-api/v1/ws"),
 		).not.toBe(403);
+	});
+});
+
+describe("AGEN-92: the upgrade rejects rebinding and cross-site requests, with authentication off", () => {
+	const fakeServer = { upgrade: () => true };
+	const upgradeVerdict = async (path: string, headers: Record<string, string>) => {
+		const res = await handleServerRequest(
+			new Request(`http://placeholder${path}`, { headers }),
+			fakeServer,
+		);
+		return res === undefined ? "upgraded" : res.status;
+	};
+
+	for (const path of ["/api/v1/ws", "/app-api/v1/ws"]) {
+		test(`${path}: a rebinding Host with the same Origin is refused`, async () => {
+			expect(
+				await upgradeVerdict(path, {
+					Host: "rebind.example:3000",
+					Origin: "http://rebind.example:3000",
+				}),
+			).toBe(403);
+		});
+
+		test(`${path}: a trusted Host with a foreign Origin is refused`, async () => {
+			expect(
+				await upgradeVerdict(path, { Host: "127.0.0.1:3000", Origin: "https://evil.example" }),
+			).toBe(403);
+		});
+
+		test(`${path}: an IP-literal Host with its own Origin is upgraded`, async () => {
+			expect(
+				await upgradeVerdict(path, { Host: "192.168.1.5:3000", Origin: "http://192.168.1.5:3000" }),
+			).toBe("upgraded");
+		});
+
+		test(`${path}: a LAN IP Host with a foreign Origin is refused`, async () => {
+			expect(
+				await upgradeVerdict(path, { Host: "192.168.1.5:3000", Origin: "https://evil.example" }),
+			).toBe(403);
+		});
+	}
+
+	test("the Origin's scheme must be the request's own, both ways (REST and WS paths)", async () => {
+		const verdictAt = async (scheme: string, path: string, origin: string) => {
+			const res = await handleServerRequest(
+				new Request(`${scheme}://placeholder${path}`, {
+					headers: { Host: "192.168.1.5", Origin: origin },
+				}),
+				fakeServer,
+			);
+			return res === undefined ? "upgraded" : res.status;
+		};
+		for (const path of ["/api/v1/ws", "/app-api/v1/ws"]) {
+			expect(await verdictAt("https", path, "http://192.168.1.5")).toBe(403);
+			expect(await verdictAt("http", path, "https://192.168.1.5")).toBe(403);
+			expect(await verdictAt("https", path, "https://192.168.1.5")).toBe("upgraded");
+			expect(await verdictAt("http", path, "http://192.168.1.5")).toBe("upgraded");
+		}
 	});
 });

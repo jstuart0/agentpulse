@@ -17,6 +17,7 @@ import {
 	resetTarget,
 	shouldRecheckAuth,
 } from "./auth-session.js";
+import { IDENTITY_PATH } from "./network-retry.js";
 
 function me(userId: string | null, extra: Partial<AuthMeResponse["user"]> = {}): AuthMeResponse {
 	return {
@@ -86,6 +87,8 @@ describe("reduceAuthLoad", () => {
 			kind: "failed",
 			network: false,
 			message: "boom",
+			status: 401,
+			code: null,
 		});
 		expect(patch.authenticated).toBe(false);
 		expect(patch.user).toBeNull();
@@ -98,6 +101,8 @@ describe("reduceAuthLoad", () => {
 			kind: "failed",
 			network: true,
 			message: "offline",
+			status: null,
+			code: null,
 		});
 		expect(patch).toEqual({ error: "offline" });
 		expect(reset).toBeNull();
@@ -107,9 +112,48 @@ describe("reduceAuthLoad", () => {
 		expect(
 			reduceAuthLoad(
 				{ userId: null, authenticated: false },
-				{ kind: "failed", network: false, message: "x" },
+				{ kind: "failed", network: false, message: "x", status: 401, code: null },
 			).reset,
 		).toBeNull();
+	});
+});
+
+describe("a refused address (auth off, AGEN-92)", () => {
+	const refused = {
+		kind: "failed" as const,
+		network: false,
+		message: "With authentication off, AgentPulse answers only on localhost.",
+		status: 403,
+		code: "bad_origin",
+	};
+
+	test("a 403 bad_origin on the identity call sets hostRefused with the server's words, and doesn't sign anyone out", () => {
+		const { patch, reset } = reduceAuthLoad({ userId: null, authenticated: false }, refused);
+		expect(patch.hostRefused).toBe(true);
+		expect(patch.hostRefusedMessage).toBe(refused.message);
+		expect(patch.authenticated).toBeUndefined();
+		expect(reset).toBeNull();
+	});
+
+	test("a later good answer clears it", () => {
+		const { patch } = reduceAuthLoad(
+			{ userId: null, authenticated: false },
+			{ kind: "ok", res: me("A") },
+		);
+		expect(patch.hostRefused).toBe(false);
+		expect(patch.hostRefusedMessage).toBeNull();
+	});
+
+	test("an open tab re-checks on its next refused call, but not for the identity call itself", () => {
+		expect(shouldRecheckAuth({ status: 403, code: "bad_origin", path: "/sessions" })).toBe(true);
+		expect(shouldRecheckAuth({ status: 403, code: "bad_origin", path: IDENTITY_PATH })).toBe(false);
+		expect(shouldRecheckAuth({ status: 403, code: "something_else", path: "/sessions" })).toBe(
+			false,
+		);
+	});
+
+	test("it is a loaded answer, so the gate can show the notice", () => {
+		expect(loadedAfter(false, refused)).toBe(true);
 	});
 });
 
@@ -131,6 +175,8 @@ describe("an unhealthy server is not a signed-out viewer", () => {
 			kind: "failed" as const,
 			network: isNetworkFailure(new ApiError(503, "x")),
 			message: "x",
+			status: 503,
+			code: null,
 		};
 		expect(loadedAfter(false, outcome)).toBe(false);
 		expect(reduceAuthLoad({ userId: "A", authenticated: true }, outcome).reset).toBeNull();
@@ -162,7 +208,9 @@ describe("shouldRecheckAuth", () => {
 	});
 
 	test("other refusals are the caller's business", () => {
-		expect(shouldRecheckAuth({ status: 403, code: "bad_origin", path: "/sessions/1" })).toBe(false);
+		expect(
+			shouldRecheckAuth({ status: 403, code: "insufficient_scope", path: "/sessions/1" }),
+		).toBe(false);
 		expect(shouldRecheckAuth({ status: 403, code: null, path: "/sessions/1" })).toBe(false);
 		expect(shouldRecheckAuth({ status: 404, code: null, path: "/sessions/1" })).toBe(false);
 	});
@@ -313,16 +361,22 @@ describe("password change outcomes", () => {
 
 describe("loadedAfter", () => {
 	test("a first load that never reached the server is not a load", () => {
-		expect(loadedAfter(false, { kind: "failed", network: true, message: "x" })).toBe(false);
+		expect(
+			loadedAfter(false, { kind: "failed", network: true, message: "x", status: null, code: null }),
+		).toBe(false);
 	});
 
 	test("an answer, or a refusal from the server, is a load", () => {
 		expect(loadedAfter(false, { kind: "ok", res: me("A") })).toBe(true);
-		expect(loadedAfter(false, { kind: "failed", network: false, message: "x" })).toBe(true);
+		expect(
+			loadedAfter(false, { kind: "failed", network: false, message: "x", status: 401, code: null }),
+		).toBe(true);
 	});
 
 	test("once loaded, a later network failure doesn't unload", () => {
-		expect(loadedAfter(true, { kind: "failed", network: true, message: "x" })).toBe(true);
+		expect(
+			loadedAfter(true, { kind: "failed", network: true, message: "x", status: null, code: null }),
+		).toBe(true);
 	});
 });
 
