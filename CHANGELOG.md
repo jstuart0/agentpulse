@@ -20,8 +20,11 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   escape, and `API_KEY_sk-ant-...` (a long distinctive prefix after an underscore or digit). A value that only starts with
   `[REDACTED]` is masked, so a marker can't be used to hide the rest of a secret. These also apply to the watcher, the summary,
   Telegram and push, which redact on the way out.
-- **Hook-event watcher gate.** Text next to a marker that stands for withheld text (`redaction_backlog`, `redaction_error`,
-  `over_limit`) is never read as clean: the human gate sends the turn to a person and the risk classes count it as risky.
+- **Hook-event watcher gate.** The human gate sends a turn to a person when its last message or pending tool call holds
+  any `[REDACTED` mask, because a rule may have swallowed what followed the secret; a benign false-positive mask (for example
+  `const token = await getToken()`) now holds the turn too. The risk classes flag only the narrower set of markers that
+  stand for withheld text (`redaction_backlog`, `redaction_error`, `over_limit` and similar). `Cookie:` lines and
+  `Authorization: Digest`/`AWS4` parameters mask to markers the gate treats as withheld text.
 
 ### Added
 

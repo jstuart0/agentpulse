@@ -332,6 +332,27 @@ describe("13: keys, nesting and argv", () => {
 		expect(kept.length).toBeLessThanOrEqual(10_001);
 	});
 
+	test("redacting thousands of long keys gives the event loop turns", async () => {
+		const { prepareHookPayloadForStorage } = await import("../services/ingest-redaction.js");
+		const keys = Object.fromEntries(
+			Array.from({ length: 10_000 }, (_, i) => [`k${i}`.padEnd(256, "x"), 1]),
+		);
+		let turns = 0;
+		let running = true;
+		const tick = () => {
+			turns++;
+			if (running) setImmediate(tick);
+		};
+		setImmediate(tick);
+		await prepareHookPayloadForStorage(
+			{ session_id: "s", hook_event_name: "PreToolUse", tool_input: keys } as never,
+			{ keyId: "k" },
+		);
+		running = false;
+		// 10,000 keys of 256 characters is about 2.6 M key characters: dozens of turns.
+		expect(turns).toBeGreaterThan(20);
+	});
+
 	test("strings under a nested object of a secret key, and argv arrays, are masked", async () => {
 		const id = `nest-${Date.now()}`;
 		await post({

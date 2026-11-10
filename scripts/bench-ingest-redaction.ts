@@ -155,6 +155,9 @@ const managed: NormalizedEvent[] = Array.from({ length: 500 }, (_, i) => ({
 	toolResponse: null,
 	rawPayload: { kind: "message" },
 }));
+await timed("text, one 1 MiB sk-ant token (F3)", () =>
+	redactTextForStorage(`before sk-ant-${"A".repeat(1 << 20)} after`, "bench"),
+);
 await timed("managed batch, 500 events (~2 MiB)", () => redactEventsForStorage("s:bench", managed));
 
 console.log(

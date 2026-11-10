@@ -125,6 +125,8 @@ export interface IngestRedactionCounters {
 	idsDropped: number;
 	sessionIdRefused: number;
 	maxSliceMs: number;
+	/** Transcript-sync batches whose insert threw and were skipped (the cursor moves on). */
+	transcriptSyncInsertFailed: number;
 }
 
 const counters: IngestRedactionCounters = {
@@ -138,7 +140,12 @@ const counters: IngestRedactionCounters = {
 	idsDropped: 0,
 	sessionIdRefused: 0,
 	maxSliceMs: 0,
+	transcriptSyncInsertFailed: 0,
 };
+
+export function noteTranscriptSyncInsertFailed(): void {
+	counters.transcriptSyncInsertFailed++;
+}
 
 export function getIngestRedactionCounters(): IngestRedactionCounters {
 	return { ...counters };
@@ -442,6 +449,8 @@ interface WalkState {
 	plain: Map<string, string>;
 	keys: Map<string, string>;
 	nodes: number;
+	/** Key characters redacted since the walk last gave the event loop a turn. */
+	keyChars: number;
 	/** Cut each string leaf to this many characters before it is scanned (a tool response). */
 	leafCap: number | null;
 }
@@ -457,6 +466,7 @@ function newWalkState(
 		plain: new Map(),
 		keys: new Map(),
 		nodes: 0,
+		keyChars: 0,
 		leafCap,
 	};
 }
@@ -476,6 +486,17 @@ function estimateUnits(value: unknown, depth = 0, budget = { nodes: 0 }): number
 		if (total > GLOBAL_PENDING_CAP_UNITS) break;
 	}
 	return total;
+}
+
+/** Key redaction is synchronous, so a walk over many long keys takes a turn every ~64 Ki key characters. */
+const KEY_CHARS_PER_TURN = 64 * 1024;
+
+async function pace(key: string, ws: WalkState): Promise<void> {
+	if (ws.keys.has(key)) return;
+	ws.keyChars += Math.min(key.length, KEY_MAX_CHARS) + 16;
+	if (ws.keyChars < KEY_CHARS_PER_TURN) return;
+	ws.keyChars = 0;
+	await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 function redactKey(key: string, ws: WalkState): string {
@@ -589,6 +610,7 @@ async function walkObject(
 	const paired = pairedValueKeys(obj);
 	for (const key of Object.keys(obj)) {
 		const value = obj[key];
+		await pace(key, ws);
 		const outKey = redactKey(key, ws);
 		let child: unknown;
 		if (typeof value === "string") {
@@ -676,6 +698,7 @@ async function walkTopLevel(
 			setOwn(out, key, special.value);
 			continue;
 		}
+		await pace(key, ws);
 		const outKey = redactKey(key, ws);
 		let child: unknown;
 		if (typeof value === "string") {

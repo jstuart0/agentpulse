@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { MAX_EVENT_CONTENT_CHARS } from "../../shared/managed-report-limits.js";
 import type { HookEventPayload } from "../../shared/types.js";
 import { redactionSamples } from "./ai/__fixtures__/redaction-samples.js";
-import { DEFAULT_RULES, redact } from "./ai/redactor.js";
+import {
+	DEFAULT_RULES,
+	REDACTION_AFTER,
+	REDACTION_BEFORE,
+	REDACTION_CHUNK,
+	REDACTION_MAX_EXTENSION,
+	RUN_TOO_LONG_MARKER,
+	redact,
+} from "./ai/redactor.js";
 import type { NormalizedEvent } from "./event-normalizer.js";
 import { TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP } from "./event-normalizer.js";
 import {
@@ -529,6 +537,21 @@ describe("scheduler", () => {
 		expect(turns).toBeGreaterThan(150);
 		expect(Math.max(...slices)).toBeLessThanOrEqual(SLICE_UNITS + 64);
 	});
+
+	test("F3: a 1 MiB single token goes through the scheduler in bounded slices and leaves only a marker", async () => {
+		const bound =
+			REDACTION_MAX_EXTENSION + REDACTION_CHUNK + 2 * REDACTION_AFTER + REDACTION_BEFORE + 8;
+		for (const size of [900_000, 1 << 20]) {
+			const slices: number[] = [];
+			__testing.setSliceObserver((info) => slices.push(info.units));
+			const out = await redactTextForStorage(`before sk-ant-${"A".repeat(size)} after`, "t");
+			__testing.setSliceObserver(null);
+			expect(out, String(size)).toContain(RUN_TOO_LONG_MARKER);
+			expect(out).not.toContain("AAAAAAAA");
+			expect(slices.length).toBeGreaterThan(2);
+			expect(Math.max(...slices)).toBeLessThanOrEqual(bound);
+		}
+	}, 60_000);
 
 	test("a small event with nothing queued is redacted with no turn at all", async () => {
 		let turns = 0;

@@ -20,3 +20,60 @@ describe("parseTranscriptDelta — D5 Pattern A' TRANSCRIPT_PARSERS map", () => 
 		expect(events).toEqual([]);
 	});
 });
+
+// AGEN-146: a batch whose insert throws is skipped, counted and logged redacted; the cursor moves on.
+describe("transcript sync insert failure", () => {
+	test("the cursor advances, the failure is counted and its log carries no secret", async () => {
+		await import("./ai/__test_db.js");
+		const { mkdtempSync, writeFileSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const { eq } = await import("drizzle-orm");
+		const { spyOn } = await import("bun:test");
+		const { getDb, initializeDatabase } = await import("../db/client.js");
+		const { sessions } = await import("../db/schema/index.js");
+		const processor = await import("./event-processor.js");
+		const { transcriptSyncWorker } = await import("./transcript-sync.js");
+		const { getIngestRedactionCounters } = await import("./ingest-redaction.js");
+		await initializeDatabase();
+		const dir = mkdtempSync(join(tmpdir(), "ts-fail-"));
+		const file = join(dir, "t.jsonl");
+		const line = `${codexAgentMessageLine}\n`;
+		writeFileSync(file, line);
+		const id = `ts-fail-${Date.now()}`;
+		await getDb()
+			.insert(sessions)
+			.values({
+				sessionId: id,
+				displayName: id,
+				agentType: "codex_cli",
+				status: "active",
+				transcriptPath: file,
+				lastActivityAt: new Date().toISOString(),
+				metadata: {},
+			})
+			.execute();
+		const KEY = `sk-ant-${"api03-"}${"A".repeat(40)}`;
+		const insert = spyOn(processor, "insertNormalizedEvents").mockImplementation(async () => {
+			throw new Error(`insert failed for ${KEY}`);
+		});
+		const logged: string[] = [];
+		const original = console.error;
+		console.error = (...args: unknown[]) => logged.push(args.map(String).join(" "));
+		const before = getIngestRedactionCounters().transcriptSyncInsertFailed;
+		try {
+			await transcriptSyncWorker.tick();
+		} finally {
+			console.error = original;
+			insert.mockRestore();
+		}
+		expect(getIngestRedactionCounters().transcriptSyncInsertFailed).toBeGreaterThan(before);
+		const text = logged.join("\n");
+		expect(text).toContain("transcript_sync_insert_failed");
+		expect(text).not.toContain("AAAAAAAA");
+		const [row] = await getDb().select().from(sessions).where(eq(sessions.sessionId, id));
+		expect(
+			(row?.metadata as { transcriptCursor?: { offset: number } }).transcriptCursor?.offset,
+		).toBe(line.length);
+	});
+});
