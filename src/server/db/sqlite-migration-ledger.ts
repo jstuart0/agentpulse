@@ -96,15 +96,100 @@ type Snapshot = Map<string, Cell>;
 /** Counters a test reads to show the memo and the fast path really skip work. */
 export const ledgerStats = { replays: 0, liveIntrospections: 0 };
 
-/** A SQL fragment with the spelling differences that don't change what it does taken out. */
+/**
+ * A SQL fragment with the spelling differences that don't change what it does taken out: identifier
+ * quoting, case, white space, IF NOT EXISTS. String literals are values and are kept exactly.
+ */
 function normalizeSql(text: string): string {
 	return text
-		.replace(/[`"]/g, "")
-		.replace(/\bif not exists\b/gi, "")
-		.replace(/\s+/g, " ")
-		.replace(/\s*([(),;=<>])\s*/g, "$1")
-		.trim()
-		.toLowerCase();
+		.split(/('(?:[^']|'')*')/)
+		.map((part, i) =>
+			i % 2 === 1
+				? part
+				: part
+						.replace(/[`"]/g, "")
+						.replace(/\bif not exists\b/gi, "")
+						.replace(/\s+/g, " ")
+						.replace(/\s*([(),;=<>])\s*/g, "$1")
+						.toLowerCase(),
+		)
+		.join("")
+		.trim();
+}
+
+/** The text between the parentheses opening at `open`, honouring quotes, and the index after the closing one. */
+function balanced(sql: string, open: number): { body: string; end: number } | null {
+	let depth = 0;
+	for (let i = open; i < sql.length; i++) {
+		const ch = sql[i] as string;
+		if (ch === "'" || ch === '"' || ch === "`") {
+			let j = i + 1;
+			while (j < sql.length) {
+				if (sql[j] === ch) {
+					if (sql[j + 1] === ch) {
+						j += 2;
+						continue;
+					}
+					break;
+				}
+				j++;
+			}
+			i = j;
+		} else if (ch === "(") depth++;
+		else if (ch === ")") {
+			depth--;
+			if (depth === 0) return { body: sql.slice(open + 1, i), end: i + 1 };
+		}
+	}
+	return null;
+}
+
+/** Every CHECK expression of a CREATE TABLE statement (column and table level), normalized. */
+function checkExpressions(sql: string): string[] {
+	const out: string[] = [];
+	let i = 0;
+	while (i < sql.length) {
+		const ch = sql[i] as string;
+		if (ch === "'" || ch === '"' || ch === "`") {
+			const lit = balancedQuote(sql, i);
+			i = lit;
+			continue;
+		}
+		const word = /^\w+/.exec(sql.slice(i));
+		if (word && (i === 0 || !/\w/.test(sql[i - 1] as string))) {
+			if (word[0].toLowerCase() === "check") {
+				const open = /^\s*\(/.exec(sql.slice(i + 5));
+				if (open) {
+					const group = balanced(sql, i + 5 + open[0].length - 1);
+					if (group) {
+						out.push(normalizeSql(group.body));
+						i = group.end;
+						continue;
+					}
+				}
+			}
+			i += word[0].length;
+			continue;
+		}
+		i++;
+	}
+	return out;
+}
+
+function balancedQuote(sql: string, start: number): number {
+	const q = sql[start] as string;
+	let j = start + 1;
+	while (j < sql.length) {
+		if (sql[j] === q) {
+			if (sql[j + 1] === q) {
+				j += 2;
+				continue;
+			}
+			break;
+		}
+		j++;
+	}
+	return j + 1;
 }
 
 function stripOuterParens(text: string): string {
@@ -200,16 +285,42 @@ function introspect(db: Database): Snapshot {
 		}
 		if (virtuals.includes(name) || virtuals.some((v) => name.startsWith(`${v}_`))) continue;
 		snap.set(`table:${name}`, { value: "1", table: name });
-		const cols = db.prepare(`PRAGMA table_info('${name}')`).all() as Row[];
+		const cols = db.prepare(`PRAGMA table_xinfo('${name}')`).all() as Row[];
 		const pkCount = cols.filter((c) => Number(c.pk) > 0).length;
 		for (const c of cols) {
 			snap.set(`column:${name}.${c.name}`, { value: columnValue(c, pkCount), table: name });
 		}
+		const tableSql = String(o.sql ?? "");
+		// A generated column's expression isn't in any PRAGMA: such a table is compared by its whole
+		// statement, so a spelling difference fails closed (unverified) rather than passing unchecked.
+		if (cols.some((c) => Number(c.hidden) >= 2)) {
+			snap.set(`tablesql:${name}`, { value: normalizeSql(tableSql), table: name });
+		}
+		for (const expression of checkExpressions(tableSql)) {
+			snap.set(`check:${name} ${expression}`, { value: "1", table: name });
+		}
+		const closing = tableSql.lastIndexOf(")");
+		const options = normalizeSql(closing >= 0 ? tableSql.slice(closing + 1) : "");
+		for (const option of ["strict", "without rowid"]) {
+			if (options.includes(option))
+				snap.set(`tableopt:${name} ${option}`, { value: "1", table: name });
+		}
+		// A foreign key is one constraint however many columns it names, so it is keyed by the whole group.
+		const fkGroups = new Map<number, Row[]>();
 		for (const f of db.prepare(`PRAGMA foreign_key_list('${name}')`).all() as Row[]) {
-			snap.set(`fk:${name}.${f.from}->${f.table}.${f.to ?? ""}`, {
-				value: `${f.on_delete}|${f.on_update}`,
-				table: name,
-			});
+			const group = fkGroups.get(Number(f.id)) ?? [];
+			group.push(f);
+			fkGroups.set(Number(f.id), group);
+		}
+		for (const group of fkGroups.values()) {
+			group.sort((x, y) => Number(x.seq) - Number(y.seq));
+			const first = group[0] as Row;
+			snap.set(
+				`fk:${name}.${group.map((f) => f.from).join(",")}->${first.table}.${group
+					.map((f) => f.to ?? "")
+					.join(",")}`,
+				{ value: `${first.on_delete}|${first.on_update}`, table: name },
+			);
 		}
 		for (const i of db.prepare(`PRAGMA index_list('${name}')`).all() as Row[]) {
 			if (i.origin === "pk") continue;
@@ -250,6 +361,8 @@ export interface Effect {
 	expected: string | null;
 	/** Every value the key takes from this entry to the tail (null: absent). A live value matching any of them passes. */
 	acceptable: Array<string | null>;
+	/** The first later entry that removes the key (null: none does). */
+	removedBy: number | null;
 }
 
 export interface EntryEffects {
@@ -352,11 +465,14 @@ export function migrationEffects(folder: string): MigrationEffects {
 		}
 		const effects: Effect[] = [...touched].map((key) => {
 			const acceptable: Array<string | null> = [];
+			let removedBy: number | null = null;
 			for (let q = i + 1; q <= last; q++) {
 				const v = snapshots[q]?.get(key)?.value ?? null;
 				if (!acceptable.includes(v)) acceptable.push(v);
+				// Snapshot q is the state after entry q - 1.
+				if (v === null && removedBy === null && q > i + 1 && after.has(key)) removedBy = q - 1;
 			}
-			return { key, expected: after.get(key)?.value ?? null, acceptable };
+			return { key, expected: after.get(key)?.value ?? null, acceptable, removedBy };
 		});
 		const created = [...after.keys()].filter(
 			(k) => (k.startsWith("table:") || k.startsWith("column:")) && !before.has(k),
@@ -565,7 +681,9 @@ export function reconcileSqliteMigrationLedger(
 
 	const journal = readJournal(folder);
 	const tail = journal.entries.at(-1) as JournalEntry;
-	if (ledger.max === tail.when) {
+	// Legacy mode trusts a ledger at the tail, as drizzle does. Forced mode never does: it is about to hand
+	// the database to migrate(), which would skip everything on a ledger that overstates the schema.
+	if (mode === "legacy" && ledger.max === tail.when) {
 		return finish({
 			...empty,
 			verifiedThrough: tail.tag,
@@ -590,6 +708,26 @@ export function reconcileSqliteMigrationLedger(
 		}
 		prefix++;
 	}
+	// An entry whose object is absent only because a later migration removes it can't be told from an entry
+	// that never ran, so it stands only if that later migration is verified too.
+	for (let again = true; again && prefix > 0; ) {
+		again = false;
+		for (let i = 0; i < prefix && !again; i++) {
+			const entry = entries[i] as EntryEffects;
+			const unexplained = entry.effects.find(
+				(e) =>
+					e.expected !== null && e.removedBy !== null && e.removedBy >= prefix && !live.has(e.key),
+			);
+			if (unexplained) {
+				prefix = i;
+				firstUnverified = {
+					tag: entry.tag,
+					keys: [`${unexplained.key} (absent, and the migration that removes it isn't verified)`],
+				};
+				again = true;
+			}
+		}
+	}
 	const verifiedThrough = prefix > 0 ? (entries[prefix - 1] as EntryEffects).tag : null;
 	const ledgerThrough = ledgerTag(entries, ledger.max);
 	const newerRows =
@@ -605,8 +743,20 @@ export function reconcileSqliteMigrationLedger(
 	};
 
 	let problem: LedgerProblem | undefined;
+	const leftovers = [...live.keys()].filter((k) => k.startsWith("table:__new_"));
 	const verifiedWhen = prefix > 0 ? (entries[prefix - 1] as EntryEffects).when : 0;
-	if (prefix < entries.length && ledger.max !== null && ledger.max > verifiedWhen) {
+	if (leftovers.length > 0) {
+		// drizzle-kit rebuilds a table through __new_<name>; one left behind is a rebuild that stopped half way.
+		problem = raise({
+			kind: "gap",
+			message: `[db] The database holds ${leftovers
+				.slice(0, 3)
+				.map((k) => k.slice("table:".length))
+				.join(
+					", ",
+				)}, left by a table rebuild that didn't finish, so a migration would fail on it. ${UPGRADE_HINT}`,
+		});
+	} else if (prefix < entries.length && ledger.max !== null && ledger.max > verifiedWhen) {
 		problem = raise({
 			kind: "ahead",
 			message: `[db] The migration ledger records migrations the schema doesn't show: it is at ${ledgerThrough ?? "an unknown migration"}, but ${

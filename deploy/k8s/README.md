@@ -1272,8 +1272,21 @@ into a half-applied migration or when the ledger claims more than the schema sho
 1. Stop the server. Back up the database file with its `-wal` and `-shm` files.
 2. Upgrade to this release (0.11.0 or later) and start it once with the flag unset. Check the log for
    `verified through 0022_fork_tool_calls`.
-3. Set `AGENTPULSE_LEGACY_INIT=false` and restart. The ledger line should read `at tail` or `recorded 0`.
+3. Set `AGENTPULSE_LEGACY_INIT=false` and restart. The ledger line should read `verified through 0022_fork_tool_calls; recorded 0`.
 4. To go back on the same release, unset the flag. To go back to an older release, restore the backup.
+
+**Forced mode always checks the schema.** The legacy path skips the check when the ledger already sits at the
+newest migration (it only adds rows, so there is nothing to protect). With the flag set to `false` the check runs
+on every boot, because Drizzle would otherwise trust a ledger that overstates the schema and skip every migration.
+On a current database it costs about 80 ms (the shipped migrations are replayed into memory once per process).
+The check covers tables, columns, foreign keys, indexes, `CHECK` constraints, `STRICT` and generated columns,
+triggers and leftover `__new_*` tables from an interrupted rebuild.
+
+**One process per SQLite file.** The SQLite deployment is single-replica (`strategy: Recreate`) and the
+reconcile assumes it. Two processes booting on one file with the flag set to `false` can race inside Drizzle's
+`migrate()`: it reads its ledger before it starts its transaction, so the loser can replay a migration the winner
+just applied, fail with `duplicate column name`, and roll back. The file stays sound and the next boot works, but
+don't start a second process on the same file during an upgrade.
 
 **If a boot stops with a ledger error.** Read the message: it names the migration and the objects. Either restore the
 backup, or boot once on this release with the flag unset: that creates what is missing and records the ledger, and a

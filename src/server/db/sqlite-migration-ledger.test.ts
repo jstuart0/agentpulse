@@ -473,7 +473,6 @@ describe("sqlite migration ledger: a ledger ahead of the schema, or unreadable",
 	itSqliteOnly(
 		"a ledger short of the tail but past a missing column: forced mode throws Ahead, legacy mode reports it, nothing is written",
 		() => {
-			// Not at the tail: a ledger at the tail is trusted without looking (the fast path, as drizzle trusts it).
 			const db = track(drizzleBornThrough(TAGS.length - 1));
 			db.exec("ALTER TABLE sessions DROP COLUMN reported_host");
 			const before = ledgerRows(db);
@@ -486,13 +485,85 @@ describe("sqlite migration ledger: a ledger ahead of the schema, or unreadable",
 		},
 	);
 
-	itSqliteOnly("a ledger at the tail is trusted without looking at the schema", () => {
+	itSqliteOnly(
+		"a ledger at the tail: legacy mode trusts it, forced mode looks and refuses an overstated one",
+		() => {
+			const db = track(drizzleBornThrough(TAGS.length));
+			db.exec("ALTER TABLE sessions DROP COLUMN reported_host");
+			const before = ledgerRows(db);
+			// Legacy mode keeps the fast path (it only ever adds rows, so there is nothing to protect).
+			const trusted = legacy(db);
+			expect(trusted.fastPath).toBe(true);
+			expect(trusted.problem).toBeUndefined();
+			// Forced mode hands the database to migrate(), which would skip everything: it looks.
+			expect(() => forced(db)).toThrow(MigrationLedgerAheadError);
+			expect(ledgerRows(db)).toEqual(before);
+		},
+	);
+
+	itSqliteOnly(
+		"a ledger at the tail on a sound database passes forced mode without the fast path",
+		() => {
+			const db = track(drizzleBornThrough(TAGS.length));
+			const report = forced(db);
+			expect(report.fastPath).toBe(false);
+			expect(report.verifiedThrough).toBe(TAGS.at(-1) as string);
+			expect(report.problem).toBeUndefined();
+			expect(report.recorded).toEqual([]);
+		},
+	);
+
+	itSqliteOnly("a ledger max above the tail with the schema verified: forced mode proceeds", () => {
 		const db = track(drizzleBornThrough(TAGS.length));
-		db.exec("ALTER TABLE sessions DROP COLUMN reported_host");
+		db.prepare("INSERT INTO __drizzle_migrations (hash, created_at) VALUES ('newer', ?)").run(
+			(journalOf().entries.at(-1)?.when ?? 0) + 9000,
+		);
 		const report = forced(db);
-		expect(report.fastPath).toBe(true);
 		expect(report.problem).toBeUndefined();
+		expect(report.newerRows).toBe(1);
+		expect(report.verifiedThrough).toBe(TAGS.at(-1) as string);
 	});
+
+	itSqliteOnly(
+		"a ledger max that matches no journal entry is read by value, as drizzle reads it",
+		() => {
+			const entries = journalOf().entries;
+			const between = (entries[10]?.when as number) + 1;
+			// Schema complete: the entries after the odd row are recorded, none is replayed.
+			const full = track(drizzleBornThrough(TAGS.length));
+			full.exec("DELETE FROM __drizzle_migrations");
+			full
+				.prepare("INSERT INTO __drizzle_migrations (hash, created_at) VALUES ('odd', ?)")
+				.run(between);
+			const report = forced(full);
+			expect(report.ledgerThrough).toBe(TAGS[10] as string);
+			expect(report.recorded).toEqual(TAGS.slice(11));
+			// Schema just past that row: the next entry is recorded, nothing is flagged.
+			const partial = track(drizzleBornThrough(12));
+			partial.exec("DELETE FROM __drizzle_migrations");
+			partial
+				.prepare("INSERT INTO __drizzle_migrations (hash, created_at) VALUES ('odd', ?)")
+				.run(between);
+			const partialReport = forced(partial);
+			expect(partialReport.problem).toBeUndefined();
+			expect(partialReport.recorded).toEqual([TAGS[11] as string]);
+			// Schema only as far as the entry before it: the row claims a little more than is verified, which
+			// is "ahead" (it is judged against the last verified entry's time, not rounded down).
+			const justShort = track(drizzleBornThrough(11));
+			justShort.exec("DELETE FROM __drizzle_migrations");
+			justShort
+				.prepare("INSERT INTO __drizzle_migrations (hash, created_at) VALUES ('odd', ?)")
+				.run(between);
+			expect(() => forced(justShort)).toThrow(MigrationLedgerAheadError);
+			// A max past what the schema shows is a ledger ahead of it.
+			const short = track(drizzleBornThrough(5));
+			short.exec("DELETE FROM __drizzle_migrations");
+			short
+				.prepare("INSERT INTO __drizzle_migrations (hash, created_at) VALUES ('odd', ?)")
+				.run(between);
+			expect(() => forced(short)).toThrow(MigrationLedgerAheadError);
+		},
+	);
 
 	itSqliteOnly("a row past the journal's tail with a full schema is a note, not an error", () => {
 		const db = track(drizzleBornThrough(TAGS.length));
@@ -627,6 +698,130 @@ describe("sqlite migration ledger: atomic, and cheap on the second boot", () => 
 			expect(report.fastPath).toBe(true);
 			expect(ledgerStats.liveIntrospections).toBe(introspections);
 			expect(ledgerStats.replays).toBe(replays);
+		},
+	);
+});
+
+describe("sqlite migration ledger: constructs the comparer must not wave through", () => {
+	itSqliteOnly(
+		"a string literal's double quotes are part of the value (0002's default)",
+		async () => {
+			const db = track(await legacyBuiltDb());
+			db.exec(
+				"ALTER TABLE api_keys DROP COLUMN scopes; ALTER TABLE api_keys ADD COLUMN scopes text DEFAULT '[ingest]' NOT NULL",
+			);
+			expectLegacyThrough(db, "0001_true_misty_knight");
+		},
+	);
+
+	const TABLE = (extra: string, options = "") =>
+		`CREATE TABLE \`t\` (\`id\` integer PRIMARY KEY NOT NULL, \`v\` integer${extra})${options};`;
+	const REBUILD = (to: string) =>
+		[
+			"PRAGMA foreign_keys=OFF;--> statement-breakpoint",
+			`${to.replace("`t`", "`__new_t`")}--> statement-breakpoint`,
+			"INSERT INTO `__new_t`(`id`, `v`) SELECT `id`, `v` FROM `t`;--> statement-breakpoint",
+			"DROP TABLE `t`;--> statement-breakpoint",
+			"ALTER TABLE `__new_t` RENAME TO `t`;--> statement-breakpoint",
+			"PRAGMA foreign_keys=ON;",
+		].join("\n");
+
+	const rebuilds: Array<{ name: string; before: string; after: string }> = [
+		{ name: "a CHECK added", before: TABLE(""), after: TABLE(", CHECK (`v` > 0)") },
+		{
+			name: "a CHECK changed",
+			before: TABLE(", CHECK (`v` > 0)"),
+			after: TABLE(", CHECK (`v` > 5)"),
+		},
+		{ name: "STRICT added", before: TABLE(""), after: TABLE("", " STRICT") },
+		{
+			name: "a generated column added",
+			before: TABLE(""),
+			after: TABLE(", `w` integer GENERATED ALWAYS AS (`v` * 2) VIRTUAL"),
+		},
+	];
+	for (const c of rebuilds) {
+		itSqliteOnly(`a table rebuild with ${c.name} is unverified on the old table`, () => {
+			const folder = syntheticFolder([
+				{ tag: "0000_base", sql: c.before },
+				{ tag: "0001_rebuild", sql: REBUILD(c.after) },
+			]);
+			const db = track(new Database(":memory:"));
+			db.exec(c.before.replaceAll("--> statement-breakpoint", ""));
+			const report = legacy(db, folder);
+			expect(report.verifiedThrough).toBe("0000_base");
+			expect(report.firstUnverified?.tag).toBe("0001_rebuild");
+			db.exec(`DROP TABLE t; ${c.after}`);
+			expect(legacy(db, folder).verifiedThrough).toBe("0001_rebuild");
+		});
+	}
+
+	itSqliteOnly("a composite foreign key is one constraint, not two", () => {
+		const parent =
+			"CREATE TABLE `p` (`a` integer NOT NULL, `b` integer NOT NULL, PRIMARY KEY(`a`, `b`));";
+		const folder = syntheticFolder([
+			{
+				tag: "0000_base",
+				sql: `${parent}--> statement-breakpoint\nCREATE TABLE \`c\` (\`a\` integer, \`b\` integer, FOREIGN KEY (\`a\`, \`b\`) REFERENCES \`p\`(\`a\`, \`b\`));`,
+			},
+		]);
+		const db = track(new Database(":memory:"));
+		db.exec(
+			`${parent} CREATE TABLE c (a integer, b integer, FOREIGN KEY (a) REFERENCES p(a), FOREIGN KEY (b) REFERENCES p(b))`,
+		);
+		expect(legacy(db, folder).verifiedThrough).toBeNull();
+		db.exec(
+			`DROP TABLE c; CREATE TABLE c (a integer, b integer, FOREIGN KEY (a, b) REFERENCES p(a, b))`,
+		);
+		expect(legacy(db, folder).verifiedThrough).toBe("0000_base");
+	});
+
+	itSqliteOnly(
+		"a leftover __new_ table from a stopped rebuild is a gap; forced mode refuses and writes nothing",
+		async () => {
+			const db = track(await legacyBuiltDb());
+			db.exec("CREATE TABLE __new_sessions (id integer PRIMARY KEY NOT NULL)");
+			expect(() => forced(db)).toThrow(MigrationLedgerGapError);
+			expect(ledgerRows(db)).toEqual([]);
+			expect(
+				db.prepare("SELECT 1 FROM sqlite_master WHERE name = '__drizzle_migrations'").get(),
+			).toBeNull();
+			const report = legacy(db);
+			expect(report.problem?.kind).toBe("gap");
+			expect(report.problem?.message).toContain("__new_sessions");
+		},
+	);
+
+	itSqliteOnly(
+		"an entry whose column a later entry drops doesn't verify on a database that never had it",
+		() => {
+			const base = "CREATE TABLE `a` (`id` integer PRIMARY KEY NOT NULL);";
+			const folder = syntheticFolder([
+				{ tag: "0000_base", sql: base },
+				{ tag: "0001_add", sql: "ALTER TABLE `a` ADD `x` text;" },
+				{
+					tag: "0002_drop",
+					sql: "ALTER TABLE `a` DROP COLUMN `x`;--> statement-breakpoint\nCREATE TABLE `y` (`id` integer PRIMARY KEY NOT NULL);",
+				},
+			]);
+			// Built through 0000 only: no x, no y.
+			const db = track(new Database(":memory:"));
+			migrate(drizzle(db), {
+				migrationsFolder: syntheticFolder([{ tag: "0000_base", sql: base }]),
+			});
+			const report = legacy(db, folder);
+			expect(report.verifiedThrough).toBe("0000_base");
+			expect(report.firstUnverified?.tag).toBe("0001_add");
+			expect(report.recorded).toEqual([]);
+			// And migrate() really does run the rest from there.
+			migrate(drizzle(db), { migrationsFolder: folder });
+			expect(ledgerRows(db).length).toBe(3);
+
+			// A database that did run all three has neither x nor... y exists: all three verify.
+			const done = track(new Database(":memory:"));
+			migrate(drizzle(done), { migrationsFolder: folder });
+			done.exec("DELETE FROM __drizzle_migrations");
+			expect(legacy(done, folder).verifiedThrough).toBe("0002_drop");
 		},
 	);
 });

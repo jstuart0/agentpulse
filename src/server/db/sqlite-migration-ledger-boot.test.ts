@@ -226,7 +226,7 @@ describe("migration ledger boot: the rest", () => {
 			const ledger = ledgerOf(file);
 			const again = await boot(file, { forced: true });
 			expectHealthy(file, again, "forced");
-			expect(again.out).toContain("at tail");
+			expect(again.out).toContain("verified through 0022_fork_tool_calls; recorded 0");
 			expect(schemaOf(file)).toEqual(schema);
 			expect(ledgerOf(file)).toEqual(ledger);
 		},
@@ -403,6 +403,106 @@ describe("migration ledger boot: the rest", () => {
 			}
 		},
 		120_000,
+	);
+});
+
+/** A copy of the migrations folder, under a working directory's drizzle/sqlite, with one more entry after the tail. */
+function folderWithFutureEntry(sql: string): string {
+	const folder = mkdtempSync(join(TMP, "future-"));
+	const migrations = join(folder, "drizzle", "sqlite");
+	mkdirSync(join(folder, "drizzle"), { recursive: true });
+	cpSync(MIGRATIONS_DIR, migrations, { recursive: true });
+	const journalPath = join(migrations, "meta", "_journal.json");
+	const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+	const tail = journal.entries.at(-1);
+	journal.entries.push({
+		idx: tail.idx + 1,
+		version: "6",
+		when: tail.when + 1000,
+		tag: "0023_future",
+		breakpoints: true,
+	});
+	writeFileSync(journalPath, JSON.stringify(journal));
+	writeFileSync(join(migrations, "0023_future.sql"), sql);
+	return folder;
+}
+
+describe("migration ledger boot: audit fixes", () => {
+	itBoot(
+		"a leftover __new_ table: the forced boot refuses cleanly and records nothing",
+		async () => {
+			const folder = folderWithFutureEntry(
+				"CREATE TABLE `__new_lp` (`id` integer PRIMARY KEY NOT NULL);--> statement-breakpoint\nALTER TABLE `__new_lp` RENAME TO `lp`;",
+			);
+			const file = fileIn("leftover");
+			writePreexistingInstallFile(file);
+			expectHealthy(file, await boot(file), "legacy");
+			const db = new Database(file);
+			db.exec("DROP TABLE __drizzle_migrations; CREATE TABLE __new_lp (id integer)");
+			db.close();
+
+			const refused = await boot(file, { cwd: folder, forced: true });
+			expect(refused.code).toBe(1);
+			expect(refused.err).toContain("[boot]");
+			expect(refused.err).toContain("__new_lp");
+			expect(refused.err).not.toContain("    at ");
+			// Nothing was written: the ledger table was not even recreated.
+			expect(
+				inspect(file, (d) =>
+					d.prepare("SELECT 1 FROM sqlite_master WHERE name = '__drizzle_migrations'").get(),
+				),
+			).toBeNull();
+		},
+	);
+
+	itBoot(
+		"a ledger row past the tail with a verified schema: the forced boot proceeds",
+		async () => {
+			const file = bornFile(TAGS.length, "newer");
+			const db = new Database(file);
+			db.prepare("INSERT INTO __drizzle_migrations (hash, created_at) VALUES ('newer', ?)").run(
+				(journalOf().entries.at(-1)?.when as number) + 5000,
+			);
+			db.close();
+			const r = await boot(file, { forced: true });
+			expectHealthy(file, r, "forced");
+			expect(r.out).toContain("1 ledger row(s) from a newer release");
+			expect(ledgerOf(file).length).toBe(TAGS.length + 1);
+		},
+	);
+
+	itBoot(
+		"two forced boots at once from an older database: no corruption, a loser fails and a restart works",
+		async () => {
+			// Two processes on one SQLite file is outside the supported deployment (one process per file). What
+			// this shows is that the worst case is a failed boot: migrate() reads its ledger before it begins, so
+			// the loser can replay a migration the winner just applied, and its transaction rolls back.
+			for (let round = 0; round < 3; round++) {
+				const file = bornFile(1, `race-forced-${round}`);
+				const [a, b] = await Promise.all([
+					boot(file, { forced: true }),
+					boot(file, { forced: true }),
+				]);
+				expect(
+					[a.code, b.code].every((c) => c === 0 || c === 1),
+					`${a.err}\n${b.err}`,
+				).toBe(true);
+				expect([a.code, b.code]).toContain(0);
+				for (const r of [a, b]) {
+					if (r.code === 1) expect(r.err).toMatch(/duplicate column|already exists|locked|busy/i);
+				}
+				inspect(file, (d) => {
+					expect(d.prepare("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
+					expect(d.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+				});
+				// The ledger is one row per migration, whoever won.
+				expect(ledgerOf(file)).toEqual(fullLedger);
+				// A restart works.
+				expectHealthy(file, await boot(file, { forced: true }), "forced");
+				expect(ledgerOf(file)).toEqual(fullLedger);
+			}
+		},
+		180_000,
 	);
 });
 
