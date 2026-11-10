@@ -56,7 +56,7 @@ import {
 	resumeLine,
 	shouldExitOnStaleHeartbeat,
 } from "./services/keep-alive.js";
-import { parseErrorBodyField, sanitizeForLog } from "./services/log-sanitize.js";
+import { parseErrorBody, sanitizeForLog } from "./services/log-sanitize.js";
 import { createManagedThreadRecord } from "./services/managed-thread-record.js";
 import { executePrelaunchActions } from "./services/prelaunch-actions.js";
 import { retryWithBackoff } from "./services/registration-retry.js";
@@ -68,6 +68,7 @@ import {
 	classifyReportFailure,
 	createCredentialTripwire,
 	credentialRejectionMayConfirm,
+	noteHostRefusal,
 	parseRetryAfterMs,
 	setSharedCredentialTripwire,
 } from "./services/report-resilience.js";
@@ -126,12 +127,13 @@ async function request(path: string, options?: RequestInit) {
 		// network-position attacker on an unencrypted http:// path) — bound
 		// the body read and strip control/ANSI characters before either ever
 		// reaches a log line.
-		const bodyError = await parseErrorBodyField(res);
+		const body = await parseErrorBody(res);
 		throw new SupervisorRequestError(
 			res.status,
 			sanitizeForLog(res.statusText),
-			bodyError,
+			body.error,
 			parseRetryAfterMs(res.headers.get("retry-after"), Date.now()),
+			body.message,
 		);
 	}
 	try {
@@ -174,6 +176,7 @@ async function main() {
 				}),
 			}),
 		(error, attempt, delayMs) => {
+			noteHostRefusal(error);
 			console.error(
 				`[supervisor] registration failed (attempt ${attempt + 1}): ${
 					error instanceof SupervisorRequestError
@@ -440,6 +443,7 @@ async function main() {
 			console.log("[supervisor] heartbeat ok");
 		} catch (error) {
 			console.error(`[supervisor] heartbeat failed: ${failureSummary(error)}`);
+			noteHostRefusal(error);
 			const failure = classifyReportFailure(error);
 			if (failure === "network") {
 				gate.noteServerUnreachable();

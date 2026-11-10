@@ -75,16 +75,25 @@ export async function parseErrorBodyField(
 	res: Response,
 	maxBytes: number = MAX_ERROR_BODY_BYTES,
 ): Promise<string | undefined> {
+	return (await parseErrorBody(res, maxBytes)).error;
+}
+
+/** The body's `error` code and, when it sent one, its `message`, both cleaned for a log line. */
+export async function parseErrorBody(
+	res: Response,
+	maxBytes: number = MAX_ERROR_BODY_BYTES,
+): Promise<{ error?: string; message?: string }> {
 	try {
 		const text = await readBoundedText(res, maxBytes);
-		if (!text) return undefined;
+		if (!text) return {};
 		const parsed: unknown = JSON.parse(text);
-		if (parsed && typeof parsed === "object" && "error" in parsed) {
-			const raw = (parsed as { error?: unknown }).error;
-			if (typeof raw === "string") return sanitizeForLog(raw);
-		}
-		return undefined;
+		if (!parsed || typeof parsed !== "object") return {};
+		const { error, message } = parsed as { error?: unknown; message?: unknown };
+		return {
+			error: typeof error === "string" ? sanitizeForLog(error) : undefined,
+			message: typeof message === "string" ? sanitizeForLog(message) : undefined,
+		};
 	} catch {
-		return undefined;
+		return {};
 	}
 }

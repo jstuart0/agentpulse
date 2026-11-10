@@ -231,13 +231,28 @@ ap_validate_hook_base_url() {
 # (--no-auth-check) is the explicit escape hatch.
 ap_check_auth_before_write() {
 	local base="\$1" key="\$2" skip="\${3:-}" body
-	if [[ -n "\$key" ]]; then
-		return 0
-	fi
 	if [[ "\$skip" == "1" ]]; then
 		return 0
 	fi
-	if body="\$(curl -sS -m 10 "\${base}/api/v1/auth/me" 2>/dev/null)" && printf '%s' "\$body" | python3 -c '
+	# AGEN-92: with auth off the server refuses an address it doesn't accept (403 bad_origin), key or no
+	# key, and a hook fire would then be dropped silently. The probe runs even when a key is given; any
+	# other outcome with a key passes, as before.
+	body="\$(curl -sS -m 10 "\${base}/api/v1/auth/me" 2>/dev/null)" || body=""
+	if printf '%s' "\$body" | python3 -c '
+import json, sys
+try:
+    me = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if me.get("error") == "bad_origin" else 1)
+'; then
+		echo "The server refuses this address while authentication is off. Use an IP address or localhost, or add \${base} to PUBLIC_URL on the server." >&2
+		return 1
+	fi
+	if [[ -n "\$key" ]]; then
+		return 0
+	fi
+	if printf '%s' "\$body" | python3 -c '
 import json, sys
 try:
     me = json.load(sys.stdin)

@@ -15,6 +15,10 @@ export interface AuthState {
 	effectiveRole: "admin" | "member" | null;
 	/** True until the user replaces a password someone else chose. */
 	mustChangePassword: boolean;
+	/** True when the server refused this address while authentication is off (AGEN-92): the app shows only the notice. */
+	hostRefused: boolean;
+	/** The server's own words for the refusal, when it sent them. */
+	hostRefusedMessage: string | null;
 }
 
 export function authStateFromMe(res: AuthMeResponse): AuthState {
@@ -29,5 +33,7 @@ export function authStateFromMe(res: AuthMeResponse): AuthState {
 		userId: res.user?.userId ?? null,
 		effectiveRole: res.user?.effectiveRole ?? null,
 		mustChangePassword: res.user?.mustChangePassword === true,
+		hostRefused: false,
+		hostRefusedMessage: null,
 	};
 }

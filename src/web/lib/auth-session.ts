@@ -11,7 +11,15 @@ import { IDENTITY_PATH } from "./network-retry.js";
  */
 export type AuthLoadOutcome =
 	| { kind: "ok"; res: AuthMeResponse }
-	| { kind: "failed"; network: boolean; message: string };
+	| {
+			kind: "failed";
+			network: boolean;
+			message: string;
+			/** The HTTP status of the refusal, or null when the call never got an answer. */
+			status: number | null;
+			/** The server's error code, or null. */
+			code: string | null;
+	  };
 
 /** Why every store should be thrown away: the viewer is gone, or is someone else now. */
 export type AuthReset = "signed_out" | "switched" | null;
@@ -31,6 +39,12 @@ export function reduceAuthLoad(
 	outcome: AuthLoadOutcome,
 ): { patch: Partial<AuthState> & { error: string | null }; reset: AuthReset } {
 	if (outcome.kind === "failed") {
+		if (isHostRefusal({ status: outcome.status, code: outcome.code })) {
+			return {
+				patch: { error: outcome.message, hostRefused: true, hostRefusedMessage: outcome.message },
+				reset: null,
+			};
+		}
 		if (outcome.network) return { patch: { error: outcome.message }, reset: null };
 		return {
 			patch: {
@@ -64,6 +78,11 @@ export function reduceAuthLoad(
  */
 export function loadedAfter(wasLoaded: boolean, outcome: AuthLoadOutcome): boolean {
 	return wasLoaded || outcome.kind === "ok" || !outcome.network;
+}
+
+/** The server refused this address or this site while authentication is off (AGEN-92): 403 bad_origin. */
+export function isHostRefusal(failure: { status: number | null; code: string | null }): boolean {
+	return failure.status === 403 && failure.code === "bad_origin";
 }
 
 const PASSWORD_CHANGE_REQUIRED = "password_change_required";
@@ -104,6 +123,7 @@ export function shouldRecheckAuth(failure: {
 	path: string;
 }): boolean {
 	if (failure.path === IDENTITY_PATH) return false;
+	if (isHostRefusal(failure)) return true;
 	if (failure.status === 403) return failure.code !== null && ROLE_REFUSAL_CODES.has(failure.code);
 	if (failure.status !== 401) return false;
 	return !(failure.path === PASSWORD_CHANGE_PATH && failure.code === WRONG_CURRENT_PASSWORD);
