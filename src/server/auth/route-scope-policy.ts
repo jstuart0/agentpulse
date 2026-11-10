@@ -526,9 +526,10 @@ function findPolicyEntry(entries: PolicyEntry[], method: string, path: string): 
 /**
  * Refuses a mutating request whose Origin is neither configured nor the
  * request's own, by the same rule as the WebSocket upgrade: with authentication
- * off, "the request's own" holds only for a loopback or allowlisted Host, so a
+ * off, "the request's own" holds only for a loopback, IP-literal or allowlisted Host, so a
  * page on a name that resolves to this machine (DNS rebinding) is refused. No Origin header at all
- * (curl, scripts, MCP) passes: those are judged by authentication alone.
+ * (curl, scripts, MCP) passes: those are judged by authentication alone. With authentication off the
+ * app-level gate (AGEN-92) has already judged every /api request; this is the second line.
  */
 export function refuseBadOrigin(c: Context): Response | null {
 	const origin = c.req.header("Origin");
@@ -553,7 +554,7 @@ export async function requireBrowserOriginGate(c: Context, next: Next) {
 	const sameOrigin = c.req.header("Sec-Fetch-Site") === "same-origin";
 	if (config.disableAuth) {
 		// A rebound page has Origin equal to Host, which refuseBadOrigin accepts: the Host itself must be
-		// loopback or allowlisted. Without an Origin, only a client on this machine sending JSON (curl) passes.
+		// loopback, an IP literal or allowlisted. Without an Origin, only a client on this machine sending JSON (curl) passes.
 		const host = c.req.header("Host");
 		if (!isTrustedHostWhenAuthOff(host)) return c.json({ error: "bad_origin" }, 403);
 		const localScript =

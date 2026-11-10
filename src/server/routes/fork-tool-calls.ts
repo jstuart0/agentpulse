@@ -58,7 +58,8 @@ forkToolCallsRouter.use("*", async (c, next) => {
 	c.header("Cache-Control", "no-store");
 });
 // With authentication off a page reached through DNS rebinding has Origin equal to Host and could read seven
-// days of tool output, so the Host must be this machine or on the allowlist, as for Stop turn (review M3).
+// days of tool output, so the Host must be this machine, an IP address or on the allowlist, as for Stop turn (review M3). The app-level
+// gate (AGEN-92) refuses it first; this stays as a second line.
 forkToolCallsRouter.use("*", async (c, next) => {
 	const host = c.req.header("Host");
 	if (config.disableAuth && host !== undefined && !isTrustedHostWhenAuthOff(host)) {

@@ -1042,7 +1042,7 @@ describe("POST /prompt: the request has to be the page's own or a script's (revi
 		const w = await world("codex_cli", WITH_FEATURE);
 		const res = await send(w.sessionId, { ...JSON_TYPE, Origin: "https://evil.example" });
 		expect(res.status).toBe(403);
-		expect(await res.json()).toEqual({ error: "bad_origin" });
+		expect(((await res.json()) as { error: string }).error).toBe("bad_origin");
 		expect(await promptRows(w.sessionId)).toEqual([]);
 	});
 

@@ -177,7 +177,7 @@ export async function handleWsUpgradeRequest(
 	// is on the allowlist derived from PUBLIC_URL (comma-separated; dev setups:
 	// PUBLIC_URL=https://prod.example.com,http://localhost:5173) or is the
 	// request's own (its host and port equal the Host header) — with auth off,
-	// only for a loopback or allowlisted Host (see isAcceptedSocketOrigin). The
+	// only for a loopback, IP-literal or allowlisted Host (see isAcceptedSocketOrigin). The
 	// literal "null", no Host and foreign origins are refused. A request with no
 	// Origin at all is judged by guardWsUpgrade: only a Bearer `ap_` key passes.
 	const origin = req.headers.get("Origin");

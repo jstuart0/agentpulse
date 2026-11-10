@@ -22,9 +22,8 @@ import {
 const { initializeDatabase } = await import("../db/client.js");
 const { config } = await import("../config.js");
 const { Hono } = await import("hono");
-const { ALWAYS_ADMIN_ROUTES, refuseBadOrigin, requireRolePolicy } = await import(
-	"./route-scope-policy.js"
-);
+const { ALWAYS_ADMIN_ROUTES, refuseBadOrigin, requireBrowserOriginGate, requireRolePolicy } =
+	await import("./route-scope-policy.js");
 
 const originalDisableAuth = config.disableAuth;
 const originalPublicUrl = process.env.PUBLIC_URL;
@@ -290,5 +289,41 @@ describe("refuseBadOrigin with authentication off (DNS rebinding)", () => {
 			(config as Record<string, unknown>).disableAuth = off;
 			expect((await post("localhost:3000", "https://evil.example.test")).status).toBe(403);
 		}
+	});
+});
+
+describe("AGEN-92: the shared Host rule with authentication off", () => {
+	const post = (host: string, origin: string) => {
+		const app = new Hono();
+		app.post("/x", (c) => refuseBadOrigin(c) ?? c.json({ reached: true }));
+		return app.request("http://placeholder/x", {
+			method: "POST",
+			headers: { Host: host, Origin: origin },
+		});
+	};
+
+	test("an Origin equal to an IP-literal Host is accepted", async () => {
+		(config as Record<string, unknown>).disableAuth = true;
+		expect((await post("192.168.1.5:3000", "http://192.168.1.5:3000")).status).toBe(200);
+		expect((await post("[fd00::1]:3000", "http://[fd00::1]:3000")).status).toBe(200);
+	});
+
+	test("a Host with a suffix after the bracket is refused", async () => {
+		(config as Record<string, unknown>).disableAuth = true;
+		expect((await post("[::1].evil", "http://[::1].evil")).status).toBe(403);
+	});
+
+	test("requireBrowserOriginGate: no Origin on an IP-literal Host is refused (the local-script branch is loopback-only)", async () => {
+		(config as Record<string, unknown>).disableAuth = true;
+		const app = new Hono();
+		app.post("/x", requireBrowserOriginGate, (c) => c.json({ reached: true }));
+		const send = (host: string) =>
+			app.request("http://placeholder/x", {
+				method: "POST",
+				headers: { Host: host, "Content-Type": "application/json" },
+				body: "{}",
+			});
+		expect((await send("192.168.1.5:3000")).status).toBe(403);
+		expect((await send("127.0.0.1:3000")).status).toBe(200);
 	});
 });
