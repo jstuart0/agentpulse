@@ -58,6 +58,12 @@ const SearchPage = lazy(() =>
 const LoginPage = lazy(() =>
 	import("./pages/LoginPage.js").then((module) => ({ default: module.LoginPage })),
 );
+// Rarely shown (auth off, an address the server refuses): kept out of the main chunk.
+const HostRefusedNotice = lazy(() =>
+	import("./components/HostRefusedNotice.js").then((module) => ({
+		default: module.HostRefusedNotice,
+	})),
+);
 const ProjectsPage = lazy(() =>
 	import("./pages/ProjectsPage.js").then((module) => ({ default: module.ProjectsPage })),
 );
@@ -74,10 +80,24 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 	const authenticated = useUserStore((s) => s.authenticated);
 	const disableAuth = useUserStore((s) => s.disableAuth);
 	const mustChangePassword = useUserStore((s) => s.mustChangePassword);
+	const hostRefused = useUserStore((s) => s.hostRefused);
 	const location = useLocation();
 
-	const gate = deriveAppGate({ loaded, authenticated, disableAuth, mustChangePassword });
+	const gate = deriveAppGate({
+		loaded,
+		authenticated,
+		disableAuth,
+		mustChangePassword,
+		hostRefused,
+	});
 	if (gate === "loading") return <RouteFallback />;
+	if (gate === "host_refused") {
+		return (
+			<Suspense fallback={<RouteFallback />}>
+				<HostRefusedNotice />
+			</Suspense>
+		);
+	}
 	if (gate === "change_password") return <ForcedPasswordChange />;
 	if (gate === "login") {
 		return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
@@ -111,6 +131,7 @@ export function App() {
 	const authenticated = useUserStore((s) => s.authenticated);
 	const disableAuth = useUserStore((s) => s.disableAuth);
 	const mustChangePassword = useUserStore((s) => s.mustChangePassword);
+	const hostRefused = useUserStore((s) => s.hostRefused);
 	const { themeIsPerBrowser, callDirectory } = useOwnershipUi();
 	const loadDirectory = useUsersStore((s) => s.load);
 	// Toasts go to the top while a bottom-sheet dialog is open on a phone, so they don't sit on its buttons.
@@ -120,7 +141,8 @@ export function App() {
 	// or must-change-password viewer would only collect refusals (and a
 	// reconnecting socket) behind the screen they are allowed to see.
 	const appReady =
-		deriveAppGate({ loaded, authenticated, disableAuth, mustChangePassword }) === "app";
+		deriveAppGate({ loaded, authenticated, disableAuth, mustChangePassword, hostRefused }) ===
+		"app";
 	useWebSocket(appReady);
 	useIdentityRecheck(appReady);
 

@@ -490,8 +490,9 @@ describe("gates", () => {
 
 	test("TC-6.2 the order of the POST gates: build, then runtime-active, then the flag, then origin", async () => {
 		await activeSession(SID);
-		const headers = disableAuth();
-		headers.set("Host", "summary.example.test");
+		// The route's own Origin check is only reachable with authentication on: with it off the app-level
+		// gate (AGEN-92) refuses a foreign Origin before any route runs.
+		const { headers } = await authedMember("gate-order-member");
 		headers.set("Origin", "http://evil.example.test");
 
 		await setLabsFlag("sessionSummary", false);
@@ -1446,14 +1447,16 @@ describe("the per-caller limit", () => {
 describe("origin, audit, shutdown", () => {
 	test("TC-6.13 a present foreign Origin is refused on the POST; an absent or same Origin passes; the GET ignores Origin", async () => {
 		const editId = await activeSession(SID);
-		const base = disableAuth();
-		const foreign = new Headers(base);
-		foreign.set("Host", "summary.example.test");
+		// The route's own Origin check, with authentication on (auth off is the app-level gate's, AGEN-92).
+		const member = await authedMember("origin-member");
+		const foreign = new Headers(member.headers);
 		foreign.set("Origin", "http://evil.example.test");
 		const refusedPost = await post(SID, foreign);
 		expect([refusedPost.status, refusedPost.json?.error]).toEqual([403, "bad_origin"]);
 		expect(await H.readSummaryRow(SID)).toBeUndefined();
 		expect((await get(SID, foreign)).status).toBe(200);
+
+		const base = disableAuth();
 
 		// With authentication off, "same Origin as the Host" holds only for a loopback or
 		// allowlisted Host (otherwise a page on a rebound name would pass).

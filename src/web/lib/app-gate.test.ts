@@ -14,6 +14,14 @@ describe("deriveAppGate", () => {
 		expect(deriveAppGate({ ...signedIn, loaded: false, mustChangePassword: true })).toBe("loading");
 	});
 
+	test("a refused address (auth off) shows its own screen, after loading and before everything else", () => {
+		expect(deriveAppGate({ ...signedIn, hostRefused: true })).toBe("host_refused");
+		expect(
+			deriveAppGate({ ...signedIn, authenticated: false, disableAuth: false, hostRefused: true }),
+		).toBe("host_refused");
+		expect(deriveAppGate({ ...signedIn, loaded: false, hostRefused: true })).toBe("loading");
+	});
+
 	test("signed out goes to the sign-in page", () => {
 		expect(deriveAppGate({ ...signedIn, authenticated: false })).toBe("login");
 	});

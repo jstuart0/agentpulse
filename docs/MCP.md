@@ -145,6 +145,8 @@ When the server runs in team mode (see the README's "Teams" section), a key's au
 - **`GET /users/directory`** answers `observe` keys: for everyone who can own something, `{ id, displayName, disabled, authSource }` and nothing else. It is a REST route; there is no MCP tool for it. Use it to turn a person into the user id that `owner` takes. The rest of `/users` (list, create, disable, reset password) is for admins, and every change refuses an API key outright.
 - **`list_hosts`** returns `ownerUserId` per host, `excludeRulesState` and `outbox` (above). Owning a host controls who may rotate or revoke it, not who may launch on it.
 
+**`403 bad_origin` with authentication off.** A server run with `DISABLE_AUTH=true` answers only on `localhost`, an IP address or a name in its `PUBLIC_URL`, and refuses requests from other websites. Point `AGENTPULSE_URL` at one of those, or add the name to `PUBLIC_URL` on the server and restart it. The error carries the server's own message.
+
 ### What's deliberately excluded (and why)
 
 These are never registered as tools, enforced by a drift-guard test that walks the live tool registry:

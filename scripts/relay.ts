@@ -2222,10 +2222,35 @@ function announceAuth(ctx: RelayContext) {
 	}
 }
 
+const hostRefusalAnnounced = new WeakSet<object>();
+
+/**
+ * AGEN-92: an auth-off server answers 403 bad_origin to an address it doesn't accept. The relay's
+ * queue keeps retrying, but it drops a file after 24 h or 10,000 files, so say what to fix, once.
+ */
+async function announceHostRefusal(ctx: RelayContext, res: Response) {
+	if (hostRefusalAnnounced.has(ctx)) return;
+	const body = (await res
+		.clone()
+		.json()
+		.catch(() => null)) as { error?: unknown } | null;
+	if (body?.error !== "bad_origin") return;
+	hostRefusalAnnounced.add(ctx);
+	ctx.log("");
+	ctx.log(
+		`  ! AgentPulse relay: The server refuses this address while authentication is off. Use an IP address or localhost, or add ${ctx.config.remoteUrl} to PUBLIC_URL on the server.`,
+	);
+	ctx.log(
+		"    Events stay queued, but the relay drops a queued file after 24 hours or 10,000 files.",
+	);
+	ctx.log("");
+}
+
 export async function checkScopesTick(ctx: RelayContext) {
 	const auth = ctx.state.auth;
 	try {
 		const res = await remoteFetch(ctx, "/api/v1/auth/me");
+		if (res.status === 403) await announceHostRefusal(ctx, res);
 		if (res.status === 401) {
 			Object.assign(auth, {
 				scopes: null,

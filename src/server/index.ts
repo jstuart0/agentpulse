@@ -1,4 +1,5 @@
 import packageJson from "../../package.json" with { type: "json" };
+import { logAuthOffBootRule } from "./auth/request-origin.js";
 import { config } from "./config.js";
 import { initializeDatabase } from "./db/client.js";
 import { MigrationLedgerError } from "./db/sqlite-migration-ledger.js";
@@ -334,6 +335,7 @@ if (config.disableAuth) {
 	console.warn(
 		"[auth] DISABLE_AUTH=true — scope enforcement is bypassed. All API routes are open.",
 	);
+	logAuthOffBootRule();
 }
 
 // hosts-visibility fix: best-effort advisory. SQLite only supports a single

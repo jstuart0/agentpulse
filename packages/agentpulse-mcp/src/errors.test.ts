@@ -37,7 +37,7 @@ describe("mapError — ownership and role refusals (403)", () => {
 		["admin_required", "needs an admin"],
 		["human_admin_required", "signed-in admin"],
 		["password_change_required", "change the password"],
-		["bad_origin", "dashboard"],
+		["bad_origin", "AGENTPULSE_URL"],
 	];
 	for (const [code, mustContain] of cases) {
 		test(`403 ${code} → a plain message, not the bare code`, () => {
@@ -55,10 +55,22 @@ describe("mapError — ownership and role refusals (403)", () => {
 		expect(new Set(texts).size).toBe(texts.length);
 	});
 
-	test("bad_origin names both causes: a foreign Origin, and an untrusted Host with authentication off", () => {
+	test("bad_origin prefers the server's own words and names the fix (AGEN-92)", () => {
+		const text = mapError(
+			new ApiError(403, { error: "bad_origin", message: "Only localhost, please." }),
+			BASE_URL,
+		).content[0].text;
+		expect(text).toContain("Only localhost, please.");
+		expect(text).toContain("AGENTPULSE_URL");
+		expect(text).toContain("PUBLIC_URL");
+	});
+
+	test("bad_origin without a message falls back to a text naming both causes", () => {
 		const text = mapError(new ApiError(403, { error: "bad_origin" }), BASE_URL).content[0].text;
 		expect(text).toContain("Origin");
 		expect(text).toContain("Host");
+		expect(text).toContain("PUBLIC_URL");
+		expect(text).not.toContain("loopback address or an allowed name");
 	});
 
 	test("415 unsupported_media_type tells the caller to declare JSON", () => {
