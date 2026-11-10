@@ -16,8 +16,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   `403 { error: "bad_origin", message }` when the Host isn't `localhost`, an IP address or a `PUBLIC_URL` name, or when a browser
   marks the request cross-site (`Sec-Fetch-Site: cross-site`, or an Origin that isn't allowlisted, the request's own, or a
   loopback origin on the server's own port, or on Vite's 5173 outside production; the Origin's scheme must match the request's). Requests with no Origin and no `Sec-Fetch-Site` (curl, the relay, the supervisor, MCP, hooks) are judged by
-  Host only. Auth-on behaviour is unchanged. Still open, filed separately: with auth on, a page on another local port isn't
-  judged by this rule (AGEN-152); auth on, `POST /internal/drain` checks no Origin (AGEN-151); `/setup.sh` and the other install scripts are readable
+  Host only. Auth-on behaviour is unchanged. Still open, filed separately: outside production, a page on Vite's port 5173
+  is accepted as a loopback origin (AGEN-152); auth on, `POST /internal/drain` checks no Origin (AGEN-151); `/setup.sh` and the other install scripts are readable
   by rebinding (AGEN-153). On a plain-http LAN server a cross-site GET sends no `Sec-Fetch-Site` or Origin and passes.
 
 ### Changed
@@ -37,6 +37,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
     an accepted address and press **Set webhook** again.
   - Monitors that probe `/health` by service name (`http://agentpulse:3000/...`): probe by IP or `localhost`, or add the name.
   - An IPv6 address with a zone id (`[fe80::1%25en0]`) is refused.
+  - A browser page on any other loopback port (`http://localhost:8080`, or Vite moved off 5173) is refused: list that origin in
+    `PUBLIC_URL`.
   - A request with `Origin: null` (a `file://` page, a sandboxed or `data:` frame, a redirect-tainted request, some browser
     extensions) is refused.
   - By-IP and `localhost` setups, the Vite dev server (`http://localhost:5173`), and the dashboard on an accepted address are
