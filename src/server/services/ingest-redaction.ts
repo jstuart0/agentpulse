@@ -1042,7 +1042,12 @@ function checkedLabels(
 	event: NormalizedEvent,
 	stats: RedactionStats,
 ): Pick<NormalizedEvent, "eventType" | "category" | "source"> {
-	const eventType = isCleanName(event.eventType) ? event.eventType : NAME_MARKER;
+	// A non-string event type carries no sender text; pass it through so the insert still rejects a
+	// malformed internal event (NOT NULL) instead of storing it under a marker name.
+	const eventType =
+		typeof event.eventType !== "string" || isCleanName(event.eventType)
+			? event.eventType
+			: NAME_MARKER;
 	const category = EVENT_CATEGORIES.has(event.category) ? event.category : FALLBACK_CATEGORY;
 	const source = EVENT_SOURCES.has(event.source) ? event.source : FALLBACK_SOURCE;
 	if (eventType !== event.eventType || category !== event.category || source !== event.source) {
