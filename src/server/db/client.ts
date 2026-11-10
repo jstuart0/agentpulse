@@ -204,13 +204,15 @@ function createDatabase() {
 	// Durability strategy in this deployment: scheduled VACUUM INTO snapshot
 	// to operator's NFS via in-pod backup-sidecar in
 	// deploy/k8s/04-deployment.yaml; runbook in deploy/k8s/BACKUP-RESTORE.md.
-	sqlite.exec("PRAGMA journal_mode = WAL;");
-	sqlite.exec("PRAGMA foreign_keys = ON;");
 	// Block + retry for up to 5s on transient SQLITE_BUSY (e.g. a concurrent
 	// writer committing while a secondary reader — like the FTS backend —
 	// tries to prepare a statement). Without this, short read races surface
-	// as immediate 500s in /api/v1/search and similar paths.
+	// as immediate 500s in /api/v1/search and similar paths. Set first, so the WAL pragma
+	// itself waits out a second process opening the file at the same moment
+	// (SQLITE_BUSY_RECOVERY) instead of failing boot.
 	sqlite.exec("PRAGMA busy_timeout = 5000;");
+	sqlite.exec("PRAGMA journal_mode = WAL;");
+	sqlite.exec("PRAGMA foreign_keys = ON;");
 	return { db: drizzleBunSqlite(sqlite, { schema }), sqlite };
 }
 
