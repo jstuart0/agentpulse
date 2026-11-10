@@ -579,7 +579,7 @@ again at `0010`; see `CLAUDE.md`'s "DB migrations" paragraph).
 `idx_event_embeddings_model_dim_event` on `event_embeddings (model, dim,
 event_id)`, which the Ask semantic scan names with `INDEXED BY`. An existing
 install on the legacy init path gets the same index from `db/client.ts`
-(only when `AGENTPULSE_VECTOR_SEARCH=true`); fresh installs and
+(whatever `AGENTPULSE_VECTOR_SEARCH` says, since AGEN-67); fresh installs and
 `AGENTPULSE_LEGACY_INIT=false` get it from the Drizzle migration. Both use
 `CREATE INDEX IF NOT EXISTS`, so an index you created by hand under that name
 is left alone.
@@ -1251,3 +1251,41 @@ supervisor sends detail, so an upgraded server with older supervisors behaves as
   advertises `fork_tool_detail`, so a newer supervisor sends nothing to it.
 - **Rollback.** Rolling the server back below `0022` leaves the table and its ciphertext in place and nothing
   prunes it. Drop it by hand when you are sure: `DROP TABLE fork_tool_calls;`.
+
+## Moving an existing SQLite install to Drizzle migrate (AGEN-67)
+
+An existing SQLite install boots on the legacy init path by default. `AGENTPULSE_LEGACY_INIT=false` makes it boot
+through Drizzle's `migrate()` instead. Drizzle decides what to run from `__drizzle_migrations`, and the legacy path
+used to leave that table behind, so `migrate()` replayed migrations the database already had and failed with
+`duplicate column name` or `table ... already exists`.
+
+Both paths now reconcile that table first (`src/server/db/sqlite-migration-ledger.ts`). It replays the shipped
+migrations into memory, compares your database with what each one creates (tables, columns, foreign keys, indexes,
+trigger bodies), and records a migration only when its effects are really there. The legacy path does this on every
+boot and never fails because of it. With the flag set to `false` the same check runs before `migrate()`, and the
+server refuses to start, with a message and exit code 1 and without writing anything, when `migrate()` would replay
+into a half-applied migration or when the ledger claims more than the schema shows. Each boot logs one line:
+`[db] migration ledger (<mode>): verified through <tag>; recorded <n>; ...`. Postgres is unaffected.
+
+**To switch an install over**
+
+1. Stop the server. Back up the database file with its `-wal` and `-shm` files.
+2. Upgrade to this release (0.11.0 or later) and start it once with the flag unset. Check the log for
+   `verified through 0022_fork_tool_calls`.
+3. Set `AGENTPULSE_LEGACY_INIT=false` and restart. The ledger line should read `at tail` or `recorded 0`.
+4. To go back on the same release, unset the flag. To go back to an older release, restore the backup.
+
+**If a boot stops with a ledger error.** Read the message: it names the migration and the objects. Either restore the
+backup, or boot once on this release with the flag unset: that creates what is missing and records the ledger, and a
+later boot with the flag set then works. If the message names an object that exists with the wrong shape (a column
+with another type, an index with another definition), the legacy boot won't change it; restore the backup. Don't
+edit `__drizzle_migrations` by hand: a wrong row makes Drizzle skip the migrations before it.
+
+**What stays different on a legacy-built database.** The ledger comparison accepts three known differences: the
+default `'{}'` on `sessions.metadata`, nullable text primary keys, and `ON DELETE CASCADE` on the `session_id` foreign
+keys the post-boot rebuild adds. The legacy path also keeps a few things no migration creates (the vector delete
+trigger, `idx_event_embeddings_model`, the HITL backfill); an install that moves to `AGENTPULSE_LEGACY_INIT=false`
+keeps the ones it has and does not get new ones.
+
+**Before the legacy init is removed.** This release is a required stop: an install that skips it has no ledger for
+the removal release to rely on.

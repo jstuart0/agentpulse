@@ -69,6 +69,13 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Upgrade notes
 
+- **SQLite installs: this release records the migration ledger, and it is a required stop before the legacy init goes
+  away (AGEN-67).** Boot once on this release with `AGENTPULSE_LEGACY_INIT` unset. The legacy init now writes
+  `__drizzle_migrations` for every migration its schema really has, so `AGENTPULSE_LEGACY_INIT=false` works afterwards
+  instead of failing with `duplicate column name` or `table ... already exists`. With the flag set to `false`, boot checks
+  the ledger first and stops with a message (exit 1, nothing written) when it can't safely run `migrate()`. Back up the
+  database file with its `-wal` and `-shm` files before switching. The procedure and recovery steps are in
+  `deploy/k8s/README.md`, "Moving an existing SQLite install to Drizzle migrate". Postgres is unchanged.
 - **Fork follow-ups: server first, then supervisors.** A host that doesn't advertise `claude_turn_interrupt` (Stop turn),
   `claude_fork_mcp` or `claude_fork_subagents` is refused (`409 host_upgrade_required`) or shown the option disabled with a
   reason, and a queued interrupt that reaches an old host fails at claim. `GET /capabilities` advertises `claudeStopTurn`,
@@ -129,6 +136,11 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Fixed
 
+- **`AGENTPULSE_LEGACY_INIT=false` no longer replays migrations on an existing SQLite install** (AGEN-67). A database born
+  by Drizzle and later topped up by the legacy init failed with `duplicate column name: dedup_key`, and a legacy-born one
+  with ``table `ai_action_requests` already exists``, because the ledger drifted from the schema. Both paths now reconcile
+  the ledger by comparing the schema with what each migration creates. The legacy init also creates `event_embeddings` and
+  its scan index whether or not vector search is on.
 - **A follow-up prompt to a managed Codex session now runs on that session's Codex thread** (AGEN-91). It was sent down the
   Claude path: a launch with an explicit approval policy failed with a misleading "policy isn't recognised" error, and one with
   the agent's defaults ran `claude --resume` on the Codex session id in the launch directory. The prompt box, a watcher request's Approve,
