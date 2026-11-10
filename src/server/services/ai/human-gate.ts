@@ -10,7 +10,6 @@
  * Any of them sends the turn to a person. Pure: it reads the events it is given.
  */
 import type { SessionEvent } from "../../../shared/types.js";
-import { FAIL_CLOSED_MARKER_PATTERN } from "./redactor.js";
 import { type RiskClassesConfig, evaluateRisk } from "./risk-classes.js";
 import { boundaryOf } from "./turn-identity.js";
 
@@ -23,6 +22,13 @@ export const ASKS_HUMAN_RE =
 
 /** How much of the end of the last message is read for those phrases. */
 const LAST_MESSAGE_TAIL_CHARS = 600;
+
+/**
+ * Any mask at all: a redaction rule may have swallowed what followed the secret (a command after a secret
+ * once vanished with it), so a turn whose last message or pending call was masked is
+ * judged by a person, not by the text next to the mask.
+ */
+const MASKED_TEXT_PATTERN = /\[REDACTED/;
 
 export type HumanGateResult = { hold: false } | { hold: true; why: string };
 
@@ -110,7 +116,7 @@ export function needsHuman(
 	if (asksSomething(last)) return { hold: true, why: ASKING_WHY };
 	// Text the ingest step withheld (too long to scan, over a sender's share, a failed rule) can't be
 	// shown to be harmless: it goes to a person.
-	if (FAIL_CLOSED_MARKER_PATTERN.test(last)) return { hold: true, why: WITHHELD_WHY };
+	if (MASKED_TEXT_PATTERN.test(last)) return { hold: true, why: WITHHELD_WHY };
 
 	if (
 		turn.some(
@@ -124,7 +130,7 @@ export function needsHuman(
 	}
 
 	const pending = pendingAction(turn);
-	if (pending !== null && FAIL_CLOSED_MARKER_PATTERN.test(pending)) {
+	if (pending !== null && MASKED_TEXT_PATTERN.test(pending)) {
 		return { hold: true, why: WITHHELD_WHY };
 	}
 	const texts = [last, pending].filter((t): t is string => t !== null && t !== "");

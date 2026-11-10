@@ -71,7 +71,7 @@ import {
 } from "./effective-machine.js";
 import { normalizeHookEvent } from "./event-normalizer.js";
 import { insertNormalizedEvents } from "./event-processor.js";
-import { redactShortForStorage } from "./ingest-redaction.js";
+import { redactShortForStorage, trimCutTokenFragment } from "./ingest-redaction.js";
 import { getManagedSession, mapManagedSession } from "./managed-session-state.js";
 import { capNativeName, stripNativeName } from "./name-sanitizer.js";
 import { notifySessionUpdated } from "./notifier.js";
@@ -186,9 +186,10 @@ export async function applyNativeName(
 }> {
 	// A name an agent reports can carry a pasted key: masked before it is compared or stored.
 	// Strip, redact, then cut, then redact the cut: a token never straddles the 200-character cap.
-	const sanitized = redactShortForStorage(
-		capNativeName(redactShortForStorage(stripNativeName(nativeName), NATIVE_NAME_PRE_CAP_CHARS)),
-	);
+	const first = redactShortForStorage(stripNativeName(nativeName), NATIVE_NAME_PRE_CAP_CHARS);
+	const capped = capNativeName(first);
+	const again = redactShortForStorage(capped);
+	const sanitized = capped.length < first.length ? trimCutTokenFragment(again) : again;
 	if (sanitized.length === 0) {
 		return { found: false, applied: false, reason: "empty_after_sanitize" };
 	}

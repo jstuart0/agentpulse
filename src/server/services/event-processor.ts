@@ -59,6 +59,7 @@ import {
 	redactShortForStorage,
 	redactTextForStorage,
 	refuseSessionIdForStorage,
+	senderOfPoster,
 	storableFromPrepared,
 } from "./ingest-redaction.js";
 import { getMode } from "./instance-mode.js";
@@ -306,7 +307,7 @@ export async function insertHookEvents(
 	const incoming = isStorableEvents(normalizedEvents)
 		? normalizedEvents
 		: await redactEventsForStorage(
-				policy.kind === "hook_delivery" ? `k:${policy.ctx.keyId}` : `session:${sessionId}`,
+				policy.kind === "hook_delivery" ? senderOfPoster(policy.ctx) : `session:${sessionId}`,
 				normalizedEvents,
 			);
 	const plan = planEventInsert({
@@ -1719,7 +1720,10 @@ export async function processStatusUpdate(
 
 	// Charged to the posting key, like a hook event. The session's task and plan are redacted
 	// before they are written; the timeline rows are redacted by the insert.
-	const sender = `k:${attribution.ingestKeyId ?? "anonymous"}`;
+	const sender = senderOfPoster({
+		keyId: attribution.ingestKeyId ?? "anonymous",
+		attribution,
+	});
 	if (update.status) updates.semanticStatus = update.status;
 	if (update.task) updates.currentTask = await redactTextForStorage(update.task, sender);
 	if (update.plan) {

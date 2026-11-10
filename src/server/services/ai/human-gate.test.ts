@@ -277,9 +277,9 @@ describe("text the ingest redaction step withheld", () => {
 		expect(needsHuman([pre], NO_RISK)).toMatchObject({ hold: true, why: WITHHELD_WHY });
 	});
 
-	test("an ordinary secret mask is not a withheld marker", () => {
+	test("any mask holds the turn: what followed the secret may have been swallowed", () => {
 		expect(needsHuman([message("used [REDACTED:github_token] and it worked")], NO_RISK).hold).toBe(
-			false,
+			true,
 		);
 	});
 

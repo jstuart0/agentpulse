@@ -24,7 +24,7 @@ import {
  * input is never mutated, the same input gives the same output, nothing here does
  * I/O, and nothing throws: a failure becomes a marker in place of the text.
  *
- * Cost is bounded three ways. Work runs in slices of at most 4 ms or 16 Ki characters,
+ * Cost is bounded three ways. Work runs in slices of at most 4 ms or 16 Ki characters (a rescan after a window grew is one atomic pass of up to about 33 Ki),
  * one slice per event-loop turn, round-robin across senders, so a large event cannot
  * hold the loop. A leaf over `MAX_EVENT_CONTENT_CHARS` keeps its head and tail around
  * a marker, and a tool response is cut before it is scanned. And each sender may have
@@ -792,8 +792,16 @@ function estimateToolResponseUnits(response: unknown): number {
 	return estimateUnits(response, 0);
 }
 
-function senderOfKey(keyId: string): string {
-	return `k:${keyId}`;
+/**
+ * Who a hook's pending work is charged to: its key's owner when there is one (a member's several
+ * keys share one share), else the key itself.
+ */
+export function senderOfPoster(poster: {
+	keyId: string;
+	attribution?: { ownerUserId: string | null } | undefined;
+}): string {
+	const owner = poster.attribution?.ownerUserId;
+	return owner ? `u:${owner}` : `k:${poster.keyId}`;
 }
 
 /**
@@ -802,7 +810,7 @@ function senderOfKey(keyId: string): string {
  * Counted on /health as `sessionIdRefused`.
  */
 export function refuseSessionIdForStorage(sessionId: unknown): boolean {
-	if (typeof sessionId !== "string" || unchangedByRedaction(sessionId)) return false;
+	if (typeof sessionId !== "string" || isCleanId(sessionId)) return false;
 	counters.sessionIdRefused++;
 	return true;
 }
@@ -814,16 +822,17 @@ export function refuseSessionIdForStorage(sessionId: unknown): boolean {
  */
 export async function prepareHookPayloadForStorage(
 	payload: HookEventPayload,
-	ctx: { keyId: string },
+	ctx: { keyId: string; attribution?: { ownerUserId: string | null } },
 ): Promise<PrepareResult> {
 	const stats = newStats();
 	const raw = payload as unknown as Record<string, unknown>;
 	const sessionId = raw.session_id;
-	if (typeof sessionId === "string" && !unchangedByRedaction(sessionId)) {
+	// The grammar and its length bound come first, so no unbounded text reaches a rule.
+	if (typeof sessionId === "string" && !isCleanId(sessionId)) {
 		counters.sessionIdRefused++;
 		return { refused: "session_id" };
 	}
-	const sender = senderOfKey(ctx.keyId);
+	const sender = senderOfPoster(ctx);
 	const isToolResult =
 		raw.hook_event_name === "PostToolUse" || raw.hook_event_name === "PostToolUseFailure";
 	// A tool result is scanned by its own path (cut first); on any other event a `tool_response` is
@@ -892,12 +901,28 @@ async function shortField(text: string, sender: string, stats: RedactionStats): 
 // ── Other text ──────────────────────────────────────────────────────────────
 
 /**
+ * A recognised token prefix and at least 8 token characters at the very end of a string that was
+ * just cut: what is left of a token whose full form no rule can match any more.
+ */
+const CUT_TOKEN_FRAGMENT =
+	/(?:sk-ant-|sk-or-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|xox[abposr]-|xapp-|hf_|npm_|AIza|AKIA|ASIA|sk_live_|eyJ|aps?_)[A-Za-z0-9_.-]{8,}$/;
+
+export function trimCutTokenFragment(text: string): string {
+	return text.replace(CUT_TOKEN_FRAGMENT, "[REDACTED:cut_token]");
+}
+
+/**
  * A short text (a model name, a branch, a title), redacted and cut. Synchronous: the input is
  * cut to a few hundred characters first, so it costs microseconds. Never throws.
  */
 export function redactShortForStorage(text: string, maxChars = SHORT_FIELD_MAX_CHARS): string {
 	try {
-		return cutHead(redact(cutHead(text, maxChars + 256)).text, maxChars);
+		// Redact, cut, redact again; a cut that fell inside a token it could no longer recognise
+		// loses that fragment too.
+		const first = redact(cutHead(text, maxChars + 256)).text;
+		const cut = cutHead(first, maxChars);
+		const second = redact(cut).text;
+		return cut.length < first.length ? trimCutTokenFragment(second) : second;
 	} catch {
 		counters.errors++;
 		return ERROR_MARKER;

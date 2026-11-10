@@ -124,7 +124,7 @@ describe("prepareHookPayloadForStorage: structure", () => {
 		expect(payload.hook_event_name).toBe(" AiContinueSent ");
 	});
 
-	test("a session id that is a secret refuses the delivery; a plain odd one does not", async () => {
+	test("a session id that is a secret, or not a plain id, refuses the delivery", async () => {
 		expect(await prepareHookPayloadForStorage(hook({ session_id: ghp }), { keyId: "k" })).toEqual({
 			refused: "session_id",
 		});
@@ -132,8 +132,8 @@ describe("prepareHookPayloadForStorage: structure", () => {
 		const odd = await prepareHookPayloadForStorage(hook({ session_id: "has space" }), {
 			keyId: "k",
 		});
-		expect("refused" in odd).toBe(false);
-		expect((odd as PreparedHookPayload).payload.session_id).toBeUndefined();
+		// The grammar comes first: an id that is not a plain id is refused whether or not a rule matches it.
+		expect(odd).toEqual({ refused: "session_id" });
 	});
 
 	test("a nested session_id is an ordinary leaf", async () => {

@@ -782,6 +782,7 @@ const SELF_SCAN_FILES_ABOUT_REDACTION = new Set([
 	"src/server/services/ingest-redaction.guard.test.ts",
 	"src/server/routes/ingest-redaction.test.ts",
 	"src/server/routes/ingest-redaction-fixes.test.ts",
+	"src/server/routes/ingest-redaction-r3.test.ts",
 	"src/server/routes/ingest-redaction-readers.test.ts",
 	"scripts/bench-ingest-redaction.ts",
 	"src/server/services/ai/__fixtures__/redaction-benign.json",
@@ -829,6 +830,13 @@ describe("P2-15 repo self-scan", () => {
 				for (let i = 0; i < after.length; i++) {
 					if (before[i] === after[i]) continue;
 					const line = original[i] ?? "";
+					// An unquoted env value now ends at `; & | ` or `$(` (AGEN-146): the text after the
+					// mask survives, the mask itself is the old one.
+					const tail = /\[REDACTED\][\s\S]*$/;
+					if (before[i]?.replace(tail, "[REDACTED]") === after[i]?.replace(tail, "[REDACTED]"))
+						continue;
+					// ...or the value began with such an operator (a command substitution): nothing to mask.
+					if (!(after[i] ?? "").includes("[REDACTED") && /[;&|`]|\$\(/.test(line)) continue;
 					const allowed = SELF_SCAN_ALLOWLIST.some(
 						(a) => a.file === file && line.includes(a.includes),
 					);

@@ -351,7 +351,7 @@ export const DEFAULT_RULES: RedactionRule[] = [
 		// like `MAX_BATCHES_PER_PASS = 1_000` is left alone.
 		// ACCEPTED over-match: `const token = await getToken()` is masked.
 		pattern:
-			/(^|[^A-Za-z0-9])((?:[A-Z][A-Z0-9]*_){0,8}(?:PASSWORD|PASSWD|PASS(?==)|SECRET_KEY|SECRET|SIGNING_KEY|ENCRYPTION_KEY|API_KEY|APIKEY|TOKEN|ACCESS_KEY|PRIVATE_KEY|AUTH_TOKEN|CREDENTIALS))[ \t]*=[ \t]*(?:"(?=[^"\n]*[ \t])[^"\n]{4,}"|'(?=[^'\n]*[ \t])[^'\n]{4,}'|["']?[^\s"'\n]{4,})/gi,
+			/(^|[^A-Za-z0-9])((?:[A-Z][A-Z0-9]*_){0,8}(?:PASSWORD|PASSWD|PASS(?==)|SECRET_KEY|SECRET|SIGNING_KEY|ENCRYPTION_KEY|API_KEY|APIKEY|TOKEN|ACCESS_KEY|PRIVATE_KEY|AUTH_TOKEN|CREDENTIALS))[ \t]*=[ \t]*(?:"(?=[^"\n]*[ \t])[^"\n]{4,}"|'(?=[^'\n]*[ \t])[^'\n]{4,}'|["']?(?:(?!\$\(|[;&|`])[^\s"'\n]){4,})/gi,
 		replacement: (match) => {
 			const eq = match.indexOf("=");
 			// A trailing question mark is kept: a reader that asks "does this end in a question" must still see it.

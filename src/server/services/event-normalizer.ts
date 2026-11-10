@@ -9,6 +9,7 @@ import type {
 	SemanticStatus,
 	SemanticStatusUpdate,
 } from "../../shared/types.js";
+import { redact } from "./ai/redactor.js";
 
 export interface NormalizedEvent {
 	eventType: string;
@@ -380,7 +381,7 @@ export function normalizeHookEvent(
 					kind: "ingest_reserved_event_type",
 					level: "warn",
 					nameLength: name.length,
-					namePrefix: name.slice(0, 32),
+					namePrefix: redact(name).text.slice(0, 32),
 				}),
 			);
 			return [];
