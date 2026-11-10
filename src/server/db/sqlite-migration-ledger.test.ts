@@ -771,7 +771,7 @@ describe("sqlite migration ledger: constructs the comparer must not wave through
 		);
 		expect(legacy(db, folder).verifiedThrough).toBeNull();
 		db.exec(
-			`DROP TABLE c; CREATE TABLE c (a integer, b integer, FOREIGN KEY (a, b) REFERENCES p(a, b))`,
+			"DROP TABLE c; CREATE TABLE c (a integer, b integer, FOREIGN KEY (a, b) REFERENCES p(a, b))",
 		);
 		expect(legacy(db, folder).verifiedThrough).toBe("0000_base");
 	});
