@@ -25,6 +25,7 @@ const {
 	CROSS_SITE_REFUSED_MESSAGE,
 	HOST_REFUSED_MESSAGE,
 	__resetAuthOffGateLogForTests,
+	isLoopbackHostHeader,
 	logAuthOffBootRule,
 } = await import("./request-origin.js");
 
@@ -191,14 +192,23 @@ describe("route walk", () => {
 		expect(res.status).toBe(403);
 	});
 
-	test("odd spellings of an API path never answer 200 for a rebinding Host", async () => {
-		for (const path of ["/api/%76%31/sessions", "//api/v1/sessions", "/api/v1/sessions/"]) {
+	test("odd spellings of an API path are exactly 403 or 404 for a rebinding Host", async () => {
+		const results: Record<string, number> = {};
+		for (const path of [
+			"/api/%76%31/sessions",
+			"//api/v1/sessions",
+			"/api/v1/sessions/",
+			"/api//v1/sessions",
+			"/%61pi/v1/sessions",
+			"/api/v1/../v1/sessions",
+		]) {
 			const res = await app.request(`http://placeholder${path}`, {
 				headers: { Host: "rebind.example" },
 			});
-			const type = res.headers.get("content-type") ?? "";
-			expect([403, 404].includes(res.status) || !type.includes("json")).toBe(true);
-			expect(res.status === 200 && type.includes("json")).toBe(false);
+			results[path] = res.status;
+		}
+		for (const [path, status] of Object.entries(results)) {
+			expect({ path, ok: status === 403 || status === 404 }).toEqual({ path, ok: true });
 		}
 	});
 
@@ -283,9 +293,9 @@ describe("trusted requests pass (auth off)", () => {
 		expect((await get({ Host: "localhost:3000", Origin: "http://localhost:5173" })).status).toBe(
 			200,
 		);
-		expect((await get({ Host: "127.0.0.1:3000", Origin: "http://127.0.0.1:8080" })).status).toBe(
-			200,
-		);
+		expect(
+			(await get({ Host: "127.0.0.1:3000", Origin: `http://127.0.0.1:${config.port}` })).status,
+		).toBe(200);
 		expect(
 			(await get({ Host: "192.168.1.5:3000", Origin: "http://192.168.1.5:3000" })).status,
 		).toBe(200);
@@ -327,6 +337,59 @@ describe("trusted requests pass (auth off)", () => {
 	});
 });
 
+describe("scheme and loopback port (AGEN-92 fix pass)", () => {
+	const at = (scheme: string, headers: Record<string, string>) =>
+		app.request(`${scheme}://placeholder/api/v1/sessions`, { headers });
+
+	test("an Origin of the other scheme is refused, both ways", async () => {
+		expect((await at("https", { Host: "192.168.1.5", Origin: "http://192.168.1.5" })).status).toBe(
+			403,
+		);
+		expect((await at("http", { Host: "192.168.1.5", Origin: "https://192.168.1.5" })).status).toBe(
+			403,
+		);
+		expect((await at("https", { Host: "127.0.0.1", Origin: "http://127.0.0.1" })).status).toBe(403);
+	});
+
+	test("the same scheme passes, with the default port implied on each side", async () => {
+		expect((await at("https", { Host: "192.168.1.5", Origin: "https://192.168.1.5" })).status).toBe(
+			200,
+		);
+		expect((await at("http", { Host: "192.168.1.5", Origin: "http://192.168.1.5" })).status).toBe(
+			200,
+		);
+		expect(
+			(await at("https", { Host: "192.168.1.5:443", Origin: "https://192.168.1.5" })).status,
+		).toBe(200);
+	});
+
+	test("a loopback Origin passes on the server's port, on Vite's outside production, and nowhere else", async () => {
+		const origins = (port: number) => ({
+			Host: "127.0.0.1:3000",
+			Origin: `http://localhost:${port}`,
+		});
+		expect((await get(origins(config.port))).status).toBe(200);
+		expect((await get(origins(5173))).status).toBe(200);
+		expect((await get(origins(8080))).status).toBe(403);
+		(config as Record<string, unknown>).isProduction = true;
+		try {
+			expect((await get(origins(5173))).status).toBe(403);
+			expect((await get(origins(config.port))).status).toBe(200);
+		} finally {
+			(config as Record<string, unknown>).isProduction = false;
+		}
+	});
+
+	test("a non-canonical IPv6 Host passes and counts as loopback", async () => {
+		expect((await get({ Host: "[0:0:0:0:0:0:0:1]:3000" })).status).toBe(200);
+		expect(
+			(await get({ Host: "[0:0:0:0:0:0:0:1]:3000", Origin: "http://[::1]:3000" })).status,
+		).toBe(200);
+		expect(isLoopbackHostHeader("[0:0:0:0:0:0:0:1]:3000")).toBe(true);
+		expect(isLoopbackHostHeader("[0:0:0:0:0:0:0:2]")).toBe(false);
+	});
+});
+
 describe("untrusted requests are refused (auth off)", () => {
 	const HOSTS = [
 		"",
@@ -353,6 +416,8 @@ describe("untrusted requests are refused (auth off)", () => {
 	test("Origins: another port on a LAN IP, null, a sibling of an allowlisted name", async () => {
 		for (const [host, origin] of [
 			["192.168.1.5:3000", "http://192.168.1.5:8080"],
+			["127.0.0.1:3000", "http://127.0.0.1:8080"],
+			["localhost:3000", "http://localhost:4000"],
 			["127.0.0.1:3000", "null"],
 			["127.0.0.1:3000", "https://evil.mybox.example"],
 		] as const) {
@@ -448,6 +513,12 @@ describe("refusal log lines", () => {
 			const text = log.lines().join("\n");
 			expect(text).toContain("from Origin https://evil.example (authentication is off)");
 			expect(text).not.toContain("http://evil");
+			// A header can't carry U+2028 or U+2029, but a PUBLIC_URL entry in the boot line can.
+			setPublicUrl("http://ok.example,bad\u2028entry\u2029x");
+			logAuthOffBootRule();
+			const bootLine = log.lines().find((l) => l.includes("entry ignored")) as string;
+			expect(bootLine).toContain("badentryx");
+			expect(bootLine).not.toMatch(/[\u2028\u2029]/);
 			const hostLine = log.lines().find((l) => l.includes("refused a request")) as string;
 			const value = /Host (\S+) is not/.exec(hostLine)?.[1] ?? "";
 			expect(value.length).toBeLessThanOrEqual(128);

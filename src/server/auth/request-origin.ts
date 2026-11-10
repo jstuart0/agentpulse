@@ -29,7 +29,11 @@ function hostAndPort(host: string, protocol: string): string {
  * or userinfo makes it something else, however much it looks like the host.
  * The literal "null" (sandboxed or cross-origin redirects) never is.
  */
-function isSameOrigin(origin: string, hostHeader: string | undefined): boolean {
+function isSameOrigin(
+	origin: string,
+	hostHeader: string | undefined,
+	requestScheme?: string,
+): boolean {
 	if (!hostHeader) return false;
 	let url: URL;
 	try {
@@ -40,7 +44,29 @@ function isSameOrigin(origin: string, hostHeader: string | undefined): boolean {
 	if (url.protocol !== "http:" && url.protocol !== "https:") return false;
 	const bare = url.pathname === "/" && !url.search && !url.hash && !url.username && !url.password;
 	if (!bare || origin.endsWith("/") || /[?#@]/.test(origin)) return false;
-	return hostAndPort(url.host, url.protocol) === hostAndPort(hostHeader, url.protocol);
+	if (!config.disableAuth) {
+		return hostAndPort(url.host, url.protocol) === hostAndPort(hostHeader, url.protocol);
+	}
+	// Authentication off (AGEN-92): the scheme counts. The Host header names no scheme, so the request's own
+	// (from its URL: nothing here trusts X-Forwarded-Proto) supplies it and the default port. An unknown
+	// scheme fails closed, and so does an Origin of the other scheme (http://h against https://h).
+	if (requestScheme !== "http:" && requestScheme !== "https:") return false;
+	if (url.protocol !== requestScheme) return false;
+	const host = parseHost(hostHeader);
+	if (!host) return false;
+	const originHost = parseHost(url.host);
+	if (!originHost || originHost.hostname !== host.hostname) return false;
+	const defaultPort = DEFAULT_PORTS[requestScheme];
+	return (originHost.port ?? defaultPort) === (host.port ?? defaultPort);
+}
+
+/** The scheme of a request URL ("http:" or "https:"), or undefined when it can't be read. */
+export function schemeOfRequestUrl(url: string): string | undefined {
+	try {
+		return new URL(url).protocol;
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -48,14 +74,19 @@ function isSameOrigin(origin: string, hostHeader: string | undefined): boolean {
  * with no Host included), anything else by the socket rule, so the same-origin
  * shortcut is closed to DNS rebinding when authentication is off.
  */
-export function isAcceptedRequestOrigin(origin: string, hostHeader: string | undefined): boolean {
-	return isAllowedOrigin(origin) || isAcceptedSocketOrigin(origin, hostHeader);
+export function isAcceptedRequestOrigin(
+	origin: string,
+	hostHeader: string | undefined,
+	requestScheme?: string,
+): boolean {
+	return isAllowedOrigin(origin) || isAcceptedSocketOrigin(origin, hostHeader, requestScheme);
 }
 
 const IPV4_QUAD =
 	/^(?:(?:0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\.){3}(?:0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$/;
 const LDH_NAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/;
 const PORT = /^[0-9]{1,5}$/;
+const VITE_DEV_PORT = "5173";
 
 export interface ParsedHost {
 	/** Lower-cased, one trailing dot dropped, IPv6 in brackets. */
@@ -83,12 +114,13 @@ export function parseHost(hostHeader: string): ParsedHost | null {
 		if (!match) return null;
 		const port = validPort(match[2]);
 		if (port === false) return null;
+		// Canonicalise through URL ([0:0:0:0:0:0:0:1] and [::1] are one address); the regex above has
+		// already limited the input to hex digits, colons and dots.
 		try {
-			if (new URL(`http://[${match[1]}]/`).hostname !== `[${match[1]}]`) return null;
+			return { hostname: new URL(`http://[${match[1]}]/`).hostname, port };
 		} catch {
 			return null;
 		}
-		return { hostname: `[${match[1]}]`, port };
 	}
 	const match = /^([^:]*)(?::([0-9]+))?$/.exec(lowered);
 	if (!match) return null;
@@ -191,9 +223,13 @@ export function isLoopbackHostHeader(hostHeader: string | undefined): boolean {
  */
 export function isLoopbackOrigin(origin: string): boolean {
 	const match =
-		/^https?:\/\/(localhost|\[::1\]|[0-9]{1,3}(?:\.[0-9]{1,3}){3})(:[0-9]{1,5})?$/i.exec(origin);
+		/^(https?):\/\/(localhost|\[::1\]|[0-9]{1,3}(?:\.[0-9]{1,3}){3})(:[0-9]{1,5})?$/i.exec(origin);
 	if (!match) return false;
-	return isLoopbackHostHeader(`${match[1]}${match[2] ?? ""}`);
+	if (!isLoopbackHostHeader(`${match[2]}${match[3] ?? ""}`)) return false;
+	const defaultPort = DEFAULT_PORTS[`${(match[1] as string).toLowerCase()}:`];
+	const port = match[3] ? (match[3] as string).slice(1) : defaultPort;
+	// The server's own port, and (outside production) the Vite dev server's.
+	return port === String(config.port) || (!config.isProduction && port === VITE_DEV_PORT);
 }
 
 /**
@@ -205,10 +241,14 @@ export function isLoopbackOrigin(origin: string): boolean {
  * loopback address, an IP literal or an allowlisted name. A request with no
  * Host is refused.
  */
-export function isAcceptedSocketOrigin(origin: string, hostHeader: string | undefined): boolean {
+export function isAcceptedSocketOrigin(
+	origin: string,
+	hostHeader: string | undefined,
+	requestScheme?: string,
+): boolean {
 	if (!hostHeader) return false;
 	if (isAllowedOrigin(origin)) return true;
-	if (!isSameOrigin(origin, hostHeader)) return false;
+	if (!isSameOrigin(origin, hostHeader, requestScheme)) return false;
 	if (!config.disableAuth) return true;
 	return isTrustedHostWhenAuthOff(hostHeader);
 }
@@ -226,7 +266,7 @@ const LOG_DISTINCT_CAP = 64;
 const LOG_VALUE_CAP = 128;
 // Quotes, then control and format characters. Built from a string: a quote inside a regex literal confuses the seam-leak scanner.
 // biome-ignore lint/complexity/useRegexLiterals: a literal here trips the seam-leak scanner
-const LOG_STRIP = new RegExp("[\"'`\\p{Cc}\\p{Cf}]", "gu");
+const LOG_STRIP = new RegExp("[\"'`\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]", "gu");
 
 type RefusalKind = "host" | "cross";
 
@@ -250,7 +290,7 @@ export function __resetAuthOffGateLogForTests(clock?: () => number): void {
 	summaryTimer = null;
 }
 
-/** Quotes, control and format characters out, 128 characters at most. */
+/** Quotes, control, format and line or paragraph separator characters out, 128 characters at most. */
 function cleanForLog(value: string): string {
 	return value.replace(LOG_STRIP, "").slice(0, LOG_VALUE_CAP);
 }
@@ -349,7 +389,7 @@ export function authOffRequestGate(): MiddlewareHandler {
 		if (
 			origin !== undefined &&
 			!allowlisted &&
-			!(host !== undefined && isSameOrigin(origin, host)) &&
+			!(host !== undefined && isSameOrigin(origin, host, schemeOfRequestUrl(c.req.url))) &&
 			!isLoopbackOrigin(origin)
 		) {
 			logRefusal("cross", origin);

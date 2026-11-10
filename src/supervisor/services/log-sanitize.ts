@@ -23,7 +23,7 @@ export function sanitizeForLog(value: string): string {
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — stripping ANSI escapes from untrusted server input
 	const withoutAnsi = value.replace(/\u001b\[[0-9;]*[a-zA-Z]/g, "");
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — stripping control chars (incl. newlines) from untrusted server input
-	const withoutControl = withoutAnsi.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+	const withoutControl = withoutAnsi.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "");
 	return withoutControl.slice(0, MAX_LOG_STRING_LENGTH);
 }
 

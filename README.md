@@ -582,7 +582,7 @@ Things that stop working until then, because they reach the server by a name:
 
 Running the Vite dev server? Its own `allowedHosts` setting is the rebinding protection on port 5173. Never set it to `true`.
 
-This is for servers on a network you control. A page served from another port on your own machine is still accepted.
+This is for servers on a network you control. A page on your own machine (`localhost`, `127.x.x.x`, `[::1]`) is accepted only on the server's own port, or on the Vite dev server's port 5173 when `NODE_ENV` isn't `production`. For another local dev origin, list it in `PUBLIC_URL`. The Origin's scheme must also match the request's: an `http://` Origin against an `https://` request URL is refused. The scheme is read from the request URL, never from `X-Forwarded-Proto`, so a server behind a TLS-terminating proxy should list its public `https://` name in `PUBLIC_URL`.
 
 ### Remote server
 

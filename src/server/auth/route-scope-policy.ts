@@ -43,6 +43,7 @@ import {
 	isJsonContentType,
 	isLoopbackHostHeader,
 	isTrustedHostWhenAuthOff,
+	schemeOfRequestUrl,
 } from "./request-origin.js";
 
 const READ_METHODS = new Set(["GET", "HEAD"]);
@@ -533,7 +534,11 @@ function findPolicyEntry(entries: PolicyEntry[], method: string, path: string): 
  */
 export function refuseBadOrigin(c: Context): Response | null {
 	const origin = c.req.header("Origin");
-	if (origin === undefined || isAcceptedRequestOrigin(origin, c.req.header("Host"))) return null;
+	if (
+		origin === undefined ||
+		isAcceptedRequestOrigin(origin, c.req.header("Host"), schemeOfRequestUrl(c.req.url))
+	)
+		return null;
 	return c.json({ error: "bad_origin" }, 403);
 }
 

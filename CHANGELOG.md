@@ -15,9 +15,9 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   or `/hooks` with a `text/plain` body. One gate now runs first on every `/api` and `/app-api` request and answers
   `403 { error: "bad_origin", message }` when the Host isn't `localhost`, an IP address or a `PUBLIC_URL` name, or when a browser
   marks the request cross-site (`Sec-Fetch-Site: cross-site`, or an Origin that isn't allowlisted, the request's own, or a
-  loopback origin). Requests with no Origin and no `Sec-Fetch-Site` (curl, the relay, the supervisor, MCP, hooks) are judged by
-  Host only. Auth-on behaviour is unchanged. Still open, filed separately: a page served from another local port is accepted
-  (AGEN-152); auth on, `POST /internal/drain` checks no Origin (AGEN-151); `/setup.sh` and the other install scripts are readable
+  loopback origin on the server's own port, or on Vite's 5173 outside production; the Origin's scheme must match the request's). Requests with no Origin and no `Sec-Fetch-Site` (curl, the relay, the supervisor, MCP, hooks) are judged by
+  Host only. Auth-on behaviour is unchanged. Still open, filed separately: with auth on, a page on another local port isn't
+  judged by this rule (AGEN-152); auth on, `POST /internal/drain` checks no Origin (AGEN-151); `/setup.sh` and the other install scripts are readable
   by rebinding (AGEN-153). On a plain-http LAN server a cross-site GET sends no `Sec-Fetch-Site` or Origin and passes.
 
 ### Changed

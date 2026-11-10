@@ -300,4 +300,22 @@ describe("AGEN-92: the upgrade rejects rebinding and cross-site requests, with a
 			).toBe(403);
 		});
 	}
+
+	test("the Origin's scheme must be the request's own, both ways (REST and WS paths)", async () => {
+		const verdictAt = async (scheme: string, path: string, origin: string) => {
+			const res = await handleServerRequest(
+				new Request(`${scheme}://placeholder${path}`, {
+					headers: { Host: "192.168.1.5", Origin: origin },
+				}),
+				fakeServer,
+			);
+			return res === undefined ? "upgraded" : res.status;
+		};
+		for (const path of ["/api/v1/ws", "/app-api/v1/ws"]) {
+			expect(await verdictAt("https", path, "http://192.168.1.5")).toBe(403);
+			expect(await verdictAt("http", path, "https://192.168.1.5")).toBe(403);
+			expect(await verdictAt("https", path, "https://192.168.1.5")).toBe("upgraded");
+			expect(await verdictAt("http", path, "http://192.168.1.5")).toBe("upgraded");
+		}
+	});
 });

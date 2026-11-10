@@ -326,4 +326,25 @@ describe("AGEN-92: the shared Host rule with authentication off", () => {
 		expect((await send("192.168.1.5:3000")).status).toBe(403);
 		expect((await send("127.0.0.1:3000")).status).toBe(200);
 	});
+
+	test("refuseBadOrigin judges the scheme with authentication off: http Origin on an https request is refused", async () => {
+		(config as Record<string, unknown>).disableAuth = true;
+		const app = new Hono();
+		app.post("/x", (c) => refuseBadOrigin(c) ?? c.json({ reached: true }));
+		const send = (scheme: string, origin: string) =>
+			app.request(`${scheme}://placeholder/x`, {
+				method: "POST",
+				headers: { Host: "192.168.1.5", Origin: origin },
+			});
+		expect((await send("https", "http://192.168.1.5")).status).toBe(403);
+		expect((await send("http", "https://192.168.1.5")).status).toBe(403);
+		expect((await send("https", "https://192.168.1.5")).status).toBe(200);
+	});
+
+	test("an unknown request scheme fails closed for a same-origin claim with authentication off", async () => {
+		(config as Record<string, unknown>).disableAuth = true;
+		const { isAcceptedSocketOrigin } = await import("./request-origin.js");
+		expect(isAcceptedSocketOrigin("http://192.168.1.5", "192.168.1.5")).toBe(false);
+		expect(isAcceptedSocketOrigin("http://192.168.1.5", "192.168.1.5", "http:")).toBe(true);
+	});
 });
