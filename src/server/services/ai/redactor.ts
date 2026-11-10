@@ -679,14 +679,14 @@ export function createRedactionJob(input: string, options: RedactionJobOptions =
 		if (!rule) return 0;
 		if (rule.gate && !rule.gate(src, lower)) {
 			ruleIndex++;
-			return Math.ceil(src.length / 64) + 1;
+			return Math.ceil(src.length / 128) + 1;
 		}
 		inPass = true;
 		pos = 0;
 		emitted = 0;
 		out = [];
 		passHit = false;
-		return Math.ceil(src.length / 64) + 1;
+		return Math.ceil(src.length / 128) + 1;
 	};
 
 	const endPass = (): void => {
@@ -803,6 +803,8 @@ export function createRedactionJob(input: string, options: RedactionJobOptions =
 					units += startPass();
 					continue;
 				}
+				// A window costs up to `chunk`; one that would carry this slice past its budget waits for the next.
+				if (units > 0 && !w && units + chunk > maxUnits) break;
 				const rule = DEFAULT_RULES[ruleIndex] as RedactionRule;
 				units += runWindow(rule);
 				if (!w && pos >= src.length) endPass();

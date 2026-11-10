@@ -8,6 +8,7 @@ import {
 	getEventsDeduplicatedCounts,
 	getLegacyObserverDeliveries,
 } from "../services/event-dedup.js";
+import { getIngestRedactionCounters } from "../services/ingest-redaction.js";
 import { getRetentionStatus } from "../services/retention-service.js";
 import { getSearchIndexStatus } from "../services/search/search-index-status.js";
 import { computeChecksum } from "../util/checksum.js";
@@ -100,6 +101,10 @@ export function computeClientChecksums(): Promise<Record<string, string>> {
 //    summariesDeleted for expired session summaries, receiptsDeleted for
 //    managed-delivery receipts, durationMs, disabled) and
 //    the next scheduled tick — see services/retention-service.ts.
+//  - ingestRedaction (AGEN-146): counters only for the secret-redaction step on
+//    the way into storage (pendingUnits, pendingJobs, unitsScanned, hits,
+//    cutLeaves, backlogMarkers, errors, idsDropped, sessionIdRefused,
+//    maxSliceMs) — see services/ingest-redaction.ts.
 //  - searchIndexes (AGEN-27 / percy TB17): Postgres trigram search-index
 //    presence ({ present, missing[] }), checked once at boot; null on
 //    SQLite (not applicable) — see services/search/search-index-status.ts.
@@ -147,6 +152,7 @@ health.get("/health", async (c) => {
 		clients,
 		eventsDeduplicated: getEventsDeduplicatedCounts(),
 		legacyObserverDeliveries: getLegacyObserverDeliveries(),
+		ingestRedaction: getIngestRedactionCounters(),
 		retention: getRetentionStatus(),
 		searchIndexes: getSearchIndexStatus(),
 		instance: { dbFingerprint, dialect: config.dialect },
