@@ -10,6 +10,7 @@
 import { Database } from "bun:sqlite";
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { LEGACY_SESSIONS_DDL } from "../../../test-utils/legacy-install.js";
 
 const SHAPE = process.env.AGENTPULSE_SCAN_SHAPE as "legacy" | "drizzle" | undefined;
 const describeChild = SHAPE ? describe : describe.skip;
@@ -17,19 +18,10 @@ const describeChild = SHAPE ? describe : describe.skip;
 if (SHAPE === "legacy") {
 	const path = process.env.SQLITE_PATH as string;
 	if (!existsSync(path)) {
+		// The old install's sessions table, in full: the migration ledger only records what the schema
+		// really has (AGEN-67), and a table missing columns the first migration adds can't be verified.
 		const seed = new Database(path, { create: true });
-		seed.exec(`CREATE TABLE sessions (
-			id TEXT PRIMARY KEY,
-			session_id TEXT NOT NULL UNIQUE,
-			agent_type TEXT NOT NULL,
-			status TEXT NOT NULL DEFAULT 'active',
-			started_at TEXT NOT NULL DEFAULT (datetime('now')),
-			last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
-			total_tool_uses INTEGER NOT NULL DEFAULT 0,
-			cwd TEXT,
-			current_task TEXT,
-			metadata TEXT DEFAULT '{}'
-		)`);
+		seed.exec(LEGACY_SESSIONS_DDL);
 		seed.close();
 	}
 }

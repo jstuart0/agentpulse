@@ -41,6 +41,9 @@ const ALLOWLISTED_SUFFIXES = [
 	"src/server/db/client.ts",
 	// AGEN-67: reads and writes drizzle's SQLite ledger table with raw bun:sqlite.
 	"src/server/db/sqlite-migration-ledger.ts",
+	// AGEN-67: the structural-shape oracle the SQLite schema tests compare databases with (moved out of
+	// legacy-init-parity.test.ts, which was exempt as a test file).
+	"src/server/test-utils/schema-shape.ts",
 	// The withTransaction helper is the canonical DB-layer file for sync-tx
 	// semantics. Its docstring documents the .run()/.all()/.get() patterns by
 	// design; its implementation uses them to bridge the bun-sqlite sync path.

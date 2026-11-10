@@ -23,7 +23,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +35,23 @@ import "../services/ai/__test_db.js";
 const { initializeDatabase } = await import("./client.js");
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Runs initializeDatabase(handle) and returns what it logged. The legacy path now writes the migration
+ * ledger too (AGEN-67), so a `__drizzle_migrations` table no longer says which path ran: the boot's own
+ * path line does.
+ */
+async function bootLog(db: Database): Promise<string> {
+	const spy = spyOn(console, "log");
+	try {
+		await initializeDatabase(db);
+		return spy.mock.calls.map((c) => c.join(" ")).join("\n");
+	} finally {
+		spy.mockRestore();
+	}
+}
+
+const LEGACY_PATH_LINE = "using legacy init path";
 
 const TMP_DIR = mkdtempSync(join(tmpdir(), "ap-migrate-test-"));
 
@@ -103,7 +120,7 @@ function getIndexNames(db: Database): string[] {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
-	test("existing install: sessions table present → legacy init path (no __drizzle_migrations)", async () => {
+	test("existing install: sessions table present → legacy init path", async () => {
 		// Create an in-memory DB with only the sessions table to simulate an existing install.
 		const db = new Database(":memory:");
 		db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
@@ -121,7 +138,7 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 		`);
 
 		// Pass the handle explicitly — bypasses the module singleton path.
-		await initializeDatabase(db);
+		const log = await bootLog(db);
 
 		const tables = getTableNames(db);
 
@@ -135,8 +152,9 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 		expect(tables).toContain("llm_providers");
 		expect(tables).toContain("watcher_configs");
 
-		// Drizzle's migration tracking table should NOT be present (legacy path ran).
-		expect(tables).not.toContain("__drizzle_migrations");
+		// The legacy path ran: the boot says so (the ledger table can't, it is written there too).
+		expect(log).toContain(LEGACY_PATH_LINE);
+		expect(log).not.toContain("Fresh SQLite install");
 
 		db.close();
 	});
@@ -507,10 +525,10 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 		// set AGENTPULSE_LEGACY_INIT yet) so the ALTER array applies the 15
 		// ownership columns. A second legacy boot must be a clean no-op.
 		//
-		// AGENTPULSE_LEGACY_INIT=false forcing Drizzle afterwards is out of
-		// scope (AGEN-67): the legacy path never stamps __drizzle_migrations,
-		// so a forced migrate() re-running prior ALTERs throws on main today
-		// for 0001-0003, independent of these changes.
+		// AGENTPULSE_LEGACY_INIT=false forcing Drizzle afterwards is covered by
+		// sqlite-migration-ledger-boot.test.ts (AGEN-67): the legacy path records
+		// the migrations its schema now has, so a forced migrate() has nothing to
+		// replay.
 		const dbPath = tmpDbPath();
 		const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
 		const { drizzle } = await import("drizzle-orm/bun-sqlite");
@@ -574,9 +592,17 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 			expect(indexNamesAfterFirst).toContain(idx);
 		}
 
-		// __drizzle_migrations is untouched by the legacy path.
+		// The legacy path topped the ledger up to the whole journal (AGEN-67).
 		const tablesAfterFirst = getTableNames(freshDb);
 		expect(tablesAfterFirst).toContain("__drizzle_migrations");
+		const journalLength = (
+			JSON.parse(readFileSync(joinPath(fullMigrationsDir, "meta", "_journal.json"), "utf8")) as {
+				entries: unknown[];
+			}
+		).entries.length;
+		expect(
+			(freshDb.prepare("SELECT count(*) AS n FROM __drizzle_migrations").get() as { n: number }).n,
+		).toBe(journalLength);
 
 		// Second legacy boot is clean (idempotent) — no duplicate-column throw.
 		await initializeDatabase(freshDb);
@@ -1368,9 +1394,9 @@ describeSqliteOnly("pairing_codes on SQLite", () => {
 			metadata TEXT DEFAULT '{}'
 		)`);
 		try {
-			await initializeDatabase(db);
+			const log = await bootLog(db);
 			expect(getTableNames(db)).toContain("pairing_codes");
-			expect(getTableNames(db)).not.toContain("__drizzle_migrations"); // the legacy path ran
+			expect(log).toContain(LEGACY_PATH_LINE);
 			expect(getColumnNames(db, "pairing_codes")).toEqual([
 				"id",
 				"code_hash",
@@ -1718,8 +1744,7 @@ describeSqliteOnly("mobile devices on SQLite", () => {
 			metadata TEXT DEFAULT '{}'
 		)`);
 		try {
-			await initializeDatabase(db);
-			expect(getTableNames(db)).not.toContain("__drizzle_migrations");
+			expect(await bootLog(db)).toContain(LEGACY_PATH_LINE);
 			assertShape(db);
 			db.exec(insertDeviceSql("d-keep", "relay-keep"));
 			await initializeDatabase(db);

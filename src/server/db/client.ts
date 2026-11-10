@@ -20,6 +20,7 @@ import {
 } from "./fts-ddl.js";
 import * as schema from "./schema/index.js";
 import { SESSION_CHILD_FK_TARGETS } from "./session-child-fks.js";
+import { describeLedgerReport, reconcileSqliteMigrationLedger } from "./sqlite-migration-ledger.js";
 import { AI_DISPATCH_AUDIT_TRIGGERS_SQLITE, DEDUPE_OPEN_RUNS_SQL } from "./watcher-modes-ddl.js";
 
 // Hand-written DDL shared with drizzle/sqlite/0012 (see watcher-modes-ddl.ts).
@@ -428,12 +429,19 @@ export async function initializeDatabase(handle?: Database): Promise<void> {
 		//
 		// Existing installs continue to use the original CREATE TABLE IF NOT
 		// EXISTS + ALTER TABLE migration array + cascade rebuild + FTS bootstrap.
-		// This keeps rolling upgrades non-breaking: no __drizzle_migrations table
-		// appears, no schema shape changes, no risk of migration replay.
+		// This keeps rolling upgrades non-breaking: no schema shape changes, no
+		// risk of migration replay. Since AGEN-67 it also records, in
+		// __drizzle_migrations, every migration whose effects the schema now has
+		// (sqlite-migration-ledger.ts), without ever failing boot over it.
+		//
+		// INVARIANT: every existing-install boot that reaches Drizzle's migrate()
+		// below reconciles that ledger first, in "forced" mode, whatever the env
+		// var says. A source-scan test pins it (sqlite-migration-ledger.test.ts).
 		//
 		// Fresh installs (or AGENTPULSE_LEGACY_INIT=false) use the Drizzle path
 		// below. The legacy init code stays alive for one release; Phase 8
-		// (dexter L-2) tracks the removal.
+		// (dexter L-2) tracks the removal, and the release that ships the ledger
+		// is a required stop before it goes.
 		console.log("[db] Existing SQLite install detected — using legacy init path");
 		await runLegacySqliteInit(sqlite);
 		return;
@@ -448,6 +456,17 @@ export async function initializeDatabase(handle?: Database): Promise<void> {
 
 	const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
 	const migrationsFolder = resolveMigrationsPath("sqlite");
+	if (isExistingInstall) {
+		// Throws a MigrationLedgerError (the caller exits cleanly) rather than let migrate() replay
+		// into a half-applied migration or skip one the schema lacks. Writes nothing in that case.
+		const report = reconcileSqliteMigrationLedger(
+			// biome-ignore lint/style/noNonNullAssertion: postgres path returned early; sqlite is non-null here
+			_client.sqlite!,
+			migrationsFolder,
+			"forced",
+		);
+		console.log(describeLedgerReport(report, migrationsFolder));
+	}
 	migrate(_client.db as unknown as Parameters<typeof migrate>[0], { migrationsFolder });
 
 	// For the Drizzle path, cascade rebuild and FTS bootstrap run against
@@ -1493,10 +1512,33 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		console.warn("[db] HITL backfill skipped:", err);
 	}
 
+	recordMigrationLedgerOnLegacyPath(sqlite);
+
 	// FTS bootstrap + backfill shared with the Drizzle fresh-install path.
 	await runFtsBootstrap(sqlite);
 
 	console.log("[db] Database initialized");
+}
+
+/**
+ * Legacy path: record the migrations the schema now has in __drizzle_migrations, so an operator can
+ * later set AGENTPULSE_LEGACY_INIT=false. Never fails boot: the schema work above is what the server
+ * needs, and the next boot tries again.
+ */
+function recordMigrationLedgerOnLegacyPath(sqlite: Database): void {
+	try {
+		const folder = resolveMigrationsPath("sqlite");
+		const report = reconcileSqliteMigrationLedger(sqlite, folder, "legacy");
+		console.log(describeLedgerReport(report, folder));
+		if (report.problem) {
+			console.warn(`[db] migration ledger not updated: ${report.problem.message}`);
+		}
+	} catch (err) {
+		if (sqlite.inTransaction) sqlite.exec("ROLLBACK");
+		console.warn(
+			`[db] migration ledger not updated: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
 }
 
 /**
