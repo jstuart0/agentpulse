@@ -384,11 +384,18 @@ itSqliteOnly(
 		const db = legacyFixture();
 		try {
 			expect(tableExists(db), "fixture starts without the table").toBe(false);
-			await initializeDatabase(db);
+			// The legacy path writes the migration ledger too (AGEN-67), so the boot's own path line is
+			// what says which path ran.
+			const log = spyOn(console, "log");
+			try {
+				await initializeDatabase(db);
+				expect(log.mock.calls.map((c) => c.join(" ")).join("\n")).toContain(
+					"using legacy init path",
+				);
+			} finally {
+				log.mockRestore();
+			}
 			expect(tableExists(db)).toBe(true);
-			expect(
-				db.prepare("SELECT 1 FROM sqlite_master WHERE name = '__drizzle_migrations'").get(),
-			).toBeNull();
 		} finally {
 			db.close();
 		}

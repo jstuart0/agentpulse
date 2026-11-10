@@ -47,8 +47,15 @@ function resolveRelative(from: string, spec: string, fs: Fs): string | null {
 }
 
 const FORBIDDEN_BARE = /^(node:)?(fs|fs\/promises|child_process)$/;
-/** The database client is the one module the whole server reaches the filesystem through (it makes the SQLite file's directory). */
-const SANCTIONED_FS_IMPORTERS = ["src/server/db/client.ts"];
+/**
+ * The database client is the one module the whole server reaches the filesystem through (it makes the SQLite
+ * file's directory). Its boot-time helper, the migration ledger reconcile (AGEN-67), reads the migrations
+ * folder's journal and is imported only by the client.
+ */
+const SANCTIONED_FS_IMPORTERS = [
+	"src/server/db/client.ts",
+	"src/server/db/sqlite-migration-ledger.ts",
+];
 
 /**
  * Walks the relative imports from `entry` and returns what the closure does wrong: a module

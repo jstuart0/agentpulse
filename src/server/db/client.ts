@@ -19,6 +19,8 @@ import {
 	FTS_INDEXED_EVENT_TYPES_SQL_LIST,
 } from "./fts-ddl.js";
 import * as schema from "./schema/index.js";
+import { SESSION_CHILD_FK_TARGETS } from "./session-child-fks.js";
+import { describeLedgerReport, reconcileSqliteMigrationLedger } from "./sqlite-migration-ledger.js";
 import { AI_DISPATCH_AUDIT_TRIGGERS_SQLITE, DEDUPE_OPEN_RUNS_SQL } from "./watcher-modes-ddl.js";
 
 // Hand-written DDL shared with drizzle/sqlite/0012 (see watcher-modes-ddl.ts).
@@ -202,13 +204,15 @@ function createDatabase() {
 	// Durability strategy in this deployment: scheduled VACUUM INTO snapshot
 	// to operator's NFS via in-pod backup-sidecar in
 	// deploy/k8s/04-deployment.yaml; runbook in deploy/k8s/BACKUP-RESTORE.md.
-	sqlite.exec("PRAGMA journal_mode = WAL;");
-	sqlite.exec("PRAGMA foreign_keys = ON;");
 	// Block + retry for up to 5s on transient SQLITE_BUSY (e.g. a concurrent
 	// writer committing while a secondary reader — like the FTS backend —
 	// tries to prepare a statement). Without this, short read races surface
-	// as immediate 500s in /api/v1/search and similar paths.
+	// as immediate 500s in /api/v1/search and similar paths. Set first, so the WAL pragma
+	// itself waits out a second process opening the file at the same moment
+	// (SQLITE_BUSY_RECOVERY) instead of failing boot.
 	sqlite.exec("PRAGMA busy_timeout = 5000;");
+	sqlite.exec("PRAGMA journal_mode = WAL;");
+	sqlite.exec("PRAGMA foreign_keys = ON;");
 	return { db: drizzleBunSqlite(sqlite, { schema }), sqlite };
 }
 
@@ -427,12 +431,19 @@ export async function initializeDatabase(handle?: Database): Promise<void> {
 		//
 		// Existing installs continue to use the original CREATE TABLE IF NOT
 		// EXISTS + ALTER TABLE migration array + cascade rebuild + FTS bootstrap.
-		// This keeps rolling upgrades non-breaking: no __drizzle_migrations table
-		// appears, no schema shape changes, no risk of migration replay.
+		// This keeps rolling upgrades non-breaking: no schema shape changes, no
+		// risk of migration replay. Since AGEN-67 it also records, in
+		// __drizzle_migrations, every migration whose effects the schema now has
+		// (sqlite-migration-ledger.ts), without ever failing boot over it.
+		//
+		// INVARIANT: every existing-install boot that reaches Drizzle's migrate()
+		// below reconciles that ledger first, in "forced" mode, whatever the env
+		// var says. A source-scan test pins it (sqlite-migration-ledger.test.ts).
 		//
 		// Fresh installs (or AGENTPULSE_LEGACY_INIT=false) use the Drizzle path
 		// below. The legacy init code stays alive for one release; Phase 8
-		// (dexter L-2) tracks the removal.
+		// (dexter L-2) tracks the removal, and the release that ships the ledger
+		// is a required stop before it goes.
 		console.log("[db] Existing SQLite install detected — using legacy init path");
 		await runLegacySqliteInit(sqlite);
 		return;
@@ -447,6 +458,17 @@ export async function initializeDatabase(handle?: Database): Promise<void> {
 
 	const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
 	const migrationsFolder = resolveMigrationsPath("sqlite");
+	if (isExistingInstall) {
+		// Throws a MigrationLedgerError (the caller exits cleanly) rather than let migrate() replay
+		// into a half-applied migration or skip one the schema lacks. Writes nothing in that case.
+		const report = reconcileSqliteMigrationLedger(
+			// biome-ignore lint/style/noNonNullAssertion: postgres path returned early; sqlite is non-null here
+			_client.sqlite!,
+			migrationsFolder,
+			"forced",
+		);
+		console.log(describeLedgerReport(report, migrationsFolder));
+	}
 	migrate(_client.db as unknown as Parameters<typeof migrate>[0], { migrationsFolder });
 
 	// For the Drizzle path, cascade rebuild and FTS bootstrap run against
@@ -1395,20 +1417,24 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		"CREATE UNIQUE INDEX IF NOT EXISTS launch_requests_idempotency_key_unique ON launch_requests(idempotency_key)",
 	];
 
-	// Vector search opt-in. The embeddings table only materializes when
-	// the build flag is on so installs that don't need this feature stay
-	// lean (no extra column, no extra writes, no boot-time backfill).
+	// The embeddings table and its scan index (migrations 0000 and 0010) are created whatever the
+	// vector flag says: a Drizzle-born install already has both, and the migration ledger reconcile
+	// (sqlite-migration-ledger.ts) only records 0000 and 0010 when they are present, so they must
+	// exist here. Only the delete trigger and the model index stay opt-in: they cost writes, and
+	// no migration creates them.
+	migrations.push(
+		"CREATE TABLE IF NOT EXISTS event_embeddings (event_id INTEGER PRIMARY KEY, model TEXT NOT NULL, dim INTEGER NOT NULL, vector BLOB NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))",
+		// Serves the bounded Ask scan (services/ai/embeddings/vector-scan.ts).
+		// Mirrors the drizzle migration for installs on the legacy init path.
+		"CREATE INDEX IF NOT EXISTS idx_event_embeddings_model_dim_event ON event_embeddings(model, dim, event_id)",
+	);
 	if (config.vectorSearchEnabled) {
 		migrations.push(
-			"CREATE TABLE IF NOT EXISTS event_embeddings (event_id INTEGER PRIMARY KEY, model TEXT NOT NULL, dim INTEGER NOT NULL, vector BLOB NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))",
 			// FK-style cascade via trigger (we don't define a real FK on
 			// events.id because the events table doesn't have ON DELETE
 			// cascade configured and we don't want to retrofit one here).
 			"CREATE TRIGGER IF NOT EXISTS trg_events_ad_embeddings AFTER DELETE ON events BEGIN DELETE FROM event_embeddings WHERE event_id = OLD.id; END",
 			"CREATE INDEX IF NOT EXISTS idx_event_embeddings_model ON event_embeddings(model)",
-			// Serves the bounded Ask scan (services/ai/embeddings/vector-scan.ts).
-			// Mirrors the drizzle migration for installs on the legacy init path.
-			"CREATE INDEX IF NOT EXISTS idx_event_embeddings_model_dim_event ON event_embeddings(model, dim, event_id)",
 		);
 	}
 
@@ -1488,10 +1514,33 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		console.warn("[db] HITL backfill skipped:", err);
 	}
 
+	recordMigrationLedgerOnLegacyPath(sqlite);
+
 	// FTS bootstrap + backfill shared with the Drizzle fresh-install path.
 	await runFtsBootstrap(sqlite);
 
 	console.log("[db] Database initialized");
+}
+
+/**
+ * Legacy path: record the migrations the schema now has in __drizzle_migrations, so an operator can
+ * later set AGENTPULSE_LEGACY_INIT=false. Never fails boot: the schema work above is what the server
+ * needs, and the next boot tries again.
+ */
+function recordMigrationLedgerOnLegacyPath(sqlite: Database): void {
+	try {
+		const folder = resolveMigrationsPath("sqlite");
+		const report = reconcileSqliteMigrationLedger(sqlite, folder, "legacy");
+		console.log(describeLedgerReport(report, folder));
+		if (report.problem) {
+			console.warn(`[db] migration ledger not updated: ${report.problem.message}`);
+		}
+	} catch (err) {
+		if (sqlite.inTransaction) sqlite.exec("ROLLBACK");
+		console.warn(
+			`[db] migration ledger not updated: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
 }
 
 /**
@@ -1676,17 +1725,7 @@ async function runFtsBootstrap(sqlite: Database): Promise<void> {
  * row count without aborting boot — operators can clean up stragglers.
  */
 function rebuildSessionChildFks(sqlite: Database): void {
-	const targets: ReadonlyArray<{ table: string; column: string }> = [
-		{ table: "events", column: "session_id" },
-		{ table: "managed_sessions", column: "session_id" },
-		{ table: "control_actions", column: "session_id" },
-		{ table: "watcher_proposals", column: "session_id" },
-		{ table: "ai_hitl_requests", column: "session_id" },
-		{ table: "ai_watcher_runs", column: "session_id" },
-		{ table: "watcher_configs", column: "session_id" },
-	];
-
-	for (const { table, column } of targets) {
+	for (const { table, column } of SESSION_CHILD_FK_TARGETS) {
 		try {
 			const exists = sqlite
 				.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
