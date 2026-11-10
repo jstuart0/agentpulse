@@ -132,7 +132,7 @@ describe("4: a plain mask does not fool the gate", () => {
 			hook_event_name: "PreToolUse",
 			tool_name: "Bash",
 			tool_use_id: "toolu_g2",
-			tool_input: { command: `curl -u bob:hunter2pass https://example.test` },
+			tool_input: { command: "curl -u bob:hunter2pass https://example.test" },
 		});
 		const rows = await rowsOf(id);
 		expect(needsHuman(rows as never, { version: 1, classes: [] }).hold).toBe(true);
