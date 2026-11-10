@@ -9,7 +9,6 @@ import type {
 	SemanticStatus,
 	SemanticStatusUpdate,
 } from "../../shared/types.js";
-import { redact } from "./ai/redactor.js";
 
 export interface NormalizedEvent {
 	eventType: string;
@@ -381,7 +380,9 @@ export function normalizeHookEvent(
 					kind: "ingest_reserved_event_type",
 					level: "warn",
 					nameLength: name.length,
-					namePrefix: redact(name).text.slice(0, 32),
+					// A fixed family, never the sender's text: the name is unbounded (up to the 16 MiB body),
+					// so redacting it here would block the event loop, and cutting it first could leave a token.
+					family: isSupervisorOnlyEventName(name) ? "supervisor_only" : "server_only",
 				}),
 			);
 			return [];
