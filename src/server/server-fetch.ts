@@ -4,7 +4,8 @@ import { WS_UPGRADE_PATHS, handleWsUpgradeRequest } from "./ws/ws-auth.js";
 /**
  * The server's request handler, shared by Bun.serve and the tests that need the
  * real routing: a WebSocket upgrade goes through the origin and auth guard,
- * everything else through the app. `server` is the Bun server handle; Hono gets
+ * everything else through the app. The upgrade never reaches the app, so the auth-off gate mounted there
+ * (AGEN-92) does not cover it: ws-auth.ts applies the same Host and Origin rules itself. `server` is the Bun server handle; Hono gets
  * it as `env` so that `getConnInfo(c)` (backed by `server.requestIP`) can
  * resolve the TCP peer address for rate limiting and IP logging.
  */

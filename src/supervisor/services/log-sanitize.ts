@@ -23,7 +23,7 @@ export function sanitizeForLog(value: string): string {
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — stripping ANSI escapes from untrusted server input
 	const withoutAnsi = value.replace(/\u001b\[[0-9;]*[a-zA-Z]/g, "");
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — stripping control chars (incl. newlines) from untrusted server input
-	const withoutControl = withoutAnsi.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+	const withoutControl = withoutAnsi.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "");
 	return withoutControl.slice(0, MAX_LOG_STRING_LENGTH);
 }
 
@@ -75,16 +75,25 @@ export async function parseErrorBodyField(
 	res: Response,
 	maxBytes: number = MAX_ERROR_BODY_BYTES,
 ): Promise<string | undefined> {
+	return (await parseErrorBody(res, maxBytes)).error;
+}
+
+/** The body's `error` code and, when it sent one, its `message`, both cleaned for a log line. */
+export async function parseErrorBody(
+	res: Response,
+	maxBytes: number = MAX_ERROR_BODY_BYTES,
+): Promise<{ error?: string; message?: string }> {
 	try {
 		const text = await readBoundedText(res, maxBytes);
-		if (!text) return undefined;
+		if (!text) return {};
 		const parsed: unknown = JSON.parse(text);
-		if (parsed && typeof parsed === "object" && "error" in parsed) {
-			const raw = (parsed as { error?: unknown }).error;
-			if (typeof raw === "string") return sanitizeForLog(raw);
-		}
-		return undefined;
+		if (!parsed || typeof parsed !== "object") return {};
+		const { error, message } = parsed as { error?: unknown; message?: unknown };
+		return {
+			error: typeof error === "string" ? sanitizeForLog(error) : undefined,
+			message: typeof message === "string" ? sanitizeForLog(message) : undefined,
+		};
 	} catch {
-		return undefined;
+		return {};
 	}
 }

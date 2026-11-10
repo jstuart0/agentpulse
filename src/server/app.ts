@@ -24,6 +24,7 @@ import { Hono } from "hono";
 import { logger } from "hono/logger";
 import { bridgeForwardauthSession } from "./auth/forwardauth-bridge.js";
 import { requireAuth } from "./auth/middleware.js";
+import { authOffRequestGate } from "./auth/request-origin.js";
 import { requireOperatorScope, requireRolePolicy } from "./auth/route-scope-policy.js";
 import { config } from "./config.js";
 import { securityHeaders } from "./middleware/security-headers.js";
@@ -65,6 +66,15 @@ app.use("*", logger());
 // and static-file responses carry the headers. HSTS is harmless on HTTP
 // (ignored by browsers) and covers the production TLS deployment.
 app.use("*", securityHeaders());
+// AGEN-92: with authentication off, refuse a Host that couldn't be an address
+// the user opened (DNS rebinding) and a browser request marked cross-site,
+// before any router runs, on every /api and /app-api path (unmatched ones
+// included). Mounted first so the bridge below never sees such a request.
+// auth-off-gate.test.ts walks every route to hold this. The WebSocket upgrade
+// never reaches the app: server-fetch.ts sends it to ws/ws-auth.ts, which
+// applies the same Host and Origin rules.
+app.use("/api/*", authOffRequestGate());
+app.use("/app-api/*", authOffRequestGate());
 // SSO session bridge — fires on every request, mints an ap_session cookie for
 // forwardauth-identified requests so /auth/me and WS resolve SSO identity via
 // the cookie step (Phase 4 / Decision 2). Must be BEFORE api.route() and the

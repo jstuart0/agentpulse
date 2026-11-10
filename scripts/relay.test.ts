@@ -1126,6 +1126,32 @@ describe("scope check, status file, sync gating (D10, D17)", () => {
 		expect(ctx.state.auth.missing).toEqual([]);
 	});
 
+	test("AGEN-92: a 403 bad_origin from /auth/me is announced once, naming the fix and the 24 h loss", async () => {
+		const R = await mod();
+		const stub = authStub({ error: "bad_origin", message: "refused" }, 403);
+		stops.push(stub.stop);
+		const lines: string[] = [];
+		const ctx = await makeCtx({ remote: stub.url, log: (line) => lines.push(line) });
+		await R.checkScopesTick(ctx);
+		await R.checkScopesTick(ctx);
+		const announced = lines.filter((l) =>
+			l.includes("refuses this address while authentication is off"),
+		);
+		expect(announced).toHaveLength(1);
+		expect(announced[0]).toContain(`add ${stub.url} to PUBLIC_URL`);
+		expect(lines.join("\n")).toContain("24 hours or 10,000 files");
+	});
+
+	test("a different 403 from /auth/me says nothing about the address", async () => {
+		const R = await mod();
+		const stub = authStub({ error: "insufficient_scope" }, 403);
+		stops.push(stub.stop);
+		const lines: string[] = [];
+		const ctx = await makeCtx({ remote: stub.url, log: (line) => lines.push(line) });
+		await R.checkScopesTick(ctx);
+		expect(lines.join("\n")).not.toContain("refuses this address");
+	});
+
 	test("observe without manage → uploads skipped with upload_disabled_missing_manage", async () => {
 		const R = await mod();
 		const cwd = join(tmp, "proj");

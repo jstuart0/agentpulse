@@ -7,6 +7,43 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Security
+
+- **With `DISABLE_AUTH=true`, the whole API now refuses DNS-rebinding pages and cross-site requests (AGEN-92).** Until now only a
+  few routes (stop turn, prompt, tool calls, approval decisions, take over) judged the Host, so a page on a name that resolves to
+  your machine could read every session and start a launch, and any website could post to `http://127.0.0.1:3000/api/v1/launches`
+  or `/hooks` with a `text/plain` body. One gate now runs first on every `/api` and `/app-api` request and answers
+  `403 { error: "bad_origin", message }` when the Host isn't `localhost`, an IP address or a `PUBLIC_URL` name, or when a browser
+  marks the request cross-site (`Sec-Fetch-Site: cross-site`, or an Origin that isn't allowlisted, the request's own, or a
+  loopback origin on the server's own port, or on Vite's 5173 outside production; the Origin's scheme must match the request's). Requests with no Origin and no `Sec-Fetch-Site` (curl, the relay, the supervisor, MCP, hooks) are judged by
+  Host only. Auth-on behaviour is unchanged. Still open, filed separately: outside production, a page on Vite's port 5173
+  is accepted as a loopback origin (AGEN-152); auth on, `POST /internal/drain` checks no Origin (AGEN-151); `/setup.sh` and the other install scripts are readable
+  by rebinding (AGEN-153). On a plain-http LAN server a cross-site GET sends no `Sec-Fetch-Site` or Origin and passes.
+
+### Changed
+
+- **⚠ breaking (auth off only): a server run with `DISABLE_AUTH=true` refuses every Host that isn't `localhost`, an IP address or
+  a name in `PUBLIC_URL`, and every cross-site browser request.** Opening the dashboard at `http://mybox.local:3000` now shows a
+  "This address isn't allowed" page. Fix: add the name to `PUBLIC_URL` and restart, or use an IP or `localhost` (README, "Opening
+  an auth-off server by name"). What else reaches the server by a name and stops until then:
+  - Claude HTTP hooks, Codex and Copilot hook shims and the OpenCode plugin installed with `--url http://<name>`. Events are
+    dropped silently. `agentpulse setup`, `setup-hooks.sh` and the `/setup.sh` script now check for this before writing anything.
+  - The relay with a `--url` by name: events stay queued, but a queued file is dropped after 24 hours or 10,000 files.
+    `setup-relay.sh` checks, and the relay logs the fix once.
+  - The supervisor with `AGENTPULSE_SERVER_URL` by name: registration retries forever, and its offline outbox ages out after 24
+    hours. It logs the server's message once.
+  - MCP with `AGENTPULSE_URL` by name (the error now says what to set).
+  - The Telegram webhook, if you set it through a name that is now refused: add the name to `PUBLIC_URL`, or open the dashboard at
+    an accepted address and press **Set webhook** again.
+  - Monitors that probe `/health` by service name (`http://agentpulse:3000/...`): probe by IP or `localhost`, or add the name.
+  - An IPv6 address with a zone id (`[fe80::1%25en0]`) is refused.
+  - A browser page on any other loopback port (`http://localhost:8080`, or Vite moved off 5173) is refused: list that origin in
+    `PUBLIC_URL`.
+  - A request with `Origin: null` (a `file://` page, a sandboxed or `data:` frame, a redirect-tainted request, some browser
+    extensions) is refused.
+  - By-IP and `localhost` setups, the Vite dev server (`http://localhost:5173`), and the dashboard on an accepted address are
+    unchanged. The Vite dev server's own `allowedHosts` must never be set to `true`.
+
 ### Added
 
 - **OpenCode is observed (AGEN-141).** OpenCode 1.x and 2.x sessions appear on the dashboard with an "OpenCode" badge and an

@@ -974,7 +974,8 @@ sessionsRouter.post("/sessions/:sessionId/stop", async (c: Context) => {
 /**
  * Stop turn (AGEN-119): ends what a continued Claude session is doing and keeps it open. It runs nothing, so a
  * `manage` key may press it as it may Stop; owner or admin in team mode. A foreign Origin is refused, and so is
- * (with authentication off) a Host that is neither loopback nor allowlisted. Six a minute per caller.
+ * (with authentication off) a Host that is not loopback, an IP address or allowlisted. Six a minute per caller. The
+ * app-level gate (AGEN-92) already refuses both; the checks here stay as a second line.
  */
 sessionsRouter.post("/sessions/:sessionId/interrupt", async (c: Context) => {
 	const foreign = refuseBadOrigin(c);
@@ -1017,8 +1018,8 @@ sessionsRouter.post("/sessions/:sessionId/interrupt", async (c: Context) => {
 
 /**
  * A prompt types into a running agent, so the request has to be the dashboard's own or a script's: a
- * foreign Origin is refused, with authentication off the Host must be a loopback address or an allowlisted
- * name (a page reached by DNS rebinding has Origin equal to Host; a browser always sends a Host, so only a
+ * foreign Origin is refused, with authentication off the Host must be a loopback address, an IP address or an allowlisted
+ * name, which the app-level gate (AGEN-92) also enforces first (a page reached by DNS rebinding has Origin equal to Host; a browser always sends a Host, so only a
  * request without one, which no page can make, is let through), and the body must be declared JSON
  * (a form post or `text/plain` from another page can't be). A client with a key and no Origin passes.
  */

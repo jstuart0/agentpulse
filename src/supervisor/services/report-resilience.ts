@@ -26,15 +26,47 @@ export class SupervisorRequestError extends Error {
 	readonly error?: string;
 	/** The server's `Retry-After`, in milliseconds (at most an hour), when it sent a usable one. */
 	readonly retryAfterMs?: number;
+	/** The body's own `message`, cleaned for a log line, when it had one. */
+	readonly serverMessage?: string;
 
-	constructor(status: number, statusText: string, error?: string, retryAfterMs?: number) {
+	constructor(
+		status: number,
+		statusText: string,
+		error?: string,
+		retryAfterMs?: number,
+		serverMessage?: string,
+	) {
 		super(`Supervisor request failed: ${status} ${statusText}`);
 		this.name = "SupervisorRequestError";
 		this.status = status;
 		this.statusText = statusText;
 		this.error = error;
 		this.retryAfterMs = retryAfterMs;
+		this.serverMessage = serverMessage;
 	}
+}
+
+let hostRefusalLogged = false;
+
+/**
+ * AGEN-92: an auth-off server answers 403 bad_origin to an address it doesn't accept. It is back-pressure
+ * (never the credential tripwire); the supervisor says what to fix once per process, in the server's words.
+ */
+export function noteHostRefusal(error: unknown): void {
+	if (hostRefusalLogged) return;
+	if (!(error instanceof SupervisorRequestError)) return;
+	if (error.status !== 403 || error.error !== "bad_origin") return;
+	hostRefusalLogged = true;
+	console.error(
+		`[supervisor] The server refused this host's address: ${
+			error.serverMessage ??
+			"With authentication off, AgentPulse answers only on localhost, an IP address, or a name listed in PUBLIC_URL."
+		} Use an IP address or localhost in AGENTPULSE_SERVER_URL, or add it to PUBLIC_URL on the server. Reports queue on disk for up to 24 hours.`,
+	);
+}
+
+export function __resetHostRefusalNoteForTests(): void {
+	hostRefusalLogged = false;
 }
 
 /**

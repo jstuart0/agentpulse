@@ -31,7 +31,7 @@
  */
 import { SCOPE_ALL } from "../auth/api-key.js";
 import { type AuthUser, getAuthUserFromHeaders } from "../auth/middleware.js";
-import { isAcceptedSocketOrigin } from "../auth/request-origin.js";
+import { isAcceptedSocketOrigin, schemeOfRequestUrl } from "../auth/request-origin.js";
 import { SCOPE_GRANTS, scopesIncludeManage } from "../auth/route-scope-policy.js";
 import { config } from "../config.js";
 import { WS_MAX_SOCKETS_PER_KEY, openSocketCountForKey } from "./handler.js";
@@ -177,11 +177,18 @@ export async function handleWsUpgradeRequest(
 	// is on the allowlist derived from PUBLIC_URL (comma-separated; dev setups:
 	// PUBLIC_URL=https://prod.example.com,http://localhost:5173) or is the
 	// request's own (its host and port equal the Host header) — with auth off,
-	// only for a loopback or allowlisted Host (see isAcceptedSocketOrigin). The
+	// only for a loopback, IP-literal or allowlisted Host (see isAcceptedSocketOrigin). The
 	// literal "null", no Host and foreign origins are refused. A request with no
 	// Origin at all is judged by guardWsUpgrade: only a Bearer `ap_` key passes.
 	const origin = req.headers.get("Origin");
-	if (origin && !isAcceptedSocketOrigin(origin, req.headers.get("Host") ?? undefined)) {
+	if (
+		origin &&
+		!isAcceptedSocketOrigin(
+			origin,
+			req.headers.get("Host") ?? undefined,
+			schemeOfRequestUrl(req.url),
+		)
+	) {
 		return new Response("Forbidden", { status: 403 });
 	}
 
