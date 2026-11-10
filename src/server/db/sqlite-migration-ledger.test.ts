@@ -612,20 +612,23 @@ describe("sqlite migration ledger: atomic, and cheap on the second boot", () => 
 		},
 	);
 
-	test("the effects are replayed once per process, and a database at the tail is not introspected", async () => {
-		migrationEffects(MIGRATIONS_DIR);
-		const replays = ledgerStats.replays;
-		migrationEffects(MIGRATIONS_DIR);
-		expect(ledgerStats.replays).toBe(replays);
+	itSqliteOnly(
+		"the effects are replayed once per process, and a database at the tail is not introspected",
+		async () => {
+			migrationEffects(MIGRATIONS_DIR);
+			const replays = ledgerStats.replays;
+			migrationEffects(MIGRATIONS_DIR);
+			expect(ledgerStats.replays).toBe(replays);
 
-		const db = track(await legacyBuiltDb());
-		legacy(db);
-		const introspections = ledgerStats.liveIntrospections;
-		const report = legacy(db);
-		expect(report.fastPath).toBe(true);
-		expect(ledgerStats.liveIntrospections).toBe(introspections);
-		expect(ledgerStats.replays).toBe(replays);
-	});
+			const db = track(await legacyBuiltDb());
+			legacy(db);
+			const introspections = ledgerStats.liveIntrospections;
+			const report = legacy(db);
+			expect(report.fastPath).toBe(true);
+			expect(ledgerStats.liveIntrospections).toBe(introspections);
+			expect(ledgerStats.replays).toBe(replays);
+		},
+	);
 });
 
 describe("sqlite migration ledger: what each entry owns", () => {
