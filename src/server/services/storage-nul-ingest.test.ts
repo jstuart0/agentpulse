@@ -36,7 +36,7 @@ const { supervisorsAgentRouter } = await import("../routes/supervisors.js");
 const { createSupervisorEnrollmentToken } = await import("../auth/supervisor-auth.js");
 const { deleteAllSupervisors } = await import("./__test_supervisors.js");
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
-const { buildPresentation } = await import("./codex-approval-presentation.js");
+const { buildPresentation, buildPreview } = await import("./codex-approval-presentation.js");
 const { commandReport } = await import("../test-utils/codex-approvals-harness.js");
 const { appendMessage, findOrCreateTelegramThread } = await import("./ask/ask-service.js");
 
@@ -444,8 +444,8 @@ describe("other writers", () => {
 			const [row] = await getDb().select().from(controlActions).where(eq(controlActions.id, id));
 			expect(row?.status).toBe("succeeded");
 			expect(row?.metadata).toEqual({ note: `a${MARK}b`, [`k${MARK}`]: FFFD });
-			// Host error text already goes through cleanHostText, which turns control characters into spaces.
-			expect(row?.error).toBe("bad thing");
+			// The body is repaired at the route, so the marker is in place before cleanHostText runs.
+			expect(row?.error).toBe(`bad${MARK}thing`);
 			expectStorable(row);
 		});
 
@@ -468,6 +468,103 @@ describe("other writers", () => {
 			expect(row?.providerLaunchMetadata).toEqual({ note: `a${MARK}`, [`k${MARK}`]: FFFD });
 			expectStorable(row);
 		});
+
+		test("(t) a registration body is repaired before it is stored", async () => {
+			const { token } = await createSupervisorEnrollmentToken(
+				`nul-${crypto.randomUUID()}`,
+				null,
+				null,
+			);
+			const res = await app.request("/api/v1/supervisors/register", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					hostName: "nul-host",
+					platform: `lin${NUL}ux`,
+					arch: "x64",
+					version: "1.0.0",
+					enrollmentToken: token,
+					id: crypto.randomUUID(),
+				}),
+			});
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as { supervisor: { platform: string } };
+			expect(body.supervisor.platform).toBe(`lin${MARK}ux`);
+		});
+
+		test("(u) an id or a state word that would need repair is refused, never repaired", async () => {
+			const sup = await supervisor();
+			const bad = async (path: string, body: unknown) => {
+				const res = await send(sup, path, body);
+				expect(res.status).toBe(400);
+				expect(await res.json()).toEqual({ error: "invalid_body" });
+			};
+			await bad("/managed-session-state", { sessionId: `ab${NUL}` });
+			await bad("/managed-session-state", { sessionId: "ok-session", status: `act${NUL}ive` });
+			await bad("/managed-session-state", { sessionId: "ok-session", launchRequestId: `l${LONE}` });
+			await bad("/launches/some-launch/status", { status: `run${NUL}ning` });
+			await bad("/control-actions/some-action/status", { status: "succeeded", id: `a${NUL}` });
+			// the two raw ids that would have collided after repair create nothing
+			const rows = await getDb()
+				.select()
+				.from(sessions)
+				.where(eq(sessions.sessionId, `ab${MARK}`));
+			expect(rows).toHaveLength(0);
+		});
+
+		test("(v) a path parameter that would need repair is refused", async () => {
+			const sup = await supervisor();
+			const res = await send(sup, "/control-actions/a%00b/status", { status: "succeeded" });
+			expect(res.status).toBe(400);
+			expect(await res.json()).toEqual({ error: "invalid_body" });
+		});
+
+		test("(w) launch status and control-action status carry the managed report body limit", async () => {
+			const sup = await supervisor();
+			const huge = { status: "running", metadata: { pad: "x".repeat(3 * 1024 * 1024) } };
+			for (const path of ["/launches/some-launch/status", "/control-actions/some-action/status"]) {
+				const res = await send(sup, path, huge);
+				expect(res.status).toBe(413);
+				expect(await res.json()).toEqual({ error: "payload_too_large" });
+			}
+		});
+
+		test("(x) a managed events delivery is repaired but its receipt comes from the raw body", async () => {
+			const sup = await supervisor();
+			const s = sid("x");
+			await getDb()
+				.insert(sessions)
+				.values({ sessionId: s, agentType: "claude_code", status: "active" });
+			await seedOwnedLaunch(s, sup.id);
+			const deliveryId = `del-${crypto.randomUUID()}`;
+			const body = JSON.stringify({
+				events: [
+					{ eventType: "ManagedAgentMessage", category: "assistant_message", content: `a${NUL}b` },
+				],
+			});
+			const post = () =>
+				app.request(`/api/v1/supervisors/${sup.id}/managed-sessions/${s}/events`, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: `Bearer ${sup.credential}`,
+						"X-AgentPulse-Delivery-Id": deliveryId,
+					},
+					body,
+				});
+			expect((await post()).status).toBeLessThan(300);
+			expect((await post()).status).toBeLessThan(300);
+			const rows = await rowsOf(s);
+			expect(rows.map((r) => r.content)).toEqual([`a${MARK}b`]);
+		});
+	});
+
+	test("(y) the approval preview's tail cut never starts on a low surrogate", () => {
+		const command = `a\u{1F600}${"b".repeat(1199)}`;
+		const lines = buildPreview(
+			buildPresentation(commandReport({ command })).presentation,
+		).lastLines;
+		expect(lines).toBe("b".repeat(1199));
 	});
 
 	test("(r) Ask: message content, error text and a thread title cut inside a pair", async () => {

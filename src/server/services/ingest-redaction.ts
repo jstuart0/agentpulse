@@ -128,7 +128,7 @@ export interface IngestRedactionCounters {
 	maxSliceMs: number;
 	/** Transcript-sync batches whose insert threw and were skipped (the cursor moves on). */
 	transcriptSyncInsertFailed: number;
-	/** Strings and keys whose U+0000 or lone surrogate was replaced before storage (AGEN-39). */
+	/** Distinct strings and keys, counted once per walk, whose U+0000 or lone surrogate was replaced before storage (AGEN-39). */
 	storageTextFixed: number;
 }
 

@@ -105,7 +105,7 @@ export function computeClientChecksums(): Promise<Record<string, string>> {
 //    the way into storage (pendingUnits, pendingJobs, unitsScanned, hits,
 //    cutLeaves, backlogMarkers, errors, idsDropped, sessionIdRefused,
 //    maxSliceMs, transcriptSyncInsertFailed, storageTextFixed (AGEN-39:
-//    strings and keys whose U+0000 or lone surrogate was replaced)) — see
+//    distinct strings and keys, per walk, whose U+0000 or lone surrogate was replaced)) — see
 //    services/ingest-redaction.ts.
 //  - searchIndexes (AGEN-27 / percy TB17): Postgres trigram search-index
 //    presence ({ present, missing[] }), checked once at boot; null on

@@ -38,6 +38,15 @@ export function cutText(text: string, max: number): string {
 	return text.slice(0, end);
 }
 
+/** The last `max` units, never starting on a low surrogate. */
+export function cutTextTail(text: string, max: number): string {
+	if (text.length <= max) return text;
+	let start = text.length - max;
+	const first = text.charCodeAt(start);
+	if (first >= 0xdc00 && first <= 0xdfff) start++;
+	return text.slice(start);
+}
+
 interface BoundState {
 	nodes: number;
 	maxDepth: number;
@@ -55,10 +64,11 @@ function defineOwn(target: Record<string, unknown>, key: string, value: unknown)
 }
 
 function boundedWalk(value: unknown, depth: number, state: BoundState): unknown {
+	// Every value counts, scalars too: a flat array of a million numbers is out of reach of the rule otherwise.
+	if (++state.nodes > state.maxNodes) return STORAGE_TOO_LARGE_MARKER;
 	if (typeof value === "string") return wellFormedText(value);
 	if (value === null || typeof value !== "object") return value;
 	if (depth >= state.maxDepth) return STORAGE_TOO_DEEP_MARKER;
-	if (++state.nodes > state.maxNodes) return STORAGE_TOO_LARGE_MARKER;
 	if (Array.isArray(value)) {
 		let out: unknown[] | null = null;
 		for (let i = 0; i < value.length; i++) {
@@ -87,7 +97,7 @@ function boundedWalk(value: unknown, depth: number, state: BoundState): unknown 
 /**
  * A JSON-shaped value with every string and every key made well formed, copied only where
  * something changed (the same reference otherwise). A subtree deeper than `maxDepth` becomes
- * `[STORAGE:too_deep]` and the rest past `maxNodes` objects becomes `[STORAGE:too_large]`, so a
+ * `[STORAGE:too_deep]` and the rest past `maxNodes` values (scalars included) becomes `[STORAGE:too_large]`, so a
  * hostile body can't put the rule out of reach. Not a redaction: it leaves secrets alone.
  */
 export function boundedWellFormedValue<T>(

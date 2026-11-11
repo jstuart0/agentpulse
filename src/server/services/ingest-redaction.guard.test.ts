@@ -173,6 +173,35 @@ describe("storable text (AGEN-39)", () => {
 		expect(read("server/services/event-normalizer.ts")).not.toMatch(/\.slice\(0,/);
 	});
 
+	test("every supervisor agent POST reads its body through the one bounded well-formed pass", () => {
+		const source = read("server/routes/supervisors.ts");
+		const start = source.indexOf("const supervisorsAgentRouter");
+		const end = source.indexOf("export { supervisorsAgentRouter");
+		expect(start).toBeGreaterThanOrEqual(0);
+		const agent = source.slice(start, end);
+		const blocks = agent
+			.split(/(?=supervisorsAgentRouter\.post\()/)
+			.filter((b) => b.startsWith("supervisorsAgentRouter.post("));
+		expect(blocks.length).toBeGreaterThanOrEqual(11);
+		// routes that take no body at all
+		const bodyless = ["/supervisors/:id/launches/claim", "/supervisors/:id/control-actions/claim"];
+		for (const block of blocks) {
+			const path = block.match(/post\(\s*"([^"]+)"/)?.[1] ?? "";
+			if (path.includes(":"))
+				expect(block, `${path} checks its path parameters`).toContain("wellFormedPathParams");
+			if (bodyless.includes(path)) continue;
+			expect(block, `${path} reads its body through the bounded pass`).toMatch(
+				/parseJsonObject\(|readHeartbeatBody\(/,
+			);
+			expect(block, `${path} doesn't parse the body on its own`).not.toMatch(/c\.req\.json\(/);
+		}
+		// the pass itself, and the receipts staying on raw text
+		expect(source).toMatch(/function parseJsonObject[\s\S]{0,800}boundedWellFormedValue\(/);
+		expect(read("server/services/supervisor-exclude-state.ts")).toContain(
+			"boundedWellFormedValue(",
+		);
+	});
+
 	test("every writer of host or agent text imports the one storage rule", () => {
 		for (const file of [
 			"server/services/ingest-redaction.ts",

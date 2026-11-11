@@ -3,6 +3,7 @@ import {
 	STORAGE_NUL_MARKER,
 	boundedWellFormedValue,
 	cutText,
+	cutTextTail,
 	wellFormedText,
 } from "./storage-text.js";
 
@@ -52,6 +53,14 @@ describe("cutText", () => {
 	});
 });
 
+describe("cutTextTail", () => {
+	test("never starts on a low surrogate", () => {
+		expect(cutTextTail("\u{1F600}x", 2)).toBe("x");
+		expect(cutTextTail("a\u{1F600}x", 3)).toBe("\u{1F600}x");
+		expect(cutTextTail("abc", 10)).toBe("abc");
+	});
+});
+
 describe("boundedWellFormedValue", () => {
 	test("fixes strings and keys, keeps order, copies only what changed", () => {
 		const clean = { a: "x", b: [1, "y", { c: null }] };
@@ -87,6 +96,21 @@ describe("boundedWellFormedValue", () => {
 		expect(depth).toBe(64);
 	});
 
+	test("a flat array of a million scalars hits the node bound", () => {
+		const flat = Array.from({ length: 1_000_000 }, (_, i) => i);
+		const out = boundedWellFormedValue(flat) as unknown[];
+		expect(out).toHaveLength(1_000_000);
+		expect(out[0]).toBe(0);
+		expect(out[199_998]).toBe(199_998);
+		expect(out[199_999]).toBe("[STORAGE:too_large]");
+		expect(out[999_999]).toBe("[STORAGE:too_large]");
+		const flatObject = boundedWellFormedValue({ a: "x", b: 1, c: null }, { maxNodes: 3 }) as Record<
+			string,
+			unknown
+		>;
+		expect(flatObject.c).toBe("[STORAGE:too_large]");
+	});
+
 	test("past the node bound the rest becomes a marker", () => {
 		const out = boundedWellFormedValue([{}, {}, {}, {}], { maxNodes: 4 }) as unknown[];
 		expect(out[2]).toEqual({});
@@ -95,7 +119,7 @@ describe("boundedWellFormedValue", () => {
 
 	test("timing: a clean 200k-node object stays cheap", () => {
 		const o: Record<string, unknown> = {};
-		for (let i = 0; i < 50_000; i++) o[`key${i}`] = { a: `hello ${i}`, b: [1, "x", { c: "d" }] };
+		for (let i = 0; i < 20_000; i++) o[`key${i}`] = { a: `hello ${i}`, b: [1, "x", { c: "d" }] };
 		const start = performance.now();
 		expect(boundedWellFormedValue(o)).toBe(o);
 		expect(performance.now() - start).toBeLessThan(250);

@@ -24,7 +24,7 @@ import {
 	type NotApprovableReason,
 } from "../../shared/codex-approvals.js";
 import { stripAndRedact } from "./ai/redactor.js";
-import { cutText, wellFormedText } from "./storage-text.js";
+import { cutText, cutTextTail, wellFormedText } from "./storage-text.js";
 import { sha256Hex } from "./util/hash.js";
 
 /** Stable JSON: keys sorted at every depth, so the same value always hashes the same. */
@@ -401,7 +401,7 @@ const NON_ASCII_RE = /\P{ASCII}/u;
 function lastLinesOf(text: string, count: number, maxChars: number): string {
 	const lines = text.split("\n");
 	const tail = lines.slice(Math.max(0, lines.length - count)).join("\n");
-	return tail.length > maxChars ? tail.slice(tail.length - maxChars) : tail;
+	return cutTextTail(tail, maxChars);
 }
 
 function isInside(path: string, cwd: string): boolean {
