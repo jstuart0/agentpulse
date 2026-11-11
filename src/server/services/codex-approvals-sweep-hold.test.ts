@@ -20,12 +20,15 @@ const { recordApprovalRequest, sweepApprovals, _resetApprovalWaitRepairForTest }
 );
 const { updateStaleSessions } = await import("./session-tracker.js");
 const { processHookEvent } = await import("./event-processor.js");
-const { upsertManagedSessionState } = await import("./managed-session-state.js");
+const { upsertManagedSessionState, _setBeforeReplayStatusHookForTest } = await import(
+	"./managed-session-state.js"
+);
 
 beforeAll(() => initializeDatabase());
 const used: string[] = [];
 const hosts: string[] = [];
 afterEach(async () => {
+	_setBeforeReplayStatusHookForTest(null);
 	await harness.cleanApprovalFixtures(used.splice(0), hosts.splice(0));
 	_resetApprovalWaitRepairForTest();
 });
@@ -219,14 +222,6 @@ describe("an approval opening on a session the sweep completed reopens it", () =
 	});
 
 	const stays: [string, SeedOptions][] = [
-		[
-			"a hook SessionEnd ended it (endedByEvent)",
-			{
-				status: "completed",
-				managedState: "managed",
-				metadata: { endedByEvent: { at: new Date().toISOString() } },
-			},
-		],
 		["the host's managed state is stopped", { status: "completed", managedState: "stopped" }],
 		["the session failed", { status: "failed", managedState: "managed" }],
 	];
@@ -239,6 +234,20 @@ describe("an approval opening on a session the sweep completed reopens it", () =
 			expect(row.endedAt === null).toBe(options.status === "failed");
 		});
 	}
+
+	test("8. a SessionEnd that landed first doesn't keep it ended: reopened, and the latch is lifted", async () => {
+		const { sessionId, supervisorId } = await seed({
+			status: "completed",
+			managedState: "managed",
+			metadata: { endedByEvent: { at: new Date().toISOString() } },
+		});
+		await recordApprovalRequest(supervisorId, sessionId, report());
+		const row = await sessionRow(sessionId);
+		expect(row.status).toBe("active");
+		expect(row.endedAt).toBeNull();
+		expect((row.metadata as Record<string, unknown>).endedByEvent).toBeUndefined();
+		expect(await operational(sessionId)).toBe("waiting");
+	});
 
 	test("8. stays archived", async () => {
 		const { sessionId, supervisorId } = await seed({
@@ -270,6 +279,39 @@ describe("a hook SessionEnd doesn't end a session that holds an approval wait", 
 		expect((row.metadata as Record<string, unknown>).endedByEvent).toBeUndefined();
 	});
 
+	test("9. fenced by the open row alone, before its wait id is written", async () => {
+		const { sessionId, rowId } = await seed({
+			status: "active",
+			quietMs: MIN,
+			row: { status: "pending", expiresAt: fromNow(10 * MIN) },
+		});
+		await getDb().update(sessions).set({ metadata: {} }).where(eq(sessions.sessionId, sessionId));
+		expect(rowId).not.toBeNull();
+		await processHookEvent(hook(sessionId, "SessionEnd"), "codex_cli");
+		const row = await sessionRow(sessionId);
+		expect(row.status).not.toBe("completed");
+		expect(row.endedAt).toBeNull();
+		expect((row.metadata as Record<string, unknown>).endedByEvent).toBeUndefined();
+	});
+
+	test("9. a fenced SessionEnd still ends the turn: the working flag clears", async () => {
+		const { sessionId } = await seed({
+			status: "active",
+			isWorking: true,
+			quietMs: MIN,
+			row: { status: "pending", expiresAt: fromNow(10 * MIN) },
+		});
+		await getDb()
+			.update(sessions)
+			.set({ currentTurnStartedAt: ago(MIN) })
+			.where(eq(sessions.sessionId, sessionId));
+		await processHookEvent(hook(sessionId, "SessionEnd"), "codex_cli");
+		const row = await sessionRow(sessionId);
+		expect(row.isWorking).toBe(false);
+		expect(row.currentTurnStartedAt).toBeNull();
+		expect(row.status).not.toBe("completed");
+	});
+
 	test("9. control: the same hook with no approval wait completes the session", async () => {
 		const { sessionId } = await seed({ status: "active", quietMs: MIN });
 		await processHookEvent(hook(sessionId, "SessionEnd"), "codex_cli");
@@ -293,7 +335,7 @@ describe("a replayed terminal report doesn't complete a session with an open row
 				.where(eq(managedSessions.sessionId, sessionId))
 		)[0]?.state;
 
-	test("10. replay with an open row: the session keeps its status, the managed row ends", async () => {
+	test("10. replay with an open row: the session keeps its status and the managed row stays live", async () => {
 		const { sessionId, supervisorId } = await seed({
 			status: "active",
 			quietMs: MIN,
@@ -301,7 +343,34 @@ describe("a replayed terminal report doesn't complete a session with an open row
 		});
 		await upsertManagedSessionState(supervisorId, terminal(sessionId), { replay: true });
 		expect((await sessionRow(sessionId)).status).toBe("active");
-		expect(await managedState(sessionId)).toBe("completed");
+		expect(await managedState(sessionId)).toBe("managed");
+	});
+
+	test("10. an approval committed after the report began, before its status write, is still seen", async () => {
+		const { sessionId, supervisorId } = await seed({ status: "active", quietMs: MIN });
+		_setBeforeReplayStatusHookForTest(async () => {
+			await getDb()
+				.insert(codexApprovals)
+				.values({
+					sessionId,
+					runtimeEpoch: "e",
+					rpcId: "late",
+					requestKind: "command",
+					threadId: "t",
+					turnId: "t",
+					itemId: "i",
+					presentationHash: "h",
+					presentationRevision: 1,
+					approvable: true,
+					status: "pending",
+					createdAt: ago(0),
+					updatedAt: ago(0),
+					expiresAt: fromNow(10 * MIN),
+				});
+		});
+		await upsertManagedSessionState(supervisorId, terminal(sessionId), { replay: true });
+		expect((await sessionRow(sessionId)).status).toBe("active");
+		expect(await managedState(sessionId)).toBe("managed");
 	});
 
 	test("10. control: a replay with no open row completes the session", async () => {

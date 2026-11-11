@@ -1,5 +1,9 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { APPROVAL_WAIT_ID_PREFIX, approvalWaitId } from "../../shared/codex-approvals.js";
+import {
+	APPROVAL_WAIT_ID_PREFIX,
+	OPEN_APPROVAL_STATUSES,
+	approvalWaitId,
+} from "../../shared/codex-approvals.js";
 import { AGENT_TYPES, SEMANTIC_STATUSES } from "../../shared/constants.js";
 import type {
 	AgentType,
@@ -11,7 +15,13 @@ import type {
 import { LIVE_MANAGED_STATES } from "../../shared/types.js";
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
-import { events, managedDeliveryReceipts, managedSessions, sessions } from "../db/schema/index.js";
+import {
+	events,
+	codexApprovals,
+	managedDeliveryReceipts,
+	managedSessions,
+	sessions,
+} from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import {
 	incrementForkHookDropped,
@@ -936,11 +946,19 @@ export async function applyApprovalWait(
 					.update(sessions)
 					.set({ metadata, semanticStatus: "waiting" })
 					.where(eq(sessions.sessionId, sessionId));
-				// The sweep can complete a session whose host went quiet before this approval arrived; the card
-				// is answerable, so the session reads WAITING again (AGEN-94). A hook's SessionEnd (the
-				// endedByEvent latch), a failed or archived row and a host that reported the end stay ended.
-				if (row.status === "completed" && !metadata.endedByEvent)
-					await reopenSweptSession(tx, sessionId);
+				// A session completed before this approval arrived (the sweep, or a hook's SessionEnd that
+				// landed first) is answerable again, so it reads WAITING (AGEN-94). A failed or archived
+				// session and one whose host reported the end stay ended. The row is the host's own report, so
+				// reopening on it can't be forged by a hook; a SessionEnd's latch is lifted with it.
+				if (row.status === "completed" && (await reopenSweptSession(tx, sessionId))) {
+					if (metadata.endedByEvent) {
+						const { endedByEvent: _latch, ...rest } = metadata;
+						await tx
+							.update(sessions)
+							.set({ metadata: rest })
+							.where(eq(sessions.sessionId, sessionId));
+					}
+				}
 				return;
 			}
 
@@ -958,8 +976,8 @@ export async function applyApprovalWait(
 
 /** One guarded write: a completed, unarchived session whose managed process is still live goes back to active. */
 // biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
-async function reopenSweptSession(tx: any, sessionId: string) {
-	await tx
+async function reopenSweptSession(tx: any, sessionId: string): Promise<boolean> {
+	const reopened = await tx
 		.update(sessions)
 		.set({ status: "active", endedAt: null })
 		.where(
@@ -969,7 +987,25 @@ async function reopenSweptSession(tx: any, sessionId: string) {
 				eq(sessions.isArchived, false),
 				sql`EXISTS (SELECT 1 FROM ${managedSessions} WHERE ${managedSessions.sessionId} = ${sessions.sessionId} AND ${inArray(managedSessions.managedState, [...LIVE_MANAGED_STATES])})`,
 			),
-		);
+		)
+		.returning({ sessionId: sessions.sessionId });
+	return reopened.length > 0;
+}
+
+/** An approval row that can still be answered, read inside the caller's transaction. */
+// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+async function hasOpenApprovalRow(tx: any, sessionId: string): Promise<boolean> {
+	const rows = await tx
+		.select({ id: codexApprovals.id })
+		.from(codexApprovals)
+		.where(
+			and(
+				eq(codexApprovals.sessionId, sessionId),
+				inArray(codexApprovals.status, [...OPEN_APPROVAL_STATUSES]),
+			),
+		)
+		.limit(1);
+	return rows.length > 0;
 }
 
 /** What a reconcile pass changed for one session. */
@@ -1553,21 +1589,32 @@ export async function processHookEvent(
 			// A resumed session is not ended by a hook (D14): the real end of a taken-over session comes from
 			// the host's reports. Stored, with no lifecycle effect and no latch.
 			// Nor is a session that holds an approval wait (AGEN-94): the card is still answerable.
-			if (
+			// The row is read, not just the derived wait: the wait is written a moment after the row commits.
+			const resumed = eventType === "SessionEnd" && Boolean(freshMetadata.managedResumeAt);
+			const holdsApproval =
 				eventType === "SessionEnd" &&
-				(freshMetadata.managedResumeAt ||
-					hasApprovalWaitIds(
-						(freshMetadata.permissionWait as PermissionWaitState | undefined)?.ids,
-					))
-			) {
+				!resumed &&
+				(hasApprovalWaitIds(
+					(freshMetadata.permissionWait as PermissionWaitState | undefined)?.ids,
+				) ||
+					(await hasOpenApprovalRow(tx, sessionId)));
+			if (resumed || holdsApproval) {
 				const {
 					status: _s,
 					endedAt: _e,
 					isWorking: _w,
 					currentTurnStartedAt: _t,
 					metadata: _m,
-					...kept
+					...rest
 				} = updates;
+				// A held end still ends the turn: the working flag clears, only the lifecycle waits (AGEN-94).
+				const kept = holdsApproval
+					? {
+							...rest,
+							isWorking: updates.isWorking,
+							currentTurnStartedAt: updates.currentTurnStartedAt,
+						}
+					: rest;
 				await tx.update(sessions).set(kept).where(eq(sessions.sessionId, sessionId));
 				return true;
 			}
