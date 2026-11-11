@@ -233,6 +233,31 @@ export function isLoopbackOrigin(origin: string): boolean {
 }
 
 /**
+ * True when a request carries any header a browser adds on its own: `Origin`
+ * (any value, `null` and the empty string included) or any `Sec-Fetch-Site`,
+ * `-Mode` or `-Dest`. Browsers send `Origin` on every POST and fetch-metadata
+ * browsers send the others, so a request with none of them did not come from
+ * a page. Used where no browser may ever reach a route (`/internal`).
+ */
+export function hasBrowserRequestSignal(get: (name: string) => string | undefined): boolean {
+	return ["Origin", "Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest"].some(
+		(name) => get(name) !== undefined,
+	);
+}
+
+/**
+ * True when a request declares a body type other than `application/json`
+ * (parameters and case ignored). A form post or a no-cors fetch from a page
+ * can only carry `application/x-www-form-urlencoded`, `multipart/form-data` or
+ * `text/plain`, even from a browser that sends no `Origin`. A caller with no
+ * body sends no Content-Type at all, which is false here.
+ */
+export function hasNonJsonContentType(contentType: string | undefined): boolean {
+	if (contentType === undefined) return false;
+	return (contentType.split(";")[0] ?? "").trim().toLowerCase() !== "application/json";
+}
+
+/**
  * Which Origins may open the live-update socket. The configured allowlist is
  * accepted. Beyond it an Origin equal to the request's own is accepted too, so
  * an install reached on another address still gets live updates, but with

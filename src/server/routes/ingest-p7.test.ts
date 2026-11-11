@@ -24,6 +24,9 @@ const { initializeDatabase } = await import("../db/client.js");
 const { health } = await import("./health.js");
 const { ingest } = await import("./ingest.js");
 const { internalRouter } = await import("./internal.js");
+const { hasBrowserRequestSignal, hasNonJsonContentType } = await import(
+	"../auth/request-origin.js"
+);
 const { _resetBucketsForTest, hookRateLimit } = await import("../middleware/hook-rate-limit.js");
 const { _resetCountersForTest, getRateLimitedDropped } = await import("./ingest-counters.js");
 const { _resetDrainStateForTest, isShuttingDown, setShuttingDown } = await import(
@@ -215,6 +218,138 @@ describe("POST /api/v1/internal/drain", () => {
 		expect(res.status).toBe(403);
 		expect(isShuttingDown()).toBe(false);
 	});
+});
+
+// ── Drain endpoint — browser requests ─────────────────────────────────────────
+
+describe("POST /api/v1/internal/drain: browser requests", () => {
+	const originalPublicUrl = process.env.PUBLIC_URL;
+
+	afterEach(() => {
+		config.disableAuth = true;
+		if (originalPublicUrl === undefined) {
+			// biome-ignore lint/performance/noDelete: restoring an absent env var
+			delete process.env.PUBLIC_URL;
+		} else {
+			process.env.PUBLIC_URL = originalPublicUrl;
+		}
+	});
+
+	const refused: Array<[string, Record<string, string>]> = [
+		["a foreign Origin", { Host: "127.0.0.1:3000", Origin: "https://attacker.example" }],
+		["Origin: null", { Host: "127.0.0.1:3000", Origin: "null" }],
+		[
+			"DNS rebinding (Origin equals Host)",
+			{ Host: "attacker.example:3000", Origin: "http://attacker.example:3000" },
+		],
+		["a same-origin Origin", { Host: "127.0.0.1:3000", Origin: "http://127.0.0.1:3000" }],
+		["an allowlisted Origin", { Host: "127.0.0.1:3000", Origin: "https://ap.example.test" }],
+		["Sec-Fetch-Site: cross-site", { Host: "127.0.0.1:3000", "Sec-Fetch-Site": "cross-site" }],
+		["Sec-Fetch-Site: same-site", { Host: "127.0.0.1:3000", "Sec-Fetch-Site": "same-site" }],
+		["Sec-Fetch-Site: same-origin", { Host: "127.0.0.1:3000", "Sec-Fetch-Site": "same-origin" }],
+		["Sec-Fetch-Site: none", { Host: "127.0.0.1:3000", "Sec-Fetch-Site": "none" }],
+		["only Sec-Fetch-Mode: no-cors", { Host: "127.0.0.1:3000", "Sec-Fetch-Mode": "no-cors" }],
+		["only Sec-Fetch-Dest: empty", { Host: "127.0.0.1:3000", "Sec-Fetch-Dest": "empty" }],
+	];
+
+	for (const authOff of [false, true]) {
+		const mode = authOff ? "auth off" : "auth on";
+
+		test(`${mode}: the preStop shape (no Origin, no Sec-Fetch) drains`, async () => {
+			config.disableAuth = authOff;
+			const app = buildLoopbackDrainApp("127.0.0.1");
+			const res = await app.request("/api/v1/internal/drain", {
+				method: "POST",
+				headers: { Host: "127.0.0.1:3000" },
+			});
+			expect(res.status).toBe(200);
+			expect(isShuttingDown()).toBe(true);
+		});
+
+		for (const [label, headers] of refused) {
+			test(`${mode}: refuses ${label}`, async () => {
+				config.disableAuth = authOff;
+				process.env.PUBLIC_URL = "https://ap.example.test";
+				const app = buildLoopbackDrainApp("127.0.0.1");
+				const res = await app.request("/api/v1/internal/drain", { method: "POST", headers });
+				expect(res.status).toBe(403);
+				expect(await res.json()).toEqual({ error: "bad_origin" });
+				expect(isShuttingDown()).toBe(false);
+			});
+		}
+
+		for (const type of [
+			"application/x-www-form-urlencoded",
+			"multipart/form-data; boundary=x",
+			"text/plain",
+			"TEXT/PLAIN;charset=UTF-8",
+		]) {
+			test(`${mode}: refuses no Origin with Content-Type ${type}`, async () => {
+				config.disableAuth = authOff;
+				const app = buildLoopbackDrainApp("127.0.0.1");
+				const res = await app.request("/api/v1/internal/drain", {
+					method: "POST",
+					headers: { Host: "127.0.0.1:3000", "Content-Type": type },
+					body: "a=b",
+				});
+				expect(res.status).toBe(403);
+				expect(await res.json()).toEqual({ error: "bad_origin" });
+				expect(isShuttingDown()).toBe(false);
+			});
+		}
+
+		test(`${mode}: application/json with no Origin drains`, async () => {
+			config.disableAuth = authOff;
+			const app = buildLoopbackDrainApp("127.0.0.1");
+			const res = await app.request("/api/v1/internal/drain", {
+				method: "POST",
+				headers: { Host: "127.0.0.1:3000", "Content-Type": "Application/JSON; charset=utf-8" },
+				body: "{}",
+			});
+			expect(res.status).toBe(200);
+			expect(isShuttingDown()).toBe(true);
+		});
+
+		test(`${mode}: GET with no headers does not drain`, async () => {
+			config.disableAuth = authOff;
+			const app = buildLoopbackDrainApp("127.0.0.1");
+			const res = await app.request("/api/v1/internal/drain", { method: "GET" });
+			expect(res.status).not.toBe(200);
+			expect(isShuttingDown()).toBe(false);
+		});
+
+		test(`${mode}: GET with an Origin is refused by the router-wide gate`, async () => {
+			config.disableAuth = authOff;
+			const app = buildLoopbackDrainApp("127.0.0.1");
+			const res = await app.request("/api/v1/internal/drain", {
+				method: "GET",
+				headers: { Origin: "https://attacker.example" },
+			});
+			expect(res.status).toBe(403);
+			expect(await res.json()).toEqual({ error: "bad_origin" });
+		});
+	}
+
+	test("hasBrowserRequestSignal: none of the four headers is false", () => {
+		expect(hasBrowserRequestSignal(() => undefined)).toBe(false);
+	});
+
+	test("hasNonJsonContentType: absent and JSON are false, anything else true", () => {
+		expect(hasNonJsonContentType(undefined)).toBe(false);
+		expect(hasNonJsonContentType("application/json")).toBe(false);
+		expect(hasNonJsonContentType(" Application/JSON ;charset=utf-8")).toBe(false);
+		expect(hasNonJsonContentType("text/plain")).toBe(true);
+		expect(hasNonJsonContentType("")).toBe(true);
+	});
+
+	for (const name of ["Origin", "Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest"]) {
+		test(`hasBrowserRequestSignal: ${name} alone is true, empty string included`, () => {
+			const only = (value: string) => (n: string) =>
+				n.toLowerCase() === name.toLowerCase() ? value : undefined;
+			expect(hasBrowserRequestSignal(only("x"))).toBe(true);
+			expect(hasBrowserRequestSignal(only(""))).toBe(true);
+		});
+	}
 });
 
 // ── Always-200 post-auth contract ─────────────────────────────────────────────

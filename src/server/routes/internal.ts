@@ -18,6 +18,22 @@
  * 07-ingressroute.yaml, providing defense-in-depth even if the loopback
  * check were somehow bypassed.
  *
+ * Browsers: no request a browser sends may reach any route here, with auth on
+ * or off. A page on any site can POST to http://127.0.0.1:<port>; the browser
+ * runs on this machine, so the peer is loopback. Browsers always add `Origin`
+ * to a POST and fetch-metadata browsers add `Sec-Fetch-*`; the one legitimate
+ * caller (the preStop hook, Bun's fetch) sends none of them. So the router
+ * refuses any request carrying one of those headers, whatever its value.
+ * A browser that sends neither (an old Firefox with the Origin header turned
+ * off) is still caught: a form post or no-cors fetch always carries a
+ * Content-Type of form-urlencoded, multipart or text/plain, so any
+ * Content-Type other than application/json is refused too. The preStop call
+ * has no body and sends no Content-Type.
+ * `refuseBadOrigin` is deliberately not used: it accepts Origin equal to Host
+ * with auth on, which a DNS-rebinding page satisfies. No Host check is added:
+ * a rebinding page still sends Origin and is refused, and a non-browser
+ * process on loopback can set any Host anyway.
+ *
  * NetworkPolicy implication: even a compromised sibling pod cannot trigger
  * drain because its peer address is not loopback. The restriction is
  * enforced at the TCP layer by the Bun server before any handler runs.
@@ -25,10 +41,42 @@
 
 import { Hono } from "hono";
 import { getConnInfo } from "hono/bun";
+import { hasBrowserRequestSignal, hasNonJsonContentType } from "../auth/request-origin.js";
 import { setShuttingDown } from "../drain-state.js";
 import { getInFlightCount } from "./ingest-counters.js";
 
 const internalRouter = new Hono();
+
+const BROWSER_REFUSAL_LOG_INTERVAL_MS = 60_000;
+let lastBrowserRefusalLogAt = 0;
+let suppressedBrowserRefusals = 0;
+
+// Registered before every route so any method and any future route inherits it.
+// The Origin value is never logged, and one line a minute at most, so a hostile
+// page can't flood the log.
+internalRouter.use("*", async (c, next) => {
+	if (
+		!hasBrowserRequestSignal((name) => c.req.header(name)) &&
+		!hasNonJsonContentType(c.req.header("Content-Type"))
+	) {
+		return next();
+	}
+	const now = Date.now();
+	if (now - lastBrowserRefusalLogAt >= BROWSER_REFUSAL_LOG_INTERVAL_MS) {
+		console.warn(
+			JSON.stringify({
+				kind: "internal_rejected_browser",
+				level: "warn",
+				suppressed: suppressedBrowserRefusals,
+			}),
+		);
+		lastBrowserRefusalLogAt = now;
+		suppressedBrowserRefusals = 0;
+	} else {
+		suppressedBrowserRefusals++;
+	}
+	return c.json({ error: "bad_origin" }, 403);
+});
 
 // POST /api/v1/internal/drain
 //
