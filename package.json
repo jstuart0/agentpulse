@@ -1,6 +1,6 @@
 {
 	"name": "agentpulse",
-	"version": "0.10.0",
+	"version": "0.11.0",
 	"description": "Open-source, self-hosted dashboard to monitor, orchestrate and remotely control Claude Code and Codex CLI sessions, and observe Copilot CLI and OpenCode, across all your machines",
 	"homepage": "https://jstuart0.github.io/agentpulse/",
 	"type": "module",
