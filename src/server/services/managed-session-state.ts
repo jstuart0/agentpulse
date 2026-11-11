@@ -1,4 +1,5 @@
 import { and, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { OPEN_APPROVAL_STATUSES } from "../../shared/codex-approvals.js";
 import {
 	HOST_RESTARTED_FORK_SYNC_ERROR,
 	HOST_RESTARTED_SYNC_ERROR,
@@ -17,6 +18,7 @@ import type {
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
 import {
+	codexApprovals,
 	controlActions,
 	launchRequests,
 	managedSessions,
@@ -256,6 +258,21 @@ export function peerTurnRecord(
 	return changed ? { text: null, hidden: true, at } : { text: cleaned, hidden: false, at };
 }
 
+// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+async function hasOpenApprovalRow(tx: any, sessionId: string): Promise<boolean> {
+	const rows = await tx
+		.select({ id: codexApprovals.id })
+		.from(codexApprovals)
+		.where(
+			and(
+				eq(codexApprovals.sessionId, sessionId),
+				inArray(codexApprovals.status, [...OPEN_APPROVAL_STATUSES]),
+			),
+		)
+		.limit(1);
+	return rows.length > 0;
+}
+
 async function writeManagedSessionState(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	db: any,
@@ -351,6 +368,17 @@ async function writeManagedSessionState(
 	} else {
 		await inTransactionOf(db, inTx, async (tx) => {
 			const updates: Record<string, unknown> = { ...sessionUpdates };
+			// A replayed terminal report may be older than an approval row that is still open, and a live
+			// terminal report is the one that closes rows. Until the rows close the session keeps its status
+			// (AGEN-94); the managed row below still records the end.
+			if (
+				options.replay === true &&
+				isTerminalStateReport(input) &&
+				(await hasOpenApprovalRow(tx, input.sessionId))
+			) {
+				// biome-ignore lint/performance/noDelete: the key must be absent, not undefined, so the column isn't written
+				delete updates.status;
+			}
 			const latch = await claudeStopLatchChange(
 				tx,
 				input,

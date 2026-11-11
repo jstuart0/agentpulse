@@ -90,6 +90,8 @@ export const CODEX_APPROVAL_LIMITS = {
 } as const;
 
 export const APPROVAL_STATUSES = ["pending", "answered", "closed"] as const;
+/** The statuses of a row that can still be answered or delivered. */
+export const OPEN_APPROVAL_STATUSES = ["pending", "answered"] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 export const APPROVAL_CLOSED_REASONS = [

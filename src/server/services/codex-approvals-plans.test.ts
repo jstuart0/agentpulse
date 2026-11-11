@@ -18,6 +18,7 @@ const { codexApprovals, launchRequests, managedSessions, sessions } = await impo
 	"../db/schema/index.js"
 );
 const { ownedApprovalRowsQuery } = await import("./codex-approvals.js");
+const { sweepConditions } = await import("./session-tracker.js");
 
 const SESSIONS = 50_000;
 const OWN = 300;
@@ -145,6 +146,27 @@ async function seed() {
 	}
 }
 
+/**
+ * The inactivity sweep's completion statement (AGEN-94), built from the same conditions the sweep runs.
+ * It must find sessions by their status and each candidate's open approvals by (session_id, status),
+ * at 50k sessions, never by scanning either table.
+ */
+const sweepEnd = () => {
+	const cutoff = new Date().toISOString();
+	const { end } = sweepConditions({
+		idleCutoff: cutoff,
+		endCutoff: cutoff,
+		stuckWorkingCutoff: cutoff,
+		approvalHoldCutoff: cutoff,
+		protectedIds: ["a", "b"],
+	});
+	return getDb()
+		.update(sessions)
+		.set({ status: "completed", endedAt: cutoff })
+		.where(end)
+		.toSQL() as { sql: string; params: unknown[] };
+};
+
 const syncRead = (listed: string[] = []) =>
 	ownedApprovalRowsQuery(getDb(), HOST, listed).toSQL() as { sql: string; params: unknown[] };
 
@@ -182,6 +204,27 @@ describeSqliteOnly("sync plan — SQLite", () => {
 	});
 });
 
+describeSqliteOnly("sweep end plan — SQLite", () => {
+	test("sessions by an index, approvals by (session_id, status), no table scan", () => {
+		// A fresh Drizzle database lacks the legacy-init index the installs the sweep runs on have.
+		getSqlite().exec("CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)");
+		const q = sweepEnd();
+		const text = (
+			getSqlite()
+				.prepare(`EXPLAIN QUERY PLAN ${q.sql}`)
+				.all(...(q.params as never[])) as Array<{ detail: string }>
+		)
+			.map((r) => r.detail)
+			.join("\n");
+		// Which sessions index leads depends on the statistics other suites left; either is a seek, not a scan.
+		expect(text, text).toMatch(/SEARCH sessions USING INDEX idx_sessions_(status|last_activity)/);
+		expect(text, text).toContain(
+			"SEARCH codex_approvals USING INDEX idx_codex_approvals_session_status",
+		);
+		expect(text, text).not.toMatch(/SCAN (sessions|codex_approvals)/);
+	});
+});
+
 describePostgresOnly("sync plan — Postgres", () => {
 	const planOf = async (q: { sql: string; params: unknown[] }) => {
 		const client = (
@@ -203,5 +246,27 @@ describePostgresOnly("sync plan — Postgres", () => {
 				/Seq Scan on (managed_sessions|launch_requests|codex_approvals)/,
 			);
 		}
+	});
+});
+
+describePostgresOnly("sweep end plan — Postgres", () => {
+	// Postgres has no index on sessions.status or last_activity_at, so the sweep's statement scans sessions
+	// with or without the approval check (measured on the base statement too); what the check must not add
+	// is a scan of codex_approvals.
+	test("reaches codex_approvals by an index and never sequentially scans it", async () => {
+		const client = (
+			getDb() as unknown as {
+				$client: { unsafe: (text: string, params: unknown[], options: object) => Promise<unknown> };
+			}
+		).$client;
+		const q = sweepEnd();
+		const rows = (await client.unsafe(`EXPLAIN (COSTS OFF) ${q.sql}`, q.params, {
+			prepare: false,
+		})) as Array<Record<string, string>>;
+		const text = rows.map((r) => r["QUERY PLAN"]).join("\n");
+		expect(text, text).toMatch(
+			/Index (Only )?Scan using idx_codex_approvals_\w+ on codex_approvals/,
+		);
+		expect(text, text).not.toMatch(/Seq Scan on codex_approvals/);
 	});
 });

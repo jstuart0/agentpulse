@@ -1,7 +1,8 @@
 /**
  * The sweep's UPDATEs must keep using an index: the silence ceiling narrows
  * the protected id list in JS precisely so that no `OR last_activity_at < ?`
- * lands in the WHERE (that form planned as `SCAN sessions`).
+ * lands in the WHERE (that form planned as `SCAN sessions`). The end statement's
+ * open-approval check (AGEN-94) must reach `codex_approvals` by its (session_id, status) index.
  */
 import { Database } from "bun:sqlite";
 import { beforeAll, expect, test } from "bun:test";
@@ -32,6 +33,7 @@ describeSqliteOnly("sweep UPDATE plans", () => {
 		idleCutoff: cutoff,
 		endCutoff: cutoff,
 		stuckWorkingCutoff: cutoff,
+		approvalHoldCutoff: cutoff,
 		protectedIds: ["a", "b"],
 	});
 
@@ -47,7 +49,7 @@ describeSqliteOnly("sweep UPDATE plans", () => {
 			.toSQL();
 		const ddl = getSqlite()
 			.prepare(
-				"SELECT sql FROM sqlite_master WHERE tbl_name = 'sessions' AND type IN ('table', 'index') AND sql IS NOT NULL ORDER BY (type = 'table') DESC",
+				"SELECT sql FROM sqlite_master WHERE tbl_name IN ('sessions', 'codex_approvals') AND type IN ('table', 'index') AND sql IS NOT NULL ORDER BY (type = 'table') DESC",
 			)
 			.all() as { sql: string }[];
 		const scratch = new Database(":memory:");
@@ -69,6 +71,16 @@ describeSqliteOnly("sweep UPDATE plans", () => {
 		idle: "idx_sessions_status",
 		end: "idx_sessions_status",
 	} as const;
+
+	test("end looks up open approvals by (session_id, status), never by walking every open row", () => {
+		const details = plan(conditions.end);
+		expect(
+			details.some((d) =>
+				d.includes("SEARCH codex_approvals USING INDEX idx_codex_approvals_session_status"),
+			),
+		).toBe(true);
+		expect(details.some((d) => /SCAN codex_approvals/.test(d))).toBe(false);
+	});
 
 	for (const name of ["stuckWorking", "idle", "end"] as const) {
 		const index = expectedIndex[name];

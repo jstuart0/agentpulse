@@ -67,6 +67,7 @@ import {
 	type CodexApprovalSyncResponse,
 	NOT_APPROVABLE_REASONS,
 	type NotApprovableReason,
+	OPEN_APPROVAL_STATUSES,
 	TRACKER_OUTCOMES,
 	TRACKER_OUTCOME_TABLE,
 	type TrackerOutcome,
@@ -158,7 +159,7 @@ function iso(ms: number): string {
 type Tx = any;
 type ApprovalRow = typeof codexApprovals.$inferSelect;
 
-const OPEN_STATUSES = ["pending", "answered"] as const;
+const OPEN_STATUSES = OPEN_APPROVAL_STATUSES;
 
 // ── effective state and the one outcome function ───────────────────────────
 
