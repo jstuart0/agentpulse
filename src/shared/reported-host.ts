@@ -30,15 +30,21 @@ export function containsUnsafeHostCharacters(value: string): boolean {
 }
 
 /** Trim, strip unsafe characters, collapse interior whitespace to one space, cap at 128 characters; null when nothing is left. */
-export function sanitizeReportedHost(value: unknown): string | null {
+export function sanitizeReportedHost(
+	value: unknown,
+	cap = REPORTED_HOST_MAX_LENGTH,
+): string | null {
 	if (typeof value !== "string") return null;
 	const cleaned = value.replace(UNSAFE_CHARACTERS, "").replace(WHITESPACE_RUN, " ").trim();
-	const capped = Array.from(cleaned).slice(0, REPORTED_HOST_MAX_LENGTH).join("").trim();
+	const capped = Array.from(cleaned).slice(0, cap).join("").trim();
 	return capped.length > 0 ? capped : null;
 }
 
 /** The server's reading of the header: decoded, then cleaned; null when absent, malformed or empty. */
-export function parseReportedHostHeader(value: string | null | undefined): string | null {
+export function parseReportedHostHeader(
+	value: string | null | undefined,
+	options: { capped?: boolean } = {},
+): string | null {
 	if (!value || value.length > REPORTED_HOST_HEADER_MAX_LENGTH) return null;
 	let decoded: string;
 	try {
@@ -46,7 +52,12 @@ export function parseReportedHostHeader(value: string | null | undefined): strin
 	} catch {
 		return null;
 	}
-	return sanitizeReportedHost(decoded);
+	// A server that redacts the name before storing it cuts it itself, after redaction: a cut here could
+	// leave half a token that no rule recognises.
+	return sanitizeReportedHost(
+		decoded,
+		options.capped === false ? REPORTED_HOST_HEADER_MAX_LENGTH : REPORTED_HOST_MAX_LENGTH,
+	);
 }
 
 /** What a sender puts in the header; "" when there is no usable name (send no header then). */

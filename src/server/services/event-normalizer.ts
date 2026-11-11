@@ -29,6 +29,12 @@ export interface NormalizedEvent {
 	 * checked against the accepted window; display only, never used for a decision.
 	 */
 	occurredAt?: string | null;
+	/**
+	 * Set by the ingest redaction step when it changed or withheld text of this event. Such an event
+	 * takes no part in content-window or authority dedup: two different secrets redact to the same
+	 * text, and a possible duplicate row beats a certain lost one.
+	 */
+	redactionChanged?: boolean;
 }
 
 // Hook-body char caps (F29, F40, F56, F76). The stored `toolResponse`
@@ -169,6 +175,7 @@ function shapeUserAcknowledgeRawPayload(payload: HookEventPayload): Record<strin
 export function shapeHookRawPayload(
 	payload: HookEventPayload,
 	eventType: string,
+	originalToolResponseChars?: number,
 ): Record<string, unknown> {
 	const shaped: Record<string, unknown> = { ...(payload as unknown as Record<string, unknown>) };
 
@@ -182,7 +189,16 @@ export function shapeHookRawPayload(
 
 	if (eventType === "PostToolUse" || eventType === "PostToolUseFailure") {
 		const serialized = serializeToolResponse(payload.tool_response);
-		if (serialized !== null) {
+		if (serialized !== null && originalToolResponseChars !== undefined) {
+			// The ingest redaction step cut the response before scanning it and says how long it was.
+			if (originalToolResponseChars > TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP) {
+				shaped.tool_response = serialized.slice(0, TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP);
+				shaped.tool_response_truncated = true;
+				shaped.tool_response_chars = originalToolResponseChars;
+			} else {
+				shaped.tool_response = serialized;
+			}
+		} else if (serialized !== null) {
 			if (serialized.length > TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP) {
 				shaped.tool_response = serialized.slice(0, TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP);
 				shaped.tool_response_truncated = true;
@@ -351,6 +367,7 @@ export function normalizeHookEvent(
 	payload: HookEventPayload,
 	agentType: AgentType,
 	isOversizeStub = false,
+	options: { originalToolResponseChars?: number } = {},
 ): NormalizedEvent[] {
 	// First of all, before the oversize stub below: a hook may not be named like one
 	// of the watcher's events. Those rows are written only by the watcher itself, and a
@@ -363,7 +380,9 @@ export function normalizeHookEvent(
 					kind: "ingest_reserved_event_type",
 					level: "warn",
 					nameLength: name.length,
-					namePrefix: name.slice(0, 32),
+					// A fixed family, never the sender's text: the name is unbounded (up to the 16 MiB body),
+					// so redacting it here would block the event loop, and cutting it first could leave a token.
+					family: isSupervisorOnlyEventName(name) ? "supervisor_only" : "server_only",
 				}),
 			);
 			return [];
@@ -435,7 +454,7 @@ export function normalizeHookEvent(
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
-			rawPayload: shapeHookRawPayload(payload, eventType),
+			rawPayload: shapeHookRawPayload(payload, eventType, options.originalToolResponseChars),
 		});
 	} else if (eventType === "UserAcknowledge" || eventType === "UserUnacknowledge") {
 		// Synthetic acknowledgement/unacknowledgement (see
@@ -484,7 +503,7 @@ export function normalizeHookEvent(
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
-			rawPayload: shapeHookRawPayload(payload, eventType),
+			rawPayload: shapeHookRawPayload(payload, eventType, options.originalToolResponseChars),
 		});
 	} else {
 		normalized.push({

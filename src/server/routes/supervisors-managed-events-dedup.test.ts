@@ -492,7 +492,7 @@ describe("body handling", () => {
 });
 
 describe("statement budget", () => {
-	test("no header: the base count; with a delivery id: base + 1 (the receipt), at 1 and at 500 events", async () => {
+	test("no header: the base count; with a delivery id: base + 2 (the replay pre-check and the receipt), at 1 and at 500 events", async () => {
 		const sup = await registerSupervisor();
 		const measure = async (n: number, deliveryId?: string) => {
 			const sessionId = await ownedSession(sup);
@@ -512,10 +512,11 @@ describe("statement budget", () => {
 		expect(base).toBe(BASE_STATEMENTS);
 		expect(await measure(500)).toBe(base);
 
-		expect(await measure(1, newDeliveryId())).toBe(base + 1);
-		expect(await measure(500, newDeliveryId())).toBe(base + 1);
+		// The receipt, plus the read that answers a replay before any text is scanned (AGEN-146).
+		expect(await measure(1, newDeliveryId())).toBe(base + 2);
+		expect(await measure(500, newDeliveryId())).toBe(base + 2);
 		// Past one chunk each further 500 rows is one more insert statement, and nothing else.
-		expect(await measure(2500, newDeliveryId())).toBe(base + 1 + 4);
+		expect(await measure(2500, newDeliveryId())).toBe(base + 2 + 4);
 	});
 
 	test("no statement inside the transaction goes through getDb(): only the transaction opener asks for it", async () => {
@@ -555,9 +556,10 @@ describe("statement budget", () => {
 				bodyDigest: "digest-empty",
 			});
 			const withoutTransaction = spy.mock.calls.length;
-			// The delta between a delivery that opens the transaction and one that doesn't is
-			// exactly the opener's single getDb().
-			expect(insideStarted - withoutTransaction).toBe(1);
+			// The delta between a delivery that opens the transaction and one that doesn't is the
+			// opener's single getDb() plus the receipt pre-check's, which runs before the
+			// transaction on purpose (AGEN-146: a replay is answered before any text is scanned).
+			expect(insideStarted - withoutTransaction).toBe(2);
 		} finally {
 			spy.mockRestore();
 		}

@@ -4,9 +4,8 @@ import "./ai/__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../db/client.js");
 const { events, managedSessions, sessions } = await import("../db/schema/index.js");
-const { appendManagedSessionEvents, upsertManagedSessionState } = await import(
-	"./managed-session-state.js"
-);
+const { appendManagedSessionDelivery, appendManagedSessionEvents, upsertManagedSessionState } =
+	await import("./managed-session-state.js");
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
 
 beforeAll(() => initializeDatabase());
@@ -396,5 +395,61 @@ describe("upsertManagedSessionState: forkOptionsConsentUserId is server-owned", 
 		});
 		const kept = await readSession("fork-consent-kept");
 		expect(kept?.metadata).toEqual({ forkOptionsConsentUserId: "alice", providerRunId: "r" });
+	});
+});
+
+// AGEN-146: managed reports are redacted on both append paths, and a title or model name carrying a key is
+// masked before it names a session.
+describe("managed reports are redacted (AGEN-146)", () => {
+	const KEY = `sk-ant-${"api03-"}${"A".repeat(40)}`;
+	const PROOF = "AAAAAAAAAAAAAAAA";
+	const message = (content: string) => ({
+		eventType: "ManagedAgentMessage",
+		category: "assistant_message" as const,
+		content,
+	});
+
+	test("an agent message carrying a key, with no delivery id", async () => {
+		await mkSession("red-1");
+		await seedOwnedLaunch("red-1", "sup-1");
+		await appendManagedSessionEvents("sup-1", "red-1", [message(`token ${KEY}`)]);
+		const rows = await getDb().select().from(events).where(eq(events.sessionId, "red-1"));
+		expect(JSON.stringify(rows)).not.toContain(PROOF);
+		expect(rows[0]?.content).toContain("[REDACTED:anthropic_api_key]");
+	});
+
+	test("an agent message carrying a key, with a delivery id (the receipt transaction)", async () => {
+		await mkSession("red-2");
+		await seedOwnedLaunch("red-2", "sup-1");
+		const result = await appendManagedSessionDelivery("sup-1", "red-2", [message(`token ${KEY}`)], {
+			deliveryId: "dlv-red-2",
+			bodyDigest: "d",
+		});
+		expect(result.replay).toBe(false);
+		const rows = await getDb().select().from(events).where(eq(events.sessionId, "red-2"));
+		expect(JSON.stringify(rows)).not.toContain(PROOF);
+	});
+
+	test("thread titles and the model name carrying a key are masked on a new and on an existing session", async () => {
+		await seedOwnedLaunch("red-3", "sup-1");
+		await upsertManagedSessionState("sup-1", {
+			sessionId: "red-3",
+			desiredThreadTitle: `title ${KEY}`,
+			providerThreadTitle: `title ${KEY}`,
+			model: `m ${KEY}`,
+		});
+		await upsertManagedSessionState("sup-1", {
+			sessionId: "red-3",
+			desiredThreadTitle: `second ${KEY}`,
+			model: `m2 ${KEY}`,
+		});
+		const [session] = await getDb().select().from(sessions).where(eq(sessions.sessionId, "red-3"));
+		const [managed] = await getDb()
+			.select()
+			.from(managedSessions)
+			.where(eq(managedSessions.sessionId, "red-3"));
+		expect(JSON.stringify([session, managed])).not.toContain(PROOF);
+		expect(session?.displayName).toContain("[REDACTED:anthropic_api_key]");
+		expect(session?.model).toContain("[REDACTED:anthropic_api_key]");
 	});
 });

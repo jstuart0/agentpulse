@@ -64,6 +64,7 @@ import {
 	parseForkToolCallsReport,
 	recordForkToolCalls,
 } from "../services/fork-tool-detail.js";
+import { redactShortForStorage } from "../services/ingest-redaction.js";
 import {
 	claimNextLaunchRequest,
 	failRunningHeadlessLaunchesOfRestartedHost,
@@ -248,6 +249,11 @@ supervisorsAdminRouter.post("/supervisors/:id/revoke", async (c) => {
 // Mounted at /api/v1/supervisors — edge-public (exempt from forwardauth).
 // Each endpoint carries explicit in-process auth; supervisor agents running on
 // remote machines cannot hold an SSO session.
+
+function redactHostText(value: unknown): string | null {
+	const cleaned = cleanHostText(value, 4000);
+	return cleaned === null ? null : redactShortForStorage(cleaned, 500);
+}
 
 const supervisorsAgentRouter = new Hono();
 
@@ -829,7 +835,8 @@ supervisorsAgentRouter.post(
 			actionId,
 			supervisorId,
 			status: body.status,
-			error: cleanHostText(body.error),
+			// Host text can carry a path or a pasted value: cleaned uncut, redacted, then cut.
+			error: redactHostText(body.error),
 			metadata: body.metadata ?? null,
 			accepted: body.accepted === true,
 			provedCwd: body.provedCwd,

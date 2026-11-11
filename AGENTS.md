@@ -120,6 +120,7 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 - Biome for formatting (tabs, double quotes, semicolons)
 - Dark theme is default
 - Hook ingestion always returns 200 (rate-limited/oversize drops are silent; counters in /health)
+- Agent text is masked before it is stored (`services/ingest-redaction.ts`, rules in `services/ai/redactor.ts`): every path that writes `events` rows or a session's text fields goes through it, and `ingest-redaction.guard.test.ts` pins the writers. A new writer must redact or be named there
 - Hook deliveries are deduplicated by durable identity (`events.dedup_key`), not content comparison — repeated identical tool calls are all stored
 - Continued Claude session (fork) row payloads are rebuilt from a per-kind whitelist on the server (`services/fork-call-row.ts`); a call row carries `{ tool, toolOutcome, is_error, exit_code, tool_use_id }` and never the command, path, URL or output. What a call ran is in `fork_tool_calls`, owner-only (`services/fork-tool-detail.ts`). The options "Include my fork MCP servers" (`~/.agentpulse/claude-fork-mcp.json` on the host) and "Allow subagents" are chosen per continued session, off by default
 - An unrecognized `agent_type`/`agentType` filter on `/sessions`, `/templates`, `/search` returns `400 { error: "invalid_agent_type", value, allowed }` instead of silently matching zero rows

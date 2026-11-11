@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionEvent } from "../../../shared/types.js";
 import { normalizeHookEvent } from "../event-normalizer.js";
-import { ASKS_HUMAN_RE, eventsOfTurn, needsHuman, pendingAction } from "./human-gate.js";
+import {
+	ASKS_HUMAN_RE,
+	WITHHELD_WHY,
+	eventsOfTurn,
+	needsHuman,
+	pendingAction,
+} from "./human-gate.js";
 import type { RiskClassesConfig } from "./risk-classes.js";
 
 let nextId = 1;
@@ -238,5 +244,51 @@ describe("S1: the final message is stored after the Stop", () => {
 			rawPayload: { source_event_type: "Notification" },
 		});
 		expect(eventsOfTurn([stop, other], stop.id).map((e) => e.id)).toEqual([stop.id]);
+	});
+});
+
+// AGEN-146: the ingest redaction step withholds text it could not scan; the gate must not read the
+// text next to such a marker as clean.
+describe("text the ingest redaction step withheld", () => {
+	const MARKERS = [
+		"[REDACTED:redaction_backlog]",
+		"[REDACTED:redaction_error]",
+		"[REDACTED:over_limit]",
+		"[REDACTED:run_too_long]",
+		"[REDACTED:too_deep]",
+	];
+
+	test("a marker in the last assistant message holds the turn", () => {
+		for (const marker of MARKERS) {
+			expect(needsHuman([message(`All done. ${marker}`)], NO_RISK), marker).toMatchObject({
+				hold: true,
+				why: WITHHELD_WHY,
+			});
+		}
+	});
+
+	test("a marker in the pending tool call holds the turn", () => {
+		const pre = ev({
+			eventType: "PreToolUse",
+			category: "tool_event",
+			toolName: "Bash",
+			toolInput: { command: "echo [REDACTED:redaction_backlog]" },
+		});
+		expect(needsHuman([pre], NO_RISK)).toMatchObject({ hold: true, why: WITHHELD_WHY });
+	});
+
+	test("any mask holds the turn: what followed the secret may have been swallowed", () => {
+		expect(needsHuman([message("used [REDACTED:github_token] and it worked")], NO_RISK).hold).toBe(
+			true,
+		);
+	});
+
+	test("a question at the end of a 1.2 MB assistant message still opens the gate", async () => {
+		const { redactTextForStorage } = await import("../ingest-redaction.js");
+		const long = `${"I changed a lot of files. ".repeat(46_200)}Should I push this now?`;
+		expect(long.length).toBeGreaterThan(1_000_000);
+		const stored = await redactTextForStorage(long, "t");
+		expect(stored.endsWith("Should I push this now?")).toBe(true);
+		expect(needsHuman([message(stored)], NO_RISK).hold).toBe(true);
 	});
 });

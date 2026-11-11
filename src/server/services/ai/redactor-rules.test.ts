@@ -420,6 +420,7 @@ describe("TC-2.9 no regression", () => {
 		let withMatch = 0;
 		let class1NewlineAfterOrBeforeEquals = 0;
 		let class2SpacedQuote = 0;
+		let class3StopsAtShellOperator = 0;
 		let identical = 0;
 		const total = 3000;
 		for (let n = 0; n < total; n++) {
@@ -443,6 +444,12 @@ describe("TC-2.9 no regression", () => {
 			if (old.count > 0) withMatch++;
 			if (old.text !== oldFixed.text || old.count !== oldFixed.count)
 				class1NewlineAfterOrBeforeEquals++;
+			// Class 3 (AGEN-146): an unquoted value now ends at `; & | ` or `$(`, so the command after
+			// it stays visible; the old rule took the rest of the word.
+			if (/[;&|`]|\$\(/.test(input)) {
+				class3StopsAtShellOperator++;
+				continue;
+			}
 			if (SPACED_QUOTE.test(input)) {
 				class2SpacedQuote++;
 				continue;
@@ -462,7 +469,8 @@ describe("TC-2.9 no regression", () => {
 		expect(withMatch).toBeGreaterThan(1000);
 		expect(class1NewlineAfterOrBeforeEquals).toBeGreaterThan(100);
 		expect(class2SpacedQuote).toBeGreaterThan(100);
-		expect(identical).toBeGreaterThan(1500);
+		expect(class3StopsAtShellOperator).toBeGreaterThan(100);
+		expect(identical).toBeGreaterThan(800);
 	});
 
 	test("TC-2.9 a key of 12 prefix segments is still redacted (the {0,8} bound is a performance bound, not a behaviour: the match starts inside the key)", () => {

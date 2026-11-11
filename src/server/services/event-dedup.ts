@@ -178,7 +178,10 @@ function planContentWindow(
 
 	for (const event of incoming) {
 		const key = contentWindowKey(event);
-		const kept = keepEventTypes?.has(event.eventType) === true || keepEvent?.(event) === true;
+		const kept =
+			keepEventTypes?.has(event.eventType) === true ||
+			keepEvent?.(event) === true ||
+			event.redactionChanged === true;
 		if (!kept && seen.has(key)) {
 			countDrop(plan.drops, "contentWindow");
 			continue;
@@ -191,7 +194,10 @@ function planContentWindow(
 			content: event.content,
 			createdAt: nowIso,
 		};
-		const rivals = pool.filter((existing) => isAuthorityDuplicate(existing, candidate));
+		const rivals =
+			event.redactionChanged === true
+				? []
+				: pool.filter((existing) => isAuthorityDuplicate(existing, candidate));
 		if (rivals.some((existing) => outranks(existing, candidate))) {
 			countDrop(plan.drops, "authority");
 			continue;
@@ -377,7 +383,10 @@ function planHookDelivery(
 			content: event.content,
 			createdAt: nowIso,
 		};
-		const rivals = pool.filter((existing) => isAuthorityDuplicate(existing, candidate));
+		const rivals =
+			event.redactionChanged === true
+				? []
+				: pool.filter((existing) => isAuthorityDuplicate(existing, candidate));
 		if (rivals.some((existing) => outranks(existing, candidate))) {
 			countDrop(plan.drops, "authority");
 			return;

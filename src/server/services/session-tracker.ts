@@ -71,8 +71,9 @@ import {
 } from "./effective-machine.js";
 import { normalizeHookEvent } from "./event-normalizer.js";
 import { insertNormalizedEvents } from "./event-processor.js";
+import { redactShortForStorage, trimCutTokenFragment } from "./ingest-redaction.js";
 import { getManagedSession, mapManagedSession } from "./managed-session-state.js";
-import { sanitizeNativeName } from "./name-sanitizer.js";
+import { capNativeName, stripNativeName } from "./name-sanitizer.js";
 import { notifySessionUpdated } from "./notifier.js";
 import { loadFailureReasons, permissionWaitCount, toSessionCard } from "./session-card.js";
 import { mapSessionDto } from "./session-dto.js";
@@ -103,12 +104,17 @@ import { parseDbTimestamp } from "./util/db-time.js";
  * pass `{ source: "user" }` explicitly. Metadata is read-modify-written so
  * unrelated keys (e.g. `permissionWait`, `nativeName`) survive.
  */
+const NATIVE_NAME_PRE_CAP_CHARS = 1024;
+const RENAME_MAX_CHARS = 512;
+
 export async function renameSession(
 	sessionId: string,
 	name: string,
 	options: { source?: string } = {},
 ): Promise<void> {
-	const trimmed = name.trim();
+	// A name an agent syncs (no explicit `user` source) is agent text: masked. A person's own rename is not.
+	const trimmed =
+		options.source === "user" ? name.trim() : redactShortForStorage(name.trim(), RENAME_MAX_CHARS);
 	await withTransaction(async (tx) => {
 		const [row] = await tx
 			.select({ metadata: sessions.metadata })
@@ -178,7 +184,12 @@ export async function applyNativeName(
 	applied: boolean;
 	reason?: "manual_rename" | "empty_after_sanitize";
 }> {
-	const sanitized = sanitizeNativeName(nativeName);
+	// A name an agent reports can carry a pasted key: masked before it is compared or stored.
+	// Strip, redact, then cut, then redact the cut: a token never straddles the 200-character cap.
+	const first = redactShortForStorage(stripNativeName(nativeName), NATIVE_NAME_PRE_CAP_CHARS);
+	const capped = capNativeName(first);
+	const again = redactShortForStorage(capped);
+	const sanitized = capped.length < first.length ? trimCutTokenFragment(again) : again;
 	if (sanitized.length === 0) {
 		return { found: false, applied: false, reason: "empty_after_sanitize" };
 	}

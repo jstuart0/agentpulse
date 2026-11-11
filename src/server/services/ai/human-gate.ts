@@ -23,10 +23,18 @@ export const ASKS_HUMAN_RE =
 /** How much of the end of the last message is read for those phrases. */
 const LAST_MESSAGE_TAIL_CHARS = 600;
 
+/**
+ * Any mask at all: a redaction rule may have swallowed what followed the secret (a command after a secret
+ * once vanished with it), so a turn whose last message or pending call was masked is
+ * judged by a person, not by the text next to the mask.
+ */
+const MASKED_TEXT_PATTERN = /\[REDACTED/;
+
 export type HumanGateResult = { hold: false } | { hold: true; why: string };
 
 export const ASKING_WHY = "The agent is asking you something.";
 export const PERMISSION_WHY = "A permission prompt is open.";
+export const WITHHELD_WHY = "Part of this turn's text was withheld, so it can't be judged.";
 
 /**
  * The events of the turn that ended at `trigger`: everything after the newest
@@ -106,6 +114,9 @@ export function needsHuman(
 ): HumanGateResult {
 	const last = lastAssistantMessage(turn);
 	if (asksSomething(last)) return { hold: true, why: ASKING_WHY };
+	// Text the ingest step withheld (too long to scan, over a sender's share, a failed rule) can't be
+	// shown to be harmless: it goes to a person.
+	if (MASKED_TEXT_PATTERN.test(last)) return { hold: true, why: WITHHELD_WHY };
 
 	if (
 		turn.some(
@@ -119,6 +130,9 @@ export function needsHuman(
 	}
 
 	const pending = pendingAction(turn);
+	if (pending !== null && MASKED_TEXT_PATTERN.test(pending)) {
+		return { hold: true, why: WITHHELD_WHY };
+	}
 	const texts = [last, pending].filter((t): t is string => t !== null && t !== "");
 	const labels = new Set<string>();
 	for (const proposedPrompt of texts) {

@@ -485,10 +485,10 @@ describe("K1-K4: API-key scoping and identity (auth on)", () => {
 		expect((await rowsFor(sid)).length).toBe(2);
 	});
 
-	test("K3: a 100 KB session_id -> dedup_key matches ^d:[0-9a-f]{32}$", async () => {
+	test("K3: a long (150 character) session_id -> dedup_key matches ^d:[0-9a-f]{32}$; a 100 KB one is refused", async () => {
 		config.disableAuth = false;
 		const { key } = await createApiKey("k3", [SCOPE_INGEST]);
-		const sid = `${newSessionId("k3")}-${"s".repeat(100 * 1024)}`;
+		const sid = `${newSessionId("k3")}-${"s".repeat(120)}`;
 		await postHook(
 			{ session_id: sid, hook_event_name: "Stop" },
 			{ headers: { [DELIVERY_ID_HEADER]: "d1-aaaaaaaa" }, auth: key },
@@ -496,5 +496,12 @@ describe("K1-K4: API-key scoping and identity (auth on)", () => {
 		const rows = await rowsFor(sid);
 		expect(rows).toHaveLength(1);
 		expect(rows[0]?.dedupKey).toMatch(/^d:[0-9a-f]{32}$/);
+		// AGEN-146: an id longer than the id grammar allows is refused before any rule scans it.
+		const huge = `${newSessionId("k3")}-${"s".repeat(100 * 1024)}`;
+		await postHook(
+			{ session_id: huge, hook_event_name: "Stop" },
+			{ headers: { [DELIVERY_ID_HEADER]: "d1-bbbbbbbb" }, auth: key },
+		);
+		expect(await rowsFor(huge)).toHaveLength(0);
 	});
 });

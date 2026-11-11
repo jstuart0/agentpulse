@@ -38,13 +38,21 @@ function preCapCodeUnits(raw: string): string {
 	return raw.slice(0, end);
 }
 
-export function sanitizeNativeName(raw: string): string {
-	const bounded = preCapCodeUnits(raw);
-	const stripped = bounded.replace(UNSAFE_NAME_CHARS_RE, "").trim();
+/** The name with unsafe characters stripped and the cheap pre-cap applied, but not yet cut to 200 code points. */
+export function stripNativeName(raw: string): string {
+	return preCapCodeUnits(raw).replace(UNSAFE_NAME_CHARS_RE, "").trim();
+}
+
+/** Cuts to `MAX_NATIVE_NAME_CODE_POINTS` code points, never inside a surrogate pair. */
+export function capNativeName(stripped: string): string {
 	const codePoints = [...stripped];
 	// Code-point-safe truncation — a naive string.slice(0, N) can split a
 	// surrogate pair, leaving a lone surrogate (renders as U+FFFD / mojibake).
 	return codePoints.length > MAX_NATIVE_NAME_CODE_POINTS
 		? codePoints.slice(0, MAX_NATIVE_NAME_CODE_POINTS).join("")
 		: stripped;
+}
+
+export function sanitizeNativeName(raw: string): string {
+	return capNativeName(stripNativeName(raw));
 }

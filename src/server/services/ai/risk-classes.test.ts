@@ -73,3 +73,30 @@ describe("risk-classes", () => {
 		expect(hits.length).toBe(0);
 	});
 });
+
+describe("AGEN-146: text the ingest redaction step withheld is risky", () => {
+	test("any fail-closed marker in the proposed prompt is a hit with no configured class", async () => {
+		const { evaluateRisk, WITHHELD_TEXT_CLASS_ID } = await import("./risk-classes.js");
+		for (const marker of [
+			"[REDACTED:redaction_backlog]",
+			"[REDACTED:redaction_error]",
+			"[REDACTED:over_limit]",
+		]) {
+			const hits = evaluateRisk(
+				{ version: 1, classes: [] },
+				{ proposedPrompt: `run it ${marker}` },
+			);
+			expect(
+				hits.map((h) => h.classId),
+				marker,
+			).toEqual([WITHHELD_TEXT_CLASS_ID]);
+			expect(hits[0]?.policyOverride).toBe("ask");
+		}
+		expect(
+			evaluateRisk(
+				{ version: 1, classes: [] },
+				{ proposedPrompt: "run it [REDACTED:github_token]" },
+			),
+		).toEqual([]);
+	});
+});

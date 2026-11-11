@@ -21,6 +21,7 @@ import {
 	processHookEvent,
 	processStatusUpdate,
 } from "../services/event-processor.js";
+import { redactShortForStorage } from "../services/ingest-redaction.js";
 import {
 	notifyChannel,
 	notifySessionCreated,
@@ -483,9 +484,8 @@ export function extractOversizeIdentity(prefixText: string): OversizeIdentity | 
  * Uses charCodeAt filtering rather than a regex literal to avoid Biome's
  * noControlCharactersInRegex rule, which rejects /[\x00-\x1f\x7f]/.
  */
-function sanitizeLogField(value: unknown, maxLen = 64): string {
-	return String(value ?? "")
-		.slice(0, maxLen)
+function stripControlCharacters(value: string): string {
+	return value
 		.split("")
 		.filter((ch) => {
 			const code = ch.charCodeAt(0);
@@ -493,6 +493,19 @@ function sanitizeLogField(value: unknown, maxLen = 64): string {
 			return code >= 32 && code !== 127;
 		})
 		.join("");
+}
+
+/** Control characters stripped, then cut to `maxLen`: for fields that hold no sender text. */
+function sanitizeLogField(value: unknown, maxLen = 64): string {
+	return stripControlCharacters(String(value ?? "").slice(0, maxLen));
+}
+
+/**
+ * A sender-controlled value for a log line: control characters stripped, then redacted, then cut,
+ * then redacted again (a cut must not leave half a token). Never cut before redaction.
+ */
+function logField(value: unknown, maxLen = 64): string {
+	return redactShortForStorage(stripControlCharacters(String(value ?? "").slice(0, 4096)), maxLen);
 }
 
 /**
@@ -507,7 +520,7 @@ export function buildHookDeliveryContext(c: Context): HookDeliveryContext {
 		deliveryId: parseDeliveryId(c.req.header(DELIVERY_ID_HEADER)),
 		origin: parseOrigin(c.req.header(ORIGIN_HEADER)),
 		attribution: postingAttribution(authUser),
-		reportedHost: parseReportedHostHeader(c.req.header(HOST_HEADER)),
+		reportedHost: parseReportedHostHeader(c.req.header(HOST_HEADER), { capped: false }),
 	};
 }
 
@@ -573,8 +586,8 @@ async function wakeWatcherForBoundaries(
 			JSON.stringify({
 				kind: "watcher_wake_error",
 				level: "error",
-				session_id: sanitizeLogField(sessionId),
-				error: err instanceof Error ? err.message : String(err),
+				session_id: logField(sessionId),
+				error: logField(err instanceof Error ? err.message : String(err), 500),
 			}),
 		);
 	}
@@ -621,10 +634,11 @@ function enqueueHookProcessingReal(
 					kind: "ingest_bg_error",
 					level: "error",
 					// Sanitize user-controlled fields to prevent log injection.
-					session_id: sanitizeLogField(payload.session_id),
-					event_type: sanitizeLogField(payload.hook_event_name),
-					error: err instanceof Error ? err.message : String(err),
-					stack: err instanceof Error ? err.stack : undefined,
+					session_id: logField(payload.session_id),
+					event_type: logField(payload.hook_event_name),
+					// Error text can carry a path or a pasted value from the payload: masked and cut.
+					error: redactShortForStorage(err instanceof Error ? err.message : String(err), 500),
+					stack: err instanceof Error ? redactShortForStorage(err.stack ?? "", 2000) : undefined,
 				}),
 			);
 		} finally {
@@ -747,8 +761,8 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c: Context) => {
 			JSON.stringify({
 				kind: "ingest_missing_fields",
 				level: "warn",
-				session_id: parsed.session_id,
-				hook_event_name: parsed.hook_event_name,
+				session_id: logField(parsed.session_id),
+				hook_event_name: logField(parsed.hook_event_name),
 			}),
 		);
 		return c.json({ ok: true });
@@ -836,9 +850,9 @@ ingest.post("/hooks/status", requireApiKey(), hookRateLimit(), async (c: Context
 					kind: "ingest_status_bg_error",
 					level: "error",
 					// Sanitize user-controlled session_id to prevent log injection.
-					session_id: sanitizeLogField(update.session_id),
-					error: err instanceof Error ? err.message : String(err),
-					stack: err instanceof Error ? err.stack : undefined,
+					session_id: logField(update.session_id),
+					error: redactShortForStorage(err instanceof Error ? err.message : String(err), 500),
+					stack: err instanceof Error ? redactShortForStorage(err.stack ?? "", 2000) : undefined,
 				}),
 			);
 		} finally {

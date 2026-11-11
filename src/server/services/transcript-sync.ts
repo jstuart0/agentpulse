@@ -1,10 +1,11 @@
 import { readFile, stat } from "node:fs/promises";
 import { and, eq, isNotNull, ne } from "drizzle-orm";
-import type { AgentType, Session } from "../../shared/types.js";
+import type { AgentType, Session, SessionEvent } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { sessions } from "../db/schema/index.js";
 import { type NormalizedEvent, createAssistantTranscriptEvent } from "./event-normalizer.js";
 import { insertNormalizedEvents } from "./event-processor.js";
+import { noteTranscriptSyncInsertFailed, redactShortForStorage } from "./ingest-redaction.js";
 import { notifySessionEvents } from "./notifier.js";
 
 // Polling-based by design. LISTEN/NOTIFY would replace setInterval on Postgres
@@ -153,7 +154,22 @@ async function syncTranscriptForSession(session: SessionWithMetadata): Promise<v
 	}
 
 	const normalizedEvents = parseTranscriptDelta(session.agentType, lines);
-	const insertedEvents = await insertNormalizedEvents(session.sessionId, normalizedEvents);
+	let insertedEvents: SessionEvent[] = [];
+	try {
+		insertedEvents = await insertNormalizedEvents(session.sessionId, normalizedEvents);
+	} catch (error) {
+		// One bad batch must not hold the cursor back for ever: the lines are skipped, counted, and
+		// the sync goes on from the end of the file.
+		noteTranscriptSyncInsertFailed();
+		console.error(
+			JSON.stringify({
+				kind: "transcript_sync_insert_failed",
+				level: "error",
+				// A database error can echo row parameters: redacted before it is cut.
+				error: redactShortForStorage(error instanceof Error ? error.message : String(error), 500),
+			}),
+		);
+	}
 
 	if (insertedEvents.length > 0) {
 		notifySessionEvents(session.sessionId, insertedEvents);

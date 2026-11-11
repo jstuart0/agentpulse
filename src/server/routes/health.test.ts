@@ -148,4 +148,26 @@ describe("GET /health — clients checksums", () => {
 		const body = await res.json();
 		expect(typeof body.unacknowledgeDropped).toBe("number");
 	});
+
+	// AGEN-146: counters only, every one a number, no text from any event.
+	test("ingestRedaction carries the redaction counters and nothing else", async () => {
+		const app = buildApp();
+		const body = await (await app.request("/api/v1/health")).json();
+		expect(Object.keys(body.ingestRedaction).sort()).toEqual(
+			[
+				"backlogMarkers",
+				"cutLeaves",
+				"errors",
+				"hits",
+				"idsDropped",
+				"maxSliceMs",
+				"pendingJobs",
+				"pendingUnits",
+				"sessionIdRefused",
+				"transcriptSyncInsertFailed",
+				"unitsScanned",
+			].sort(),
+		);
+		for (const value of Object.values(body.ingestRedaction)) expect(typeof value).toBe("number");
+	});
 });
