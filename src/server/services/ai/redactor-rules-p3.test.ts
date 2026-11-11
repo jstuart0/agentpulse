@@ -88,16 +88,16 @@ describe("P3-37.3 the watcher strips invisible characters before it redacts", ()
 			lastUserAcknowledgedAt: null,
 		} as Session;
 	}
-	test("a key split by a zero-width space in CLAUDE.md does not reach the system prompt", () => {
+	test("a key split by a zero-width space in CLAUDE.md does not reach the prompt", () => {
 		const ctx = buildWatcherContext({
 			session: session(`notes\n${split}\nkeep`),
 			events: [],
 			triggerType: "manual",
 			extraRedactionRules: [],
 		});
-		expect(ctx.systemPrompt).not.toContain("aB3dE5fG7haB3d");
-		expect(ctx.systemPrompt).not.toContain("sk-ant-");
-		expect(ctx.systemPrompt).toContain("keep");
+		expect(ctx.transcriptPrompt).not.toContain("aB3dE5fG7haB3d");
+		expect(ctx.transcriptPrompt).not.toContain("sk-ant-");
+		expect(ctx.transcriptPrompt).toContain("keep");
 	});
 	test("a key split by a zero-width space in a transcript event does not reach the user prompt", () => {
 		const ctx = buildWatcherContext({

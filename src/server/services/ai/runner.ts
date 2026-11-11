@@ -40,6 +40,7 @@ import {
 import { getProvider, getProviderApiKey } from "./providers-service.js";
 import { RunLeaser } from "./run-leaser.js";
 import { addSpendCents, checkSpendBudget } from "./spend-service.js";
+import { textForTranscript } from "./transcript-text-check.js";
 import { type Boundary, boundaryOf, computeTurnKey, hasPromptAfter } from "./turn-identity.js";
 import { isWatched } from "./watched-sessions.js";
 import { getWatcherConfig } from "./watcher-config-service.js";
@@ -62,6 +63,11 @@ export const CONTINUE_MIN_CALL_INTERVAL_MS = 60_000;
 export const CONTINUE_PROPOSALS_PER_SESSION_PER_HOUR = 6;
 // Enough events to find the trigger and to cover a turn that ran long.
 const MAX_EVENTS_LOOKBACK = 200;
+
+/** Appended to the prompt when the first reply did not match the schema. Fixed, so nothing the model said comes back. */
+const PARSE_RETRY_NOTICE =
+	"RESPONSE PARSE ERROR: the reply did not match the schema. Respond with exactly one JSON object per the schema. No prose.";
+
 // A Continue decision reads the whole current turn, however long ago it began.
 const CONTINUE_TIME_BUDGET_MS = 6 * 60 * 60 * 1000;
 const CONTINUE_MAX_TOKENS = 600;
@@ -682,9 +688,14 @@ export class WatcherRunner {
 			// One retry on schema violation; just downgrade on syntax errors.
 			if (parsed.schemaViolation) {
 				try {
+					// A fixed sentence: the parse error can carry the model's own text, and the prompt
+					// is not a place to repeat it. The detail goes to the log only.
+					console.warn(
+						`[ai-watcher] ${sessionId} reply did not match the schema, retrying: ${JSON.stringify(parsed.error.slice(0, 200))}`,
+					);
 					const retry = await adapter.complete({
 						systemPrompt: ctx.systemPrompt,
-						transcriptPrompt: `${ctx.transcriptPrompt}\n\nRESPONSE PARSE ERROR: ${parsed.error}. Respond with exactly one JSON object per the schema. No prose.`,
+						transcriptPrompt: `${ctx.transcriptPrompt}\n\n${PARSE_RETRY_NOTICE}`,
 						model: provider.model,
 						disableReasoning: true,
 						timeoutMs: config.watcherCallTimeoutSeconds * 1000,
@@ -715,7 +726,7 @@ export class WatcherRunner {
 			await completeProposal({
 				id: pending.id,
 				decision: "report",
-				reportSummary: `Watcher output did not parse: ${parsed.error}`,
+				reportSummary: "Watcher output did not parse.",
 				rawResponse: { raw: responseText, parse_error: parsed.error },
 				tokensIn: usageInput,
 				tokensOut: usageOutput,
@@ -728,7 +739,9 @@ export class WatcherRunner {
 				source: "managed_control",
 				category: "ai_error",
 				eventType: "ParseFailure",
-				content: parsed.error,
+				// Fixed text: the parse error can carry the model's own words. The detail is in the
+				// proposal's rawResponse, which no prompt reads.
+				content: "The watcher's reply did not match the schema.",
 				rawPayload: { sub_type: "parse_failure", proposal_id: pending.id },
 			});
 			await stampWatcherState(sessionId, "cooling_down");
@@ -768,7 +781,7 @@ export class WatcherRunner {
 				source: "managed_control",
 				category: "ai_proposal",
 				eventType: "AiStop",
-				content: decision.why ?? "Watcher decided to stop.",
+				content: textForTranscript(decision.why ?? "Watcher decided to stop.", recent),
 				rawPayload: { proposal_id: pending.id, decision: "stop" },
 			});
 			await stampWatcherState(sessionId, "idle");
@@ -795,7 +808,7 @@ export class WatcherRunner {
 				source: "managed_control",
 				category: "ai_report",
 				eventType: "AiReport",
-				content: decision.summary,
+				content: textForTranscript(decision.summary, recent),
 				rawPayload: {
 					proposal_id: pending.id,
 					status: decision.status,

@@ -115,12 +115,12 @@ export const FALLTHROUGH_CASES: GateCase[] = [
 	},
 ];
 
-const NONCE = /sessions-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
+const NONCE = /(sessions|history)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 
-/** Replaces the per-turn nonce in the context tags; fails if there was none to replace. */
+/** Replaces the per-turn nonce in the sessions and history tags; fails if there was none to replace. */
 export function normaliseNonce(text: string): string {
 	expect(text).toMatch(NONCE);
-	return text.replace(NONCE, "sessions-<nonce>");
+	return text.replace(NONCE, "$1-<nonce>");
 }
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;

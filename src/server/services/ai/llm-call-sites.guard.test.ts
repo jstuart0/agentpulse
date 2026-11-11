@@ -10,11 +10,15 @@
  * that need it. The check reads the source of each `.complete(` call.
  */
 import { describe, expect, test } from "bun:test";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
-
-const ROOT = join(import.meta.dir, "../../../..");
-const SERVER = join(ROOT, "src/server");
+import {
+	ROOT,
+	SERVER,
+	productionFiles,
+	requestLiterals,
+	walk,
+} from "../../test-utils/llm-call-sites.js";
 
 /** Call sites whose request is built elsewhere, each with where the flags are pinned. */
 const REQUEST_BUILT_ELSEWHERE: Record<string, string> = {
@@ -37,40 +41,10 @@ const EXPECTED_SITES = [
 	"src/server/services/session-summary-service.ts",
 ];
 
-async function* walk(dir: string): AsyncGenerator<string> {
-	for (const entry of await readdir(dir, { withFileTypes: true })) {
-		const full = join(dir, entry.name);
-		if (entry.isDirectory()) yield* walk(full);
-		else if (/\.ts$/.test(entry.name)) yield full;
-	}
-}
-
-/** The source of each `.complete({ ... })` or `streamWithFallback(x, { ... })` object literal in `source`. */
-function requestLiterals(source: string): string[] {
-	const found: string[] = [];
-	const opener = /(?:\.complete\(|streamWithFallback\([^,]+,\s*)\{/g;
-	for (let m = opener.exec(source); m; m = opener.exec(source)) {
-		let depth = 1;
-		let i = m.index + m[0].length;
-		while (i < source.length && depth > 0) {
-			if (source[i] === "{") depth++;
-			else if (source[i] === "}") depth--;
-			i++;
-		}
-		found.push(source.slice(m.index + m[0].length - 1, i));
-	}
-	return found;
-}
-
 async function productionCallSites(): Promise<Map<string, string[]>> {
 	const sites = new Map<string, string[]>();
-	for await (const file of walk(SERVER)) {
-		const rel = relative(ROOT, file);
-		if (/\.test\.ts$/.test(rel) || rel.includes("/test-utils/")) continue;
-		if (rel.startsWith("src/server/services/ai/llm/")) continue;
-		// Forwards the caller's own request to a provider; sets nothing itself.
-		if (rel === "src/server/services/ai/fast-provider.ts") continue;
-		const literals = requestLiterals(await readFile(file, "utf8"));
+	for await (const { rel, source } of productionFiles()) {
+		const literals = requestLiterals(source);
 		if (literals.length > 0) sites.set(rel, literals);
 	}
 	return sites;
