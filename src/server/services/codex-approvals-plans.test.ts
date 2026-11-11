@@ -304,9 +304,9 @@ describePostgresOnly("sweep end plan — Postgres", () => {
 		const text = rows.map((r) => r["QUERY PLAN"]).join("\n");
 		// With 50 stale candidates and 5,000 open rows on other sessions, each candidate's rows are found by
 		// key (a nested anti join on session_id), not by walking every open row through (status, expires_at).
-		expect(text, text).toContain(
-			"Index Scan using idx_codex_approvals_session_status on codex_approvals",
-		);
+		// The planner may pick either index that leads with session_id (idx_codex_approvals_session_status or
+		// uq_codex_approvals_session_epoch_rpc, seen in CI); both are a per-candidate lookup.
+		expect(text, text).toMatch(/Index Scan using \w+ on codex_approvals/);
 		expect(text, text).toContain("Index Cond: (session_id = sessions.session_id)");
 		expect(text, text).not.toContain("idx_codex_approvals_status_expires");
 		expect(text, text).not.toMatch(/Seq Scan on codex_approvals/);
