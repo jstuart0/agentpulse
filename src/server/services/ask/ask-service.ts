@@ -311,7 +311,7 @@ export async function findOrCreateTelegramThread(input: {
 	});
 }
 
-async function appendMessage(input: {
+export async function appendMessage(input: {
 	threadId: string;
 	role: AskMessageRecord["role"];
 	content: string;

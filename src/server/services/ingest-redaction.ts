@@ -127,6 +127,8 @@ export interface IngestRedactionCounters {
 	maxSliceMs: number;
 	/** Transcript-sync batches whose insert threw and were skipped (the cursor moves on). */
 	transcriptSyncInsertFailed: number;
+	/** Strings and keys whose U+0000 or lone surrogate was replaced before storage (AGEN-39). */
+	storageTextFixed: number;
 }
 
 const counters: IngestRedactionCounters = {
@@ -141,6 +143,7 @@ const counters: IngestRedactionCounters = {
 	sessionIdRefused: 0,
 	maxSliceMs: 0,
 	transcriptSyncInsertFailed: 0,
+	storageTextFixed: 0,
 };
 
 export function noteTranscriptSyncInsertFailed(): void {
