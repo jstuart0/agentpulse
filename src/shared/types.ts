@@ -82,7 +82,7 @@ export type WatcherRunTriggerKind = "idle" | "stop" | "error" | "plan_completed"
 // allowlist. Order is roughly lifecycle:
 //   pending → active(interactive_terminal | headless | managed | linked)
 //          → degraded → stopped/completed/failed (terminal).
-// LIVE_MANAGED_STATES (session-tracker.ts) preserves its own subset
+// LIVE_MANAGED_STATES (below) preserves its own subset
 // order; do not reorder by re-deriving from this tuple.
 export const MANAGED_STATES = [
 	"pending",
@@ -96,6 +96,20 @@ export const MANAGED_STATES = [
 	"failed",
 ] as const;
 export type ManagedState = (typeof MANAGED_STATES)[number];
+
+// Managed states that indicate an agent process is still running under a live
+// supervisor. Sessions in these states must not be auto-completed by staleness
+// checks — the supervisor will report terminal state when the process exits,
+// or the silence ceiling (config.managedSessionMaxSilenceMs) is reached.
+// Order is preserved from the original slice (interactive/headless/managed
+// first, pending last); `satisfies` makes a new live state come from the
+// canonical union.
+export const LIVE_MANAGED_STATES = [
+	"interactive_terminal",
+	"headless",
+	"managed",
+	"pending",
+] as const satisfies readonly ManagedState[];
 
 // HITL reply actions accepted from the inbox / session detail.
 export const HITL_REPLY_KINDS = ["approve", "decline", "custom"] as const;

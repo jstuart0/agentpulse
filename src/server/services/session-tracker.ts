@@ -6,6 +6,7 @@ import {
 	desc,
 	eq,
 	getTableColumns,
+	gt,
 	inArray,
 	isNotNull,
 	isNull,
@@ -15,6 +16,7 @@ import {
 	or,
 	sql,
 } from "drizzle-orm";
+import { OPEN_APPROVAL_STATUSES } from "../../shared/codex-approvals.js";
 import {
 	AGENT_TYPES,
 	SESSION_END_TIMEOUT_MS,
@@ -35,16 +37,17 @@ import type {
 	AgentType,
 	HostStatsGroup,
 	HostStatsResponse,
-	ManagedState,
 	OwnerStatsGroup,
 	OwnerStatsResponse,
 	SessionStatus,
 	SessionTabCounts,
 } from "../../shared/types.js";
+import { LIVE_MANAGED_STATES } from "../../shared/types.js";
 import type { Actor } from "../auth/actor.js";
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
 import {
+	codexApprovals,
 	launchRequests,
 	managedSessions,
 	projects,
@@ -413,21 +416,6 @@ export async function unacknowledgeSession(
 
 	return { found: true, unacknowledged: true, changed: true };
 }
-
-// Managed states that indicate an agent process is still running under a live
-// supervisor. Sessions in these states must not be auto-completed by staleness
-// checks — the supervisor will report terminal state when the process exits,
-// or the silence ceiling (config.managedSessionMaxSilenceMs) is reached.
-// Order is preserved from the original slice (interactive/headless/managed
-// first, pending last) — the slice TYPE-2b promotion narrows the element type
-// to ManagedState so adding a new live state requires picking it from the
-// canonical union.
-const LIVE_MANAGED_STATES = [
-	"interactive_terminal",
-	"headless",
-	"managed",
-	"pending",
-] as const satisfies readonly ManagedState[];
 
 type SessionListFilters = {
 	status?: SessionStatus;
@@ -1996,11 +1984,36 @@ function withinSilenceCeiling(lastActivityAt: string, nowMs: number): boolean {
 	return at === null || at > nowMs - config.managedSessionMaxSilenceMs;
 }
 
-/** The three sweep WHERE clauses; `protectedIds` are skipped by every one. */
+/**
+ * How long past its own expiry an approval row still holds its session. A row stays open past
+ * `expires_at` for at most about 6 minutes (the 60 s accept window, then 5 minutes to
+ * `outcome_unknown`), and the approval sweep runs every 30 s, so 10 minutes only matters if that sweep
+ * is broken: the session then completes at most 30 minutes after its newest approval was asked.
+ */
+export const APPROVAL_SWEEP_HOLD_GRACE_MS = 10 * 60_000;
+
+/**
+ * "No open approval row for this session" (AGEN-94). SQLite is pinned to the (session_id, status)
+ * index: without the hint it picks (status, expires_at) and walks every open row in the table for each
+ * candidate session. Postgres plans the same statement by key on its own.
+ */
+function noOpenApproval(holdCutoff: string): SQL {
+	const hint =
+		config.dialect === "sqlite"
+			? sql.raw("INDEXED BY idx_codex_approvals_session_status")
+			: sql.raw("");
+	return sql`NOT EXISTS (SELECT 1 FROM ${codexApprovals} ${hint} WHERE ${codexApprovals.sessionId} = ${sessions.sessionId} AND ${inArray(codexApprovals.status, [...OPEN_APPROVAL_STATUSES])} AND ${gt(codexApprovals.expiresAt, holdCutoff)})`;
+}
+
+/**
+ * The three sweep WHERE clauses; `protectedIds` are skipped by every one. Only completion (`end`) also
+ * waits for an open approval row: a held session is still idled and its working flag still cleared.
+ */
 export function sweepConditions(input: {
 	idleCutoff: string;
 	endCutoff: string;
 	stuckWorkingCutoff: string;
+	approvalHoldCutoff: string;
 	protectedIds: readonly string[];
 }) {
 	const skipProtected =
@@ -2020,6 +2033,7 @@ export function sweepConditions(input: {
 		end: and(
 			eq(sessions.status, "idle"),
 			lt(sessions.lastActivityAt, input.endCutoff),
+			noOpenApproval(input.approvalHoldCutoff),
 			...skipProtected,
 		),
 	};
@@ -2029,6 +2043,10 @@ export function sweepConditions(input: {
  * Advance stale sessions through the lifecycle:
  *   active  → idle       when !isWorking and no activity for idle timeout
  *   idle    → completed  when no activity for end timeout
+ *
+ * A session with an open approval row isn't completed (until `APPROVAL_SWEEP_HOLD_GRACE_MS` past the
+ * row's expiry): the card says the host can still answer, so the badge must say WAITING (AGEN-94).
+ * It still goes idle.
  *
  * Working sessions never transition automatically — the user rule is
  * that isWorking=true must block idle/completed until Stop arrives.
@@ -2052,7 +2070,15 @@ export async function updateStaleSessions(now: number = Date.now()): Promise<num
 		.filter((row) => withinSilenceCeiling(row.lastActivityAt, now))
 		.map((row) => row.sessionId);
 
-	const conditions = sweepConditions({ idleCutoff, endCutoff, stuckWorkingCutoff, protectedIds });
+	const approvalHoldCutoff = new Date(now - APPROVAL_SWEEP_HOLD_GRACE_MS).toISOString();
+
+	const conditions = sweepConditions({
+		idleCutoff,
+		endCutoff,
+		stuckWorkingCutoff,
+		approvalHoldCutoff,
+		protectedIds,
+	});
 
 	// Stuck-working recovery: clear isWorking on sessions that have been
 	// silent for far too long. Runs first so the idle transition below

@@ -37,6 +37,9 @@ export const EXPECTED_SUITES: readonly string[] = [
 	"src/server/services/claude-agent-approval-e2e.test.ts",
 	// AGEN-140: the control-lock race harness; a Claude Stop's host check moved under it once and CI caught it only after merge.
 	"src/server/services/ai/hitl-decision-races.test.ts",
+	// AGEN-94: an open approval row keeps a session from being completed (sweep, SessionEnd, replay), and the sweep statement's plan.
+	"src/server/services/codex-approvals-sweep-hold.test.ts",
+	"src/server/services/codex-approvals-plans.test.ts",
 ];
 
 /** Every path-like token of every `run:` block (folded `>-`, literal `|` or one line). */

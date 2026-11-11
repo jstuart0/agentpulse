@@ -1,5 +1,9 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { APPROVAL_WAIT_ID_PREFIX, approvalWaitId } from "../../shared/codex-approvals.js";
+import {
+	APPROVAL_WAIT_ID_PREFIX,
+	OPEN_APPROVAL_STATUSES,
+	approvalWaitId,
+} from "../../shared/codex-approvals.js";
 import { AGENT_TYPES, SEMANTIC_STATUSES } from "../../shared/constants.js";
 import type {
 	AgentType,
@@ -8,9 +12,16 @@ import type {
 	SemanticStatusUpdate,
 	SessionEvent,
 } from "../../shared/types.js";
+import { LIVE_MANAGED_STATES } from "../../shared/types.js";
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
-import { events, managedDeliveryReceipts, sessions } from "../db/schema/index.js";
+import {
+	events,
+	codexApprovals,
+	managedDeliveryReceipts,
+	managedSessions,
+	sessions,
+} from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import {
 	incrementForkHookDropped,
@@ -688,6 +699,10 @@ function isApprovalWaitId(id: unknown): id is string {
 	return typeof id === "string" && id.startsWith(APPROVAL_WAIT_ID_PREFIX);
 }
 
+function hasApprovalWaitIds(ids: unknown): boolean {
+	return Array.isArray(ids) && ids.some(isApprovalWaitId);
+}
+
 /**
  * The one push for a session's wait opening (the 0-to-1 transition): fire and forget, after the
  * transaction that opened it committed. Shared by a hook's PermissionRequest and by a Codex
@@ -899,7 +914,11 @@ export async function applyApprovalWait(
 	await enqueuePermissionWaitTask(sessionId, () =>
 		withTransaction(async (tx) => {
 			const [row] = await tx
-				.select({ metadata: sessions.metadata, semanticStatus: sessions.semanticStatus })
+				.select({
+					metadata: sessions.metadata,
+					semanticStatus: sessions.semanticStatus,
+					status: sessions.status,
+				})
 				.from(sessions)
 				.where(eq(sessions.sessionId, sessionId))
 				.limit(1);
@@ -927,6 +946,12 @@ export async function applyApprovalWait(
 					.update(sessions)
 					.set({ metadata, semanticStatus: "waiting" })
 					.where(eq(sessions.sessionId, sessionId));
+				// The sweep can complete a session whose host went quiet before this approval arrived; the card
+				// is answerable, so the session reads WAITING again (AGEN-94). Only a sweep-completed session
+				// (no endedByEvent: the sweep never writes it): a hook's SessionEnd, a failed or archived
+				// session and a host that reported the end stay ended.
+				if (row.status === "completed" && !metadata.endedByEvent)
+					await reopenSweptSession(tx, sessionId);
 				return;
 			}
 
@@ -940,6 +965,38 @@ export async function applyApprovalWait(
 	);
 	// Once, on the 0->1 transition, and only after the transaction committed.
 	if (waitOpened) announcePermissionWait(sessionId);
+}
+
+/** One guarded write: a completed, unarchived session whose managed process is still live goes back to active. */
+// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+async function reopenSweptSession(tx: any, sessionId: string) {
+	await tx
+		.update(sessions)
+		.set({ status: "active", endedAt: null })
+		.where(
+			and(
+				eq(sessions.sessionId, sessionId),
+				eq(sessions.status, "completed"),
+				eq(sessions.isArchived, false),
+				sql`EXISTS (SELECT 1 FROM ${managedSessions} WHERE ${managedSessions.sessionId} = ${sessions.sessionId} AND ${inArray(managedSessions.managedState, [...LIVE_MANAGED_STATES])})`,
+			),
+		);
+}
+
+/** An approval row that can still be answered, read inside the caller's transaction. */
+// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+async function hasOpenApprovalRow(tx: any, sessionId: string): Promise<boolean> {
+	const rows = await tx
+		.select({ id: codexApprovals.id })
+		.from(codexApprovals)
+		.where(
+			and(
+				eq(codexApprovals.sessionId, sessionId),
+				inArray(codexApprovals.status, [...OPEN_APPROVAL_STATUSES]),
+			),
+		)
+		.limit(1);
+	return rows.length > 0;
 }
 
 /** What a reconcile pass changed for one session. */
@@ -1522,15 +1579,33 @@ export async function processHookEvent(
 			const freshMetadata = (fresh?.metadata ?? {}) as Record<string, unknown>;
 			// A resumed session is not ended by a hook (D14): the real end of a taken-over session comes from
 			// the host's reports. Stored, with no lifecycle effect and no latch.
-			if (eventType === "SessionEnd" && freshMetadata.managedResumeAt) {
+			// Nor is a session that holds an approval wait (AGEN-94): the card is still answerable.
+			// The row is read, not just the derived wait: the wait is written a moment after the row commits.
+			const resumed = eventType === "SessionEnd" && Boolean(freshMetadata.managedResumeAt);
+			const holdsApproval =
+				eventType === "SessionEnd" &&
+				!resumed &&
+				(hasApprovalWaitIds(
+					(freshMetadata.permissionWait as PermissionWaitState | undefined)?.ids,
+				) ||
+					(await hasOpenApprovalRow(tx, sessionId)));
+			if (resumed || holdsApproval) {
 				const {
 					status: _s,
 					endedAt: _e,
 					isWorking: _w,
 					currentTurnStartedAt: _t,
 					metadata: _m,
-					...kept
+					...rest
 				} = updates;
+				// A held end still ends the turn: the working flag clears, only the lifecycle waits (AGEN-94).
+				const kept = holdsApproval
+					? {
+							...rest,
+							isWorking: updates.isWorking,
+							currentTurnStartedAt: updates.currentTurnStartedAt,
+						}
+					: rest;
 				await tx.update(sessions).set(kept).where(eq(sessions.sessionId, sessionId));
 				return true;
 			}

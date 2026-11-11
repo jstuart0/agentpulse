@@ -18,6 +18,7 @@ const { codexApprovals, launchRequests, managedSessions, sessions } = await impo
 	"../db/schema/index.js"
 );
 const { ownedApprovalRowsQuery } = await import("./codex-approvals.js");
+const { sweepConditions } = await import("./session-tracker.js");
 
 const SESSIONS = 50_000;
 const OWN = 300;
@@ -145,6 +146,63 @@ async function seed() {
 	}
 }
 
+const CANDIDATES = 50;
+const OPEN_MANY = 5_000;
+
+/**
+ * What the sweep sees in a busy install: CANDIDATES sessions that are idle and long quiet (the rows the
+ * end statement may complete), and OPEN_MANY open approval rows on other sessions (other hosts' requests,
+ * far from expiry). The statement must find each candidate's rows by key, not walk the open ones.
+ */
+async function seedSweepCandidates() {
+	const run = (text: string) => executeRows(getDb(), sql.raw(text));
+	const stale = "2020-01-01T00:00:00.000Z";
+	const now = new Date().toISOString();
+	const future = new Date(Date.now() + 600_000).toISOString();
+	const first = 1_000;
+	const openFirst = 2_000;
+	const cols =
+		"id, session_id, runtime_epoch, rpc_id, request_kind, thread_id, turn_id, item_id, presentation_hash, presentation_revision, approvable, can_cancel, status, created_at, expires_at, updated_at";
+	const bool = (v: boolean) => (config.dialect === "postgres" ? String(v) : v ? "1" : "0");
+	const openValues = (i: string) =>
+		`'plan-o-' || ${i}, '${PREFIX}' || ${i}, 'e', '1', 'command', 't', 't', 'i', 'h', 1, ${bool(true)}, ${bool(false)}, 'pending', '${now}', '${future}', '${now}'`;
+	const series = (from: number, to: number) =>
+		config.dialect === "postgres"
+			? `generate_series(${from}, ${to}) AS i`
+			: `(WITH RECURSIVE n(i) AS (SELECT ${from} UNION ALL SELECT i + 1 FROM n WHERE i < ${to}) SELECT i FROM n) AS i`;
+	await run(
+		`UPDATE sessions SET status = 'idle', last_activity_at = '${stale}' WHERE session_id IN (SELECT '${PREFIX}' || i FROM ${series(first, first + CANDIDATES - 1)})`,
+	);
+	await run(
+		`INSERT INTO codex_approvals (${cols}) SELECT ${openValues("i")} FROM ${series(openFirst, openFirst + OPEN_MANY - 1)}`,
+	);
+	if (config.dialect === "postgres") {
+		await run("ANALYZE sessions");
+		await run("ANALYZE codex_approvals");
+	}
+}
+
+/**
+ * The inactivity sweep's completion statement (AGEN-94), built from the same conditions the sweep runs.
+ * It must find sessions by their status and each candidate's open approvals by (session_id, status),
+ * at 50k sessions, never by scanning either table.
+ */
+const sweepEnd = () => {
+	const cutoff = new Date().toISOString();
+	const { end } = sweepConditions({
+		idleCutoff: cutoff,
+		endCutoff: cutoff,
+		stuckWorkingCutoff: cutoff,
+		approvalHoldCutoff: cutoff,
+		protectedIds: ["a", "b"],
+	});
+	return getDb()
+		.update(sessions)
+		.set({ status: "completed", endedAt: cutoff })
+		.where(end)
+		.toSQL() as { sql: string; params: unknown[] };
+};
+
 const syncRead = (listed: string[] = []) =>
 	ownedApprovalRowsQuery(getDb(), HOST, listed).toSQL() as { sql: string; params: unknown[] };
 
@@ -182,6 +240,28 @@ describeSqliteOnly("sync plan — SQLite", () => {
 	});
 });
 
+describeSqliteOnly("sweep end plan — SQLite", () => {
+	beforeAll(seedSweepCandidates, 120_000);
+	test("sessions by an index, approvals by (session_id, status), no table scan", () => {
+		// A fresh Drizzle database lacks the legacy-init index the installs the sweep runs on have.
+		getSqlite().exec("CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)");
+		const q = sweepEnd();
+		const text = (
+			getSqlite()
+				.prepare(`EXPLAIN QUERY PLAN ${q.sql}`)
+				.all(...(q.params as never[])) as Array<{ detail: string }>
+		)
+			.map((r) => r.detail)
+			.join("\n");
+		// Which sessions index leads depends on the statistics other suites left; either is a seek, not a scan.
+		expect(text, text).toMatch(/SEARCH sessions USING INDEX idx_sessions_(status|last_activity)/);
+		expect(text, text).toContain(
+			"SEARCH codex_approvals USING INDEX idx_codex_approvals_session_status",
+		);
+		expect(text, text).not.toMatch(/SCAN (sessions|codex_approvals)/);
+	});
+});
+
 describePostgresOnly("sync plan — Postgres", () => {
 	const planOf = async (q: { sql: string; params: unknown[] }) => {
 		const client = (
@@ -203,5 +283,32 @@ describePostgresOnly("sync plan — Postgres", () => {
 				/Seq Scan on (managed_sessions|launch_requests|codex_approvals)/,
 			);
 		}
+	});
+});
+
+describePostgresOnly("sweep end plan — Postgres", () => {
+	beforeAll(seedSweepCandidates, 120_000);
+	// Postgres has no index on sessions.status or last_activity_at, so the sweep's statement scans sessions
+	// with or without the approval check (measured on the base statement too); what the check must not add
+	// is a scan of codex_approvals.
+	test("looks up each candidate's open approvals by (session_id, status)", async () => {
+		const client = (
+			getDb() as unknown as {
+				$client: { unsafe: (text: string, params: unknown[], options: object) => Promise<unknown> };
+			}
+		).$client;
+		const q = sweepEnd();
+		const rows = (await client.unsafe(`EXPLAIN (COSTS OFF) ${q.sql}`, q.params, {
+			prepare: false,
+		})) as Array<Record<string, string>>;
+		const text = rows.map((r) => r["QUERY PLAN"]).join("\n");
+		// With 50 stale candidates and 5,000 open rows on other sessions, each candidate's rows are found by
+		// key (a nested anti join on session_id), not by walking every open row through (status, expires_at).
+		// The planner may pick either index that leads with session_id (idx_codex_approvals_session_status or
+		// uq_codex_approvals_session_epoch_rpc, seen in CI); both are a per-candidate lookup.
+		expect(text, text).toMatch(/Index Scan using \w+ on codex_approvals/);
+		expect(text, text).toContain("Index Cond: (session_id = sessions.session_id)");
+		expect(text, text).not.toContain("idx_codex_approvals_status_expires");
+		expect(text, text).not.toMatch(/Seq Scan on codex_approvals/);
 	});
 });

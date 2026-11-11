@@ -30,6 +30,7 @@ on:
       - "src/shared/managed-messages.ts"
       - "src/server/services/managed-session-state.ts"
       - "src/server/services/event-processor.ts"
+      - "src/server/services/session-tracker.ts" # AGEN-94
       - "src/server/services/claude-fork*"
       - "src/server/services/claude-takeover*"
       - "src/server/services/authorization.ts"
@@ -133,6 +134,8 @@ jobs:
           src/server/routes/fork-tool-calls.test.ts
           src/server/routes/fork-tool-calls-leak.test.ts
           src/server/services/retention-service.test.ts
+          src/server/services/codex-approvals-sweep-hold.test.ts
+          src/server/services/codex-approvals-plans.test.ts
 
       - name: Claude turn guard and Stop (Postgres backend; a skipped test fails the job)
         env:
