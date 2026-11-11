@@ -325,14 +325,9 @@ export function buildPresentation(
 			const rawDiff = typeof change?.diff === "string" ? change.diff : "";
 			const diffCap = Math.max(0, diffBudget);
 			const diff =
-				cleanField(
-					rawDiff.length > diffCap ? rawDiff.slice(0, diffCap) : rawDiff,
-					diffCap,
-					findings,
-					{
-						truncated: truncated || rawDiff.length > diffCap,
-					},
-				) ?? "";
+				cleanField(cutText(rawDiff, diffCap), diffCap, findings, {
+					truncated: truncated || rawDiff.length > diffCap,
+				}) ?? "";
 			diffBudget -= Math.min(rawDiff.length, diffCap);
 			changes.push({ path, kind, movePath, diff });
 		}
@@ -513,14 +508,14 @@ function buildPreviewBody(presentation: CodexApprovalPresentation): CodexApprova
 		return {
 			cwd: presentation.cwd,
 			tool: presentation.tool,
-			target: target.length > 300 ? target.slice(0, 300) : target,
+			target: cutText(target, 300),
 			pathOutsideCwd: presentation.tool === "Read",
 			nonAscii: NON_ASCII_RE.test(target) || NON_ASCII_RE.test(presentation.cwd ?? ""),
 		};
 	}
 	if (presentation.requestKind === "command") {
 		const command = presentation.command ?? "";
-		const head = command.length > 1200 ? command.slice(0, 1200) : command;
+		const head = cutText(command, 1200);
 		return {
 			cwd: presentation.cwd,
 			commandHead: head,
@@ -534,7 +529,7 @@ function buildPreviewBody(presentation: CodexApprovalPresentation): CodexApprova
 	const cwd = presentation.cwd;
 	const paths: CodexApprovalPathPreview[] = presentation.changes
 		.slice(0, 5)
-		.map((change) => ({ path: change.path.slice(0, 300), kind: change.kind }));
+		.map((change) => ({ path: cutText(change.path, 300), kind: change.kind }));
 	const outside = changesOutsideCwd(presentation).some(Boolean);
 	return {
 		cwd,
