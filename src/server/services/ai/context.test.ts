@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Session, SessionEvent } from "../../../shared/types.js";
-import { buildWatcherContext } from "./context.js";
+import { UNTRUSTED_DATA_RULES, buildWatcherContext } from "./context.js";
 
 function makeSession(overrides: Partial<Session> = {}): Session {
 	return {
@@ -57,16 +57,17 @@ function makeEvent(overrides: Partial<SessionEvent> = {}): SessionEvent {
 }
 
 describe("buildWatcherContext", () => {
-	test("produces a system prompt with session identity", () => {
+	test("puts the session identity in the user message, never in the system prompt", () => {
 		const ctx = buildWatcherContext({
 			session: makeSession(),
 			events: [],
 			triggerType: "idle",
 		});
-		expect(ctx.systemPrompt).toContain("brave-falcon");
-		expect(ctx.systemPrompt).toContain("claude_code");
-		expect(ctx.systemPrompt).toContain("/Users/test/project");
-		expect(ctx.systemPrompt).toContain("main");
+		for (const field of ["brave-falcon", "claude_code", "/Users/test/project", "main"]) {
+			expect(ctx.transcriptPrompt).toContain(field);
+		}
+		expect(ctx.systemPrompt).not.toContain("brave-falcon");
+		expect(ctx.systemPrompt).not.toContain("/Users/test/project");
 	});
 
 	test("always includes the decision schema in the system prompt", () => {
@@ -191,8 +192,10 @@ describe("buildWatcherContext", () => {
 			customSystemPrompt: "You are a concise watcher. Always respond with JSON.",
 		});
 		expect(ctx.systemPrompt).toContain("concise watcher");
-		// Still appends session identity block after the custom prompt.
-		expect(ctx.systemPrompt).toContain("brave-falcon");
+		// The identity is in the user message; the untrusted-data rules still follow the custom prompt.
+		expect(ctx.transcriptPrompt).toContain("brave-falcon");
+		expect(ctx.systemPrompt).not.toContain("brave-falcon");
+		expect(ctx.systemPrompt).toEndWith(UNTRUSTED_DATA_RULES);
 	});
 
 	test("mentions current task and plan in transcript prompt", () => {

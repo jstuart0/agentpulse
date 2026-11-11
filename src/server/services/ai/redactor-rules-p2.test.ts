@@ -986,35 +986,35 @@ describe("P2-27 the CLAUDE.md excerpt in the watcher's prompt is redacted", () =
 			extraRedactionRules: extra,
 		});
 
-	test("P2-27 a key, an env secret and a database URL in CLAUDE.md never reach the system prompt", () => {
+	test("P2-27 a key, an env secret and a database URL in CLAUDE.md never reach the prompt", () => {
 		const ctx = build(
 			`# Notes\nuse ${key}\nDB_PASSWORD=hunter2hunter2\nDATABASE_URL=postgres://u:pa55word@host/db\nkeep this line`,
 		);
-		expect(ctx.systemPrompt).not.toContain(key);
-		expect(ctx.systemPrompt).not.toContain("hunter2");
-		expect(ctx.systemPrompt).not.toContain("pa55word");
-		expect(ctx.systemPrompt).toContain("keep this line");
-		expect(ctx.systemPrompt).toContain(
+		expect(ctx.transcriptPrompt).not.toContain(key);
+		expect(ctx.transcriptPrompt).not.toContain("hunter2");
+		expect(ctx.transcriptPrompt).not.toContain("pa55word");
+		expect(ctx.transcriptPrompt).toContain("keep this line");
+		expect(ctx.transcriptPrompt).toContain(
 			"# Repository instructions (excerpt, untrusted data between the markers)",
 		);
 	});
 
 	test("P2-27 a key that straddles the 2,000-character cut is masked before the cut, so no piece of it remains", () => {
 		const ctx = build(`${"a".repeat(1990)} ${key} tail`);
-		expect(ctx.systemPrompt).not.toContain("sk-ant-");
-		expect(ctx.systemPrompt).not.toContain("aB3dE5");
+		expect(ctx.transcriptPrompt).not.toContain("sk-ant-");
+		expect(ctx.transcriptPrompt).not.toContain("aB3dE5");
 	});
 
 	test("P2-27 user-defined rules apply to the excerpt as well", () => {
 		const ctx = build("ticket INT-123456 is open", [
 			{ name: "internal", pattern: /INT-\d{6}/g, replacement: "[REDACTED:internal]" },
 		]);
-		expect(ctx.systemPrompt).toContain("ticket [REDACTED:internal] is open");
+		expect(ctx.transcriptPrompt).toContain("ticket [REDACTED:internal] is open");
 	});
 
 	test("P2-27 an excerpt with nothing secret in it is unchanged up to the cut", () => {
 		const text = `${"plain line\n".repeat(300)}`;
 		const ctx = build(text);
-		expect(ctx.systemPrompt).toContain(text.slice(0, 1990));
+		expect(ctx.transcriptPrompt).toContain(text.slice(0, 1990));
 	});
 });

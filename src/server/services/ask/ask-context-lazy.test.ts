@@ -345,12 +345,13 @@ function seedThread(count: number, opts: { sameSecond: boolean }): string[] {
 }
 
 function expectedHistory(count: number): string {
-	// The turn's own user message is saved first, so it is the newest of the 12.
-	const lines = ["<history>"];
+	// The turn's own user message is saved first, so it is the newest of the 12. The history is a
+	// fenced block of one-line records; its nonce is normalised by the caller.
+	const lines = ["<history-<nonce>>"];
 	for (let i = Math.max(0, count - 11); i < count; i++) {
 		lines.push(`${i % 2 === 0 ? "USER" : "ASSISTANT"}: message ${i}`);
 	}
-	lines.push("USER: hello there caching", "</history>");
+	lines.push("USER: hello there caching", "</history-<nonce>>");
 	return lines.join("\n");
 }
 
@@ -379,7 +380,10 @@ describeSqliteOnly("the history a turn reads is bounded to what it renders", () 
 			expect(reads[0]?.sql).toMatch(/limit/i);
 			expect(reads[0]?.rows).toBeLessThanOrEqual(12);
 			const transcript = llm.callsOfKind("answer")[0]?.transcriptPrompt ?? "";
-			const history = transcript.slice(0, transcript.indexOf("</history>") + "</history>".length);
+			const closeAt = transcript.search(/<\/history-[0-9a-f-]{36}>/);
+			const history = transcript
+				.slice(0, closeAt + "</history-".length + 36 + ">".length)
+				.replace(/history-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/g, "history-<nonce>");
 			expect(history).toBe(expectedHistory(count));
 		});
 	}

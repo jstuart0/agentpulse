@@ -77,6 +77,17 @@ export function fenceUntrusted(tag: string, body: string): FencedText {
 }
 
 /**
+ * A fenced block of records, one per line. Each record goes through
+ * formatUntrustedInline first (`<` and `>` become guillemets, line breaks become
+ * spaces, invisible characters go), so no record can be a second line, a tag or a
+ * fake label, and the fence around them holds as for `fenceUntrusted`. With this
+ * and `fenceUntrusted` there is no other place that builds a delimiter.
+ */
+export function fenceUntrustedLines(tag: string, lines: readonly string[]): FencedText {
+	return fenceUntrusted(tag, lines.map(formatUntrustedInline).join("\n"));
+}
+
+/**
  * Strips the same invisible characters as formatUntrustedInline but keeps
  * `\n` (and tabs), for multi-line text such as a handoff. CR is stripped, so
  * CRLF becomes LF; NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR become `\n`.

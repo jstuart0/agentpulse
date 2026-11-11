@@ -243,7 +243,7 @@ describe("ai/context.ts:119 — real system-prompt assembly", () => {
 			// biome-ignore lint/suspicious/noExplicitAny: minimal Session fixture for a pure-function test
 		} as any;
 		const ctx = buildWatcherContext({ session, events: [], triggerType: "manual" });
-		const lines = ctx.systemPrompt.split("\n");
+		const lines = ctx.transcriptPrompt.split("\n");
 		const identityLine = lines.find((l: string) => l.startsWith("- Session:"));
 		expect(identityLine).toBeDefined();
 		// The fake instruction text is still present (formatUntrustedInline
@@ -254,7 +254,9 @@ describe("ai/context.ts:119 — real system-prompt assembly", () => {
 		// instead. That's the actual defense: no separate injected line.
 		expect(identityLine).not.toContain("\n");
 		expect(lines.some((l: string) => l.trim().startsWith("# SYSTEM:"))).toBe(false);
-		expect(ctx.systemPrompt.toLowerCase()).toContain("untrusted");
+		expect(ctx.transcriptPrompt.toLowerCase()).toContain("untrusted");
+		// The system role carries none of the session's fields.
+		expect(ctx.systemPrompt).not.toContain("- Session:");
 	});
 });
 

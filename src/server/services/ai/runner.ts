@@ -39,6 +39,7 @@ import {
 } from "./proposals-service.js";
 import { getProvider, getProviderApiKey } from "./providers-service.js";
 import { RunLeaser } from "./run-leaser.js";
+import { checkText, collectUserPromptUrls, contextOf } from "./session-summary/tripwire.js";
 import { addSpendCents, checkSpendBudget } from "./spend-service.js";
 import { type Boundary, boundaryOf, computeTurnKey, hasPromptAfter } from "./turn-identity.js";
 import { isWatched } from "./watched-sessions.js";
@@ -62,6 +63,32 @@ export const CONTINUE_MIN_CALL_INTERVAL_MS = 60_000;
 export const CONTINUE_PROPOSALS_PER_SESSION_PER_HOUR = 6;
 // Enough events to find the trigger and to cover a turn that ran long.
 const MAX_EVENTS_LOOKBACK = 200;
+
+/** Appended to the prompt when the first reply did not match the schema. Fixed, so nothing the model said comes back. */
+const PARSE_RETRY_NOTICE =
+	"RESPONSE PARSE ERROR: the reply did not match the schema. Respond with exactly one JSON object per the schema. No prose.";
+
+/** Stored in place of a report that failed the text check; the person's inbox entry keeps the report itself. */
+export const HELD_BACK_REPORT_TEXT =
+	"The watcher's report was held back: it contained text AgentPulse could not check.";
+
+/**
+ * The `AiReport` event is read back by Ask and by the next watcher run, so a report that
+ * carries a link or a command nothing recorded (the same check Notify's note passes) is
+ * replaced there by fixed text. This run has no ledger: nothing counts as recorded, and
+ * the URLs the person typed in the rows the run read are the only ones that pass.
+ */
+function reportTextForTranscript(summary: string, recent: SessionEvent[]): string {
+	const typedUrls = collectUserPromptUrls(
+		recent.filter((e) => e.category === "prompt").map((e) => e.content ?? ""),
+	);
+	const suspect = checkText(
+		summary,
+		contextOf(typedUrls, { recordedPaths: [], recordedCommands: [] }),
+		{ checkCommands: false },
+	);
+	return suspect.length > 0 ? HELD_BACK_REPORT_TEXT : summary;
+}
 // A Continue decision reads the whole current turn, however long ago it began.
 const CONTINUE_TIME_BUDGET_MS = 6 * 60 * 60 * 1000;
 const CONTINUE_MAX_TOKENS = 600;
@@ -682,9 +709,14 @@ export class WatcherRunner {
 			// One retry on schema violation; just downgrade on syntax errors.
 			if (parsed.schemaViolation) {
 				try {
+					// A fixed sentence: the parse error can carry the model's own text, and the prompt
+					// is not a place to repeat it. The detail goes to the log only.
+					console.warn(
+						`[ai-watcher] ${sessionId} reply did not match the schema, retrying: ${JSON.stringify(parsed.error.slice(0, 200))}`,
+					);
 					const retry = await adapter.complete({
 						systemPrompt: ctx.systemPrompt,
-						transcriptPrompt: `${ctx.transcriptPrompt}\n\nRESPONSE PARSE ERROR: ${parsed.error}. Respond with exactly one JSON object per the schema. No prose.`,
+						transcriptPrompt: `${ctx.transcriptPrompt}\n\n${PARSE_RETRY_NOTICE}`,
 						model: provider.model,
 						disableReasoning: true,
 						timeoutMs: config.watcherCallTimeoutSeconds * 1000,
@@ -795,7 +827,7 @@ export class WatcherRunner {
 				source: "managed_control",
 				category: "ai_report",
 				eventType: "AiReport",
-				content: decision.summary,
+				content: reportTextForTranscript(decision.summary, recent),
 				rawPayload: {
 					proposal_id: pending.id,
 					status: decision.status,

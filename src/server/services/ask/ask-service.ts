@@ -18,6 +18,7 @@ import {
 	getProviderApiKey,
 } from "../ai/providers-service.js";
 import { getSemanticEnricher } from "../ai/semantic-enricher.js";
+import { fenceUntrustedLines } from "../ai/untrusted-text.js";
 import { getMode } from "../instance-mode.js";
 import { getCachedProjects } from "../projects/cache.js";
 import {
@@ -425,16 +426,14 @@ function launchCheckFailedNote(subType: string | undefined): string {
 	return `_(Heads up: I tried to check whether this was a session-launch request but ${why} — answering as a normal question.)_\n\n`;
 }
 
+/** Earlier turns, as one fenced block of one-line records: both voices are data, and neither can fake a line. */
 function renderHistory(history: AskMessageRecord[]): string {
 	const tail = history.slice(-MAX_HISTORY_TURNS * 2);
 	if (tail.length === 0) return "";
-	const lines = ["<history>"];
-	for (const msg of tail) {
-		const tag = msg.role === "user" ? "USER" : "ASSISTANT";
-		lines.push(`${tag}: ${msg.content}`);
-	}
-	lines.push("</history>");
-	return lines.join("\n");
+	return fenceUntrustedLines(
+		"history",
+		tail.map((msg) => `${msg.role === "user" ? "USER" : "ASSISTANT"}: ${msg.content}`),
+	).text;
 }
 
 export interface AskTurnInput {

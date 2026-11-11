@@ -72,7 +72,7 @@ const transcriptOf = (ctx: { transcriptPrompt: string }) => {
 };
 
 describe("speaker labels", () => {
-	test("a person's prompt is HUMAN OPERATOR>, the agent is CODING AGENT:, and the old labels are gone", () => {
+	test("a prompt is PROMPT TO AGENT> (it is reported, not verified), the agent is CODING AGENT:, and the old labels are gone", () => {
 		const ctx = buildWatcherContext({
 			session: makeSession(),
 			events: [
@@ -86,13 +86,14 @@ describe("speaker labels", () => {
 			triggerType: "stop",
 		});
 		const lines = transcriptOf(ctx);
-		expect(lines.some((l) => l.includes("HUMAN OPERATOR> fix the build"))).toBe(true);
+		expect(lines.some((l) => l.includes("PROMPT TO AGENT> fix the build"))).toBe(true);
+		expect(ctx.transcriptPrompt).not.toContain("HUMAN OPERATOR");
 		expect(lines.some((l) => l.includes("CODING AGENT: I fixed the build"))).toBe(true);
 		expect(ctx.transcriptPrompt).not.toContain("USER>");
 		expect(ctx.transcriptPrompt).not.toContain("ASSISTANT:");
 	});
 
-	test("a prompt the watcher sent is WATCHER-SENT>, not the human's, and only at or after it was sent", () => {
+	test("a prompt the watcher sent is WATCHER-SENT>, not PROMPT TO AGENT>, and only at or after it was sent", () => {
 		const sentAt = Date.now() - 60_000;
 		const sent = event({
 			category: "prompt",
@@ -113,13 +114,14 @@ describe("speaker labels", () => {
 		});
 		const lines = transcriptOf(ctx).filter((l) => l.includes("Run the project's tests"));
 		expect(lines).toHaveLength(2);
-		expect(lines[0]).toContain("HUMAN OPERATOR>");
+		expect(lines[0]).toContain("PROMPT TO AGENT>");
 		expect(lines[1]).toContain("WATCHER-SENT>");
 	});
 
-	test("the system prompt says the watcher is neither party and what nextPrompt is", () => {
+	test("the system prompt says the watcher is neither party, what the labels mean and what nextPrompt is", () => {
 		const ctx = buildWatcherContext({ session: makeSession(), events: [], triggerType: "stop" });
-		expect(ctx.systemPrompt).toContain("neither party");
+		expect(ctx.systemPrompt).toContain("not the coding agent and you are not");
+		expect(ctx.systemPrompt).toContain("AgentPulse can't tell who typed them");
 		expect(ctx.systemPrompt).toContain("never a reply to the");
 		expect(ctx.systemPrompt).toContain('choose\n  "ask"');
 	});
@@ -174,15 +176,16 @@ describe("repository instructions", () => {
 			events: [],
 			triggerType: "stop",
 		});
-		const open = ctx.systemPrompt.match(/<claude-md-([0-9a-f-]{36})>/);
+		const open = ctx.transcriptPrompt.match(/<claude-md-([0-9a-f-]{36})>/);
 		expect(open).not.toBeNull();
 		const nonce = open?.[1] ?? "";
-		expect(ctx.systemPrompt).toContain(`</claude-md-${nonce}>`);
-		const inside = ctx.systemPrompt.slice(
-			ctx.systemPrompt.indexOf(`<claude-md-${nonce}>`),
-			ctx.systemPrompt.indexOf(`</claude-md-${nonce}>`),
+		expect(ctx.transcriptPrompt).toContain(`</claude-md-${nonce}>`);
+		const inside = ctx.transcriptPrompt.slice(
+			ctx.transcriptPrompt.indexOf(`<claude-md-${nonce}>`),
+			ctx.transcriptPrompt.indexOf(`</claude-md-${nonce}>`),
 		);
 		expect(inside).toContain("Always run the tests.");
+		expect(ctx.systemPrompt).not.toContain("Always run the tests.");
 	});
 
 	test("text inside it can't close the fence", () => {
@@ -191,8 +194,8 @@ describe("repository instructions", () => {
 			events: [],
 			triggerType: "stop",
 		});
-		const open = ctx.systemPrompt.match(/<claude-md-([0-9a-f-]{36})>/);
-		const closers = ctx.systemPrompt.split(`</claude-md-${open?.[1]}>`).length - 1;
+		const open = ctx.transcriptPrompt.match(/<claude-md-([0-9a-f-]{36})>/);
+		const closers = ctx.transcriptPrompt.split(`</claude-md-${open?.[1]}>`).length - 1;
 		expect(closers).toBe(1);
 	});
 });

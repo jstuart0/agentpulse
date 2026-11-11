@@ -94,19 +94,19 @@ const EXPECTED: Record<string, { reply: string; included: string[]; transcript?:
 		reply: "ANSWER",
 		included: ["sess-alpha"],
 		transcript:
-			'<history>\nUSER: hello there caching\n</history>\n\n<sessions-<nonce>>\n## Session: Alpha caching work\n- id: sess-alpha\n- agent: claude_code\n- status: active · tool uses: 0\n- cwd: "/work/alpha"\n- last activity: 2026-01-02 03:04:05\n- recent events (oldest → newest):\n   - [2026-01-02 03:04:05] UserPromptSubmit: fix the caching bug\n</sessions-<nonce>>\n\nUSER: hello there caching',
+			'<history-<nonce>>\nUSER: hello there caching\n</history-<nonce>>\n\n<sessions-<nonce>>\n## Session: Alpha caching work\n- id: sess-alpha\n- agent: claude_code\n- status: active · tool uses: 0\n- cwd: "/work/alpha"\n- last activity: 2026-01-02 03:04:05\n- recent events (oldest → newest):\n   - [2026-01-02 03:04:05] UserPromptSubmit: fix the caching bug\n</sessions-<nonce>>\n\nUSER: hello there caching',
 	},
 	"fall-through: gate passes but the classifier declines": {
 		reply: "ANSWER",
 		included: ["sess-alpha"],
 		transcript:
-			'<history>\nUSER: stop worrying about the caching\n</history>\n\n<sessions-<nonce>>\n## Session: Alpha caching work\n- id: sess-alpha\n- agent: claude_code\n- status: active · tool uses: 0\n- cwd: "/work/alpha"\n- last activity: 2026-01-02 03:04:05\n- recent events (oldest → newest):\n   - [2026-01-02 03:04:05] UserPromptSubmit: fix the caching bug\n</sessions-<nonce>>\n\nUSER: stop worrying about the caching',
+			'<history-<nonce>>\nUSER: stop worrying about the caching\n</history-<nonce>>\n\n<sessions-<nonce>>\n## Session: Alpha caching work\n- id: sess-alpha\n- agent: claude_code\n- status: active · tool uses: 0\n- cwd: "/work/alpha"\n- last activity: 2026-01-02 03:04:05\n- recent events (oldest → newest):\n   - [2026-01-02 03:04:05] UserPromptSubmit: fix the caching bug\n</sessions-<nonce>>\n\nUSER: stop worrying about the caching',
 	},
 	"fall-through: explicit session ids": {
 		reply: "ANSWER",
 		included: ["sess-beta"],
 		transcript:
-			'<history>\nUSER: hello there\n</history>\n\n<sessions-<nonce>>\n## Session: Beta billing work\n- id: sess-beta\n- agent: claude_code\n- status: active · tool uses: 0\n- cwd: "/work/beta"\n- last activity: 2026-01-02 03:04:05\n- recent events (oldest → newest):\n   - [2026-01-02 03:04:05] UserPromptSubmit: reconcile the invoices\n</sessions-<nonce>>\n\nUSER: hello there',
+			'<history-<nonce>>\nUSER: hello there\n</history-<nonce>>\n\n<sessions-<nonce>>\n## Session: Beta billing work\n- id: sess-beta\n- agent: claude_code\n- status: active · tool uses: 0\n- cwd: "/work/beta"\n- last activity: 2026-01-02 03:04:05\n- recent events (oldest → newest):\n   - [2026-01-02 03:04:05] UserPromptSubmit: reconcile the invoices\n</sessions-<nonce>>\n\nUSER: hello there',
 	},
 };
 
