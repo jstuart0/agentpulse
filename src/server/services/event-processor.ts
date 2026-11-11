@@ -946,19 +946,12 @@ export async function applyApprovalWait(
 					.update(sessions)
 					.set({ metadata, semanticStatus: "waiting" })
 					.where(eq(sessions.sessionId, sessionId));
-				// A session completed before this approval arrived (the sweep, or a hook's SessionEnd that
-				// landed first) is answerable again, so it reads WAITING (AGEN-94). A failed or archived
-				// session and one whose host reported the end stay ended. The row is the host's own report, so
-				// reopening on it can't be forged by a hook; a SessionEnd's latch is lifted with it.
-				if (row.status === "completed" && (await reopenSweptSession(tx, sessionId))) {
-					if (metadata.endedByEvent) {
-						const { endedByEvent: _latch, ...rest } = metadata;
-						await tx
-							.update(sessions)
-							.set({ metadata: rest })
-							.where(eq(sessions.sessionId, sessionId));
-					}
-				}
+				// The sweep can complete a session whose host went quiet before this approval arrived; the card
+				// is answerable, so the session reads WAITING again (AGEN-94). Only a sweep-completed session
+				// (no endedByEvent: the sweep never writes it): a hook's SessionEnd, a failed or archived
+				// session and a host that reported the end stay ended.
+				if (row.status === "completed" && !metadata.endedByEvent)
+					await reopenSweptSession(tx, sessionId);
 				return;
 			}
 
@@ -976,8 +969,8 @@ export async function applyApprovalWait(
 
 /** One guarded write: a completed, unarchived session whose managed process is still live goes back to active. */
 // biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
-async function reopenSweptSession(tx: any, sessionId: string): Promise<boolean> {
-	const reopened = await tx
+async function reopenSweptSession(tx: any, sessionId: string) {
+	await tx
 		.update(sessions)
 		.set({ status: "active", endedAt: null })
 		.where(
@@ -987,9 +980,7 @@ async function reopenSweptSession(tx: any, sessionId: string): Promise<boolean> 
 				eq(sessions.isArchived, false),
 				sql`EXISTS (SELECT 1 FROM ${managedSessions} WHERE ${managedSessions.sessionId} = ${sessions.sessionId} AND ${inArray(managedSessions.managedState, [...LIVE_MANAGED_STATES])})`,
 			),
-		)
-		.returning({ sessionId: sessions.sessionId });
-	return reopened.length > 0;
+		);
 }
 
 /** An approval row that can still be answered, read inside the caller's transaction. */

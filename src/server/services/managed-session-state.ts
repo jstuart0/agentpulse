@@ -1,5 +1,4 @@
 import { and, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
-import { OPEN_APPROVAL_STATUSES } from "../../shared/codex-approvals.js";
 import {
 	HOST_RESTARTED_FORK_SYNC_ERROR,
 	HOST_RESTARTED_SYNC_ERROR,
@@ -18,7 +17,6 @@ import type {
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
 import {
-	codexApprovals,
 	controlActions,
 	launchRequests,
 	managedSessions,
@@ -168,13 +166,6 @@ export function _setAfterResumeCheckHookForTest(hook: (() => Promise<void>) | nu
 	afterResumeCheckHook = hook;
 }
 
-// Test seam (AGEN-94): runs inside a replayed terminal report, after its other session writes and before the
-// statement that sets the status, which is where an approval committed "just now" must still be seen.
-let beforeReplayStatusHook: (() => Promise<void>) | null = null;
-export function _setBeforeReplayStatusHookForTest(hook: (() => Promise<void>) | null): void {
-	beforeReplayStatusHook = hook;
-}
-
 /**
  * Refuses a report that names a resume action unless that action is still open for this session, in the
  * report's own transaction and before anything is written. On Postgres the action row is locked
@@ -265,11 +256,6 @@ export function peerTurnRecord(
 	return changed ? { text: null, hidden: true, at } : { text: cleaned, hidden: false, at };
 }
 
-/** "No open approval row for this session", as a condition of the statement that would end it (AGEN-94). */
-function noOpenApprovalRow() {
-	return sql`NOT EXISTS (SELECT 1 FROM ${codexApprovals} WHERE ${codexApprovals.sessionId} = ${sessions.sessionId} AND ${inArray(codexApprovals.status, [...OPEN_APPROVAL_STATUSES])})`;
-}
-
 async function writeManagedSessionState(
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	db: any,
@@ -316,7 +302,6 @@ async function writeManagedSessionState(
 		if (existingSession.isWorking) sessionUpdates.lastAgentTurnCompletedAt = timestamp;
 	}
 
-	let heldByApproval = false;
 	if (!existingSession) {
 		// The supervisor-report creation path. Owner comes from a
 		// correlated launch's requester when this report already names one
@@ -366,15 +351,6 @@ async function writeManagedSessionState(
 	} else {
 		await inTransactionOf(db, inTx, async (tx) => {
 			const updates: Record<string, unknown> = { ...sessionUpdates };
-			// A replayed terminal report may be older than an approval row that is still open, and a live
-			// terminal report is the one that closes rows. Its status is written by a statement that checks
-			// for open rows itself (below), so a row committed a moment ago can't be missed.
-			const holdsStatus = options.replay === true && isTerminalStateReport(input);
-			const terminalStatus = updates.status;
-			if (holdsStatus) {
-				// biome-ignore lint/performance/noDelete: the key must be absent, not undefined, so the column isn't written
-				delete updates.status;
-			}
 			const latch = await claudeStopLatchChange(
 				tx,
 				input,
@@ -421,17 +397,6 @@ async function writeManagedSessionState(
 				updates.metadata = merged;
 			}
 			await tx.update(sessions).set(updates).where(eq(sessions.sessionId, input.sessionId));
-			if (holdsStatus) {
-				await beforeReplayStatusHook?.();
-				const written = await tx
-					.update(sessions)
-					.set({ status: terminalStatus })
-					.where(and(eq(sessions.sessionId, input.sessionId), noOpenApprovalRow()))
-					.returning({ sessionId: sessions.sessionId });
-				// Held (AGEN-94): the session keeps its status until the rows close, and the managed row keeps
-				// its state with it, so the two can't disagree and a later approval can still reopen it.
-				heldByApproval = written.length === 0;
-			}
 		});
 	}
 
@@ -485,7 +450,7 @@ async function writeManagedSessionState(
 	// producer in the codebase only writes ManagedState members, so the
 	// runtime value is always valid.
 	const resolvedManagedState: ManagedState =
-		(heldDegraded || heldByApproval ? undefined : input.managedState) ??
+		(heldDegraded ? undefined : input.managedState) ??
 		(existingManaged?.managedState as ManagedState | undefined) ??
 		"managed";
 
