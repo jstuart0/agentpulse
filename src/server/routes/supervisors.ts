@@ -88,6 +88,7 @@ import {
 	assertSupervisorCanWriteSession,
 } from "../services/session-ownership.js";
 import { broadcastSweptSessions, getSession } from "../services/session-tracker.js";
+import { boundedWellFormedValue, wellFormedText } from "../services/storage-text.js";
 import { parseRegistrationShape } from "../services/supervisor-capabilities.js";
 import {
 	readHeartbeatBody,
@@ -506,9 +507,10 @@ supervisorsAgentRouter.post(
 			supervisorId,
 			launchId,
 			status: body.status,
-			error: body.error,
+			error: typeof body.error === "string" ? wellFormedText(body.error) : body.error,
 			pid: body.pid,
-			providerLaunchMetadata: body.providerLaunchMetadata ?? null,
+			// Host JSON, bounded and made storable on both dialects (AGEN-39).
+			providerLaunchMetadata: boundedWellFormedValue(body.providerLaunchMetadata ?? null),
 		});
 		if (!launchRequest) return c.json({ error: "Launch request not found" }, 404);
 		return c.json({ launchRequest });
@@ -837,7 +839,7 @@ supervisorsAgentRouter.post(
 			status: body.status,
 			// Host text can carry a path or a pasted value: cleaned uncut, redacted, then cut.
 			error: redactHostText(body.error),
-			metadata: body.metadata ?? null,
+			metadata: boundedWellFormedValue(body.metadata ?? null),
 			accepted: body.accepted === true,
 			provedCwd: body.provedCwd,
 			permissionMode: body.permissionMode,

@@ -14,6 +14,7 @@ import {
 	isServerOnlyEventName,
 	isSupervisorOnlyEventName,
 } from "./event-normalizer.js";
+import { boundedWellFormedValue, cutText, wellFormedText } from "./storage-text.js";
 
 /**
  * Secret redaction for text on its way into storage (AGEN-146).
@@ -344,12 +345,25 @@ function admit(sender: string, units: number): Ticket | Promise<Ticket | null> |
 // ── Leaves ──────────────────────────────────────────────────────────────────
 
 /** The string cut to `max` characters, never inside a surrogate pair. */
-function cutHead(text: string, max: number): string {
-	if (text.length <= max) return text;
-	let end = max;
-	const last = text.charCodeAt(end - 1);
-	if (last >= 0xd800 && last <= 0xdbff) end--;
-	return text.slice(0, end);
+const cutHead = cutText;
+
+/**
+ * Text made storable on both dialects (U+0000 and lone surrogates replaced, AGEN-39), counted when
+ * it changed anything. Deterministic, so it never counts as a redaction (`stats.changed`).
+ */
+function fix(text: string): string {
+	const out = wellFormedText(text);
+	if (out !== text) counters.storageTextFixed++;
+	return out;
+}
+
+/** A value kept as written (a path, a name): made storable, and counted, with the supervisor-JSON bounds. */
+function fixVerbatim(value: unknown): unknown {
+	if (typeof value === "string") return fix(value);
+	if (value === null || typeof value !== "object") return value;
+	const out = boundedWellFormedValue(value);
+	if (out !== value) counters.storageTextFixed++;
+	return out;
 }
 
 /** The last `max` characters, never starting inside a surrogate pair. */
@@ -519,8 +533,9 @@ function redactKey(key: string, ws: WalkState): string {
 		out = KEY_MARKER;
 	}
 	if (out !== key) ws.stats.changed = true;
-	ws.keys.set(key, out);
-	return out;
+	const fixed = fix(out);
+	ws.keys.set(key, fixed);
+	return fixed;
 }
 
 function setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
@@ -543,8 +558,9 @@ async function leafFor(text: string, underSecretKey: boolean, ws: WalkState): Pr
 	const input = ws.leafCap !== null ? cutHead(text, ws.leafCap) : text;
 	const out = await redactLeaf(input, ws.sender, ws.stats);
 	if (out !== text) ws.stats.changed = true;
-	ws.plain.set(text, out);
-	return out;
+	const fixed = fix(out);
+	ws.plain.set(text, fixed);
+	return fixed;
 }
 
 /** Names of members whose value a sibling's name marks as secret: `{name: "DB_PASSWORD", value: "..."}`. */
@@ -600,7 +616,7 @@ async function walkValue(
 }
 
 function maskIfValue(text: string, minChars: number): string {
-	return text.length >= minChars && !isPlaceholderValue(text) ? MASK : text;
+	return text.length >= minChars && !isPlaceholderValue(text) ? MASK : fix(text);
 }
 
 async function walkObject(
@@ -693,7 +709,7 @@ async function walkTopLevel(
 			continue;
 		}
 		if (VERBATIM_KEYS.has(key)) {
-			setOwn(out, key, value);
+			setOwn(out, key, fixVerbatim(value));
 			continue;
 		}
 		const special = await hooks.special?.(key, value);
@@ -749,7 +765,7 @@ function idsAndNamesOnly(
 		) {
 			setOwn(out, key, value);
 		} else if (VERBATIM_KEYS.has(key)) {
-			setOwn(out, key, value);
+			setOwn(out, key, fixVerbatim(value));
 		}
 	}
 	return out;
@@ -803,11 +819,12 @@ async function redactToolResponse(
 	const originalChars = original.length;
 	if (typeof response === "string") {
 		const cut = cutHead(response, TOOL_RESPONSE_SCAN_CHARS);
-		return { text: await redactLeaf(cut, sender, stats), originalChars };
+		return { text: fix(await redactLeaf(cut, sender, stats)), originalChars };
 	}
 	const ws = newWalkState(sender, stats, TOOL_RESPONSE_SCAN_CHARS);
 	const walked = await walkValue(response, false, 0, ws);
-	const text = (serializeToolResponse(walked) ?? "").slice(0, TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP);
+	// Every leaf and key is already storable, so the serialised text is too; the cut keeps pairs whole.
+	const text = cutText(serializeToolResponse(walked) ?? "", TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP);
 	return { text, originalChars };
 }
 
@@ -921,7 +938,7 @@ export async function prepareHookPayloadForStorage(
 
 async function shortField(text: string, sender: string, stats: RedactionStats): Promise<string> {
 	const cut = cutHead(text, SHORT_FIELD_MAX_CHARS + 256);
-	return cutHead(await redactLeaf(cut, sender, stats), SHORT_FIELD_MAX_CHARS);
+	return fix(cutHead(await redactLeaf(cut, sender, stats), SHORT_FIELD_MAX_CHARS));
 }
 
 // ── Other text ──────────────────────────────────────────────────────────────
@@ -948,7 +965,7 @@ export function redactShortForStorage(text: string, maxChars = SHORT_FIELD_MAX_C
 		const first = redact(cutHead(text, maxChars + 256)).text;
 		const cut = cutHead(first, maxChars);
 		const second = redact(cut).text;
-		return cut.length < first.length ? trimCutTokenFragment(second) : second;
+		return fix(cut.length < first.length ? trimCutTokenFragment(second) : second);
 	} catch {
 		counters.errors++;
 		return ERROR_MARKER;
@@ -964,7 +981,7 @@ export async function redactTextForStorage(text: string, sender: string): Promis
 		return BACKLOG_MARKER;
 	}
 	try {
-		return await redactLeaf(text, sender, stats);
+		return fix(await redactLeaf(text, sender, stats));
 	} finally {
 		ticket.release();
 	}

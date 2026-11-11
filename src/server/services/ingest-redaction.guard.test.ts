@@ -161,8 +161,29 @@ describe("the writers of a session's text fields", () => {
 
 	test("cwd and transcript_path are left as written, on purpose", () => {
 		// Operational identity: the takeover compares directories, the host's exclude rules judge them
-		// and transcript sync reads the path. Masking would break each. Named residual (D9).
+		// and transcript sync reads the path. Masking would break each. Named residual (D9). They are
+		// still made storable (AGEN-39): a path with U+0000 names no real file.
 		const module = read("server/services/ingest-redaction.ts");
 		expect(module).toMatch(/VERBATIM_KEYS[\s\S]{0,120}"cwd"[\s\S]{0,40}"transcript_path"/);
+	});
+});
+
+describe("storable text (AGEN-39)", () => {
+	test("the normalizer never cuts with a bare slice, which can split a surrogate pair", () => {
+		expect(read("server/services/event-normalizer.ts")).not.toMatch(/\.slice\(0,/);
+	});
+
+	test("every writer of host or agent text imports the one storage rule", () => {
+		for (const file of [
+			"server/services/ingest-redaction.ts",
+			"server/services/event-normalizer.ts",
+			"server/services/event-processor.ts",
+			"server/services/managed-session-state.ts",
+			"server/routes/supervisors.ts",
+			"server/services/ask/ask-service.ts",
+			"server/services/codex-approval-presentation.ts",
+		]) {
+			expect(read(file), file).toMatch(/from "(?:\.\.?\/)+(?:services\/)?storage-text\.js"/);
+		}
 	});
 });

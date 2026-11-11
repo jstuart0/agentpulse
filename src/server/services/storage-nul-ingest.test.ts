@@ -315,6 +315,11 @@ describe("other writers", () => {
 				category: "system_event",
 				source: "observed_transcript",
 				content: `third${NUL}`,
+				isNoise: false,
+				toolName: null,
+				toolInput: null,
+				toolResponse: null,
+				providerEventType: null,
 				rawPayload: {},
 			} as never,
 		]);
@@ -439,7 +444,8 @@ describe("other writers", () => {
 			const [row] = await getDb().select().from(controlActions).where(eq(controlActions.id, id));
 			expect(row?.status).toBe("succeeded");
 			expect(row?.metadata).toEqual({ note: `a${MARK}b`, [`k${MARK}`]: FFFD });
-			expect(row?.error).toBe(`bad${MARK}thing`);
+			// Host error text already goes through cleanHostText, which turns control characters into spaces.
+			expect(row?.error).toBe("bad thing");
 			expectStorable(row);
 		});
 

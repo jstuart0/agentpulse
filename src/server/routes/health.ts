@@ -104,7 +104,9 @@ export function computeClientChecksums(): Promise<Record<string, string>> {
 //  - ingestRedaction (AGEN-146): counters only for the secret-redaction step on
 //    the way into storage (pendingUnits, pendingJobs, unitsScanned, hits,
 //    cutLeaves, backlogMarkers, errors, idsDropped, sessionIdRefused,
-//    maxSliceMs) — see services/ingest-redaction.ts.
+//    maxSliceMs, transcriptSyncInsertFailed, storageTextFixed (AGEN-39:
+//    strings and keys whose U+0000 or lone surrogate was replaced)) — see
+//    services/ingest-redaction.ts.
 //  - searchIndexes (AGEN-27 / percy TB17): Postgres trigram search-index
 //    presence ({ present, missing[] }), checked once at boot; null on
 //    SQLite (not applicable) — see services/search/search-index-status.ts.

@@ -80,6 +80,7 @@ import {
 	sessionCreationLimitSubject,
 	tryConsumeSessionCreation,
 } from "./session-creation-limit.js";
+import { wellFormedText } from "./storage-text.js";
 import { toDbTimestamp } from "./util/db-time.js";
 
 const RECENT_ROWS_FOR_DEDUP = 50;
@@ -1302,8 +1303,8 @@ export async function processHookEvent(
 				displayName: generateSessionName(),
 				agentType,
 				status: "active",
-				cwd: payload.cwd || null,
-				transcriptPath: payload.transcript_path || null,
+				cwd: payload.cwd ? wellFormedText(payload.cwd) : null,
+				transcriptPath: payload.transcript_path ? wellFormedText(payload.transcript_path) : null,
 				model: payload.model ? redactShortForStorage(payload.model) : null,
 				startedAt: now,
 				lastActivityAt: now,
@@ -1417,7 +1418,7 @@ export async function processHookEvent(
 	}
 	if (metadataUpdate) updates.metadata = metadataUpdate;
 
-	if (payload.cwd) updates.cwd = payload.cwd;
+	if (payload.cwd) updates.cwd = wellFormedText(payload.cwd);
 	if (stored.payload.model) updates.model = stored.payload.model;
 
 	// The machine the sender reported (display only, unauthenticated: nothing

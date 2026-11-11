@@ -24,6 +24,7 @@ import {
 	type NotApprovableReason,
 } from "../../shared/codex-approvals.js";
 import { stripAndRedact } from "./ai/redactor.js";
+import { cutText, wellFormedText } from "./storage-text.js";
 import { sha256Hex } from "./util/hash.js";
 
 /** Stable JSON: keys sorted at every depth, so the same value always hashes the same. */
@@ -143,7 +144,7 @@ function cleanField(
 	let text = input;
 	let cut = options.truncated === true;
 	if (text.length > max) {
-		text = text.slice(0, max);
+		text = cutText(text, max);
 		cut = true;
 	}
 	if (cut) findings.tooLong = true;
@@ -154,11 +155,15 @@ function cleanField(
 		if (SPACE_RUN_RE.test(text) || hasLongBlankRun(text)) findings.padded = true;
 		if (hasLookalike(text, options.split)) findings.lookalike = true;
 	}
-	const { text: cleaned, hits } = stripAndRedact(text);
+	const { text: stripped, hits } = stripAndRedact(text);
 	if (hits.length > 0) findings.redacted = true;
-	else if (cleaned !== text) findings.invisible = true;
+	else if (stripped !== text) findings.invisible = true;
+	// A lone surrogate can't be shown or stored as it came: it is replaced, and the field is no longer
+	// approvable, like any other change (NUL is stripped above, as before).
+	const cleaned = wellFormedText(stripped);
+	if (cleaned !== stripped) findings.invisible = true;
 	if (!cut) return cleaned;
-	return cleaned.slice(0, Math.max(0, cleaned.length - CODEX_APPROVAL_LIMITS.secretCutMargin));
+	return cutText(cleaned, Math.max(0, cleaned.length - CODEX_APPROVAL_LIMITS.secretCutMargin));
 }
 
 function isBlank(value: string | null): boolean {
