@@ -519,14 +519,46 @@ describe("other writers", () => {
 			expect(await res.json()).toEqual({ error: "invalid_body" });
 		});
 
-		test("(w) launch status and control-action status carry the managed report body limit", async () => {
+		test("(w) a status body over 2 MiB is accepted, and its single huge string is repaired", async () => {
 			const sup = await supervisor();
-			const huge = { status: "running", metadata: { pad: "x".repeat(3 * 1024 * 1024) } };
-			for (const path of ["/launches/some-launch/status", "/control-actions/some-action/status"]) {
-				const res = await send(sup, path, huge);
-				expect(res.status).toBe(413);
-				expect(await res.json()).toEqual({ error: "payload_too_large" });
-			}
+			const id = crypto.randomUUID();
+			await getDb()
+				.insert(controlActions)
+				.values({ id, actionType: "prompt", status: "running", claimedBySupervisorId: sup.id });
+			const pad = `${"x".repeat(5 * 1024 * 1024)}${NUL}end`;
+			const res = await send(sup, `/control-actions/${id}/status`, {
+				status: "succeeded",
+				metadata: { pad },
+			});
+			expect(res.status).toBe(200);
+			const [row] = await getDb().select().from(controlActions).where(eq(controlActions.id, id));
+			const stored = (row?.metadata as { pad: string }).pad;
+			expect(stored.length).toBe(pad.length);
+			expect(stored.endsWith(`${MARK}end`)).toBe(true);
+			// a launch status of the same size is not refused for its size
+			const launch = await send(sup, "/launches/no-such-launch/status", {
+				status: "running",
+				providerLaunchMetadata: { pad },
+			});
+			expect(launch.status).toBe(404);
+		});
+
+		test("(w2) a malformed path parameter is judged after the credential", async () => {
+			const sup = await supervisor();
+			const res = await app.request(`/api/v1/supervisors/${sup.id}/control-actions/a%00b/status`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Authorization: "Bearer not-a-credential" },
+				body: JSON.stringify({ status: "succeeded" }),
+			});
+			expect([401, 403]).toContain(res.status);
+			const get = await app.request(`/api/v1/supervisors/${sup.id}/provider-sync`, {
+				headers: { Authorization: `Bearer ${sup.credential}` },
+			});
+			expect(get.status).toBe(200);
+			const badGet = await app.request("/api/v1/supervisors/a%00b/provider-sync", {
+				headers: { Authorization: `Bearer ${sup.credential}` },
+			});
+			expect([400, 401, 403]).toContain(badGet.status);
 		});
 
 		test("(x) a managed events delivery is repaired but its receipt comes from the raw body", async () => {

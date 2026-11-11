@@ -457,8 +457,8 @@ supervisorsAgentRouter.post("/supervisors/register", registerBodyLimit, async (c
 
 supervisorsAgentRouter.post(
 	"/supervisors/:id/heartbeat",
-	wellFormedPathParams,
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
 		const body = await readHeartbeatBody(c);
@@ -471,8 +471,8 @@ supervisorsAgentRouter.post(
 
 supervisorsAgentRouter.post(
 	"/supervisors/:id/launches/claim",
-	wellFormedPathParams,
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
 		const launchRequest = await claimNextLaunchRequest(supervisorId);
@@ -499,9 +499,8 @@ const managedReportBodyLimit = bodyLimit({
 
 supervisorsAgentRouter.post(
 	"/supervisors/:id/launches/:launchId/status",
-	wellFormedPathParams,
 	requireSupervisorAuth(),
-	managedReportBodyLimit,
+	wellFormedPathParams,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
 		const launchId = c.req.param("launchId") ?? "";
@@ -648,8 +647,8 @@ async function wellFormedPathParams(c: Context, next: Next) {
 
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-session-state",
-	wellFormedPathParams,
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	managedReportBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
@@ -691,8 +690,8 @@ supervisorsAgentRouter.post(
 
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-sessions/:sessionId/events",
-	wellFormedPathParams,
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	managedReportBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
@@ -789,8 +788,8 @@ const APPROVAL_REFUSAL_STATUS: Record<string, 400 | 403 | 409> = {
 // supervisor, so it is never a replay.
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-sessions/:sessionId/approvals",
-	wellFormedPathParams,
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	approvalReportBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
@@ -826,8 +825,8 @@ const toolCallsBodyLimit = bodyLimit({
 // fixed codes; nothing the agent wrote is ever in an answer.
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-sessions/:sessionId/tool-calls",
-	wellFormedPathParams,
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	toolCallsBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
@@ -856,8 +855,8 @@ supervisorsAgentRouter.post(
 // Holds no control lock. Ownership is judged for every id from the authenticated host.
 supervisorsAgentRouter.post(
 	"/supervisors/:id/approvals/sync",
-	wellFormedPathParams,
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	approvalSyncBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
@@ -870,16 +869,21 @@ supervisorsAgentRouter.post(
 	},
 );
 
-supervisorsAgentRouter.get("/supervisors/:id/provider-sync", requireSupervisorAuth(), async (c) => {
-	const supervisorId = c.req.param("id") ?? "";
-	const managedSessions = await listManagedSessionsNeedingSync(supervisorId);
-	return c.json({ managedSessions });
-});
+supervisorsAgentRouter.get(
+	"/supervisors/:id/provider-sync",
+	requireSupervisorAuth(),
+	wellFormedPathParams,
+	async (c) => {
+		const supervisorId = c.req.param("id") ?? "";
+		const managedSessions = await listManagedSessionsNeedingSync(supervisorId);
+		return c.json({ managedSessions });
+	},
+);
 
 supervisorsAgentRouter.post(
 	"/supervisors/:id/control-actions/claim",
-	wellFormedPathParams,
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
 		const action = await claimNextControlAction(supervisorId);
@@ -889,9 +893,8 @@ supervisorsAgentRouter.post(
 
 supervisorsAgentRouter.post(
 	"/supervisors/:id/control-actions/:actionId/status",
-	wellFormedPathParams,
 	requireSupervisorAuth(),
-	managedReportBodyLimit,
+	wellFormedPathParams,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
 		const actionId = c.req.param("actionId") ?? "";

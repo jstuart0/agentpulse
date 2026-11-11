@@ -173,23 +173,29 @@ describe("storable text (AGEN-39)", () => {
 		expect(read("server/services/event-normalizer.ts")).not.toMatch(/\.slice\(0,/);
 	});
 
-	test("every supervisor agent POST reads its body through the one bounded well-formed pass", () => {
+	test("every supervisor agent route reads its body through the one bounded well-formed pass", () => {
 		const source = read("server/routes/supervisors.ts");
 		const start = source.indexOf("const supervisorsAgentRouter");
 		const end = source.indexOf("export { supervisorsAgentRouter");
 		expect(start).toBeGreaterThanOrEqual(0);
 		const agent = source.slice(start, end);
 		const blocks = agent
-			.split(/(?=supervisorsAgentRouter\.post\()/)
-			.filter((b) => b.startsWith("supervisorsAgentRouter.post("));
-		expect(blocks.length).toBeGreaterThanOrEqual(11);
+			.split(/(?=supervisorsAgentRouter\.(?:post|get)\()/)
+			.filter((b) => /^supervisorsAgentRouter\.(?:post|get)\(/.test(b));
+		expect(blocks.length).toBeGreaterThanOrEqual(12);
 		// routes that take no body at all
 		const bodyless = ["/supervisors/:id/launches/claim", "/supervisors/:id/control-actions/claim"];
 		for (const block of blocks) {
-			const path = block.match(/post\(\s*"([^"]+)"/)?.[1] ?? "";
-			if (path.includes(":"))
+			const path = block.match(/(?:post|get)\(\s*"([^"]+)"/)?.[1] ?? "";
+			if (path.includes(":")) {
 				expect(block, `${path} checks its path parameters`).toContain("wellFormedPathParams");
-			if (bodyless.includes(path)) continue;
+				// after the credential, so a malformed id gets the established 401/403 wording
+				expect(
+					block.indexOf("requireSupervisorAuth("),
+					`${path} judges the credential first`,
+				).toBeLessThan(block.indexOf("wellFormedPathParams"));
+			}
+			if (bodyless.includes(path) || block.startsWith("supervisorsAgentRouter.get(")) continue;
 			expect(block, `${path} reads its body through the bounded pass`).toMatch(
 				/parseJsonObject\(|readHeartbeatBody\(/,
 			);
