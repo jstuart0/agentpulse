@@ -49,7 +49,7 @@
     },
     "packages/agentpulse-mcp": {
       "name": "@craze0/agentpulse-mcp",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "bin": {
         "agentpulse-mcp": "dist/cli.js",
       },

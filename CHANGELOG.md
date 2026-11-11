@@ -7,118 +7,7 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
-### Security
-
-- **With `DISABLE_AUTH=true`, the whole API now refuses DNS-rebinding pages and cross-site requests (AGEN-92).** Until now only a
-  few routes (stop turn, prompt, tool calls, approval decisions, take over) judged the Host, so a page on a name that resolves to
-  your machine could read every session and start a launch, and any website could post to `http://127.0.0.1:3000/api/v1/launches`
-  or `/hooks` with a `text/plain` body. One gate now runs first on every `/api` and `/app-api` request and answers
-  `403 { error: "bad_origin", message }` when the Host isn't `localhost`, an IP address or a `PUBLIC_URL` name, or when a browser
-  marks the request cross-site (`Sec-Fetch-Site: cross-site`, or an Origin that isn't allowlisted, the request's own, or a
-  loopback origin on the server's own port, or on Vite's 5173 outside production; the Origin's scheme must match the request's). Requests with no Origin and no `Sec-Fetch-Site` (curl, the relay, the supervisor, MCP, hooks) are judged by
-  Host only. Auth-on behaviour is unchanged. Still open, filed separately: outside production, a page on Vite's port 5173
-  is accepted as a loopback origin (AGEN-152); auth on, `POST /internal/drain` checks no Origin (AGEN-151); `/setup.sh` and the other install scripts are readable
-  by rebinding (AGEN-153). On a plain-http LAN server a cross-site GET sends no `Sec-Fetch-Site` or Origin and passes.
-
-### Changed
-
-- **⚠ breaking (auth off only): a server run with `DISABLE_AUTH=true` refuses every Host that isn't `localhost`, an IP address or
-  a name in `PUBLIC_URL`, and every cross-site browser request.** Opening the dashboard at `http://mybox.local:3000` now shows a
-  "This address isn't allowed" page. Fix: add the name to `PUBLIC_URL` and restart, or use an IP or `localhost` (README, "Opening
-  an auth-off server by name"). What else reaches the server by a name and stops until then:
-  - Claude HTTP hooks, Codex and Copilot hook shims and the OpenCode plugin installed with `--url http://<name>`. Events are
-    dropped silently. `agentpulse setup`, `setup-hooks.sh` and the `/setup.sh` script now check for this before writing anything.
-  - The relay with a `--url` by name: events stay queued, but a queued file is dropped after 24 hours or 10,000 files.
-    `setup-relay.sh` checks, and the relay logs the fix once.
-  - The supervisor with `AGENTPULSE_SERVER_URL` by name: registration retries forever, and its offline outbox ages out after 24
-    hours. It logs the server's message once.
-  - MCP with `AGENTPULSE_URL` by name (the error now says what to set).
-  - The Telegram webhook, if you set it through a name that is now refused: add the name to `PUBLIC_URL`, or open the dashboard at
-    an accepted address and press **Set webhook** again.
-  - Monitors that probe `/health` by service name (`http://agentpulse:3000/...`): probe by IP or `localhost`, or add the name.
-  - An IPv6 address with a zone id (`[fe80::1%25en0]`) is refused.
-  - A browser page on any other loopback port (`http://localhost:8080`, or Vite moved off 5173) is refused: list that origin in
-    `PUBLIC_URL`.
-  - A request with `Origin: null` (a `file://` page, a sandboxed or `data:` frame, a redirect-tainted request, some browser
-    extensions) is refused.
-  - By-IP and `localhost` setups, the Vite dev server (`http://localhost:5173`), and the dashboard on an accepted address are
-    unchanged. The Vite dev server's own `allowedHosts` must never be set to `true`.
-- **Secrets in stored event and session text are masked (AGEN-146).** Agent text used to be stored exactly as sent, then indexed,
-  shared in team mode and served over REST, WebSocket and MCP. It is now masked before it is written, for every agent type: a
-  key in a prompt, a command or a tool's output becomes a marker in `events` (content, tool input, tool response, raw payload)
-  and in a session's native name, model, branch, task, plan and managed thread titles. Text over 1,000,000 characters keeps its
-  head and tail around a marker. Work is sliced and capped per sender, and an event that can't be scanned in time is stored as
-  a marker, never in the clear. `GET /api/v1/health` gains `ingestRedaction` counters. Rows written before the upgrade are not
-  rewritten. Limits are listed in the README (*Secrets in stored text*).
-- **Redaction rules.** The built-in rules now see a token glued to a literal `\n`/`\r`/`\t`, an ANSI colour sequence or a `%xx`
-  escape, and `API_KEY_sk-ant-...` (a long distinctive prefix after an underscore or digit). A value that only starts with
-  `[REDACTED]` is masked, so a marker can't be used to hide the rest of a secret. These also apply to the watcher, the summary,
-  Telegram and push, which redact on the way out.
-- **Hook-event watcher gate.** The human gate sends a turn to a person when its last message or pending tool call holds
-  any `[REDACTED` mask, because a rule may have swallowed what followed the secret; a benign false-positive mask (for example
-  `const token = await getToken()`) now holds the turn too. The risk classes flag only the narrower set of markers that
-  stand for withheld text (`redaction_backlog`, `redaction_error`, `over_limit` and similar). `Cookie:` lines and
-  `Authorization: Digest`/`AWS4` parameters mask to markers the gate treats as withheld text.
-
-### Added
-
-- **OpenCode is observed (AGEN-141).** OpenCode 1.x and 2.x sessions appear on the dashboard with an "OpenCode" badge and an
-  "Observed only" hint; AgentPulse can't launch, steer, take over or resume them. A small plugin per OpenCode line runs inside
-  OpenCode and posts to the server (8 events on 1.x, 10 on 2.x); `agentpulse setup`, `setup-hooks.sh`, `install-local.ps1` and
-  the relay installer write it when OpenCode is found, and `--no-opencode` / `-NoOpenCode` removes it. The agent type is
-  `opencode`, accepted by the `agent_type` filters, the MCP `list_sessions` tool and the Setup page. Tested on OpenCode 1.19.5
-  and 2.2.6 on macOS. **Upgrade the server first:** an older server stores OpenCode events as Claude Code sessions.
-  Things to know:
-  - OpenCode 1.x downloads its plugin SDK the first time it finds a plugin and then waits about 70 seconds at each start while
-    offline, so setup writes the 1.x plugin only where the SDK is already present or another plugin is loaded, and says so when
-    it doesn't. The force option (`--opencode-force`, `-OpenCodeForce`) writes it anyway; it isn't remembered.
-  - The plugin applies your exclude rules and sends nothing while they're invalid. A running OpenCode 2 background service
-    doesn't see `AGENTPULSE_SKIP` set in a shell: use a rule, or `opencode service stop`. With a rules file present, a one-shot
-    `opencode run` sends nothing at exit, so a turn end whose POST hadn't started can be lost.
-  - Prompts, tool arguments and output are stored as the other agents' are (masked at ingest since AGEN-146; before that, with no
-    redaction before the server); error rows carry only the error's name and HTTP status. The exit-time send uses `/usr/bin/curl`. PowerShell has never been executed.
-- **Stop turn on a continued Claude session (AGEN-119).** While a continued session's turn runs, the prompt box shows **Stop turn**
-  in place of Send (on a phone the overflow menu has it too, above End session). It ends what Claude is doing and the session
-  stays open: the process, the conversation and the session keep going and the next prompt runs. Nothing is signalled (Claude's
-  own interrupt is used); a command it was running is ended by Claude, and anything it left in the background keeps running as
-  with any stop. The turn's open approval cards close as "stopped" and can't be answered. A Stop turn pressed before the prompt
-  reached Claude cancels the send and puts your text back in the box. `POST /sessions/:id/interrupt` is new (6 a minute per
-  caller; owner or admin in team mode; a signed-in person or a `manage` key, never `respond`), as is the MCP tool
-  `stop_session_turn`. A stopped turn is not an alarm: the session reads IDLE, the timeline line is not amber, and the watcher
-  sends no "didn't finish" note. Only continued sessions can be stopped this way (`interrupt_not_supported` otherwise).
-- **Continued Claude sessions: tool-call rows record how each call ended (AGEN-122).** A row now carries a structured outcome
-  (ran, failed, declined, refused, stopped) and, for a failed Bash command, the exit code Claude printed; nothing is inferred and
-  a success has no exit code. The Summary counts an observed tool call without storing its command, and the session classifier
-  counts only calls that actually failed. The server now rebuilds the payload of every continued-session timeline row from a
-  per-kind whitelist before it is stored.
-- **Owner-only tool detail on continued Claude sessions (AGEN-123).** The session's owner (and admins in team mode) can open what
-  each tool call ran: **Details** on a call's line and **Show what ran** under a turn's unasked line. Input and output are shown
-  with secret-looking text hidden and each cut to 16 KB, kept 7 days (sooner if event retention is shorter), encrypted at rest
-  with `AGENTPULSE_SECRETS_KEY` (without it the feature is off and rows show names and outcomes only). A signed-in person only:
-  every API key is refused `human_required` and there is no MCP tool. Nothing is kept for a call that touched a path an exclude
-  rule covers, or for a Bash command or MCP call while a rule covers a place under the session's directory. New routes
-  `GET /sessions/:id/tool-calls` and `/:toolUseId`; migration `0022` adds `fork_tool_calls`.
-- **MCP servers on continued Claude sessions (AGEN-121).** Off by default; **Include my fork MCP servers** in the continue
-  dialog starts the servers listed in `~/.agentpulse/claude-fork-mcp.json` on that machine (a `0600` file you own, at most 16
-  servers). Claude's own MCP configuration, plugins and connectors are never read. Every MCP tool call gets an approval card
-  showing the tool's name, the server and the whole input; accepting stays with a signed-in person, and the MCP package's
-  `list_pending_approvals` shows such a request as `tool: "mcp"`. Resuming after the file changed is refused
-  (`mcp_servers_changed`). Measured on Claude Code 2.1.319 only; account-synced connectors, Linux and Windows are not tested.
-- **Subagents on continued Claude sessions (AGEN-120).** Off by default; **Allow subagents** lets Claude start foreground helpers.
-  A helper's commands, file changes and fetches ask you like Claude's own, marked "Asked by a subagent"; starting a helper is
-  itself a card, approvable only for the built-in `general-purpose` type (a helper you defined and a helper that starts a helper
-  can only be declined). A helper that outlives its turn ends the session, which Resume recovers. An Agent call is recorded
-  under the tool name `Agent` in its row and detail. Measured on Claude Code 2.1.319 only.
-
-- **Take over a Codex session you started by hand, and resume one whose process ended (AGEN-115).** On a stopped, observed
-  Codex session the page offers **Take over**: pick the machine it ran on, and that machine's supervisor resumes the same
-  conversation under `untrusted` / `workspace-write`, so prompts, Stop and approvals work from the dashboard. A managed Codex
-  session whose process was lost (a supervisor restart) shows **Resume session**. Codex only; a signed-in person only (never
-  an API key); a takeover counts as a launch in the day's launch count; the session must have been quiet for 5 minutes. If a
-  TUI left Codex's background service holding the thread, the takeover says so and names `codex app-server daemon stop`.
-  `POST /sessions/:id/bind` is new and `POST /sessions/:id/resume` is real (it was a 501). A taken-over session can't be
-  retried (`409 retry_not_available`), and delete and archive are refused while a takeover is open (`takeover_in_progress`).
-  With `DISABLE_AUTH=true` the same posture applies as for approvals: anyone who can reach the server can do it.
+## [0.11.0] — 2026-11-10
 
 ### Upgrade notes
 
@@ -185,7 +74,143 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 - Run one supervisor per host credential. A second live supervisor on the same credential marks the first's Codex sessions
   `degraded` and fails their open prompts.
-- The `@craze0/agentpulse-mcp` change (error messages for the new refusals) ships with the next `mcp-v*` release.
+- The `@craze0/agentpulse-mcp` change (error messages for the new refusals) ships in `@craze0/agentpulse-mcp` 0.4.0.
+
+- **Secret masking at ingest (AGEN-146) applies to new rows only.** Rows stored before the upgrade are not rewritten. A session id longer than 200 characters or outside the id grammar is now refused (still `200`, counted as `sessionIdRefused`); every real Claude, Codex, Copilot and OpenCode id passes. The watcher's human gate now holds a turn whose last message or pending tool call contains any `[REDACTED` mask, so an `auto` watcher may hand more turns to a person.
+
+### Security
+
+- **With `DISABLE_AUTH=true`, the whole API now refuses DNS-rebinding pages and cross-site requests (AGEN-92).** Until now only a
+  few routes (stop turn, prompt, tool calls, approval decisions, take over) judged the Host, so a page on a name that resolves to
+  your machine could read every session and start a launch, and any website could post to `http://127.0.0.1:3000/api/v1/launches`
+  or `/hooks` with a `text/plain` body. One gate now runs first on every `/api` and `/app-api` request and answers
+  `403 { error: "bad_origin", message }` when the Host isn't `localhost`, an IP address or a `PUBLIC_URL` name, or when a browser
+  marks the request cross-site (`Sec-Fetch-Site: cross-site`, or an Origin that isn't allowlisted, the request's own, or a
+  loopback origin on the server's own port, or on Vite's 5173 outside production; the Origin's scheme must match the request's). Requests with no Origin and no `Sec-Fetch-Site` (curl, the relay, the supervisor, MCP, hooks) are judged by
+  Host only. Auth-on behaviour is unchanged. Still open, filed separately: outside production, a page on Vite's port 5173
+  is accepted as a loopback origin (AGEN-152); auth on, `POST /internal/drain` checks no Origin (AGEN-151); `/setup.sh` and the other install scripts are readable
+  by rebinding (AGEN-153). On a plain-http LAN server a cross-site GET sends no `Sec-Fetch-Site` or Origin and passes.
+
+### Added
+
+- **OpenCode is observed (AGEN-141).** OpenCode 1.x and 2.x sessions appear on the dashboard with an "OpenCode" badge and an
+  "Observed only" hint; AgentPulse can't launch, steer, take over or resume them. A small plugin per OpenCode line runs inside
+  OpenCode and posts to the server (8 events on 1.x, 10 on 2.x); `agentpulse setup`, `setup-hooks.sh`, `install-local.ps1` and
+  the relay installer write it when OpenCode is found, and `--no-opencode` / `-NoOpenCode` removes it. The agent type is
+  `opencode`, accepted by the `agent_type` filters, the MCP `list_sessions` tool and the Setup page. Tested on OpenCode 1.19.5
+  and 2.2.6 on macOS. **Upgrade the server first:** an older server stores OpenCode events as Claude Code sessions.
+  Things to know:
+  - OpenCode 1.x downloads its plugin SDK the first time it finds a plugin and then waits about 70 seconds at each start while
+    offline, so setup writes the 1.x plugin only where the SDK is already present or another plugin is loaded, and says so when
+    it doesn't. The force option (`--opencode-force`, `-OpenCodeForce`) writes it anyway; it isn't remembered.
+  - The plugin applies your exclude rules and sends nothing while they're invalid. A running OpenCode 2 background service
+    doesn't see `AGENTPULSE_SKIP` set in a shell: use a rule, or `opencode service stop`. With a rules file present, a one-shot
+    `opencode run` sends nothing at exit, so a turn end whose POST hadn't started can be lost.
+  - Prompts, tool arguments and output are stored as the other agents' are (masked at ingest since AGEN-146; before that, with no
+    redaction before the server); error rows carry only the error's name and HTTP status. The exit-time send uses `/usr/bin/curl`. PowerShell has never been executed.
+- **Stop turn on a continued Claude session (AGEN-119).** While a continued session's turn runs, the prompt box shows **Stop turn**
+  in place of Send (on a phone the overflow menu has it too, above End session). It ends what Claude is doing and the session
+  stays open: the process, the conversation and the session keep going and the next prompt runs. Nothing is signalled (Claude's
+  own interrupt is used); a command it was running is ended by Claude, and anything it left in the background keeps running as
+  with any stop. The turn's open approval cards close as "stopped" and can't be answered. A Stop turn pressed before the prompt
+  reached Claude cancels the send and puts your text back in the box. `POST /sessions/:id/interrupt` is new (6 a minute per
+  caller; owner or admin in team mode; a signed-in person or a `manage` key, never `respond`), as is the MCP tool
+  `stop_session_turn`. A stopped turn is not an alarm: the session reads IDLE, the timeline line is not amber, and the watcher
+  sends no "didn't finish" note. Only continued sessions can be stopped this way (`interrupt_not_supported` otherwise).
+- **Continued Claude sessions: tool-call rows record how each call ended (AGEN-122).** A row now carries a structured outcome
+  (ran, failed, declined, refused, stopped) and, for a failed Bash command, the exit code Claude printed; nothing is inferred and
+  a success has no exit code. The Summary counts an observed tool call without storing its command, and the session classifier
+  counts only calls that actually failed. The server now rebuilds the payload of every continued-session timeline row from a
+  per-kind whitelist before it is stored.
+- **Owner-only tool detail on continued Claude sessions (AGEN-123).** The session's owner (and admins in team mode) can open what
+  each tool call ran: **Details** on a call's line and **Show what ran** under a turn's unasked line. Input and output are shown
+  with secret-looking text hidden and each cut to 16 KB, kept 7 days (sooner if event retention is shorter), encrypted at rest
+  with `AGENTPULSE_SECRETS_KEY` (without it the feature is off and rows show names and outcomes only). A signed-in person only:
+  every API key is refused `human_required` and there is no MCP tool. Nothing is kept for a call that touched a path an exclude
+  rule covers, or for a Bash command or MCP call while a rule covers a place under the session's directory. New routes
+  `GET /sessions/:id/tool-calls` and `/:toolUseId`; migration `0022` adds `fork_tool_calls`.
+- **MCP servers on continued Claude sessions (AGEN-121).** Off by default; **Include my fork MCP servers** in the continue
+  dialog starts the servers listed in `~/.agentpulse/claude-fork-mcp.json` on that machine (a `0600` file you own, at most 16
+  servers). Claude's own MCP configuration, plugins and connectors are never read. Every MCP tool call gets an approval card
+  showing the tool's name, the server and the whole input; accepting stays with a signed-in person, and the MCP package's
+  `list_pending_approvals` shows such a request as `tool: "mcp"`. Resuming after the file changed is refused
+  (`mcp_servers_changed`). Measured on Claude Code 2.1.319 only; account-synced connectors, Linux and Windows are not tested.
+- **Subagents on continued Claude sessions (AGEN-120).** Off by default; **Allow subagents** lets Claude start foreground helpers.
+  A helper's commands, file changes and fetches ask you like Claude's own, marked "Asked by a subagent"; starting a helper is
+  itself a card, approvable only for the built-in `general-purpose` type (a helper you defined and a helper that starts a helper
+  can only be declined). A helper that outlives its turn ends the session, which Resume recovers. An Agent call is recorded
+  under the tool name `Agent` in its row and detail. Measured on Claude Code 2.1.319 only.
+
+- **Take over a Codex session you started by hand, and resume one whose process ended (AGEN-115).** On a stopped, observed
+  Codex session the page offers **Take over**: pick the machine it ran on, and that machine's supervisor resumes the same
+  conversation under `untrusted` / `workspace-write`, so prompts, Stop and approvals work from the dashboard. A managed Codex
+  session whose process was lost (a supervisor restart) shows **Resume session**. Codex only; a signed-in person only (never
+  an API key); a takeover counts as a launch in the day's launch count; the session must have been quiet for 5 minutes. If a
+  TUI left Codex's background service holding the thread, the takeover says so and names `codex app-server daemon stop`.
+  `POST /sessions/:id/bind` is new and `POST /sessions/:id/resume` is real (it was a 501). A taken-over session can't be
+  retried (`409 retry_not_available`), and delete and archive are refused while a takeover is open (`takeover_in_progress`).
+  With `DISABLE_AUTH=true` the same posture applies as for approvals: anyone who can reach the server can do it.
+
+- **Prompt box for managed Codex sessions** on the session page, with the reason shown inline when a send is refused and the
+  text kept. A Codex send shows "Sending…" until the host accepts the turn. A restarted or too-old host shows why the box is
+  blocked and how to continue.
+- A managed Codex session now reads Working while a turn runs, including the launch turn, and Waiting when it ends. It was
+  Idle throughout. A prompt sent to it counts as seeing the session.
+- A failed Codex turn shows as an amber row in Activity and Conversation.
+- After a supervisor restarts, the host's Codex sessions are `degraded`, stop reading as working, and age out through the
+  inactivity sweep. A replayed report can't make them `managed` again.
+- Canary scenario `followup` in `scripts/codex-approvals-live.ts`; the Codex release checklist runs it
+  (`deploy/k8s/README.md`).
+
+### Changed
+
+- **⚠ breaking (auth off only): a server run with `DISABLE_AUTH=true` refuses every Host that isn't `localhost`, an IP address or
+  a name in `PUBLIC_URL`, and every cross-site browser request.** Opening the dashboard at `http://mybox.local:3000` now shows a
+  "This address isn't allowed" page. Fix: add the name to `PUBLIC_URL` and restart, or use an IP or `localhost` (README, "Opening
+  an auth-off server by name"). What else reaches the server by a name and stops until then:
+  - Claude HTTP hooks, Codex and Copilot hook shims and the OpenCode plugin installed with `--url http://<name>`. Events are
+    dropped silently. `agentpulse setup`, `setup-hooks.sh` and the `/setup.sh` script now check for this before writing anything.
+  - The relay with a `--url` by name: events stay queued, but a queued file is dropped after 24 hours or 10,000 files.
+    `setup-relay.sh` checks, and the relay logs the fix once.
+  - The supervisor with `AGENTPULSE_SERVER_URL` by name: registration retries forever, and its offline outbox ages out after 24
+    hours. It logs the server's message once.
+  - MCP with `AGENTPULSE_URL` by name (the error now says what to set).
+  - The Telegram webhook, if you set it through a name that is now refused: add the name to `PUBLIC_URL`, or open the dashboard at
+    an accepted address and press **Set webhook** again.
+  - Monitors that probe `/health` by service name (`http://agentpulse:3000/...`): probe by IP or `localhost`, or add the name.
+  - An IPv6 address with a zone id (`[fe80::1%25en0]`) is refused.
+  - A browser page on any other loopback port (`http://localhost:8080`, or Vite moved off 5173) is refused: list that origin in
+    `PUBLIC_URL`.
+  - A request with `Origin: null` (a `file://` page, a sandboxed or `data:` frame, a redirect-tainted request, some browser
+    extensions) is refused.
+  - By-IP and `localhost` setups, the Vite dev server (`http://localhost:5173`), and the dashboard on an accepted address are
+    unchanged. The Vite dev server's own `allowedHosts` must never be set to `true`.
+- **Secrets in stored event and session text are masked (AGEN-146).** Agent text used to be stored exactly as sent, then indexed,
+  shared in team mode and served over REST, WebSocket and MCP. It is now masked before it is written, for every agent type: a
+  key in a prompt, a command or a tool's output becomes a marker in `events` (content, tool input, tool response, raw payload)
+  and in a session's native name, model, branch, task, plan and managed thread titles. Text over 1,000,000 characters keeps its
+  head and tail around a marker. Work is sliced and capped per sender, and an event that can't be scanned in time is stored as
+  a marker, never in the clear. `GET /api/v1/health` gains `ingestRedaction` counters. Rows written before the upgrade are not
+  rewritten. Limits are listed in the README (*Secrets in stored text*).
+- **Redaction rules.** The built-in rules now see a token glued to a literal `\n`/`\r`/`\t`, an ANSI colour sequence or a `%xx`
+  escape, and `API_KEY_sk-ant-...` (a long distinctive prefix after an underscore or digit). A value that only starts with
+  `[REDACTED]` is masked, so a marker can't be used to hide the rest of a secret. These also apply to the watcher, the summary,
+  Telegram and push, which redact on the way out.
+- **Hook-event watcher gate.** The human gate sends a turn to a person when its last message or pending tool call holds
+  any `[REDACTED` mask, because a rule may have swallowed what followed the secret; a benign false-positive mask (for example
+  `const token = await getToken()`) now holds the turn too. The risk classes flag only the narrower set of markers that
+  stand for withheld text (`redaction_backlog`, `redaction_error`, `over_limit` and similar). `Cookie:` lines and
+  `Authorization: Digest`/`AWS4` parameters mask to markers the gate treats as withheld text.
+
+- Web (AGEN-142): an unsent prompt is kept per person and session. It survives switching sessions and reloads, expires after 7 days, and is removed at sign-out. A box shows "Unsent draft" with Discard and Undo. A tab for a session deleted elsewhere closes, and the session page says "Session deleted". The session page and the Hosts page no longer let an older answer overwrite a newer one.
+- **Auto-send is off for Codex sessions.** A watcher set to `auto` opens a request for a person on a Codex session, and a send
+  that still reaches the backstop is refused as `auto_send_blocked` / `codex_needs_person`. Claude is unchanged. Re-opening it
+  is AGEN-112.
+- A repeated, identical managed prompt, completion or agent-message row is now stored (Claude too) when its batch has a
+  delivery id; the delivery receipt, not the content window, stops a retry.
+- `POST /sessions/:id/prompt` answers `409` `host_upgrade_required` and `managed_state_not_continuable`, `403 bad_origin` and
+  `415 unsupported_media_type` (see the upgrade notes). The text a supervisor reports as a control action's `error` is cleaned
+  and capped at 500 characters.
 
 ### Fixed
 
@@ -205,31 +230,6 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 - A failed turn is no longer reported as finished. Notify's note says the turn didn't finish, and the browser notification for a
   session that stops working now says "stopped".
 - `Headless*` event names are refused on the hook path (still `200`). A hook could forge a turn end that woke the watcher.
-
-### Added
-
-- **Prompt box for managed Codex sessions** on the session page, with the reason shown inline when a send is refused and the
-  text kept. A Codex send shows "Sending…" until the host accepts the turn. A restarted or too-old host shows why the box is
-  blocked and how to continue.
-- A managed Codex session now reads Working while a turn runs, including the launch turn, and Waiting when it ends. It was
-  Idle throughout. A prompt sent to it counts as seeing the session.
-- A failed Codex turn shows as an amber row in Activity and Conversation.
-- After a supervisor restarts, the host's Codex sessions are `degraded`, stop reading as working, and age out through the
-  inactivity sweep. A replayed report can't make them `managed` again.
-- Canary scenario `followup` in `scripts/codex-approvals-live.ts`; the Codex release checklist runs it
-  (`deploy/k8s/README.md`).
-
-### Changed
-
-- Web (AGEN-142): an unsent prompt is kept per person and session. It survives switching sessions and reloads, expires after 7 days, and is removed at sign-out. A box shows "Unsent draft" with Discard and Undo. A tab for a session deleted elsewhere closes, and the session page says "Session deleted". The session page and the Hosts page no longer let an older answer overwrite a newer one.
-- **Auto-send is off for Codex sessions.** A watcher set to `auto` opens a request for a person on a Codex session, and a send
-  that still reaches the backstop is refused as `auto_send_blocked` / `codex_needs_person`. Claude is unchanged. Re-opening it
-  is AGEN-112.
-- A repeated, identical managed prompt, completion or agent-message row is now stored (Claude too) when its batch has a
-  delivery id; the delivery receipt, not the content window, stops a retry.
-- `POST /sessions/:id/prompt` answers `409` `host_upgrade_required` and `managed_state_not_continuable`, `403 bad_origin` and
-  `415 unsupported_media_type` (see the upgrade notes). The text a supervisor reports as a control action's `error` is cleaned
-  and capped at 500 characters.
 
 ### Known limits
 
