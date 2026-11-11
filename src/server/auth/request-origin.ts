@@ -233,6 +233,19 @@ export function isLoopbackOrigin(origin: string): boolean {
 }
 
 /**
+ * True when a request carries any header a browser adds on its own: `Origin`
+ * (any value, `null` and the empty string included) or any `Sec-Fetch-Site`,
+ * `-Mode` or `-Dest`. Browsers send `Origin` on every POST and fetch-metadata
+ * browsers send the others, so a request with none of them did not come from
+ * a page. Used where no browser may ever reach a route (`/internal`).
+ */
+export function hasBrowserRequestSignal(get: (name: string) => string | undefined): boolean {
+	return ["Origin", "Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest"].some(
+		(name) => get(name) !== undefined,
+	);
+}
+
+/**
  * Which Origins may open the live-update socket. The configured allowlist is
  * accepted. Beyond it an Origin equal to the request's own is accepted too, so
  * an install reached on another address still gets live updates, but with
