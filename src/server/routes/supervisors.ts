@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { Context } from "hono";
+import type { Context, Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cleanHostText } from "../../shared/clean-host-text.js";
 import {
@@ -88,6 +88,7 @@ import {
 	assertSupervisorCanWriteSession,
 } from "../services/session-ownership.js";
 import { broadcastSweptSessions, getSession } from "../services/session-tracker.js";
+import { boundedWellFormedValue, wellFormedText } from "../services/storage-text.js";
 import { parseRegistrationShape } from "../services/supervisor-capabilities.js";
 import {
 	readHeartbeatBody,
@@ -350,15 +351,9 @@ const registerBodyLimit = bodyLimit({
 });
 
 supervisorsAgentRouter.post("/supervisors/register", registerBodyLimit, async (c) => {
-	const body = await c.req.json<SupervisorRegistrationInput | null>().catch((err: unknown) => {
-		// Only malformed JSON is the caller's mistake to report here; anything
-		// else, such as the body limit aborting an oversized read, must propagate.
-		if (!(err instanceof SyntaxError)) throw err;
-		return null;
-	});
-	if (typeof body !== "object" || body === null || Array.isArray(body)) {
-		return c.json({ error: "Request body must be a JSON object" }, 400);
-	}
+	// Malformed JSON is the caller's mistake to report; an oversized read is stopped by the body limit.
+	const body = parseJsonObject(await c.req.text()) as SupervisorRegistrationInput | null;
+	if (body === null) return c.json({ error: "Request body must be a JSON object" }, 400);
 	const registrationInput: SupervisorRegistrationInput = { ...body };
 	const cleanedHostName = cleanMachineName(
 		typeof registrationInput.hostName === "string" ? registrationInput.hostName : null,
@@ -460,18 +455,24 @@ supervisorsAgentRouter.post("/supervisors/register", registerBodyLimit, async (c
 	}
 });
 
-supervisorsAgentRouter.post("/supervisors/:id/heartbeat", requireSupervisorAuth(), async (c) => {
-	const supervisorId = c.req.param("id") ?? "";
-	const body = await readHeartbeatBody(c);
-	await recordHeartbeatExcludeState(supervisorId, body);
-	const supervisor = await heartbeatSupervisor(supervisorId, parseOutboxState(body));
-	if (!supervisor) return c.json({ error: "Supervisor not found" }, 404);
-	return c.json({ supervisor, serverFeatures: currentServerFeatures() });
-});
+supervisorsAgentRouter.post(
+	"/supervisors/:id/heartbeat",
+	requireSupervisorAuth(),
+	wellFormedPathParams,
+	async (c) => {
+		const supervisorId = c.req.param("id") ?? "";
+		const body = await readHeartbeatBody(c);
+		await recordHeartbeatExcludeState(supervisorId, body);
+		const supervisor = await heartbeatSupervisor(supervisorId, parseOutboxState(body));
+		if (!supervisor) return c.json({ error: "Supervisor not found" }, 404);
+		return c.json({ supervisor, serverFeatures: currentServerFeatures() });
+	},
+);
 
 supervisorsAgentRouter.post(
 	"/supervisors/:id/launches/claim",
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
 		const launchRequest = await claimNextLaunchRequest(supervisorId);
@@ -490,18 +491,26 @@ supervisorsAgentRouter.post(
 	},
 );
 
+/** A report body is a status line or a batch of events: 2 MiB is far above any real one. */
+const managedReportBodyLimit = bodyLimit({
+	maxSize: MANAGED_REPORT_BODY_LIMIT_BYTES,
+	onError: (c) => c.json({ error: "payload_too_large" }, 413),
+});
+
 supervisorsAgentRouter.post(
 	"/supervisors/:id/launches/:launchId/status",
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
 		const launchId = c.req.param("launchId") ?? "";
-		const body = await c.req.json<{
+		const body = parseJsonObject(await c.req.text()) as {
 			status: "launching" | "awaiting_session" | "running" | "completed" | "failed" | "cancelled";
 			error?: string | null;
 			pid?: number | null;
 			providerLaunchMetadata?: Record<string, unknown> | null;
-		}>();
+		} | null;
+		if (!body) return c.json({ error: "invalid_body" }, 400);
 		const launchRequest = await updateLaunchDispatchStatus({
 			supervisorId,
 			launchId,
@@ -514,12 +523,6 @@ supervisorsAgentRouter.post(
 		return c.json({ launchRequest });
 	},
 );
-
-/** A report body is a status line or a batch of events: 2 MiB is far above any real one. */
-const managedReportBodyLimit = bodyLimit({
-	maxSize: MANAGED_REPORT_BODY_LIMIT_BYTES,
-	onError: (c) => c.json({ error: "payload_too_large" }, 413),
-});
 
 /**
  * A report sent late, from a supervisor's offline queue, carries the replay header. At most
@@ -565,21 +568,87 @@ function isMalformedManagedEvent(e: unknown): boolean {
 	return event.rawPayload != null && !isPlainObject(event.rawPayload);
 }
 
-/** The parsed JSON object, or null when the text isn't a JSON object. */
+/**
+ * Keys whose value is an identity or a closed word. A report that needs one of these repaired
+ * (U+0000 or a lone surrogate) is refused, never repaired: two different raw ids must not become one
+ * stored id, and a repaired state word names nothing.
+ */
+const REFUSE_IF_REPAIRED_KEYS: ReadonlySet<string> = new Set([
+	"id",
+	"sessionId",
+	"launchRequestId",
+	"resumeActionId",
+	"providerSessionId",
+	"providerThreadId",
+	"runtimeEpoch",
+	"rpcId",
+	"threadId",
+	"turnId",
+	"itemId",
+	"providerApprovalId",
+	"approvalId",
+	"toolUseId",
+	"turnActionId",
+	"enrollmentToken",
+	"status",
+	"agentType",
+	"managedState",
+	"providerSyncState",
+	"requestKind",
+]);
+
+/** True when none of those keys, on the body or on the objects directly in its arrays, holds text the rule would change. */
+function identitiesAreWellFormed(body: Record<string, unknown>): boolean {
+	const clean = (obj: Record<string, unknown>): boolean => {
+		for (const key of REFUSE_IF_REPAIRED_KEYS) {
+			const value = obj[key];
+			if (typeof value === "string" && wellFormedText(value) !== value) return false;
+		}
+		return true;
+	};
+	if (!clean(body)) return false;
+	for (const value of Object.values(body)) {
+		if (!Array.isArray(value)) continue;
+		for (const item of value) {
+			if (item !== null && typeof item === "object" && !Array.isArray(item)) {
+				if (!clean(item as Record<string, unknown>)) return false;
+			}
+		}
+	}
+	return true;
+}
+
+/**
+ * The one way a supervisor agent route reads a JSON body: parsed, then passed once through the bounded
+ * well-formed rule (AGEN-39) before anything validates or stores it. Null when the text isn't a JSON
+ * object, or when an identity or state word in it would have needed repair. A receipt or a dedup
+ * digest is computed from the raw text by the caller, never from this copy.
+ */
 function parseJsonObject(text: string): Record<string, unknown> | null {
 	try {
 		const parsed: unknown = JSON.parse(text);
-		return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-			? (parsed as Record<string, unknown>)
-			: null;
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+		const raw = parsed as Record<string, unknown>;
+		const fixed = boundedWellFormedValue(raw);
+		if (fixed !== raw && !identitiesAreWellFormed(raw)) return null;
+		return fixed;
 	} catch {
 		return null;
 	}
 }
 
+/** Path parameters are ids: one that holds U+0000 or a lone surrogate names nothing, and Postgres refuses it. */
+async function wellFormedPathParams(c: Context, next: Next) {
+	for (const value of Object.values(c.req.param())) {
+		if (wellFormedText(value) !== value) return c.json({ error: "invalid_body" }, 400);
+	}
+	await next();
+}
+
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-session-state",
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	managedReportBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
@@ -629,6 +698,7 @@ supervisorsAgentRouter.post(
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-sessions/:sessionId/events",
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	managedReportBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
@@ -726,6 +796,7 @@ const APPROVAL_REFUSAL_STATUS: Record<string, 400 | 403 | 409> = {
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-sessions/:sessionId/approvals",
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	approvalReportBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
@@ -762,6 +833,7 @@ const toolCallsBodyLimit = bodyLimit({
 supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-sessions/:sessionId/tool-calls",
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	toolCallsBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
@@ -791,6 +863,7 @@ supervisorsAgentRouter.post(
 supervisorsAgentRouter.post(
 	"/supervisors/:id/approvals/sync",
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	approvalSyncBodyLimit,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
@@ -803,15 +876,21 @@ supervisorsAgentRouter.post(
 	},
 );
 
-supervisorsAgentRouter.get("/supervisors/:id/provider-sync", requireSupervisorAuth(), async (c) => {
-	const supervisorId = c.req.param("id") ?? "";
-	const managedSessions = await listManagedSessionsNeedingSync(supervisorId);
-	return c.json({ managedSessions });
-});
+supervisorsAgentRouter.get(
+	"/supervisors/:id/provider-sync",
+	requireSupervisorAuth(),
+	wellFormedPathParams,
+	async (c) => {
+		const supervisorId = c.req.param("id") ?? "";
+		const managedSessions = await listManagedSessionsNeedingSync(supervisorId);
+		return c.json({ managedSessions });
+	},
+);
 
 supervisorsAgentRouter.post(
 	"/supervisors/:id/control-actions/claim",
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
 		const action = await claimNextControlAction(supervisorId);
@@ -822,10 +901,11 @@ supervisorsAgentRouter.post(
 supervisorsAgentRouter.post(
 	"/supervisors/:id/control-actions/:actionId/status",
 	requireSupervisorAuth(),
+	wellFormedPathParams,
 	async (c) => {
 		const supervisorId = c.req.param("id") ?? "";
 		const actionId = c.req.param("actionId") ?? "";
-		const body = await c.req.json<{
+		const body = parseJsonObject(await c.req.text()) as {
 			status: "running" | "succeeded" | "failed";
 			error?: string | null;
 			metadata?: Record<string, unknown> | null;
@@ -833,7 +913,8 @@ supervisorsAgentRouter.post(
 			provedCwd?: unknown;
 			permissionMode?: unknown;
 			applied?: unknown;
-		}>();
+		} | null;
+		if (!body) return c.json({ error: "invalid_body" }, 400);
 		// A report names its status, and it must be a real one.
 		if (!["running", "succeeded", "failed"].includes(body.status)) {
 			return c.json({ error: "invalid_status" }, 400);

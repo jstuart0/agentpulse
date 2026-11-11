@@ -9,6 +9,7 @@ import type {
 	SemanticStatus,
 	SemanticStatusUpdate,
 } from "../../shared/types.js";
+import { cutText } from "./storage-text.js";
 
 export interface NormalizedEvent {
 	eventType: string;
@@ -108,7 +109,7 @@ function serializeToolResponse(toolResponse: unknown): string | null {
 
 function stringifyToolResponse(toolResponse: unknown): string | null {
 	const serialized = serializeToolResponse(toolResponse);
-	return serialized === null ? null : serialized.slice(0, TOOL_RESPONSE_COLUMN_CHAR_CAP);
+	return serialized === null ? null : cutText(serialized, TOOL_RESPONSE_COLUMN_CHAR_CAP);
 }
 
 // AGEN: `payload.source` on a UserAcknowledge event identifies what produced
@@ -159,7 +160,7 @@ const USER_ACK_RAW_SOURCE_CHAR_CAP = 200;
 function shapeUserAcknowledgeRawPayload(payload: HookEventPayload): Record<string, unknown> {
 	const shaped: Record<string, unknown> = { ...(payload as unknown as Record<string, unknown>) };
 	if (typeof shaped.source === "string" && shaped.source.length > USER_ACK_RAW_SOURCE_CHAR_CAP) {
-		shaped.source = shaped.source.slice(0, USER_ACK_RAW_SOURCE_CHAR_CAP);
+		shaped.source = cutText(shaped.source, USER_ACK_RAW_SOURCE_CHAR_CAP);
 	}
 	return shaped;
 }
@@ -192,7 +193,7 @@ export function shapeHookRawPayload(
 		if (serialized !== null && originalToolResponseChars !== undefined) {
 			// The ingest redaction step cut the response before scanning it and says how long it was.
 			if (originalToolResponseChars > TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP) {
-				shaped.tool_response = serialized.slice(0, TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP);
+				shaped.tool_response = cutText(serialized, TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP);
 				shaped.tool_response_truncated = true;
 				shaped.tool_response_chars = originalToolResponseChars;
 			} else {
@@ -200,7 +201,7 @@ export function shapeHookRawPayload(
 			}
 		} else if (serialized !== null) {
 			if (serialized.length > TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP) {
-				shaped.tool_response = serialized.slice(0, TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP);
+				shaped.tool_response = cutText(serialized, TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP);
 				shaped.tool_response_truncated = true;
 				shaped.tool_response_chars = serialized.length;
 			} else {

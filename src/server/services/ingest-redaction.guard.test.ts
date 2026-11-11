@@ -161,8 +161,64 @@ describe("the writers of a session's text fields", () => {
 
 	test("cwd and transcript_path are left as written, on purpose", () => {
 		// Operational identity: the takeover compares directories, the host's exclude rules judge them
-		// and transcript sync reads the path. Masking would break each. Named residual (D9).
+		// and transcript sync reads the path. Masking would break each. Named residual (D9). They are
+		// still made storable (AGEN-39): a path with U+0000 names no real file.
 		const module = read("server/services/ingest-redaction.ts");
 		expect(module).toMatch(/VERBATIM_KEYS[\s\S]{0,120}"cwd"[\s\S]{0,40}"transcript_path"/);
+	});
+});
+
+describe("storable text (AGEN-39)", () => {
+	test("the normalizer never cuts with a bare slice, which can split a surrogate pair", () => {
+		expect(read("server/services/event-normalizer.ts")).not.toMatch(/\.slice\(0,/);
+	});
+
+	test("every supervisor agent route reads its body through the one bounded well-formed pass", () => {
+		const source = read("server/routes/supervisors.ts");
+		const start = source.indexOf("const supervisorsAgentRouter");
+		const end = source.indexOf("export { supervisorsAgentRouter");
+		expect(start).toBeGreaterThanOrEqual(0);
+		const agent = source.slice(start, end);
+		const blocks = agent
+			.split(/(?=supervisorsAgentRouter\.(?:post|get)\()/)
+			.filter((b) => /^supervisorsAgentRouter\.(?:post|get)\(/.test(b));
+		expect(blocks.length).toBeGreaterThanOrEqual(12);
+		// routes that take no body at all
+		const bodyless = ["/supervisors/:id/launches/claim", "/supervisors/:id/control-actions/claim"];
+		for (const block of blocks) {
+			const path = block.match(/(?:post|get)\(\s*"([^"]+)"/)?.[1] ?? "";
+			if (path.includes(":")) {
+				expect(block, `${path} checks its path parameters`).toContain("wellFormedPathParams");
+				// after the credential, so a malformed id gets the established 401/403 wording
+				expect(
+					block.indexOf("requireSupervisorAuth("),
+					`${path} judges the credential first`,
+				).toBeLessThan(block.indexOf("wellFormedPathParams"));
+			}
+			if (bodyless.includes(path) || block.startsWith("supervisorsAgentRouter.get(")) continue;
+			expect(block, `${path} reads its body through the bounded pass`).toMatch(
+				/parseJsonObject\(|readHeartbeatBody\(/,
+			);
+			expect(block, `${path} doesn't parse the body on its own`).not.toMatch(/c\.req\.json\(/);
+		}
+		// the pass itself, and the receipts staying on raw text
+		expect(source).toMatch(/function parseJsonObject[\s\S]{0,800}boundedWellFormedValue\(/);
+		expect(read("server/services/supervisor-exclude-state.ts")).toContain(
+			"boundedWellFormedValue(",
+		);
+	});
+
+	test("every writer of host or agent text imports the one storage rule", () => {
+		for (const file of [
+			"server/services/ingest-redaction.ts",
+			"server/services/event-normalizer.ts",
+			"server/services/event-processor.ts",
+			"server/services/managed-session-state.ts",
+			"server/routes/supervisors.ts",
+			"server/services/ask/ask-service.ts",
+			"server/services/codex-approval-presentation.ts",
+		]) {
+			expect(read(file), file).toMatch(/from "(?:\.\.?\/)+(?:services\/)?storage-text\.js"/);
+		}
 	});
 });

@@ -26,6 +26,7 @@ import { sql } from "drizzle-orm";
 import type { Context } from "hono";
 import { getDb } from "../db/client.js";
 import { executeRows } from "../db/sql-helpers.js";
+import { boundedWellFormedValue } from "./storage-text.js";
 
 /** The states a supervisor may report on the wire. */
 const REPORTABLE_STATES = ["none", "ok", "invalid"] as const;
@@ -92,7 +93,7 @@ export async function readHeartbeatBody(c: Context): Promise<HeartbeatBody> {
 	try {
 		const parsed: unknown = JSON.parse(text);
 		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			return { kind: "object", value: parsed as Record<string, unknown> };
+			return { kind: "object", value: boundedWellFormedValue(parsed as Record<string, unknown>) };
 		}
 	} catch {
 		// falls through

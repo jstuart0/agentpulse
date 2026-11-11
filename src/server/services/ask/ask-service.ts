@@ -21,6 +21,7 @@ import { getSemanticEnricher } from "../ai/semantic-enricher.js";
 import { fenceUntrustedLines } from "../ai/untrusted-text.js";
 import { getMode } from "../instance-mode.js";
 import { getCachedProjects } from "../projects/cache.js";
+import { cutText, wellFormedText } from "../storage-text.js";
 import {
 	getOpenDraftForThread,
 	handleAddProjectContinuation,
@@ -272,7 +273,7 @@ async function ensureThread(input: {
 		const existing = await getThreadFor(input.threadId, input.asker);
 		if (existing) return existing;
 	}
-	const title = input.firstMessage.trim().replace(/\s+/g, " ").slice(0, 80);
+	const title = wellFormedText(cutText(input.firstMessage.trim().replace(/\s+/g, " "), 80));
 	const { actor, keyId } = input.asker;
 	const [row] = await getDb()
 		.insert(askThreads)
@@ -312,7 +313,7 @@ export async function findOrCreateTelegramThread(input: {
 	});
 }
 
-async function appendMessage(input: {
+export async function appendMessage(input: {
 	threadId: string;
 	role: AskMessageRecord["role"];
 	content: string;
@@ -326,11 +327,11 @@ async function appendMessage(input: {
 		.values({
 			threadId: input.threadId,
 			role: input.role,
-			content: input.content,
+			content: wellFormedText(input.content),
 			contextSessionIds: input.contextSessionIds ?? null,
 			tokensIn: input.tokensIn ?? null,
 			tokensOut: input.tokensOut ?? null,
-			errorMessage: input.errorMessage ?? null,
+			errorMessage: input.errorMessage == null ? null : wellFormedText(input.errorMessage),
 		})
 		.returning();
 	// Touch the thread so it bubbles up in the sidebar.

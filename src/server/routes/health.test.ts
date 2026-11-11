@@ -164,6 +164,7 @@ describe("GET /health — clients checksums", () => {
 				"pendingJobs",
 				"pendingUnits",
 				"sessionIdRefused",
+				"storageTextFixed",
 				"transcriptSyncInsertFailed",
 				"unitsScanned",
 			].sort(),

@@ -55,6 +55,7 @@ import {
 	ownerLaunchJoin,
 	sessionOwnedBy,
 } from "./session-ownership.js";
+import { boundedWellFormedValue, cutText, wellFormedText } from "./storage-text.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -250,9 +251,10 @@ export function peerTurnRecord(
 ): { text: string | null; hidden: boolean; at: string } {
 	// The host found no line Claude tags as a peer's: stored as "not captured" (no text, not hidden), never guessed.
 	if (text.trim() === "") return { text: null, hidden: false, at };
-	const cut = text.slice(0, PEER_TURN_MAX_CHARS);
+	const cut = cutText(text, PEER_TURN_MAX_CHARS);
 	const { text: cleaned, hits } = stripAndRedact(cut);
-	const changed = hits.length > 0 || cleaned !== cut;
+	// A lone surrogate, like a stripped character, is a change: the stranger's text is never shown altered.
+	const changed = hits.length > 0 || cleaned !== cut || wellFormedText(cleaned) !== cleaned;
 	return changed ? { text: null, hidden: true, at } : { text: cleaned, hidden: false, at };
 }
 
@@ -536,6 +538,34 @@ function withRedactedNames(input: ManagedSessionStateInput): ManagedSessionState
 	return redacted;
 }
 
+/**
+ * Every text and JSON field of a state report made storable on both dialects (AGEN-39). `sessionId`
+ * is not rewritten (an id with NUL is refused by the database, as before) and `peerTurnText` is left
+ * to `peerTurnRecord`, which hides the message rather than alter it.
+ */
+function wellFormedManagedInput(input: ManagedSessionStateInput): ManagedSessionStateInput {
+	const out = { ...input };
+	const textKeys = [
+		"cwd",
+		"resumeActionId",
+		"launchRequestId",
+		"providerSessionId",
+		"providerThreadId",
+		"correlationSource",
+		"lastProviderSyncAt",
+		"providerProtocolVersion",
+	] as const;
+	for (const key of textKeys) {
+		const value = input[key];
+		if (typeof value === "string") out[key] = wellFormedText(value);
+	}
+	if (input.metadata) out.metadata = boundedWellFormedValue(input.metadata);
+	if (input.providerCapabilitySnapshot) {
+		out.providerCapabilitySnapshot = boundedWellFormedValue(input.providerCapabilitySnapshot);
+	}
+	return out;
+}
+
 export async function upsertManagedSessionState(
 	supervisorId: string,
 	reported: ManagedSessionStateInput,
@@ -547,7 +577,7 @@ export async function upsertManagedSessionState(
 		replay?: boolean;
 	} = {},
 ): Promise<{ session: Session; managedSession: ManagedSession }> {
-	const input = withRedactedNames(reported);
+	const input = wellFormedManagedInput(withRedactedNames(reported));
 	const resumeActionId =
 		typeof input.resumeActionId === "string" && input.resumeActionId !== ""
 			? input.resumeActionId
