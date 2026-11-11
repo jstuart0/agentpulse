@@ -144,7 +144,7 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 - `POST /api/v1/hooks` — Receive hook events (always 200)
 - `POST /api/v1/hooks/status` — Receive semantic status updates
 
-**Internal (loopback-only; refuses any request carrying `Origin` or `Sec-Fetch-*`, 403 `bad_origin`):**
+**Internal (loopback-only; refuses any request carrying `Origin`, `Sec-Fetch-*` or a non-JSON `Content-Type`, 403 `bad_origin`):**
 - `POST /api/v1/internal/drain` — Initiate graceful drain (blocked externally by Traefik)
 
 **Sessions:**

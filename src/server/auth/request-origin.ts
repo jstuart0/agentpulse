@@ -246,6 +246,18 @@ export function hasBrowserRequestSignal(get: (name: string) => string | undefine
 }
 
 /**
+ * True when a request declares a body type other than `application/json`
+ * (parameters and case ignored). A form post or a no-cors fetch from a page
+ * can only carry `application/x-www-form-urlencoded`, `multipart/form-data` or
+ * `text/plain`, even from a browser that sends no `Origin`. A caller with no
+ * body sends no Content-Type at all, which is false here.
+ */
+export function hasNonJsonContentType(contentType: string | undefined): boolean {
+	if (contentType === undefined) return false;
+	return (contentType.split(";")[0] ?? "").trim().toLowerCase() !== "application/json";
+}
+
+/**
  * Which Origins may open the live-update socket. The configured allowlist is
  * accepted. Beyond it an Origin equal to the request's own is accepted too, so
  * an install reached on another address still gets live updates, but with

@@ -843,7 +843,7 @@ failed current-password attempts to 5 per account per 15 minutes, in memory per
 replica.
 
 **Explicitly blocked** (no rate limit, returns 503 via non-existent service):
-- `/api/v1/internal/*` — loopback-only endpoint that also refuses any request carrying `Origin` or `Sec-Fetch-*` (403 `bad_origin`); Traefik deny rule is defense-in-depth
+- `/api/v1/internal/*` — loopback-only endpoint that also refuses any request carrying `Origin`, `Sec-Fetch-*` or a non-JSON `Content-Type` (403 `bad_origin`); Traefik deny rule is defense-in-depth
 
 Audit command (run after `kubectl apply`):
 ```bash

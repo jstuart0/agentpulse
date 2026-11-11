@@ -24,6 +24,11 @@
  * to a POST and fetch-metadata browsers add `Sec-Fetch-*`; the one legitimate
  * caller (the preStop hook, Bun's fetch) sends none of them. So the router
  * refuses any request carrying one of those headers, whatever its value.
+ * A browser that sends neither (an old Firefox with the Origin header turned
+ * off) is still caught: a form post or no-cors fetch always carries a
+ * Content-Type of form-urlencoded, multipart or text/plain, so any
+ * Content-Type other than application/json is refused too. The preStop call
+ * has no body and sends no Content-Type.
  * `refuseBadOrigin` is deliberately not used: it accepts Origin equal to Host
  * with auth on, which a DNS-rebinding page satisfies. No Host check is added:
  * a rebinding page still sends Origin and is refused, and a non-browser
@@ -36,7 +41,7 @@
 
 import { Hono } from "hono";
 import { getConnInfo } from "hono/bun";
-import { hasBrowserRequestSignal } from "../auth/request-origin.js";
+import { hasBrowserRequestSignal, hasNonJsonContentType } from "../auth/request-origin.js";
 import { setShuttingDown } from "../drain-state.js";
 import { getInFlightCount } from "./ingest-counters.js";
 
@@ -50,7 +55,12 @@ let suppressedBrowserRefusals = 0;
 // The Origin value is never logged, and one line a minute at most, so a hostile
 // page can't flood the log.
 internalRouter.use("*", async (c, next) => {
-	if (!hasBrowserRequestSignal((name) => c.req.header(name))) return next();
+	if (
+		!hasBrowserRequestSignal((name) => c.req.header(name)) &&
+		!hasNonJsonContentType(c.req.header("Content-Type"))
+	) {
+		return next();
+	}
 	const now = Date.now();
 	if (now - lastBrowserRefusalLogAt >= BROWSER_REFUSAL_LOG_INTERVAL_MS) {
 		console.warn(

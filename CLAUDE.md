@@ -256,7 +256,7 @@ Agents post hooks to a relay on the same machine (`scripts/relay.ts`, listening 
 - `POST /api/v1/hooks/status` - Receive semantic status updates (same 16 MiB body cap and always-200 contract as `/hooks`; oversize bodies are dropped and counted, with no placeholder row)
 - **`X-AgentPulse-Skip` on `/hooks` and `/hooks/status`** (AGEN-63): `skipHeaderDrop()` is mounted with `ingest.use(path, …)` ahead of each route's own `requireApiKey()` + `hookRateLimit()`. A header value in the skip allowlist (`1`, `true`, `yes`, `on`, case-insensitive, trimmed; over 64 chars is "not set") is authenticated with `requireApiKey()` itself (so a bad key still gets its 401/403), then answered `200 {ok:true}` without reading the body, spending a rate-limit token, or touching the database; counted as `skipHeaderDropped` on `/health`. Any other request passes through untouched. A skip request skips the route's later checks on purpose: it changes nothing, so there is nothing for them to protect.
 
-**Internal (loopback-only; blocked externally by Traefik deny rule; refuses any request carrying `Origin` or `Sec-Fetch-*`, 403 `bad_origin`):**
+**Internal (loopback-only; blocked externally by Traefik deny rule; refuses any request carrying `Origin`, `Sec-Fetch-*` or a non-JSON `Content-Type`, 403 `bad_origin`):**
 - `POST /api/v1/internal/drain` - Initiate graceful drain (sets readiness to 503; only reachable from localhost)
 
 **Dashboard API:**

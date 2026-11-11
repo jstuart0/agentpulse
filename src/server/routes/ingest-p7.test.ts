@@ -24,7 +24,9 @@ const { initializeDatabase } = await import("../db/client.js");
 const { health } = await import("./health.js");
 const { ingest } = await import("./ingest.js");
 const { internalRouter } = await import("./internal.js");
-const { hasBrowserRequestSignal } = await import("../auth/request-origin.js");
+const { hasBrowserRequestSignal, hasNonJsonContentType } = await import(
+	"../auth/request-origin.js"
+);
 const { _resetBucketsForTest, hookRateLimit } = await import("../middleware/hook-rate-limit.js");
 const { _resetCountersForTest, getRateLimitedDropped } = await import("./ingest-counters.js");
 const { _resetDrainStateForTest, isShuttingDown, setShuttingDown } = await import(
@@ -276,6 +278,38 @@ describe("POST /api/v1/internal/drain: browser requests", () => {
 			});
 		}
 
+		for (const type of [
+			"application/x-www-form-urlencoded",
+			"multipart/form-data; boundary=x",
+			"text/plain",
+			"TEXT/PLAIN;charset=UTF-8",
+		]) {
+			test(`${mode}: refuses no Origin with Content-Type ${type}`, async () => {
+				config.disableAuth = authOff;
+				const app = buildLoopbackDrainApp("127.0.0.1");
+				const res = await app.request("/api/v1/internal/drain", {
+					method: "POST",
+					headers: { Host: "127.0.0.1:3000", "Content-Type": type },
+					body: "a=b",
+				});
+				expect(res.status).toBe(403);
+				expect(await res.json()).toEqual({ error: "bad_origin" });
+				expect(isShuttingDown()).toBe(false);
+			});
+		}
+
+		test(`${mode}: application/json with no Origin drains`, async () => {
+			config.disableAuth = authOff;
+			const app = buildLoopbackDrainApp("127.0.0.1");
+			const res = await app.request("/api/v1/internal/drain", {
+				method: "POST",
+				headers: { Host: "127.0.0.1:3000", "Content-Type": "Application/JSON; charset=utf-8" },
+				body: "{}",
+			});
+			expect(res.status).toBe(200);
+			expect(isShuttingDown()).toBe(true);
+		});
+
 		test(`${mode}: GET with no headers does not drain`, async () => {
 			config.disableAuth = authOff;
 			const app = buildLoopbackDrainApp("127.0.0.1");
@@ -298,6 +332,14 @@ describe("POST /api/v1/internal/drain: browser requests", () => {
 
 	test("hasBrowserRequestSignal: none of the four headers is false", () => {
 		expect(hasBrowserRequestSignal(() => undefined)).toBe(false);
+	});
+
+	test("hasNonJsonContentType: absent and JSON are false, anything else true", () => {
+		expect(hasNonJsonContentType(undefined)).toBe(false);
+		expect(hasNonJsonContentType("application/json")).toBe(false);
+		expect(hasNonJsonContentType(" Application/JSON ;charset=utf-8")).toBe(false);
+		expect(hasNonJsonContentType("text/plain")).toBe(true);
+		expect(hasNonJsonContentType("")).toBe(true);
 	});
 
 	for (const name of ["Origin", "Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest"]) {
