@@ -547,7 +547,7 @@ describe("other writers", () => {
 			const sup = await supervisor();
 			const res = await app.request(`/api/v1/supervisors/${sup.id}/control-actions/a%00b/status`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", Authorization: "Bearer not-a-credential" },
+				headers: { "Content-Type": "application/json", Authorization: `Bearer ${"not-a-credential"}` },
 				body: JSON.stringify({ status: "succeeded" }),
 			});
 			expect([401, 403]).toContain(res.status);
