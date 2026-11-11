@@ -8,8 +8,10 @@
  *       prompts are built (only `untrusted-text.ts` may build one);
  *   (b) bans a stray `randomUUID` there: the files that mention it are a named
  *       set, each with its reason, so a second nonce scheme cannot appear quietly;
- *   (c) finds every model call site, literal request or not, and requires a
- *       named framing test for it: the table's keys equal the found sites.
+ *   (c) finds every model call, literal request or not, and requires a named framing
+ *       test for each one: a file's number of calls equals its number of table
+ *       entries, and each entry's title is the title of a describe(/test( in the
+ *       test file (a comment or a string that merely mentions it doesn't count).
  *
  * What it cannot catch: a call through an alias (`const f = adapter.complete;
  * f(x)`), a new adapter method under another name, a delimiter built by
@@ -37,24 +39,29 @@ const RANDOM_UUID_REASONS: Record<string, string> = {
 	"src/server/services/session-summary-service.ts": "the generation lease token",
 };
 
-/** Every model call site and the test file with its `framing: <site>` title. */
-const FRAMING_TESTS: Record<string, string> = {
-	"src/server/services/ai/alert-rule-evaluator.ts":
-		"src/server/services/ai/managed-content-untrusted.test.ts",
-	"src/server/services/ai/notify/watcher-notify.ts":
-		"src/server/services/ai/managed-content-untrusted.test.ts",
-	"src/server/services/ai/runner.ts": "src/server/services/ai/managed-content-untrusted.test.ts",
-	"src/server/services/ai/semantic-enricher.ts":
-		"src/server/services/ai/managed-content-untrusted.test.ts",
-	"src/server/services/ask/ask-qa-handler.ts":
-		"src/server/services/ai/managed-content-untrusted.test.ts",
-	"src/server/services/ask/ask-service.ts":
-		"src/server/services/ai/managed-content-untrusted.test.ts",
-	"src/server/services/ask/launch-intent-detector.ts":
-		"src/server/services/ai/managed-content-untrusted.test.ts",
-	"src/server/services/session-summary-service.ts":
-		"src/server/services/ai/managed-content-untrusted.test.ts",
+/** The test file every framing test lives in. */
+const FRAMING_FILE = "src/server/services/ai/managed-content-untrusted.test.ts";
+
+/**
+ * Every model call, by file, with the title of the framing test for each call, in source order.
+ * A file with one call has one title, `framing: <file>`; a file with several names each call.
+ */
+const FRAMING_CALLS: Record<string, string[]> = {
+	"src/server/services/ai/alert-rule-evaluator.ts": [],
+	"src/server/services/ai/notify/watcher-notify.ts": [],
+	"src/server/services/ai/runner.ts": ["decision call", "schema retry call"],
+	"src/server/services/ai/semantic-enricher.ts": [],
+	"src/server/services/ask/ask-qa-handler.ts": [],
+	"src/server/services/ask/ask-service.ts": ["sync", "stream"],
+	"src/server/services/ask/launch-intent-detector.ts": [],
+	"src/server/services/session-summary-service.ts": [],
 };
+
+/** A file's call labels as full test titles: no label means the file's single call. */
+const titlesOf = (site: string, labels: readonly string[]): string[] =>
+	labels.length === 0
+		? [`framing: ${site}`]
+		: labels.map((label) => `framing: ${site} :: ${label}`);
 
 const HAND_BUILT_DELIMITER = /`<\/?[a-z][a-z-]*-\$\{/;
 const RANDOM_UUID = /randomUUID/;
@@ -78,22 +85,54 @@ async function scopedFiles() {
 	return out;
 }
 
-/** The sites the table lacks, and table entries whose test title is missing from the file. */
+const MODEL_CALL =
+	/\.complete\(|\.completeStream\(|\[\s*["'`]complete(?:Stream)?["'`]\s*\]|\bstreamWithFallback\(/g;
+
+/** How many model calls `source` makes. */
+const callCount = (source: string): number => (source.match(MODEL_CALL) ?? []).length;
+
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Whether `testSource` has a describe/test whose title starts with `title`. */
+const hasTitled = (testSource: string, title: string): boolean =>
+	new RegExp(`\\b(?:describe|test|it)\\w*(?:\\.\\w+)?\\(\\s*["'\`]${escapeRe(title)}`).test(
+		testSource,
+	);
+
+/**
+ * What is missing: a file whose number of calls differs from its number of table entries,
+ * a table entry for a file that makes no call, and a title that is not a describe/test title.
+ */
 async function coverageProblems(
-	found: readonly string[],
-	table: Record<string, string>,
+	calls: ReadonlyMap<string, number>,
+	table: Record<string, string[]>,
 	read: (rel: string) => Promise<string>,
+	testFile: string,
 ): Promise<string[]> {
 	const problems: string[] = [];
-	for (const site of found) if (!table[site]) problems.push(`no framing test for ${site}`);
-	for (const [site, testFile] of Object.entries(table)) {
-		if (!found.includes(site)) problems.push(`table entry ${site} is not a model call site`);
-		const source = await read(testFile).catch(() => null);
-		if (source === null) problems.push(`${testFile} does not exist`);
-		else if (!source.includes(`framing: ${site}`))
-			problems.push(`${testFile} has no test titled "framing: ${site}"`);
+	for (const [site, count] of calls) {
+		const entries = titlesOf(site, table[site] ?? []);
+		if (!table[site]) problems.push(`no framing test for ${site}`);
+		else if (entries.length !== count)
+			problems.push(`${site} makes ${count} model calls but the table has ${entries.length}`);
 	}
+	for (const site of Object.keys(table))
+		if (!calls.has(site)) problems.push(`table entry ${site} is not a model call site`);
+	const testSource = await read(testFile).catch(() => null);
+	if (testSource === null) return [...problems, `${testFile} does not exist`];
+	for (const [site, labels] of Object.entries(table))
+		for (const title of titlesOf(site, labels))
+			if (!hasTitled(testSource, title)) problems.push(`${testFile} has no test titled "${title}"`);
 	return problems;
+}
+
+async function modelCalls(): Promise<Map<string, number>> {
+	const out = new Map<string, number>();
+	for await (const { rel, source } of productionFiles()) {
+		const count = callCount(source);
+		if (count > 0) out.set(rel, count);
+	}
+	return out;
 }
 
 const readRepoFile = (rel: string) => readFile(join(ROOT, rel), "utf8");
@@ -114,13 +153,16 @@ describe("prompt framing guard", () => {
 		}
 	});
 
-	test("(c) every model call site has a framing test, and no entry is stale", async () => {
+	test("(c) every model call has a framing test, and no entry is stale", async () => {
 		const found = await modelCallSites();
 		// A population floor: an emptied search must not pass. Named member: the watcher.
 		expect(found.length).toBeGreaterThanOrEqual(8);
 		expect(found).toContain("src/server/services/ai/runner.ts");
-		expect(Object.keys(FRAMING_TESTS).sort()).toEqual(found);
-		expect(await coverageProblems(found, FRAMING_TESTS, readRepoFile)).toEqual([]);
+		const calls = await modelCalls();
+		expect([...calls.keys()].sort()).toEqual(found);
+		expect(calls.get("src/server/services/ai/runner.ts")).toBe(2);
+		expect(Object.keys(FRAMING_CALLS).sort()).toEqual(found);
+		expect(await coverageProblems(calls, FRAMING_CALLS, readRepoFile, FRAMING_FILE)).toEqual([]);
 	});
 
 	test("the scope reaches the files that build prompts", async () => {
@@ -153,31 +195,73 @@ describe("prompt framing guard", () => {
 		expect(filesMatching(planted, RANDOM_UUID)).toEqual(["src/server/services/ai/y.ts"]);
 	});
 
+	const planted = "src/server/services/ai/new-site.ts";
+	const plantedTests = (...titles: string[]) =>
+		titles.map((t) => `describe("${t}", () => {});`).join("\n");
+
 	test("planted negative: a site missing from the table is reported", async () => {
-		const problems = await coverageProblems(
-			["src/server/services/ai/new-site.ts"],
-			{},
-			async () => "",
-		);
-		expect(problems).toEqual(["no framing test for src/server/services/ai/new-site.ts"]);
+		const problems = await coverageProblems(new Map([[planted, 1]]), {}, async () => "", "t.ts");
+		expect(problems).toContain(`no framing test for ${planted}`);
 	});
 
-	test("planted negative: a table entry whose test title is absent is reported", async () => {
-		const site = "src/server/services/ai/new-site.ts";
-		const problems = await coverageProblems(
-			[site],
-			{ [site]: "some.test.ts" },
-			async () => "no title",
+	test("planted negative: a second unframed call in an already-covered file is reported", async () => {
+		const runner = "src/server/services/ai/runner.ts";
+		const source = plantedTests(
+			`framing: ${runner} :: decision call`,
+			`framing: ${runner} :: schema retry call`,
 		);
-		expect(problems).toEqual([`some.test.ts has no test titled "framing: ${site}"`]);
+		const table = { [runner]: ["decision call", "schema retry call"] };
+		expect(
+			await coverageProblems(new Map([[runner, 2]]), table, async () => source, "t.ts"),
+		).toEqual([]);
+		const problems = await coverageProblems(
+			new Map([[runner, 3]]),
+			table,
+			async () => source,
+			"t.ts",
+		);
+		expect(problems).toEqual([`${runner} makes 3 model calls but the table has 2`]);
+	});
+
+	test("planted negative: a title that is only in a comment or a string is reported", async () => {
+		const source = `// framing: ${planted}\nconst x = "framing: ${planted}";`;
+		const problems = await coverageProblems(
+			new Map([[planted, 1]]),
+			{ [planted]: [] },
+			async () => source,
+			"t.ts",
+		);
+		expect(problems).toEqual([`t.ts has no test titled "framing: ${planted}"`]);
+	});
+
+	test("a title inside describe, describeSqliteOnly and test counts", async () => {
+		for (const opener of ["describe", "describeSqliteOnly", "test", "describe.skip"]) {
+			const source = `${opener}("framing: ${planted}", () => {});`;
+			expect(
+				await coverageProblems(
+					new Map([[planted, 1]]),
+					{ [planted]: [] },
+					async () => source,
+					"t.ts",
+				),
+			).toEqual([]);
+		}
 	});
 
 	test("planted negative: a table entry that is not a call site is reported", async () => {
 		const problems = await coverageProblems(
-			[],
-			{ "gone.ts": "t.test.ts" },
-			async () => "framing: gone.ts",
+			new Map(),
+			{ "gone.ts": [] },
+			async () => plantedTests("framing: gone.ts"),
+			"t.ts",
 		);
 		expect(problems).toEqual(["table entry gone.ts is not a model call site"]);
+	});
+
+	test("callCount counts each model call, literal request or not", () => {
+		expect(
+			callCount("a.complete({}); b.completeStream(x); streamWithFallback(a, b); c['complete'](y)"),
+		).toBe(4);
+		expect(callCount("const f = 1;")).toBe(0);
 	});
 });

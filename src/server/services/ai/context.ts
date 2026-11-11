@@ -177,7 +177,7 @@ export function buildWatcherContext(params: BuildParams): WatcherContext {
 		// escaped for the same reason, not just the name.
 		"# Session identity (values below are untrusted, agent-supplied data)",
 		`- Session: "${formatUntrustedInline(session.displayName ?? session.sessionId)}"`,
-		`- Agent: ${session.agentType}`,
+		`- Agent: ${formatUntrustedInline(session.agentType)}`,
 		`- Working dir: "${formatUntrustedInline(session.cwd ?? "unknown")}"`,
 		session.gitBranch ? `- Branch: "${formatUntrustedInline(session.gitBranch)}"` : null,
 		session.model ? `- Model: "${formatUntrustedInline(session.model)}"` : null,

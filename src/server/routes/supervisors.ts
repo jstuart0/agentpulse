@@ -7,7 +7,7 @@ import {
 	CODEX_APPROVALS_SERVER_FEATURE,
 	CODEX_APPROVAL_LIMITS,
 } from "../../shared/codex-approvals.js";
-import { CLAUDE_TURN_CONTROL } from "../../shared/constants.js";
+import { AGENT_TYPES, CLAUDE_TURN_CONTROL } from "../../shared/constants.js";
 import { FORK_TOOL_DETAIL, FORK_TOOL_DETAIL_LIMITS } from "../../shared/fork-tool-calls.js";
 import { DELIVERY_ID_HEADER, REPLAY_HEADER } from "../../shared/hook-headers.js";
 import { privilegeCliArgs } from "../../shared/launch-privileges.js";
@@ -590,6 +590,13 @@ supervisorsAgentRouter.post(
 			return c.json({ error: "invalid_body" }, 400);
 		}
 		if (!body.sessionId) return c.json({ error: "sessionId is required" }, 400);
+		// The agent type is printed in model prompts and picks code paths: only a known value is stored.
+		if (
+			body.agentType !== undefined &&
+			!(AGENT_TYPES as readonly unknown[]).includes(body.agentType)
+		) {
+			return c.json({ error: "invalid_body" }, 400);
+		}
 		const release = admitReplay(late, supervisorId);
 		if (!release) return replayBusy(c);
 		try {

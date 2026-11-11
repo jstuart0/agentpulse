@@ -39,8 +39,8 @@ import {
 } from "./proposals-service.js";
 import { getProvider, getProviderApiKey } from "./providers-service.js";
 import { RunLeaser } from "./run-leaser.js";
-import { checkText, collectUserPromptUrls, contextOf } from "./session-summary/tripwire.js";
 import { addSpendCents, checkSpendBudget } from "./spend-service.js";
+import { textForTranscript } from "./transcript-text-check.js";
 import { type Boundary, boundaryOf, computeTurnKey, hasPromptAfter } from "./turn-identity.js";
 import { isWatched } from "./watched-sessions.js";
 import { getWatcherConfig } from "./watcher-config-service.js";
@@ -68,27 +68,6 @@ const MAX_EVENTS_LOOKBACK = 200;
 const PARSE_RETRY_NOTICE =
 	"RESPONSE PARSE ERROR: the reply did not match the schema. Respond with exactly one JSON object per the schema. No prose.";
 
-/** Stored in place of a report that failed the text check; the person's inbox entry keeps the report itself. */
-export const HELD_BACK_REPORT_TEXT =
-	"The watcher's report was held back: it contained text AgentPulse could not check.";
-
-/**
- * The `AiReport` event is read back by Ask and by the next watcher run, so a report that
- * carries a link or a command nothing recorded (the same check Notify's note passes) is
- * replaced there by fixed text. This run has no ledger: nothing counts as recorded, and
- * the URLs the person typed in the rows the run read are the only ones that pass.
- */
-function reportTextForTranscript(summary: string, recent: SessionEvent[]): string {
-	const typedUrls = collectUserPromptUrls(
-		recent.filter((e) => e.category === "prompt").map((e) => e.content ?? ""),
-	);
-	const suspect = checkText(
-		summary,
-		contextOf(typedUrls, { recordedPaths: [], recordedCommands: [] }),
-		{ checkCommands: false },
-	);
-	return suspect.length > 0 ? HELD_BACK_REPORT_TEXT : summary;
-}
 // A Continue decision reads the whole current turn, however long ago it began.
 const CONTINUE_TIME_BUDGET_MS = 6 * 60 * 60 * 1000;
 const CONTINUE_MAX_TOKENS = 600;
@@ -747,7 +726,7 @@ export class WatcherRunner {
 			await completeProposal({
 				id: pending.id,
 				decision: "report",
-				reportSummary: `Watcher output did not parse: ${parsed.error}`,
+				reportSummary: "Watcher output did not parse.",
 				rawResponse: { raw: responseText, parse_error: parsed.error },
 				tokensIn: usageInput,
 				tokensOut: usageOutput,
@@ -760,7 +739,9 @@ export class WatcherRunner {
 				source: "managed_control",
 				category: "ai_error",
 				eventType: "ParseFailure",
-				content: parsed.error,
+				// Fixed text: the parse error can carry the model's own words. The detail is in the
+				// proposal's rawResponse, which no prompt reads.
+				content: "The watcher's reply did not match the schema.",
 				rawPayload: { sub_type: "parse_failure", proposal_id: pending.id },
 			});
 			await stampWatcherState(sessionId, "cooling_down");
@@ -800,7 +781,7 @@ export class WatcherRunner {
 				source: "managed_control",
 				category: "ai_proposal",
 				eventType: "AiStop",
-				content: decision.why ?? "Watcher decided to stop.",
+				content: textForTranscript(decision.why ?? "Watcher decided to stop.", recent),
 				rawPayload: { proposal_id: pending.id, decision: "stop" },
 			});
 			await stampWatcherState(sessionId, "idle");
@@ -827,7 +808,7 @@ export class WatcherRunner {
 				source: "managed_control",
 				category: "ai_report",
 				eventType: "AiReport",
-				content: reportTextForTranscript(decision.summary, recent),
+				content: textForTranscript(decision.summary, recent),
 				rawPayload: {
 					proposal_id: pending.id,
 					status: decision.status,

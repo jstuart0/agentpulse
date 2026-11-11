@@ -34,6 +34,7 @@ import {
 } from "./proposal-resolution.js";
 import { cancelOpenHitl, completeProposal, completeProposalAsHitl } from "./proposals-service.js";
 import { evaluateRisk, getRiskClasses } from "./risk-classes.js";
+import { textForTranscript } from "./transcript-text-check.js";
 import type { WatcherConfigRecord } from "./watcher-config-service.js";
 
 /** A suggestion is shown whole in a Telegram message and a card, so it is held to this. */
@@ -414,7 +415,7 @@ async function openRequest(
 		source: "managed_control",
 		category: "ai_proposal",
 		eventType: "AiProposal",
-		content: shown,
+		content: textForTranscript(shown, input.recent),
 		rawPayload: { proposal_id: proposalId, decision: decision.decision, why: askWhy ?? null },
 	});
 	await emitAiEvent({
@@ -422,7 +423,7 @@ async function openRequest(
 		source: "managed_control",
 		category: "ai_hitl_request",
 		eventType: "AiHitlRequest",
-		content: shown,
+		content: textForTranscript(shown, input.recent),
 		rawPayload: { proposal_id: proposalId, why: askWhy ?? null, can_dispatch: nextPrompt !== null },
 	});
 	await stampWatcherState(sessionId, "awaiting_human");

@@ -144,9 +144,9 @@ function renderSnapshot(s: SessionSnapshot): string {
 	const title = formatUntrustedInline(s.displayName ?? s.sessionId.slice(0, 8));
 	lines.push(`## Session: ${title}`);
 	lines.push(`- id: ${formatUntrustedInline(s.sessionId)}`);
-	lines.push(`- agent: ${s.agentType}`);
+	lines.push(`- agent: ${formatUntrustedInline(s.agentType)}`);
 	lines.push(
-		`- status: ${s.status}${s.isWorking ? " (working now)" : ""} · tool uses: ${s.totalToolUses}`,
+		`- status: ${formatUntrustedInline(s.status)}${s.isWorking ? " (working now)" : ""} · tool uses: ${s.totalToolUses}`,
 	);
 	// xander F87: cwd/gitBranch/currentTask/planSummary are hook-payload
 	// fields, agent-writable exactly like displayName — escaped the same
