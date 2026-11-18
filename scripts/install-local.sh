@@ -14,6 +14,7 @@ while [[ "$HOME" == */ && "$HOME" != / ]]; do HOME="${HOME%/}"; done
 
 REPO_URL="https://github.com/jstuart0/agentpulse.git"
 REPO_REF="main"
+INSTALL_TRACK="ref"
 AGENTPULSE_DIR="${HOME%/}/.agentpulse"
 LOG_DIR="${AGENTPULSE_DIR}/logs"
 INSTALL_DIR="${AGENTPULSE_DIR}/app"
@@ -1098,6 +1099,139 @@ ap_xml_escape() {
   return 0
 }
 # <<< agentpulse-local-prereqs
+# >>> agentpulse-shim
+# The ~/.agentpulse/bin/agentpulse shim: one POSIX sh file that runs AgentPulse's own commands with the
+# Bun the installer chose, so the command works from any shell without Bun on PATH. scripts/lib/shim.sh
+# is the source; install-local.sh carries a byte-identical copy (scripts/shim.test.ts checks it), since
+# the installer is a single file that arrives through `curl | bash`.
+
+# $1 as a single-quoted sh word. A newline is refused (a path never holds one).
+ap_sh_quote() {
+  case "$1" in
+    *"
+"*) return 1 ;;
+  esac
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+  return 0
+}
+
+# The text of the shim for the Bun $1 and the checkout $2 (both absolute), ending in one newline.
+ap_render_shim() {
+  local bun_q dir_q
+  bun_q="$(ap_sh_quote "$1")" || return 1
+  dir_q="$(ap_sh_quote "$2")" || return 1
+  cat <<SHIM
+#!/bin/sh
+# Written by the AgentPulse installer and rewritten by it; edits here are lost.
+if [ "\$(id -u)" = 0 ]; then
+  echo "Don't run agentpulse as root." >&2
+  exit 1
+fi
+if [ -z "\${HOME-}" ]; then
+  echo "agentpulse: HOME is not set." >&2
+  exit 1
+fi
+BUN_BIN=${bun_q}
+INSTALL_DIR=${dir_q}
+if [ "\${1-}" = update ]; then
+  bundle="\$HOME/.agentpulse/updater/current/updater.js"
+  if [ ! -f "\$bundle" ]; then
+    echo "updates arrive with 0.12.0"
+    exit 0
+  fi
+  cd "\$HOME/.agentpulse" || exit 1
+  AGENTPULSE_UPDATER_REAL_SERVICES=1
+  export AGENTPULSE_UPDATER_REAL_SERVICES
+  exec "\$BUN_BIN" "\$bundle" "\$@"
+fi
+unset AGENTPULSE_UPDATER_REAL_SERVICES
+exec "\$BUN_BIN" "\$INSTALL_DIR/bin/cli.ts" "\$@"
+SHIM
+  return 0
+}
+# <<< agentpulse-shim
+
+# $1 as a JSON string, double quotes included. A control character is refused (no path holds one).
+ap_json_string() {
+  case "$1" in
+    *[[:cntrl:]]*) return 1 ;;
+  esac
+  printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+  return 0
+}
+
+# $1 as a JSON string, or null when it is empty.
+ap_json_string_or_null() {
+  if [[ -z "$1" ]]; then
+    printf 'null'
+    return 0
+  fi
+  ap_json_string "$1"
+}
+
+# How the supervisor reaches the server at URL $1: https, a loopback address, or plain http.
+ap_server_transport() {
+  case "$1" in
+    https://*) echo https ;;
+    "http://localhost"|"http://localhost:"*|"http://localhost/"*) echo loopback ;;
+    "http://127.0.0.1"|"http://127.0.0.1:"*|"http://127.0.0.1/"*) echo loopback ;;
+    "http://[::1]"|"http://[::1]:"*|"http://[::1]/"*) echo loopback ;;
+    *) echo http ;;
+  esac
+  return 0
+}
+
+# ~/.agentpulse/install.json: what this machine's AgentPulse was installed from and how it runs, read by
+# the server, the supervisor and the CLI (src/shared/install-record.ts). Written 0600 without following a link.
+ap_write_install_record() {
+  local real_dir comps sqlite_path
+  real_dir="$(cd -P "${INSTALL_DIR}" && pwd -P)" || return 1
+  comps='"server"'
+  if [[ "${AUTO_SUPERVISOR}" == "true" && ( "${DISABLE_AUTH}" == "true" || -n "${API_KEY}" ) ]]; then
+    comps='"server", "supervisor"'
+  fi
+  sqlite_path="${DATA_DIR}/agentpulse.db"
+  local content v
+  for v in "${REPO_URL}" "${REPO_REF}" "${real_dir}" "${DATA_DIR}" "${PUBLIC_URL}" "${BUN_BIN}"; do
+    if ! ap_json_string "$v" >/dev/null; then
+      printf '  ✗ a value the install record holds has a control character in it; nothing more was written.\n' >&2
+      return 1
+    fi
+  done
+  content="{
+  \"schema\": 1,
+  \"kind\": \"local\",
+  \"components\": [${comps}],
+  \"repoUrl\": $(ap_json_string "${REPO_URL}"),
+  \"track\": \"${INSTALL_TRACK}\",
+  \"ref\": $(ap_json_string "${REPO_REF}"),
+  \"installDir\": $(ap_json_string "${real_dir}"),
+  \"dataDir\": $(ap_json_string "${DATA_DIR}"),
+  \"sqlitePath\": $(ap_json_string "${sqlite_path}"),
+  \"dialect\": \"sqlite\",
+  \"service\": \"${SERVICE_MODE}\",
+  \"serverUrl\": $(ap_json_string "${PUBLIC_URL}"),
+  \"serverTransport\": \"$(ap_server_transport "${PUBLIC_URL}")\",
+  \"bunBin\": $(ap_json_string "${BUN_BIN}")
+}"$'\n'
+  ap_write_private_no_follow "${AGENTPULSE_DIR}/install.json" "${content}" || return 1
+  echo "  ✓ Wrote ${AGENTPULSE_DIR}/install.json"
+  return 0
+}
+
+# ~/.agentpulse/bin/agentpulse (0700), and how to put it on PATH. The installer never edits shell startup files.
+ap_write_shim() {
+  local real_dir shim="${AGENTPULSE_DIR}/bin/agentpulse" content
+  real_dir="$(cd -P "${INSTALL_DIR}" && pwd -P)" || return 1
+  ap_local_private_dir "${AGENTPULSE_DIR}/bin" default
+  content="$(ap_render_shim "${BUN_BIN}" "${real_dir}")"$'\n' || return 1
+  ap_write_private_no_follow "${shim}" "${content}" || return 1
+  chmod 700 "${shim}" || return 1
+  echo "  ✓ Wrote ${shim}"
+  echo "    To run it from any shell, add this line to your shell profile:"
+  echo "      export PATH=\"\$HOME/.agentpulse/bin:\$PATH\""
+  return 0
+}
 
 ap_local_validate_args
 
@@ -1220,6 +1354,8 @@ ENV_FILE="${INSTALL_DIR}/.env.local"
 ENV_CONTENT="$(ap_local_env_content)"$'\n'
 ap_write_private_no_follow "${ENV_FILE}" "${ENV_CONTENT}" || exit 1
 echo "  ✓ Wrote ${ENV_FILE}"
+ap_write_install_record || exit 1
+ap_write_shim || exit 1
 
 SUPERVISOR_CONFIG_FILE="${AGENTPULSE_DIR}/supervisor.json"
 SUPERVISOR_ENROLLMENT_TOKEN=""

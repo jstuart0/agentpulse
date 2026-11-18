@@ -44,6 +44,9 @@ import {
 import { homedir as osHomedir, hostname as osHostname, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
+/** The release this file belongs to. `bun run release:prepare` rewrites it; `scripts/release/version-parity.test.ts` holds it equal to package.json. */
+export const RELAY_VERSION = "0.11.0";
+
 const RELAY_FETCH_TIMEOUT_MS = 8_000;
 const SYNC_FETCH_TIMEOUT_MS = 5_000;
 const RELAY_IDLE_TIMEOUT_S = 30;
@@ -4519,6 +4522,7 @@ async function main(argv: string[]) {
 	console.log("");
 	console.log("  AgentPulse Relay");
 	console.log("  ────────────────");
+	console.log(`  Version:   ${RELAY_VERSION}`);
 	console.log(`  Local:     http://localhost:${relay.port} (hook forwarding)`);
 	console.log(`  Remote:    ${config.remoteUrl} (dashboard)`);
 	console.log(`  State:     ${config.stateDir}`);

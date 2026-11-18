@@ -2913,3 +2913,144 @@ describe("the unpinned Bun installer and the hardcoded ~/.bun are gone", () => {
 		expect(lstatSync(SCRIPT).isFile()).toBe(true);
 	});
 });
+
+// ── install.json and the agentpulse shim (AGEN-155, phase 1) ──
+
+describe("install.json and ~/.agentpulse/bin/agentpulse", () => {
+	const bunEnv = () => {
+		const bunx = fresh("bunx");
+		installBun(bunx);
+		return { BUN_INSTALL: bunx, BUN: join(bunx, "bin", "bun") };
+	};
+	const recordOf = (home: string) =>
+		JSON.parse(readFileSync(join(home, ".agentpulse", "install.json"), "utf-8"));
+	const shimOf = (home: string) => join(home, ".agentpulse", "bin", "agentpulse");
+	const renderedShim = (bash: string, bunBin: string, installDir: string) => {
+		const out = run(
+			bash,
+			'. "$1"\nap_render_shim "$2" "$3"',
+			[join(import.meta.dir, "lib", "shim.sh"), bunBin, installDir],
+			{},
+		);
+		expect(out.code).toBe(0);
+		return `${out.out}\n`;
+	};
+
+	each("a default install writes a private install.json that describes it", (bash) => {
+		const env = bunEnv();
+		const r = go(bash, PLAIN, { path: mkPath(), env });
+		expect(r.code).toBe(0);
+		const file = join(r.home, ".agentpulse", "install.json");
+		expect(modeOf(file)).toBe(0o600);
+		const rec = recordOf(r.home);
+		expect(rec).toEqual({
+			schema: 1,
+			kind: "local",
+			components: ["server", "supervisor"],
+			repoUrl: "https://github.com/jstuart0/agentpulse.git",
+			track: "ref",
+			ref: "main",
+			installDir: realpathSync(join(r.home, ".agentpulse", "app")),
+			dataDir: join(r.home, ".agentpulse", "data"),
+			sqlitePath: join(r.home, ".agentpulse", "data", "agentpulse.db"),
+			dialect: "sqlite",
+			service: "none",
+			serverUrl: "http://localhost:3000",
+			serverTransport: "loopback",
+			bunBin: join(env.BUN_INSTALL, "bin", "bun"),
+		});
+		expect(readFileSync(file, "utf-8").endsWith("}\n")).toBe(true);
+	});
+
+	each("--skip-supervisor records the server alone", (bash) => {
+		const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), env: bunEnv() });
+		expect(r.code).toBe(0);
+		expect(recordOf(r.home).components).toEqual(["server"]);
+	});
+
+	once("auth on with no API key leaves the supervisor out, as the install does", (bash) => {
+		const r = go(bash, [...PLAIN, "--disable-auth", "false"], { path: mkPath(), env: bunEnv() });
+		expect(r.code).toBe(0);
+		expect(recordOf(r.home).components).toEqual(["server"]);
+	});
+
+	once("the server transport follows the public URL: https, loopback or plain http", (bash) => {
+		for (const [url, transport] of [
+			["https://agentpulse.example.invalid", "https"],
+			["http://127.0.0.1:3000", "loopback"],
+			["http://[::1]:3000", "loopback"],
+			["http://192.0.2.10:3000", "http"],
+			["http://localhost.example.invalid:3000", "http"],
+		] as const) {
+			const r = go(bash, [...PLAIN, "--skip-supervisor", "--public-url", url], {
+				path: mkPath(),
+				env: bunEnv(),
+			});
+			expect(r.code).toBe(0);
+			expect(recordOf(r.home).serverTransport).toBe(transport);
+			expect(recordOf(r.home).serverUrl).toBe(url);
+		}
+	});
+
+	each("the shim is 0700 and byte-identical to ap_render_shim for the same inputs", (bash) => {
+		const env = bunEnv();
+		const r = go(bash, PLAIN, { path: mkPath(), env });
+		expect(r.code).toBe(0);
+		const shim = shimOf(r.home);
+		expect(modeOf(shim)).toBe(0o700);
+		expect(modeOf(join(r.home, ".agentpulse", "bin"))).toBe(0o700);
+		const installDir = realpathSync(join(r.home, ".agentpulse", "app"));
+		expect(readFileSync(shim, "utf-8")).toBe(
+			renderedShim(bash, join(env.BUN_INSTALL, "bin", "bun"), installDir),
+		);
+	});
+
+	each("the shim is written for --skip-supervisor and a custom --dir as well", (bash) => {
+		const env = bunEnv();
+		const t = fresh("t");
+		const r = go(bash, [...PLAIN, "--skip-supervisor", "--dir", `${t}/my-app`], {
+			path: mkPath(),
+			env,
+		});
+		expect(r.code).toBe(0);
+		expect(readFileSync(shimOf(r.home), "utf-8")).toBe(
+			renderedShim(bash, join(env.BUN_INSTALL, "bin", "bun"), realpathSync(`${t}/my-app`)),
+		);
+		expect(recordOf(r.home).installDir).toBe(realpathSync(`${t}/my-app`));
+	});
+
+	once("it prints the PATH hint and never edits a shell startup file", (bash) => {
+		const home = fresh("home");
+		for (const rc of [".bashrc", ".zshrc", ".profile", ".bash_profile"]) {
+			writeFileSync(join(home, rc), "# mine\n");
+		}
+		const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), home, env: bunEnv() });
+		expect(r.code).toBe(0);
+		expect(r.stdout).toContain('export PATH="$HOME/.agentpulse/bin:$PATH"');
+		for (const rc of [".bashrc", ".zshrc", ".profile", ".bash_profile"]) {
+			expect(readFileSync(join(home, rc), "utf-8")).toBe("# mine\n");
+		}
+	});
+
+	once("a link where install.json goes is refused and its target left alone", (bash) => {
+		const home = fresh("home");
+		mkdirSync(join(home, ".agentpulse"), { recursive: true });
+		writeFileSync(join(home, "target"), "keep");
+		symlinkSync(join(home, "target"), join(home, ".agentpulse", "install.json"));
+		const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), home, env: bunEnv() });
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("refusing to write through a symlink");
+		expect(readFileSync(join(home, "target"), "utf-8")).toBe("keep");
+	});
+
+	once("a link where the shim goes is refused and its target left alone", (bash) => {
+		const home = fresh("home");
+		mkdirSync(join(home, ".agentpulse", "bin"), { recursive: true });
+		writeFileSync(join(home, "target"), "keep");
+		symlinkSync(join(home, "target"), shimOf(home));
+		const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), home, env: bunEnv() });
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("refusing to write through a symlink");
+		expect(readFileSync(join(home, "target"), "utf-8")).toBe("keep");
+	});
+});

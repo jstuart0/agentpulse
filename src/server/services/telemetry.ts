@@ -28,6 +28,7 @@
 
 import { count, eq } from "drizzle-orm";
 import packageJson from "../../../package.json";
+import { INSTALLATION_ID_KEY } from "../../shared/db-fingerprint.js";
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
 import { sessions, settings } from "../db/schema/index.js";
@@ -40,7 +41,6 @@ const INITIAL_PING_DELAY_MS = 5_000;
 const PING_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const VERSION = typeof packageJson.version === "string" ? packageJson.version : "unknown";
 
-const INSTALLATION_ID_KEY = "installation_id";
 const INSTALLATION_CREATED_AT_KEY = "telemetry:installation_created_at";
 const FIRST_BOOT_SENT_AT_KEY = "telemetry:first_boot_sent_at";
 const LAST_ATTEMPT_AT_KEY = "telemetry:last_attempt_at";

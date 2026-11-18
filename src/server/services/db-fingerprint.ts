@@ -17,17 +17,10 @@
  * against a telemetry ping.
  */
 
+import { fingerprintOf } from "../../shared/db-fingerprint.js";
 import { getOrCreateInstallationId } from "./telemetry.js";
-
-const FINGERPRINT_SALT = "agentpulse-db-fingerprint:";
-const FINGERPRINT_LENGTH = 12;
 
 export async function getDbFingerprint(): Promise<string> {
 	const installation = await getOrCreateInstallationId();
-	const data = new TextEncoder().encode(`${FINGERPRINT_SALT}${installation.id}`);
-	const hash = await crypto.subtle.digest("SHA-256", data);
-	return Array.from(new Uint8Array(hash))
-		.map((b) => b.toString(16).padStart(2, "0"))
-		.join("")
-		.slice(0, FINGERPRINT_LENGTH);
+	return fingerprintOf(installation.id);
 }

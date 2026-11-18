@@ -2,9 +2,16 @@ import { constants, accessSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { arch, homedir, hostname, platform } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
+import pkg from "../../package.json" with { type: "json" };
 import { CLAUDE_FORK_MCP } from "../shared/claude-fork-mcp.js";
 import { CLAUDE_FORK_SUBAGENTS } from "../shared/claude-fork-subagents.js";
-import { CLAUDE_STOP, CLAUDE_TURN_CONTROL, CODEX_FOLLOW_UP_PROMPTS } from "../shared/constants.js";
+import {
+	CLAUDE_STOP,
+	CLAUDE_TURN_CONTROL,
+	CODEX_FOLLOW_UP_PROMPTS,
+	LOCAL_UPDATER,
+} from "../shared/constants.js";
+import { readInstallRecord } from "../shared/install-record.js";
 import {
 	tightenPrivateFilePermissionsSync,
 	writePrivateFileSyncNoFollow,
@@ -63,6 +70,12 @@ function currentOs() {
 				: "unknown";
 }
 
+/** `local_updater` only on a host install-local.sh set up with a supervisor: that is where `agentpulse update` runs. */
+function localUpdaterFeature(): string[] {
+	const record = readInstallRecord(resolveHomeDir());
+	return record?.components.includes("supervisor") ? [LOCAL_UPDATER] : [];
+}
+
 export function buildDefaultConfig(): SupervisorConfig {
 	return {
 		serverUrl: process.env.AGENTPULSE_SERVER_URL || "http://localhost:3000",
@@ -73,7 +86,7 @@ export function buildDefaultConfig(): SupervisorConfig {
 		hostName: hostname(),
 		platform: platform(),
 		arch: arch(),
-		version: "0.1.0",
+		version: pkg.version,
 		trustedRoots: [join(homedir(), "dev")],
 		claudeCommand: process.env.AGENTPULSE_CLAUDE_COMMAND,
 		codexCommand: process.env.AGENTPULSE_CODEX_COMMAND,
@@ -100,6 +113,7 @@ export function buildDefaultConfig(): SupervisorConfig {
 				CLAUDE_TURN_INTERRUPT,
 				"enforces_launch_privileges",
 				"offline_outbox",
+				...localUpdaterFeature(),
 			],
 		},
 	};
@@ -266,6 +280,7 @@ export async function withExecutableCapabilities(
 				CLAUDE_TURN_INTERRUPT,
 				"enforces_launch_privileges",
 				"offline_outbox",
+				...localUpdaterFeature(),
 				...(git.resolvedPath ? ["can_scaffold_workarea", "can_clone_repo"] : []),
 				...(terminalSupport.length > 0 ? ["interactive_terminal"] : []),
 				...(interactiveTerminalControl.available ? ["interactive_terminal_control"] : []),
@@ -311,6 +326,8 @@ export async function loadSupervisorConfig() {
 		return withExecutableCapabilities({
 			...defaults,
 			...raw,
+			// The running code's version, never one a saved file remembers (an old save held 0.1.0 forever).
+			version: pkg.version,
 			capabilities: {
 				...defaults.capabilities,
 				...(raw.capabilities ?? {}),
@@ -333,7 +350,9 @@ export async function loadSupervisorConfig() {
  */
 export async function saveSupervisorConfig(config: SupervisorConfig) {
 	await mkdir(join(resolveHomeDir(), ".agentpulse"), { recursive: true });
-	writePrivateFileSyncNoFollow(getSupervisorConfigPath(), JSON.stringify(config, null, 2));
+	// The version belongs to the running code, not to the file: it is read from package.json on every load.
+	const { version: _runningVersion, ...persisted } = config;
+	writePrivateFileSyncNoFollow(getSupervisorConfigPath(), JSON.stringify(persisted, null, 2));
 }
 
 /**
