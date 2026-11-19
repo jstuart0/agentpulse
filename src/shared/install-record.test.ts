@@ -10,11 +10,19 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { detectInstallKind, readInstallRecord } from "./install-record.js";
+import {
+	detectInstallKindForTests as detectInstallKind,
+	readInstallRecord,
+	readInstallRecordForTests,
+} from "./install-record.js";
+import { readPrivateFileNoFollowForTests } from "./private-read.js";
 
 const ROOT = realpathSync(mkdtempSync(join(tmpdir(), "ap-install-record-")));
 afterAll(() => rmSync(ROOT, { recursive: true, force: true }));
 const myUid = process.getuid?.() as number;
+/** A reader that judges the file as if it had to belong to another user. */
+const asOtherUser = (path: string, maxBytes: number) =>
+	readPrivateFileNoFollowForTests(path, maxBytes, myUid + 1);
 const posixOnly = process.platform === "win32" ? test.skip : test;
 let n = 0;
 
@@ -64,6 +72,21 @@ describe("readInstallRecord", () => {
 		expect(got?.serverTransport).toBe("loopback");
 	});
 
+	test("serverTransport is recomputed from serverUrl, never read from the file", () => {
+		const cases: Array<[string, "https" | "loopback" | "http"]> = [
+			["https://agentpulse.example.invalid", "https"],
+			["http://localhost:3000", "loopback"],
+			["http://127.0.0.1:3000", "loopback"],
+			["http://[::1]:3000", "loopback"],
+			["http://192.0.2.10:3000", "http"],
+			["http://localhost.example.invalid:3000", "http"],
+		];
+		for (const [url, expected] of cases) {
+			const got = readInstallRecord(home(record({ serverUrl: url, serverTransport: "https" })));
+			expect(got?.serverTransport).toBe(expected);
+		}
+	});
+
 	test("a supervisor-only record may have no database fields", () => {
 		const h = home(
 			record({ components: ["supervisor"], dataDir: null, sqlitePath: null, dialect: null }),
@@ -79,7 +102,14 @@ describe("readInstallRecord", () => {
 		expect(readInstallRecord(home(record({ components: [] })))).toBeNull();
 		expect(readInstallRecord(home(record({ components: ["server", "relay"] })))).toBeNull();
 		expect(readInstallRecord(home(record({ track: "nightly" })))).toBeNull();
-		expect(readInstallRecord(home(record({ serverTransport: "ftp" })))).toBeNull();
+		expect(readInstallRecord(home(record({ serverUrl: "ftp://example.invalid" })))).toBeNull();
+		expect(readInstallRecord(home(record({ ref: "a b" })))).toBeNull();
+		expect(readInstallRecord(home(record({ ref: "x".repeat(129) })))).toBeNull();
+		expect(readInstallRecord(home(record({ ref: "main\nevil" })))).toBeNull();
+		expect(
+			readInstallRecord(home(record({ repoUrl: "https://x.invalid/a\u0007.git" }))),
+		).toBeNull();
+		expect(readInstallRecord(home(record({ bunBin: "/bun/b\tin/bun" })))).toBeNull();
 		expect(readInstallRecord(home(record({ installDir: "relative/dir" })))).toBeNull();
 		expect(readInstallRecord(home(record({ bunBin: 7 })))).toBeNull();
 		expect(readInstallRecord(home([1, 2]))).toBeNull();
@@ -92,7 +122,7 @@ describe("readInstallRecord", () => {
 			expect(readInstallRecord(home(record(), { dirMode: 0o777 }))).toBeNull();
 			const h = home(record());
 			expect(readInstallRecord(h)).not.toBeNull();
-			expect(readInstallRecord(h, { ownerUid: myUid + 1 })).toBeNull();
+			expect(readInstallRecordForTests(h, asOtherUser)).toBeNull();
 		},
 	);
 
@@ -110,18 +140,29 @@ describe("readInstallRecord", () => {
 describe("detectInstallKind", () => {
 	const none = () => false;
 
-	test("an install.json whose installDir is the server's cwd is local, even inside a container", () => {
+	test("an install.json whose installDir is the server's cwd is local", () => {
 		n += 1;
 		const dir = join(ROOT, `app-${n}`);
 		mkdirSync(dir);
 		const h = home(record({ installDir: dir }));
-		const kind = detectInstallKind(
-			{ KUBERNETES_SERVICE_HOST: "10.0.0.1", AGENTPULSE_INSTALL_KIND: "container" },
-			dir,
-			h,
-			{ exists: () => true },
+		expect(detectInstallKind({}, dir, h, { exists: none })).toBe("local");
+	});
+
+	test("a record never turns a pod or a container into a local install", () => {
+		n += 1;
+		const dir = join(ROOT, `app-${n}`);
+		mkdirSync(dir);
+		const h = home(record({ installDir: dir }));
+		expect(
+			detectInstallKind({ KUBERNETES_SERVICE_HOST: "10.0.0.1" }, dir, h, { exists: none }),
+		).toBe("kubernetes");
+		expect(
+			detectInstallKind({ AGENTPULSE_INSTALL_KIND: "container" }, dir, h, { exists: none }),
+		).toBe("container");
+		expect(detectInstallKind({}, dir, h, { exists: (p) => p === "/.dockerenv" })).toBe("container");
+		expect(detectInstallKind({}, dir, h, { exists: (p) => p === "/run/.containerenv" })).toBe(
+			"container",
 		);
-		expect(kind).toBe("local");
 	});
 
 	test("the match is by realpath, so a symlinked cwd still matches", () => {
@@ -179,7 +220,7 @@ describe("detectInstallKind", () => {
 		];
 		for (const h of bad) expect(detectInstallKind({}, dir, h, { exists: none })).toBe("source");
 		const good = home(record({ installDir: dir }));
-		expect(detectInstallKind({}, dir, good, { exists: none, ownerUid: myUid + 1 })).toBe("source");
+		expect(detectInstallKind({}, dir, good, { exists: none, read: asOtherUser })).toBe("source");
 		expect(detectInstallKind({}, dir, good, { exists: none })).toBe("local");
 	});
 });

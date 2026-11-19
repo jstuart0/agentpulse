@@ -3043,14 +3043,64 @@ describe("install.json and ~/.agentpulse/bin/agentpulse", () => {
 		expect(readFileSync(join(home, "target"), "utf-8")).toBe("keep");
 	});
 
-	once("a link where the shim goes is refused and its target left alone", (bash) => {
+	once(
+		"a link where the shim goes is refused, its target left alone, and the install goes on",
+		(bash) => {
+			const home = fresh("home");
+			mkdirSync(join(home, ".agentpulse", "bin"), { recursive: true });
+			writeFileSync(join(home, "target"), "keep");
+			symlinkSync(join(home, "target"), shimOf(home));
+			const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), home, env: bunEnv() });
+			expect(r.code).toBe(0);
+			expect(r.stderr).toContain("refusing to write through a symlink");
+			expect(readFileSync(join(home, "target"), "utf-8")).toBe("keep");
+			expect(recordOf(home).components).toEqual(["server"]);
+		},
+	);
+
+	once("a symlinked ~/.agentpulse/bin is refused and nothing is written through it", (bash) => {
 		const home = fresh("home");
-		mkdirSync(join(home, ".agentpulse", "bin"), { recursive: true });
-		writeFileSync(join(home, "target"), "keep");
-		symlinkSync(join(home, "target"), shimOf(home));
+		mkdirSync(join(home, ".agentpulse"), { recursive: true });
+		const elsewhere = join(home, "elsewhere");
+		mkdirSync(elsewhere);
+		symlinkSync(elsewhere, join(home, ".agentpulse", "bin"));
 		const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), home, env: bunEnv() });
+		expect(r.code).toBe(0);
+		expect(r.stderr).toContain("refusing to write into a symlinked directory");
+		expect(list(elsewhere)).toEqual([]);
+	});
+
+	once("the shim is written through a private temp file that leaves nothing behind", (bash) => {
+		const r = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), env: bunEnv() });
+		expect(r.code).toBe(0);
+		expect(list(join(r.home, ".agentpulse", "bin"))).toEqual(["agentpulse"]);
+	});
+
+	once("an enrollment failure installs no supervisor and the record says server only", (bash) => {
+		const r = go(bash, [...PLAIN, "--disable-auth", "false", "--api-key", "ap_test_key"], {
+			path: mkPath(),
+			env: bunEnv(),
+		});
+		expect(r.code).toBe(0);
+		expect(r.stdout).toContain("Couldn't create a supervisor enrollment token");
+		expect(r.log).not.toContain("run supervisor");
+		expect(recordOf(r.home).components).toEqual(["server"]);
+		expect(r.stdout).not.toContain("    enabled");
+	});
+
+	each("a failing record write comes last: the units were already written and started", (bash) => {
+		const home = fresh("home");
+		mkdirSync(join(home, ".agentpulse"), { recursive: true });
+		writeFileSync(join(home, "target"), "keep");
+		symlinkSync(join(home, "target"), join(home, ".agentpulse", "install.json"));
+		const r = go(bash, ["--skip-hooks", "--skip-supervisor", "--service", "systemd"], {
+			path: mkPath(),
+			home,
+			env: bunEnv(),
+		});
 		expect(r.code).toBe(1);
-		expect(r.stderr).toContain("refusing to write through a symlink");
+		expect(existsSync(unitFile(home))).toBe(true);
+		expect(r.log).toContain("systemctl --user restart agentpulse");
 		expect(readFileSync(join(home, "target"), "utf-8")).toBe("keep");
 	});
 });

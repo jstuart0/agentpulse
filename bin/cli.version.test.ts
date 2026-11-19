@@ -134,8 +134,8 @@ describe("agentpulse version", () => {
 			relayFile(home, null);
 			statuslineFile(home, null);
 			const r = runCli(home, ["version"]);
-			expect(r.out).toContain("Relay: unknown version (older than 0.11.0)");
-			expect(r.out).toContain("Statusline: unknown version (older than 0.11.0)");
+			expect(r.out).toContain("Relay: unknown version (older than 0.12.0)");
+			expect(r.out).toContain("Statusline: unknown version (older than 0.12.0)");
 		} finally {
 			rmSync(home, { recursive: true, force: true });
 		}

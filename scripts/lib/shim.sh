@@ -36,7 +36,7 @@ if [ "\${1-}" = update ]; then
   bundle="\$HOME/.agentpulse/updater/current/updater.js"
   if [ ! -f "\$bundle" ]; then
     echo "updates arrive with 0.12.0"
-    exit 0
+    exit 2
   fi
   cd "\$HOME/.agentpulse" || exit 1
   AGENTPULSE_UPDATER_REAL_SERVICES=1

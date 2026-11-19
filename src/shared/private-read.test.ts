@@ -3,7 +3,12 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as store from "../supervisor/services/private-store.js";
-import { readPrivateFileNoFollow, trustedDirectory } from "./private-read.js";
+import {
+	readPrivateFileNoFollow,
+	readPrivateFileNoFollowForTests,
+	trustedDirectory,
+	trustedDirectoryForTests,
+} from "./private-read.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "ap-private-read-"));
 afterAll(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -72,10 +77,12 @@ describe("readPrivateFileNoFollow (hoisted from the supervisor's private store)"
 		() => {
 			const dir = privateDir("owner");
 			const file = put(dir, "a", "x");
-			expect(readPrivateFileNoFollow(file, 100, myUid as number).kind).toBe("ok");
-			expect(readPrivateFileNoFollow(file, 100, (myUid as number) + 1).kind).toBe("untrusted");
-			expect(trustedDirectory(dir, myUid)).toBe(true);
-			expect(trustedDirectory(dir, (myUid as number) + 1)).toBe(false);
+			expect(readPrivateFileNoFollowForTests(file, 100, myUid as number).kind).toBe("ok");
+			expect(readPrivateFileNoFollowForTests(file, 100, (myUid as number) + 1).kind).toBe(
+				"untrusted",
+			);
+			expect(trustedDirectoryForTests(dir, myUid)).toBe(true);
+			expect(trustedDirectoryForTests(dir, (myUid as number) + 1)).toBe(false);
 		},
 	);
 });

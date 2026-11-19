@@ -11,7 +11,7 @@ import { parseReleaseVersion } from "./version.js";
 
 const MAX_COPY_BYTES = 2 * 1024 * 1024;
 /** The first release that carries a version constant in these files. */
-const FIRST_VERSIONED_RELEASE = "0.11.0";
+const FIRST_VERSIONED_RELEASE = "0.12.0";
 
 const RELAY_VERSION_LINE = /^export const RELAY_VERSION = "([^"\n]{1,64})";$/m;
 const STATUSLINE_VERSION_LINE = /^AGENTPULSE_STATUSLINE_VERSION="([^"\n]{1,64})"$/m;

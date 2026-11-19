@@ -59,6 +59,13 @@ describe("parseReleaseVersion (strict)", () => {
 		}
 	});
 
+	test("a zero numeric pre-release identifier is accepted; non-ASCII digits are refused", () => {
+		expect(parseReleaseVersion("1.2.3-0")?.pre).toEqual(["0"]);
+		expect(parseReleaseVersion("1.2.3-rc.0")?.pre).toEqual(["rc", "0"]);
+		expect(parseReleaseVersion("１.２.３")).toBeNull();
+		expect(parseReleaseVersion("1.2.3-٣")).toBeNull();
+	});
+
 	test("a non-string is refused", () => {
 		expect(parseReleaseVersion(undefined as unknown as string)).toBeNull();
 		expect(parseReleaseVersion(1 as unknown as string)).toBeNull();

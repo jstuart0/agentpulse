@@ -36,10 +36,7 @@ export function isTrustedStateFileStat(
 }
 
 /** `dir` exists and is a directory only this account can write into (never a symlink). */
-export function trustedDirectory(
-	dir: string,
-	ownerUid: number | undefined = process.getuid?.(),
-): boolean {
+function trustedDirectoryAs(dir: string, ownerUid: number | undefined): boolean {
 	try {
 		const st = lstatSync(dir);
 		if (process.platform === "win32")
@@ -48,6 +45,15 @@ export function trustedDirectory(
 	} catch {
 		return false;
 	}
+}
+
+export function trustedDirectory(dir: string): boolean {
+	return trustedDirectoryAs(dir, process.getuid?.());
+}
+
+/** Test only: the owner uid the directory must belong to, to simulate a wrong owner. */
+export function trustedDirectoryForTests(dir: string, ownerUid: number | undefined): boolean {
+	return trustedDirectoryAs(dir, ownerUid);
 }
 
 function isMissing(error: unknown): boolean {
@@ -84,12 +90,24 @@ export type PrivateFileRead =
  * to be believed. The directory must be private, the path is opened without following a symlink, and the
  * file must be a plain single-link file of at most `maxBytes` that only this account can read or write.
  * A file in a directory others can write into is untrusted; no file there is simply absent.
- * `ownerUid` is the uid the file and directory must belong to (this process's by default; a test injects another).
  */
-export function readPrivateFileNoFollow(
+export function readPrivateFileNoFollow(path: string, maxBytes: number): PrivateFileRead {
+	return readPrivateFileAs(path, maxBytes, process.getuid?.());
+}
+
+/** Test only: the owner uid the file and directory must belong to, to simulate a wrong owner. */
+export function readPrivateFileNoFollowForTests(
 	path: string,
 	maxBytes: number,
-	ownerUid: number | undefined = process.getuid?.(),
+	ownerUid: number | undefined,
+): PrivateFileRead {
+	return readPrivateFileAs(path, maxBytes, ownerUid);
+}
+
+function readPrivateFileAs(
+	path: string,
+	maxBytes: number,
+	ownerUid: number | undefined,
 ): PrivateFileRead {
 	const dir = dirname(path);
 	try {
@@ -99,7 +117,7 @@ export function readPrivateFileNoFollow(
 			? { kind: "absent" }
 			: { kind: "untrusted", why: "its directory cannot be inspected" };
 	}
-	if (!trustedDirectory(dir, ownerUid)) {
+	if (!trustedDirectoryAs(dir, ownerUid)) {
 		try {
 			lstatSync(path);
 		} catch (error) {

@@ -1137,7 +1137,7 @@ if [ "\${1-}" = update ]; then
   bundle="\$HOME/.agentpulse/updater/current/updater.js"
   if [ ! -f "\$bundle" ]; then
     echo "updates arrive with 0.12.0"
-    exit 0
+    exit 2
   fi
   cd "\$HOME/.agentpulse" || exit 1
   AGENTPULSE_UPDATER_REAL_SERVICES=1
@@ -1187,7 +1187,7 @@ ap_write_install_record() {
   local real_dir comps sqlite_path
   real_dir="$(cd -P "${INSTALL_DIR}" && pwd -P)" || return 1
   comps='"server"'
-  if [[ "${AUTO_SUPERVISOR}" == "true" && ( "${DISABLE_AUTH}" == "true" || -n "${API_KEY}" ) ]]; then
+  if [[ "${SUPERVISOR_INSTALLED}" == "true" ]]; then
     comps='"server", "supervisor"'
   fi
   sqlite_path="${DATA_DIR}/agentpulse.db"
@@ -1221,12 +1221,28 @@ ap_write_install_record() {
 
 # ~/.agentpulse/bin/agentpulse (0700), and how to put it on PATH. The installer never edits shell startup files.
 ap_write_shim() {
-  local real_dir shim="${AGENTPULSE_DIR}/bin/agentpulse" content
+  local real_dir bindir="${AGENTPULSE_DIR}/bin" shim="${AGENTPULSE_DIR}/bin/agentpulse" content tmp
   real_dir="$(cd -P "${INSTALL_DIR}" && pwd -P)" || return 1
-  ap_local_private_dir "${AGENTPULSE_DIR}/bin" default
+  if [[ -L "${bindir}" ]]; then
+    echo "refusing to write into a symlinked directory: ${bindir}" >&2
+    return 1
+  fi
+  if [[ -L "${shim}" ]]; then
+    echo "refusing to write through a symlink: ${shim}" >&2
+    return 1
+  fi
+  ap_local_private_dir "${bindir}" default
   content="$(ap_render_shim "${BUN_BIN}" "${real_dir}")"$'\n' || return 1
-  ap_write_private_no_follow "${shim}" "${content}" || return 1
-  chmod 700 "${shim}" || return 1
+  # An unguessable temp name, made 0700 before it holds anything and before it takes the final name.
+  tmp="$(mktemp "${bindir}/.agentpulse.XXXXXX")" || {
+    echo "refusing: could not create a private temp file in ${bindir}" >&2
+    return 1
+  }
+  if ! { chmod 700 "${tmp}" && ( set -C && printf '%s' "${content}" >| "${tmp}" ) && mv -f -- "${tmp}" "${shim}"; }; then
+    rm -f -- "${tmp}" 2>/dev/null || true
+    echo "refusing: could not write ${shim}" >&2
+    return 1
+  fi
   echo "  ✓ Wrote ${shim}"
   echo "    To run it from any shell, add this line to your shell profile:"
   echo "      export PATH=\"\$HOME/.agentpulse/bin:\$PATH\""
@@ -1354,11 +1370,13 @@ ENV_FILE="${INSTALL_DIR}/.env.local"
 ENV_CONTENT="$(ap_local_env_content)"$'\n'
 ap_write_private_no_follow "${ENV_FILE}" "${ENV_CONTENT}" || exit 1
 echo "  ✓ Wrote ${ENV_FILE}"
-ap_write_install_record || exit 1
-ap_write_shim || exit 1
+# The shim is a convenience: if it can't be written the install goes on (the units are still rewritten).
+ap_write_shim || echo "  ! Couldn't write the agentpulse shim; the install goes on without it." >&2
 
 SUPERVISOR_CONFIG_FILE="${AGENTPULSE_DIR}/supervisor.json"
 SUPERVISOR_ENROLLMENT_TOKEN=""
+# True once the supervisor was actually configured and started; the install record says so.
+SUPERVISOR_INSTALLED="false"
 # The only two plist values that can hold XML-special characters (a URL may hold & and ').
 PUBLIC_URL_XML="$(ap_xml_escape "${PUBLIC_URL}")"
 HOST_XML="$(ap_xml_escape "${HOST}")"
@@ -1618,15 +1636,20 @@ for _ in $(seq 1 30); do
       if [[ "${DISABLE_AUTH}" != "true" ]]; then
         if [[ -n "${API_KEY}" ]]; then
           echo "  Creating local supervisor enrollment token..."
-          SUPERVISOR_ENROLLMENT_TOKEN="$(
+          if SUPERVISOR_ENROLLMENT_TOKEN="$(
             curl -fsSL -X POST \
               -H "Authorization: Bearer ${API_KEY}" \
               -H "Content-Type: application/json" \
               "${PUBLIC_URL}/api/v1/supervisors/enroll" \
               -d '{"name":"local-supervisor"}' \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])'
-          )"
-          echo "  ✓ Enrollment token issued"
+          )"; then
+            echo "  ✓ Enrollment token issued"
+          else
+            SUPERVISOR_ENROLLMENT_TOKEN=""
+            echo "  ! Couldn't create a supervisor enrollment token, so the local supervisor wasn't installed."
+            echo "    Add one later from Hosts."
+          fi
         else
           echo "  ! Skipping supervisor auto-install because auth is enabled and no --api-key was provided."
           echo "    Add a supervisor later from Hosts, or rerun with --api-key."
@@ -1652,6 +1675,7 @@ for _ in $(seq 1 30); do
             echo "    Logs: tail -f ${LOG_DIR}/supervisor.out.log"
             ;;
         esac
+        SUPERVISOR_INSTALLED="true"
         echo ""
       fi
     fi
@@ -1677,8 +1701,10 @@ for _ in $(seq 1 30); do
       echo "    curl -fsSL ${PUBLIC_URL}/setup.sh | bash"
       echo ""
     fi
+    # Last, once the units, the health check and the supervisor are done, so it says what was set up.
+    ap_write_install_record || exit 1
     echo "  Local control plane:"
-    if [[ "${AUTO_SUPERVISOR}" == "true" ]]; then
+    if [[ "${SUPERVISOR_INSTALLED}" == "true" ]]; then
       echo "    enabled"
     else
       echo "    skipped (--skip-supervisor)"
@@ -1690,6 +1716,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
+ap_write_install_record || true
 echo ""
 echo "  AgentPulse was installed but the health check did not pass in time."
 echo "  Try starting it manually:"

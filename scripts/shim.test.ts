@@ -155,11 +155,11 @@ for (const { bash, label } of BASHES) {
 			}
 		});
 
-		test("`update` with no bundle says updates arrive with 0.12.0, exits 0 and never runs Bun", () => {
+		test("`update` with no bundle says updates arrive with 0.12.0, exits 2 and never runs Bun", () => {
 			expect(existsSync(BUNDLE)).toBe(false);
 			const shim = writeShim(text);
 			const r = runShimWith(shim, ["update"]);
-			expect(r.code).toBe(0);
+			expect(r.code).toBe(2);
 			expect(r.out).toContain("updates arrive with 0.12.0");
 			expect(r.stub).toBe("");
 		});
