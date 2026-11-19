@@ -56,6 +56,7 @@ import { settingsRouter } from "./routes/settings.js";
 import { setup as setupRoute } from "./routes/setup.js";
 import { supervisorsAdminRouter, supervisorsAgentRouter } from "./routes/supervisors.js";
 import { templatesRouter } from "./routes/templates.js";
+import { updateRouter } from "./routes/update.js";
 import { usersRouter } from "./routes/users.js";
 
 export const app = new Hono();
@@ -124,6 +125,7 @@ api.route("/v1", askRouter);
 api.route("/v1", searchRouter);
 api.route("/v1", labsRouter);
 api.route("/v1", capabilitiesRouter);
+api.route("/v1", updateRouter);
 api.route("/v1", pairingCodesRouter);
 api.route("/v1", devicesRouter);
 api.route("/v1", codexApprovalsRouter);

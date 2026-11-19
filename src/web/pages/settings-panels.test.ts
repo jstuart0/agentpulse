@@ -72,3 +72,12 @@ describe("panelToReveal (AGEN-69 phase 8a)", () => {
 		expect(panelToReveal("?panel=nope", { account: true, ai: true })).toBeNull();
 	});
 });
+
+describe("the updates panel (AGEN-155)", () => {
+	test("?panel=updates resolves and has an anchor, always on the page", () => {
+		expect(panelFromSearch("?panel=updates")).toBe("updates");
+		expect(panelAnchorId("updates")).toBe("settings-updates");
+		expect(resolvePanel("updates", { account: false })).toBe("updates");
+		expect(panelToReveal("?panel=updates", { account: false, ai: false })).toBe("updates");
+	});
+});

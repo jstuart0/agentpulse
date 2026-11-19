@@ -6,6 +6,7 @@ import { ownershipUi } from "../lib/ownership-ui.js";
 import {
 	deriveHostAccess,
 	deriveHostExcludeNotice,
+	deriveHostUpdateNotice,
 	deriveHostsViewState,
 	enrollmentOwnershipNote,
 	hostActionConfirm,
@@ -372,5 +373,96 @@ describe("the owner dialogs", () => {
 	test("both pages offer a disabled current owner in the picker", () => {
 		expect(read("pages", "HostsPage.tsx")).toContain("withCurrentOwner(");
 		expect(read("pages", "SessionDetailPage.tsx")).toContain("withCurrentOwner(");
+	});
+});
+
+describe("deriveHostUpdateNotice (AGEN-155)", () => {
+	const host = (version: string, features: string[] = [], over: Partial<SupervisorRecord> = {}) =>
+		({
+			...supervisor("u1"),
+			version,
+			capabilities: { launchModes: [], agentTypes: [], features },
+			...over,
+		}) as SupervisorRecord;
+	const current = { current: "0.12.0", state: "current" };
+	const manager = { canManage: true };
+
+	test("a host at the server's version, or ahead of it, has no notice", () => {
+		expect(deriveHostUpdateNotice(host("0.12.0"), current, manager)).toBeNull();
+		expect(deriveHostUpdateNotice(host("0.13.0"), current, manager)).toBeNull();
+	});
+
+	test("a host behind the server's CURRENT version (not the latest release) gets the notice", () => {
+		const notice = deriveHostUpdateNotice(host("0.11.0", ["local_updater"]), current, manager);
+		expect(notice?.kind).toBe("update_host");
+	});
+
+	test("with local_updater: run the command on that host, the host name as its own text part", () => {
+		const notice = deriveHostUpdateNotice(
+			host("0.11.0", ["local_updater"], { hostName: "build-01" }),
+			current,
+			manager,
+		);
+		expect(notice?.parts).toEqual([
+			{ kind: "text", text: "Run " },
+			{ kind: "code", text: "~/.agentpulse/bin/agentpulse update" },
+			{ kind: "text", text: " on " },
+			{ kind: "host", text: "build-01" },
+			{ kind: "text", text: "." },
+		]);
+	});
+
+	test("a hostile host name stays a text part: it is never joined into the code part", () => {
+		const notice = deriveHostUpdateNotice(
+			host("0.11.0", ["local_updater"], { hostName: "x`; rm -rf /`" }),
+			current,
+			manager,
+		);
+		const code = notice?.parts.filter((p) => p.kind === "code").map((p) => p.text);
+		expect(code).toEqual(["~/.agentpulse/bin/agentpulse update"]);
+	});
+
+	test("without local_updater: it can't update itself; re-install with --supervisor-only", () => {
+		const notice = deriveHostUpdateNotice(host("0.11.0", []), current, manager);
+		expect(notice?.kind).toBe("reinstall");
+		expect(notice?.parts).toEqual([
+			{
+				kind: "text",
+				text: "This host wasn't installed with install-local.sh, so it can't update itself. Re-install it with ",
+			},
+			{ kind: "code", text: "install-local.sh --supervisor-only" },
+			{ kind: "text", text: "." },
+		]);
+	});
+
+	test("when the server itself is behind, it says to update the server first, whatever the host can do", () => {
+		for (const state of ["available", "security", "below_minimum", "current_pulled"]) {
+			const notice = deriveHostUpdateNotice(
+				host("0.11.0", ["local_updater"]),
+				{ current: "0.12.0", state },
+				manager,
+			);
+			expect({ state, kind: notice?.kind }).toEqual({ state, kind: "update_server_first" });
+			expect(notice?.parts).toEqual([{ kind: "text", text: "Update the server first." }]);
+		}
+	});
+
+	test("only a host's owner or an admin (canManage) is told; nobody else, and not for a revoked host", () => {
+		expect(deriveHostUpdateNotice(host("0.11.0"), current, { canManage: false })).toBeNull();
+		expect(
+			deriveHostUpdateNotice(host("0.11.0", [], { enrollmentState: "revoked" }), current, manager),
+		).toBeNull();
+	});
+
+	test("an unreadable version on either side says nothing rather than guess", () => {
+		expect(deriveHostUpdateNotice(host("weird"), current, manager)).toBeNull();
+		expect(
+			deriveHostUpdateNotice(host("0.11.0"), { current: "dev", state: "current" }, manager),
+		).toBeNull();
+		expect(deriveHostUpdateNotice(host("0.11.0"), null, manager)).toBeNull();
+	});
+
+	test("the old 0.1.0 a supervisor used to report reads as behind, which is true", () => {
+		expect(deriveHostUpdateNotice(host("0.1.0"), current, manager)?.kind).toBe("reinstall");
 	});
 });

@@ -98,6 +98,7 @@ default_tools_approval_mode = "writes"
 | `get_digest` | `GET /ai/digest` | Cross-session daily digest by project. |
 | `get_ai_status` | `GET /ai/status`, optionally `GET /ai/diagnostics` | Diagnostics are opt-in (`include_diagnostics: true`) — fetching them emits a `watcher_run_queued` metric on the server, so routine polling should leave it off. |
 | `list_projects_summary` | `GET /projects/summary` | Observe-safe project list: `id`/`name`/defaults, with `githubRepoUrl` reduced to `origin`+`pathname`. Narrower sibling of the manage-only `list_projects` below. |
+| `get_update_status` | `GET /capabilities` (`.update`) | Whether a newer AgentPulse release exists for the server: `current`, `latest`, `state` (`available`, `security`, `current`, `current_pulled`, `below_minimum`, `unverified`, `disabled`), `stale`, `checkedAt`, `installKind`. Read-only: there is no MCP tool that checks now, starts an update or turns on automatic updates, because an agent's own config can hold a `manage` key. A server that predates the update check answers `{ "state": "unknown" }`, not an error. |
 
 More read tools require `manage` — their REST DTOs carry secrets or operator-authored content, so they're excluded from the `observe` tier (see Security):
 

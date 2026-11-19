@@ -43,6 +43,8 @@ import type {
 	SessionTemplateInput,
 	SupervisorRecord,
 	TemplatePreview,
+	UnknownUpdateStatus,
+	UpdateStatus,
 } from "./types.js";
 
 // Re-exported so existing consumers (client.test.ts, scopes.test.ts) keep
@@ -308,6 +310,8 @@ export interface AgentPulseClient {
 	stopSession(sessionId: string): Promise<ControlActionResult>;
 	/** POST /sessions/:id/interrupt: ends a continued Claude session's running turn and keeps the session open. */
 	interruptSession(sessionId: string): Promise<ControlActionResult>;
+	/** GET /capabilities `.update` (observe-readable). A server that predates the update check answers `{ state: "unknown" }`. */
+	getUpdateStatus(): Promise<UpdateStatus | UnknownUpdateStatus>;
 	retryLaunch(sessionId: string): Promise<RetryLaunchResult>;
 	/** GET /sessions/:id/approvals (manage-only). A server without the route answers 404 with no error code. */
 	listApprovals(sessionId: string): Promise<CodexApprovalList>;
@@ -363,6 +367,17 @@ const TRAILING_SLASH_RE = /\/+$/;
  * instead of the Bearer bypass on a remote SSO deployment (D5/M11).
  * Idempotent: re-canonicalizing an already-canonical URL is a no-op.
  */
+const UNKNOWN_UPDATE_STATUS: UnknownUpdateStatus = { state: "unknown" };
+
+function isUpdateStatusAnswer(value: unknown): value is UpdateStatus {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		!Array.isArray(value) &&
+		typeof (value as { state?: unknown }).state === "string"
+	);
+}
+
 export function canonicalizeBaseUrl(rawUrl: string): string {
 	const url = new URL(rawUrl);
 	let pathname = url.pathname;
@@ -549,6 +564,11 @@ export function createHttpClient(options: CreateHttpClientOptions): AgentPulseCl
 			request<ControlActionResult>(`/sessions/${encodeURIComponent(sessionId)}/stop`, {
 				method: "POST",
 			}),
+		getUpdateStatus: async () => {
+			const { update } = await request<{ update?: unknown }>("/capabilities");
+			// A server that predates the check has no `update`; a malformed one is treated the same, never passed through.
+			return isUpdateStatusAnswer(update) ? update : UNKNOWN_UPDATE_STATUS;
+		},
 		interruptSession: (sessionId) =>
 			request<ControlActionResult>(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
 				method: "POST",

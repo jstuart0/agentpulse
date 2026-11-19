@@ -73,7 +73,7 @@ describe("on an always-admin mutating route", () => {
 	test("a foreign Origin is refused with bad_origin, for every mutating entry", async () => {
 		const admin = await seedLocalUser("oc-admin", "admin");
 		const app = miniApp();
-		expect(MUTATING.length).toBe(10);
+		expect(MUTATING.length).toBe(11);
 		for (const entry of MUTATING) {
 			const headers = await cookieHeadersFor(admin.id);
 			headers.set("Origin", FOREIGN);

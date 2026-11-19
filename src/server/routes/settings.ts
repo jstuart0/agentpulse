@@ -38,6 +38,8 @@ settingsRouter.use("*", requireAuth());
 settingsRouter.use("*", requireOperatorScope());
 
 const INSTANCE_SETTING_PREFIX = "instance.";
+// The update check's stored envelope and replay memory (AGEN-155): read through /health and /capabilities.
+const UPDATE_SETTING_PREFIX = "update.";
 // The one user-settable key a member may write in team mode; the others are an admin's.
 const MEMBER_WRITABLE_SETTING = "theme";
 
@@ -49,7 +51,9 @@ settingsRouter.get("/settings", async (c) => {
 		// The instance rows (the mode, the kept admin service keys) are not for
 		// clients: the mode is read from /instance, the kept list from the
 		// `adminService` flag on a key, for admins only.
-		if (row.key.startsWith(INSTANCE_SETTING_PREFIX)) continue;
+		if (row.key.startsWith(INSTANCE_SETTING_PREFIX) || row.key.startsWith(UPDATE_SETTING_PREFIX)) {
+			continue;
+		}
 		result[row.key] = row.value;
 	}
 	return c.json(result);

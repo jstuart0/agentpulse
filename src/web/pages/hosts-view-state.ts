@@ -1,7 +1,11 @@
+import { LOCAL_UPDATER } from "../../shared/constants.js";
 import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type { SupervisorRecord } from "../../shared/types.js";
+import type { UpdateStatusWire } from "../../shared/update-status.js";
+import { compareReleaseVersions, parseReleaseVersion } from "../../shared/version.js";
 import { type DirectoryEntry, hostLabel } from "../lib/owner-label.js";
 import type { OwnershipUi } from "../lib/ownership-ui.js";
+import { UPDATE_HOST_COPY } from "../lib/update-outcome-copy.js";
 
 /**
  * Pure derivation of what HostsPage should render. Splits the "no hosts
@@ -158,4 +162,81 @@ export function deriveHostExcludeNotice(
 	if (supervisor.status !== "connected") return null;
 	if (!leaseIsLive(supervisor.heartbeatLeaseExpiresAt, now)) return null;
 	return { text: HOST_EXCLUDE_INVALID_TEXT };
+}
+
+// ── A host that is behind the server (AGEN-155) ─────────────────────────────
+
+export interface HostUpdateNoticePart {
+	/** `host` is the host's name as plain text, never joined into the command. */
+	kind: "text" | "code" | "host";
+	text: string;
+}
+
+export interface HostUpdateNotice {
+	kind: "update_server_first" | "update_host" | "reinstall";
+	parts: HostUpdateNoticePart[];
+}
+
+const LOCAL_UPDATE_COMMAND = "~/.agentpulse/bin/agentpulse update";
+const SUPERVISOR_ONLY_COMMAND = "install-local.sh --supervisor-only";
+/** Server states that mean the server itself has a newer release to move to. */
+const SERVER_BEHIND_STATES: ReadonlySet<string> = new Set([
+	"available",
+	"security",
+	"below_minimum",
+	"current_pulled",
+]);
+
+/**
+ * What a host card says when its supervisor is older than the server it reports to. It compares against the
+ * server's CURRENT version, not the latest release: a host can't move ahead of its server, so when the server
+ * is itself behind, the first step is the server. Shown only to someone who may act on the host (its owner or
+ * an admin: `canManage` from `deriveHostAccess`), and never for a revoked host. A version that can't be read
+ * on either side says nothing rather than guess.
+ */
+export function deriveHostUpdateNotice(
+	supervisor: Pick<SupervisorRecord, "version" | "hostName" | "enrollmentState" | "capabilities">,
+	server: { current: string; state: string } | null,
+	access: { canManage: boolean },
+): HostUpdateNotice | null {
+	if (!access.canManage || !server || supervisor.enrollmentState === "revoked") return null;
+	const host = parseReleaseVersion(supervisor.version);
+	const running = parseReleaseVersion(server.current);
+	if (!host || !running || compareReleaseVersions(host, running) >= 0) return null;
+
+	if (SERVER_BEHIND_STATES.has(server.state)) {
+		return {
+			kind: "update_server_first",
+			parts: [{ kind: "text", text: UPDATE_HOST_COPY.updateServerFirst }],
+		};
+	}
+	if (supervisor.capabilities?.features?.includes(LOCAL_UPDATER)) {
+		return {
+			kind: "update_host",
+			parts: [
+				{ kind: "text", text: UPDATE_HOST_COPY.runBefore },
+				{ kind: "code", text: LOCAL_UPDATE_COMMAND },
+				{ kind: "text", text: UPDATE_HOST_COPY.runAfter },
+				{ kind: "host", text: supervisor.hostName },
+				{ kind: "text", text: UPDATE_HOST_COPY.end },
+			],
+		};
+	}
+	return {
+		kind: "reinstall",
+		parts: [
+			{ kind: "text", text: UPDATE_HOST_COPY.reinstallBefore },
+			{ kind: "code", text: SUPERVISOR_ONLY_COMMAND },
+			{ kind: "text", text: UPDATE_HOST_COPY.end },
+		],
+	};
+}
+
+/** The server's own version and update state, for comparing a host against; null until it is known. */
+export function serverUpdateOf(
+	status: UpdateStatusWire | null,
+): { current: string; state: string } | null {
+	return status && typeof status.current === "string"
+		? { current: status.current, state: status.state }
+		: null;
 }

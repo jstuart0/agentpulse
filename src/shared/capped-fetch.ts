@@ -32,10 +32,15 @@ export interface CappedFetchOptions {
 	maxBytes: number;
 	/** Default true: http is allowed only for a loopback host. */
 	httpsOrLoopbackOnly?: boolean;
+	/**
+	 * Extra trust anchors for the TLS handshake. Only a test sets this (through a `...ForTests` factory):
+	 * no production caller passes it, so the system trust store is always what verifies a real server.
+	 */
+	tls?: { ca: string };
 }
 
 /** Bun's `fetch` takes `timeout`, which `bun-types` does not declare. */
-type BunRequestInit = RequestInit & { timeout?: false };
+type BunRequestInit = RequestInit & { timeout?: false; tls?: { ca: string } };
 
 const LOOPBACK_V4 = /^127(?:\.\d{1,3}){3}$/;
 
@@ -114,6 +119,7 @@ export async function fetchCapped(
 			signal: deadline,
 			// Bun's own 300 s idle timer is off, so `deadlineMs` is the only time limit.
 			timeout: false,
+			...(options.tls ? { tls: options.tls } : {}),
 		} as BunRequestInit);
 		if (response.status >= 300 && response.status < 400) {
 			await response.body?.cancel().catch(() => {});

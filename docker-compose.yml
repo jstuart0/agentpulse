@@ -16,6 +16,8 @@ services:
       - AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS=${AGENTPULSE_AI_HELPER_TIMEOUT_SECONDS:-}
       # Time limit of the attempt on the "quick calls" provider, in seconds (1 to 60). Empty means the default (5).
       - AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS=${AGENTPULSE_AI_FAST_PROVIDER_TIMEOUT_SECONDS:-}
+      # Daily check for a newer release (notification only). Set to "off" to stop it.
+      - AGENTPULSE_UPDATE_CHECK=${AGENTPULSE_UPDATE_CHECK:-}
     volumes:
       - agentpulse-data:/app/data
     restart: unless-stopped

@@ -2,6 +2,7 @@ import { Fragment, type ReactNode, useCallback, useEffect, useState } from "reac
 import { Link, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import type { LaunchRequest, SupervisorRecord } from "../../shared/types.js";
+import { HostUpdateNotice } from "../components/HostUpdateNotice.js";
 import { LabsBadge } from "../components/LabsBadge.js";
 import { AccountPanel } from "../components/settings/AccountPanel.js";
 import { AdminSettingsGroup } from "../components/settings/AdminSettingsGroup.js";
@@ -12,8 +13,9 @@ import { PairDevicePanel } from "../components/settings/PairDevicePanel.js";
 import { SettingsSection } from "../components/settings/SettingsSection.js";
 import { TeamPanel } from "../components/settings/TeamPanel.js";
 import { TelegramChannelPanel } from "../components/settings/TelegramChannelPanel.js";
+import { UpdatesPanel } from "../components/settings/UpdatesPanel.js";
 import { WorkspacesPanel } from "../components/settings/WorkspacesPanel.js";
-import { useOwnershipUi } from "../hooks/useOwnershipUi.js";
+import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
 import { useSettingsPanelToReveal } from "../hooks/useSettingsPanelToReveal.js";
 import { describeApiError } from "../lib/api-errors.js";
 import { type ApiKeyRow, api } from "../lib/api.js";
@@ -27,7 +29,9 @@ import {
 } from "../lib/theme.js";
 import { useLabsStore } from "../stores/labs-store.js";
 import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
+import { useUpdateStore } from "../stores/update-store.js";
 import { useUserStore } from "../stores/user-store.js";
+import { deriveHostAccess, serverUpdateOf } from "./hosts-view-state.js";
 import { panelAnchorId } from "./settings-panels.js";
 import {
 	type FetchStatus,
@@ -47,6 +51,9 @@ export function SettingsPage() {
 	const telegramEnabled = useLabsStore((s) => s.isEnabled("telegramChannel"));
 	const ui = useOwnershipUi();
 	const isLocalAccount = useUserStore((s) => s.user?.source === "local");
+	const viewerUserId = useUserStore((s) => s.userId);
+	const isAdminViewer = useViewerIsAdmin();
+	const serverUpdate = serverUpdateOf(useUpdateStore((s) => s.status));
 	const location = useLocation();
 	const panelToOpen = useSettingsPanelToReveal(location.search);
 	const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([]);
@@ -259,6 +266,18 @@ export function SettingsPage() {
 											{supervisor.status}
 										</span>
 									</div>
+									<HostUpdateNotice
+										supervisor={supervisor}
+										server={serverUpdate}
+										canManage={
+											deriveHostAccess(supervisor, {
+												ui,
+												viewerUserId,
+												isAdmin: isAdminViewer,
+												ownerName: () => "",
+											}).canManage
+										}
+									/>
 									<div className="mt-3 grid gap-3 sm:grid-cols-2 text-xs text-muted-foreground">
 										<div>
 											<div className="font-medium text-foreground mb-1">Trusted roots</div>
@@ -551,6 +570,7 @@ export function SettingsPage() {
 				)}
 			</>
 		),
+		updates: <UpdatesPanel />,
 		server: (
 			<>
 				<section className="border border-border bg-card rounded-lg p-5">

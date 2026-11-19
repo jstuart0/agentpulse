@@ -10,6 +10,7 @@ import { getDefaultProvider } from "../services/ai/providers-service.js";
 import { forkToolDetailAvailable } from "../services/fork-tool-detail.js";
 import { getMode } from "../services/instance-mode.js";
 import { type PushAvailability, pushAvailability } from "../services/push/push-runtime.js";
+import { getUpdateStatus } from "../services/update-check.js";
 
 /** Bumped when a client-visible contract changes incompatibly; clients gate on it before the feature flags. */
 export const CAPABILITIES_API_LEVEL = 1;
@@ -198,6 +199,12 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		proof: { kind: "bindBodyKey", key: "subagents" },
 		value: true,
 	},
+	{
+		// AGEN-155: `update` carries whether a newer release exists. The check route proves the feature; `state` is open-valued.
+		name: "updateStatus",
+		proof: { kind: "route", method: "POST", path: "/update/check" },
+		value: true,
+	},
 ];
 
 /** What the availability checks may look at; read once per request. */
@@ -256,6 +263,8 @@ capabilitiesRouter.get("/capabilities", async (c) => {
 		// Present only with features.mobilePush, so a client that sees the flag always has the origin.
 		...(push.available ? { push: { relayOrigin: push.relayOrigin } } : {}),
 		pushEvents: [...new Set(features.flatMap((f) => f.pushEvents ?? []))],
+		// From memory. `state` is open-valued on the wire: a client maps a name it doesn't know to "unknown".
+		update: getUpdateStatus(),
 	});
 });
 

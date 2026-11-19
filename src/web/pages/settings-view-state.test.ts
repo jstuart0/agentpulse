@@ -46,6 +46,7 @@ describe("settingsSectionOrder", () => {
 			"keys",
 			"mobile",
 			"account",
+			"updates",
 			"server",
 		]);
 	});
@@ -64,6 +65,7 @@ describe("settingsSectionOrder", () => {
 			"ai",
 			"workspaces",
 			"telegram",
+			"updates",
 			"server",
 		]);
 	});
@@ -72,7 +74,7 @@ describe("settingsSectionOrder", () => {
 		for (const teamOn of [false, true]) {
 			const order = settingsSectionOrder(teamOn);
 			expect(new Set(order).size).toBe(order.length);
-			expect(order).toHaveLength(13);
+			expect(order).toHaveLength(14);
 		}
 	});
 });

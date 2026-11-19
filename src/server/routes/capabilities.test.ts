@@ -128,7 +128,17 @@ describe("GET /capabilities", () => {
 			expect(res.status).toBe(200);
 			const body = (await res.json()) as Record<string, any>;
 			expect(Object.keys(body).sort()).toEqual(
-				["ai", "apiLevel", "auth", "caller", "features", "mode", "pushEvents", "version"].sort(),
+				[
+					"ai",
+					"apiLevel",
+					"auth",
+					"caller",
+					"features",
+					"mode",
+					"pushEvents",
+					"update",
+					"version",
+				].sort(),
 			);
 			expect(body.apiLevel).toBe(CAPABILITIES_API_LEVEL);
 			expect(typeof body.version).toBe("string");
@@ -156,6 +166,7 @@ describe("GET /capabilities", () => {
 				forkToolDetail: true,
 				claudeForkMcp: true,
 				claudeForkSubagents: true,
+				updateStatus: true,
 			});
 			expect(body.pushEvents).toEqual(["ask_reply"]);
 			expect(Object.keys(body.ai).sort()).toEqual(["active", "build", "provider", "vectorSearch"]);

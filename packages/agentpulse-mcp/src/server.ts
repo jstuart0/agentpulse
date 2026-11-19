@@ -34,6 +34,7 @@ import { registerOrchestrateTools } from "./tools/orchestrate.js";
 import { registerSessionActionTools } from "./tools/session-actions.js";
 import { registerSessionsTools } from "./tools/sessions.js";
 import { registerTemplateMutationTools } from "./tools/templates.js";
+import { registerUpdateTools } from "./tools/update.js";
 import { VERSION } from "./version.js";
 
 export const REQUIRES_USER_INTERACTION_META = "anthropic/requiresUserInteraction";
@@ -213,6 +214,7 @@ export function buildMcpServer({ client, scopes }: BuildMcpServerOptions): Build
 	registerTemplateMutationTools(ctx, flags);
 	registerDecideTools(ctx, flags);
 	registerApprovalTools(ctx, flags);
+	registerUpdateTools(ctx, flags);
 	if (flags.hasObserve) registerResources(server, client);
 
 	return { server, registry };

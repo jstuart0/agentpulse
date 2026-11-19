@@ -646,6 +646,7 @@ AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). T
 | `DO_NOT_TRACK` | | Set `1` to disable telemetry (standard) |
 | `AGENTPULSE_TELEMETRY_MODE` | inferred | Telemetry install class override: `self_hosted_real`, `production`, `dev`, `test`, or `ci` |
 | `AGENTPULSE_TELEMETRY_TEST` | | Set `1` to force this install to report as `test` |
+| `AGENTPULSE_UPDATE_CHECK` | `on` | Set `off` (or `false`, `0`) to stop the daily check for a newer release. Separate from telemetry: `DO_NOT_TRACK` and `AGENTPULSE_TELEMETRY` don't turn it off. See [Version check](#version-check). |
 | `AGENTPULSE_AI_ENABLED` | `false` | Compile the AI Labs layer in at boot. Off = zero AI services, routes, or UI (non-AI install footprint is identical to pre-AI). |
 | `AGENTPULSE_SECRETS_KEY` | | Required when `AGENTPULSE_AI_ENABLED=true`, and for mobile push (it encrypts each phone's relay send token; without it phones can't register). 32+ random chars; encrypts credentials at rest (AES-256-GCM). |
 | `AGENTPULSE_PUSH_RELAY_URL` | | The push relay for the companion app, e.g. `https://relay.example.com`. https only (plain http only for loopback outside production). Push is off unless this and `AGENTPULSE_SECRETS_KEY` are both set. |
@@ -672,6 +673,18 @@ Telemetry classification defaults:
 - prerelease/dev builds report as `dev`
 - stable production builds report as `self_hosted_real`
 - set `AGENTPULSE_TELEMETRY_MODE=test` or `AGENTPULSE_TELEMETRY_TEST=1` for local/test deployments so they do not pollute real-world usage counts
+
+## Version check
+
+The server looks for a newer release once a day. It makes one `GET` of a signed release manifest from a fixed HTTPS address (the project's GitHub Pages site). The request carries no cookie, no query string, no custom header, no installation id and no server address, so it says nothing about you beyond what any web request does. A response over 32 KiB, a redirect or a non-HTTPS address is refused. A failed check is silent: it backs off (1 hour, 6 hours, then 24 hours), writes at most one short log line a day, and never changes `/api/v1/health`'s `status`. An airgapped server shows no banner and no error.
+
+The manifest is signed with a key whose public half ships in the code. A server that can't verify it (including every install until the first signed release) shows a quiet "Can't verify updates. Update by hand." and nothing red. When it verifies, an admin sees an "Update available" badge in the top bar, or a red banner for a security release, a withdrawn version or a version that is no longer supported; everyone else sees only the red ones. **Settings > Updates** shows the running and latest versions, how to update for how this server is installed, and a **Check now** button (admins, once a minute; with `DISABLE_AUTH=true` only from `localhost`).
+
+Nothing updates itself. The check only tells you.
+
+- Turn it off with `AGENTPULSE_UPDATE_CHECK=off`. `DO_NOT_TRACK=1` doesn't turn it off, because this request identifies nothing.
+- `GET /api/v1/health` carries `update` and `GET /api/v1/capabilities` carries the full status (`state` may be a name a newer server adds; treat anything you don't know as unknown). `GET /api/v1/health?manifest=1` also returns the verified envelope.
+- The MCP tool `get_update_status` reads the same status.
 
 ## Teams
 

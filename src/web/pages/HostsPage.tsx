@@ -4,6 +4,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog.js";
 import { HostExcludeNotice } from "../components/HostExcludeNotice.js";
 import { HostOutboxNotice } from "../components/HostOutboxNotice.js";
 import { HostOwnerDialog } from "../components/HostOwnerDialog.js";
+import { HostUpdateNotice } from "../components/HostUpdateNotice.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { useHostsClock } from "../hooks/useHostsClock.js";
 import { useNoteUnknownOwners } from "../hooks/useNoteUnknownOwners.js";
@@ -16,6 +17,7 @@ import { SECRET_LIFETIME_NOTE } from "../lib/one-time-secret.js";
 import { ownerLabel } from "../lib/owner-label.js";
 import { assignablePeople, withCurrentOwner } from "../lib/people.js";
 import { useDbFingerprintStore } from "../stores/db-fingerprint-store.js";
+import { useUpdateStore } from "../stores/update-store.js";
 import { useUserStore } from "../stores/user-store.js";
 import { useUsersStore } from "../stores/users-store.js";
 import { hostsRefreshNotice } from "./host-outbox-view-state.js";
@@ -24,6 +26,7 @@ import {
 	deriveHostsViewState,
 	enrollmentOwnershipNote,
 	hostActionConfirm,
+	serverUpdateOf,
 } from "./hosts-view-state.js";
 
 /**
@@ -50,6 +53,8 @@ export function HostsPage() {
 	const ui = useOwnershipUi();
 	const viewerUserId = useUserStore((s) => s.userId);
 	const isAdmin = useViewerIsAdmin();
+	const serverStatus = useUpdateStore((s) => s.status);
+	const serverUpdate = serverUpdateOf(serverStatus);
 	const directory = useUsersStore((s) => s.byId);
 	const [ownerDialogHost, setOwnerDialogHost] = useState<SupervisorRecord | null>(null);
 	const [enrollName, setEnrollName] = useState("");
@@ -438,6 +443,11 @@ export function HostsPage() {
 
 										<HostExcludeNotice supervisor={supervisor} now={now} />
 										<HostOutboxNotice supervisor={supervisor} now={now} />
+										<HostUpdateNotice
+											supervisor={supervisor}
+											server={serverUpdate}
+											canManage={access.canManage}
+										/>
 
 										<div className="mt-4 space-y-3 text-xs">
 											{access.ownerText !== null && (

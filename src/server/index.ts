@@ -42,6 +42,7 @@ import {
 import { runSessionSweepTick } from "./services/session-sweep-tick.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
+import { startUpdateCheck } from "./services/update-check.js";
 import { validateForwardauthProviderConfig } from "./services/user-identity.js";
 import { initWsBroadcaster, startHeartbeat, wsHandlers } from "./ws/handler.js";
 
@@ -305,6 +306,9 @@ setInterval(() => {
 // operator has explicitly set eventsRetentionDays > 0 (see
 // services/retention-service.ts for the full data-safety rationale).
 scheduleRetentionInterval(config.retentionIntervalMs);
+
+// AGEN-155: the daily release check. Inert under AGENTPULSE_UPDATE_CHECK=off; never blocks boot or ingest.
+startUpdateCheck();
 
 // Mobile push: on only when a relay URL and the instance secrets key are both set.
 startPush();

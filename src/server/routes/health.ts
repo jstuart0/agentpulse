@@ -11,6 +11,7 @@ import {
 import { getIngestRedactionCounters } from "../services/ingest-redaction.js";
 import { getRetentionStatus } from "../services/retention-service.js";
 import { getSearchIndexStatus } from "../services/search/search-index-status.js";
+import { getSignedEnvelope, getUpdateStatus } from "../services/update-check.js";
 import { computeChecksum } from "../util/checksum.js";
 import {
 	getBgErrorCount,
@@ -110,6 +111,9 @@ export function computeClientChecksums(): Promise<Record<string, string>> {
 //  - searchIndexes (AGEN-27 / percy TB17): Postgres trigram search-index
 //    presence ({ present, missing[] }), checked once at boot; null on
 //    SQLite (not applicable) — see services/search/search-index-status.ts.
+//  - update (AGEN-155): {current, latest, state, stale, checkedAt} from the update check's
+//    memory. `?manifest=1` adds `releaseManifest`, the verified signed envelope or null. Never
+//    a database read, and never a reason for `status` to be anything but ok.
 //  - instance.dbFingerprint (hosts-visibility fix): first 12 hex chars of
 //    sha256("agentpulse-db-fingerprint:" + installation_id) — a
 //    non-reversible way for the dashboard to detect it's talking to more
@@ -133,6 +137,7 @@ health.get("/health", async (c) => {
 	}
 	const clients = await computeClientChecksums();
 	const dbFingerprint = await getDbFingerprint();
+	const update = getUpdateStatus();
 	return c.json({
 		status: "ok",
 		service: "agentpulse",
@@ -158,6 +163,16 @@ health.get("/health", async (c) => {
 		retention: getRetentionStatus(),
 		searchIndexes: getSearchIndexStatus(),
 		instance: { dbFingerprint, dialect: config.dialect },
+		// From memory: no database read, and no state here ever changes `status`.
+		update: {
+			current: update.current,
+			latest: update.latest,
+			state: update.state,
+			stale: update.stale,
+			checkedAt: update.checkedAt,
+		},
+		// The signed envelope as it was served, for an updater that can't reach the release feed itself.
+		...(c.req.query("manifest") === "1" ? { releaseManifest: getSignedEnvelope() } : {}),
 	});
 });
 

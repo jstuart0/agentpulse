@@ -1,7 +1,7 @@
 /** The sections of Settings that a link can open directly (`/settings?panel=account`). */
-export type SettingsPanel = "account" | "team" | "labs" | "ai" | "mobile";
+export type SettingsPanel = "account" | "team" | "labs" | "ai" | "mobile" | "updates";
 
-const PANELS: readonly SettingsPanel[] = ["account", "team", "labs", "ai", "mobile"];
+const PANELS: readonly SettingsPanel[] = ["account", "team", "labs", "ai", "mobile", "updates"];
 
 export function panelFromSearch(search: string): SettingsPanel | null {
 	const value = new URLSearchParams(search).get("panel");
