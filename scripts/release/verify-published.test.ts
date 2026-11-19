@@ -12,7 +12,9 @@ import type { CappedFetchResult, fetchCapped } from "../../src/shared/capped-fet
 
 type Fetcher = typeof fetchCapped;
 import { type AuditSnapshot, auditFindings, verifyPublished } from "./verify-published.ts";
-import { envelopeFromEnv, writeSiteManifest } from "./write-site-manifest.ts";
+import { type LiveOptions, envelopeFromEnv, writeSiteManifest } from "./write-site-manifest.ts";
+
+const NO_LIVE: LiveOptions = { noLive: true, nothingPinned: false };
 
 const dirs: string[] = [];
 const site = () => {
@@ -30,7 +32,13 @@ describe("writeSiteManifest (the deploy gate)", () => {
 	test("verifies the envelope and writes it byte for byte", async () => {
 		const dir = site();
 		const envelope = envelopeFor(testPayload());
-		const done = await writeSiteManifest({ siteDir: dir, envelope, keys: TEST_KEY_LIST, now: NOW });
+		const done = await writeSiteManifest({
+			siteDir: dir,
+			envelope,
+			keys: TEST_KEY_LIST,
+			now: NOW,
+			live: NO_LIVE,
+		});
 		expect(done).toEqual({ seq: 100, latest: "0.12.0", keyStatus: "active" });
 		expect(readFileSync(join(dir, "releases/manifest.json"), "utf-8")).toBe(envelope);
 	});
@@ -39,11 +47,11 @@ describe("writeSiteManifest (the deploy gate)", () => {
 		const dir = site();
 		const envelope = envelopeFor(testPayload(), "unknown");
 		await expect(
-			writeSiteManifest({ siteDir: dir, envelope, keys: TEST_KEY_LIST, now: NOW }),
+			writeSiteManifest({ siteDir: dir, envelope, keys: TEST_KEY_LIST, now: NOW, live: NO_LIVE }),
 		).rejects.toThrow(/unknown_key/);
-		await expect(writeSiteManifest({ siteDir: dir, envelope, keys: [], now: NOW })).rejects.toThrow(
-			/does not verify/,
-		);
+		await expect(
+			writeSiteManifest({ siteDir: dir, envelope, keys: [], now: NOW, live: NO_LIVE }),
+		).rejects.toThrow(/does not verify/);
 		expect(() => readFileSync(join(dir, "releases/manifest.json"))).toThrow();
 	});
 
@@ -55,6 +63,7 @@ describe("writeSiteManifest (the deploy gate)", () => {
 				envelope: envelopeFor(testPayload()),
 				keys: TEST_KEY_LIST,
 				now: Date.parse("2027-01-01T00:00:00Z"),
+				live: NO_LIVE,
 			}),
 		).rejects.toThrow(/expired/);
 	});
@@ -68,6 +77,7 @@ describe("writeSiteManifest (the deploy gate)", () => {
 				envelope: envelopeFor(testPayload()),
 				keys: TEST_KEY_LIST,
 				now: NOW,
+				live: NO_LIVE,
 			}),
 		).rejects.toThrow(/private key/);
 	});
@@ -122,22 +132,33 @@ describe("verifyPublished", () => {
 describe("auditFindings", () => {
 	const good: AuditSnapshot = {
 		environment: { reviewers: 0, customBranchPolicies: true, branchPolicies: ["main"] },
+		pagesEnvironment: { reviewers: 0, customBranchPolicies: true, branchPolicies: ["main"] },
 		rulesets: [
-			{ target: "tag", refs: ["refs/tags/v*"], rules: ["creation", "update", "deletion"] },
+			{
+				target: "tag",
+				refs: ["refs/tags/v*"],
+				rules: ["creation", "update", "deletion"],
+				bypassActors: 0,
+			},
+			{ target: "branch", refs: ["~DEFAULT_BRANCH"], rules: ["pull_request"], bypassActors: 0 },
 		],
-		mainProtection: { requireCodeOwnerReviews: true },
+		mainProtection: { requireCodeOwnerReviews: true, enforceAdmins: true },
 	};
+	const tagRuleset = (over: Partial<AuditSnapshot["rulesets"][number]>) => [
+		{ ...(good.rulesets[0] as AuditSnapshot["rulesets"][number]), ...over },
+		good.rulesets[1] as AuditSnapshot["rulesets"][number],
+	];
 
 	test("a fully protected repository has no findings", () => {
 		expect(auditFindings(good)).toEqual([]);
 	});
 
 	const cases: [string, AuditSnapshot, RegExp][] = [
-		["no environment", { ...good, environment: null }, /does not exist/],
+		["no environment", { ...good, environment: null }, /release-signing does not exist/],
 		[
 			"an environment open to every branch",
 			{ ...good, environment: { reviewers: 0, customBranchPolicies: false, branchPolicies: [] } },
-			/only the main branch/,
+			/release-signing must admit only the main branch/,
 		],
 		[
 			"an environment that admits two branches",
@@ -145,7 +166,7 @@ describe("auditFindings", () => {
 				...good,
 				environment: { reviewers: 0, customBranchPolicies: true, branchPolicies: ["main", "dev"] },
 			},
-			/only the main branch/,
+			/release-signing must admit only the main branch/,
 		],
 		[
 			"a required reviewer",
@@ -155,31 +176,89 @@ describe("auditFindings", () => {
 			},
 			/required reviewer/,
 		],
+		[
+			"no github-pages environment",
+			{ ...good, pagesEnvironment: null },
+			/github-pages does not exist/,
+		],
+		[
+			"a github-pages environment open to every branch",
+			{
+				...good,
+				pagesEnvironment: { reviewers: 0, customBranchPolicies: false, branchPolicies: [] },
+			},
+			/github-pages must admit only the main branch/,
+		],
+		[
+			"a github-pages environment that admits another branch",
+			{
+				...good,
+				pagesEnvironment: {
+					reviewers: 0,
+					customBranchPolicies: true,
+					branchPolicies: ["main", "gh-pages"],
+				},
+			},
+			/github-pages must admit only the main branch/,
+		],
 		["no tag ruleset", { ...good, rulesets: [] }, /no tag ruleset/],
 		[
 			"a tag ruleset that allows update",
-			{ ...good, rulesets: [{ target: "tag", refs: ["refs/tags/v*"], rules: ["deletion"] }] },
+			{ ...good, rulesets: tagRuleset({ rules: ["creation", "deletion"] }) },
 			/forbid update/,
 		],
 		[
 			"a tag ruleset that allows delete",
-			{ ...good, rulesets: [{ target: "tag", refs: ["refs/tags/v*"], rules: ["update"] }] },
+			{ ...good, rulesets: tagRuleset({ rules: ["creation", "update"] }) },
 			/forbid deletion/,
+		],
+		[
+			"a tag ruleset that doesn't restrict creation",
+			{ ...good, rulesets: tagRuleset({ rules: ["update", "deletion"] }) },
+			/restrict creation/,
+		],
+		[
+			"bypass actors on the tag ruleset",
+			{ ...good, rulesets: tagRuleset({ bypassActors: 1 }) },
+			/tag ruleset has bypass actors/,
+		],
+		[
+			"bypass actors on a ruleset covering main",
+			{
+				...good,
+				rulesets: [
+					good.rulesets[0] as AuditSnapshot["rulesets"][number],
+					{ target: "branch", refs: ["refs/heads/main"], rules: ["pull_request"], bypassActors: 2 },
+				],
+			},
+			/main.*bypass/,
 		],
 		[
 			"a branch ruleset instead of a tag one",
 			{
 				...good,
-				rulesets: [{ target: "branch", refs: ["refs/tags/v*"], rules: ["update", "deletion"] }],
+				rulesets: [
+					{
+						target: "branch",
+						refs: ["refs/tags/v*"],
+						rules: ["update", "deletion"],
+						bypassActors: 0,
+					},
+				],
 			},
 			/no tag ruleset/,
 		],
 		[
 			"no CODEOWNERS review",
-			{ ...good, mainProtection: { requireCodeOwnerReviews: false } },
+			{ ...good, mainProtection: { requireCodeOwnerReviews: false, enforceAdmins: true } },
 			/CODEOWNERS/,
 		],
 		["no branch protection", { ...good, mainProtection: null }, /CODEOWNERS/],
+		[
+			"admins who can bypass main's protection",
+			{ ...good, mainProtection: { requireCodeOwnerReviews: true, enforceAdmins: false } },
+			/administrators/,
+		],
 	];
 	for (const [name, snapshot, why] of cases) {
 		test(`finds ${name}`, () => {

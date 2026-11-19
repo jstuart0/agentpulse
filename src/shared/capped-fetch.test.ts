@@ -46,6 +46,24 @@ beforeAll(() => {
 					}),
 				);
 			}
+			if (path === "/chunked-at" || path === "/chunked-over") {
+				const total = path === "/chunked-at" ? 1024 : 1025;
+				return new Response(
+					new ReadableStream({
+						async start(controller) {
+							for (let sent = 0; sent < total; sent += 256) {
+								controller.enqueue(new Uint8Array(Math.min(256, total - sent)).fill(97));
+								await Bun.sleep(1);
+							}
+							controller.close();
+						},
+					}),
+				);
+			}
+			if (path === "/gzip-bomb") {
+				const body = Bun.gzipSync(new Uint8Array(200_000).fill(97));
+				return new Response(body, { headers: { "content-encoding": "gzip" } });
+			}
 			if (path === "/stall") {
 				return new Response(new ReadableStream({ start() {} }));
 			}
@@ -154,5 +172,54 @@ describe("fetchCapped", () => {
 			ok: false,
 			code: "bad_options",
 		});
+	});
+
+	test("a chunked body with no Content-Length: exactly maxBytes passes, one more is too_large", async () => {
+		const at = await fetchCapped(`${base()}/chunked-at`, opts);
+		expect(at.ok && at.body.length).toBe(1024);
+		expect(await fetchCapped(`${base()}/chunked-over`, opts)).toEqual({
+			ok: false,
+			code: "too_large",
+		});
+	});
+
+	test("a gzip response that expands past the cap is too_large, though its wire size is tiny", async () => {
+		expect(await fetchCapped(`${base()}/gzip-bomb`, opts)).toEqual({
+			ok: false,
+			code: "too_large",
+		});
+	});
+
+	test("a server that accepts the connection and never answers hits the deadline", async () => {
+		const silent = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {}, open() {} } });
+		try {
+			const started = Date.now();
+			const r = await fetchCapped(`http://127.0.0.1:${silent.port}/x`, {
+				deadlineMs: 300,
+				maxBytes: 1024,
+			});
+			expect(r).toEqual({ ok: false, code: "timeout" });
+			expect(Date.now() - started).toBeLessThan(1500);
+		} finally {
+			silent.stop(true);
+		}
+	});
+
+	test("http://[::1]:port is loopback and allowed", async () => {
+		let v6: ReturnType<typeof Bun.serve>;
+		try {
+			v6 = Bun.serve({ hostname: "::1", port: 0, fetch: () => new Response("six") });
+		} catch {
+			return; // no IPv6 loopback on this machine
+		}
+		try {
+			expect(await fetchCapped(`http://[::1]:${v6.port}/x`, opts)).toEqual({
+				ok: true,
+				status: 200,
+				body: "six",
+			});
+		} finally {
+			v6.stop(true);
+		}
 	});
 });

@@ -2,15 +2,23 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createFixtureRepo } from "./fixture-repo.ts";
+import { recomputeTags } from "./image-tags.ts";
 import { pinRelease } from "./pin.ts";
-import { type PreflightOptions, imageTagsFor, runPreflight } from "./preflight.ts";
+import {
+	type PreflightOptions,
+	imageTagsFor,
+	parseReleaseKeysSource,
+	revisionFromIndex,
+	runPreflight,
+	stableVersionsFromRemoteTags,
+} from "./preflight.ts";
 
 const cleanup: string[] = [];
 afterAll(() => {
 	for (const dir of cleanup) rmSync(dir, { recursive: true, force: true });
 });
 
-const KEYS_WITH_ACTIVE = `export const RELEASE_KEYS = [\n\t{ keyId: "k-000000000001", publicKeyRaw: "AAAA", status: "active" },\n];\n`;
+const KEYS_WITH_ACTIVE = `export const RELEASE_KEYS = [\n\t{ keyId: "k-000000000001", publicKeyRaw: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", status: "active" },\n];\n`;
 const KEYS_EMPTY = "export const RELEASE_KEYS: readonly ReleaseKey[] = [];\n";
 
 const files = (version: string, over: Record<string, string> = {}) => ({
@@ -147,6 +155,9 @@ describe("runPreflight", () => {
 		if (!other.ok) expect(other.reason).toMatch(/already exists|different commit/);
 		const same = run("v0.20.0", { existingImageRevision: () => w().good });
 		expect(same.ok).toBe(true);
+		const unlabelled = run("v0.20.0", { existingImageRevision: () => "" });
+		expect(unlabelled.ok).toBe(false);
+		if (!unlabelled.ok) expect(unlabelled.reason).toMatch(/no revision label/);
 		const none = run("v0.20.0", { existingImageRevision: () => null });
 		expect(none.ok).toBe(true);
 	});
@@ -186,5 +197,153 @@ describe("pinRelease (release:pin)", () => {
 		expect(() => pinRelease(repo.dir, "0.20.0", head)).toThrow(/package\.json|already pinned/);
 		expect(() => pinRelease(repo.dir, "not-a-version", good)).toThrow(/version/);
 		expect(() => pinRelease(repo.dir, "0.20.0", "abc")).toThrow(/40/);
+	});
+});
+
+const KEY = (id: string, status: string) =>
+	`{ keyId: "${id}", publicKeyRaw: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", status: "${status}" }`;
+
+describe("parseReleaseKeysSource: the exported list is parsed, not pattern-matched", () => {
+	const src = (body: string) => `export const RELEASE_KEYS: readonly ReleaseKey[] = [${body}];\n`;
+
+	test("reads active and standby entries, tolerating comments and trailing commas", () => {
+		const keys = parseReleaseKeysSource(
+			src(
+				`\n\t// the first key\n\t${KEY("k-aaaaaaaaaaaa", "active")},\n\t${KEY("k-bbbbbbbbbbbb", "standby")},\n`,
+			),
+		);
+		expect(keys?.map((k) => [k.keyId, k.status])).toEqual([
+			["k-aaaaaaaaaaaa", "active"],
+			["k-bbbbbbbbbbbb", "standby"],
+		]);
+	});
+
+	test("an empty list parses to an empty list", () => {
+		expect(parseReleaseKeysSource(src(""))).toEqual([]);
+	});
+
+	const bad: [string, string][] = [
+		["an active key that is commented out", src(`// ${KEY("k-aaaaaaaaaaaa", "active")},`)],
+		["a block-commented active key", src(`/* ${KEY("k-aaaaaaaaaaaa", "active")} */`)],
+		["a bad status", src(KEY("k-aaaaaaaaaaaa", "root"))],
+		["a key id with a slash", src(KEY("k/aaaaaaaaaaa", "active"))],
+		[
+			"a public key of the wrong length",
+			src(`{ keyId: "k-aaaaaaaaaaaa", publicKeyRaw: "AAAA", status: "active" }`),
+		],
+		[
+			"a duplicate key id",
+			src(`${KEY("k-aaaaaaaaaaaa", "active")}, ${KEY("k-aaaaaaaaaaaa", "standby")}`),
+		],
+		[
+			"an extra field",
+			src(
+				`{ keyId: "k-aaaaaaaaaaaa", publicKeyRaw: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", status: "active", x: 1 }`,
+			),
+		],
+		["no RELEASE_KEYS at all", "export const OTHER = [];\n"],
+	];
+	for (const [name, text] of bad) {
+		test(`refuses ${name}`, () => {
+			const keys = parseReleaseKeysSource(text);
+			expect(keys === null || !keys.some((k) => k.status === "active")).toBe(true);
+		});
+	}
+
+	test("a tree whose only 'active' is in a comment fails the preflight (the old regex passed it)", () => {
+		const repo = createFixtureRepo();
+		cleanup.push(repo.dir);
+		repo.commit(
+			files("0.30.0", {
+				"src/shared/release-keys.ts": src(`// ${KEY("k-aaaaaaaaaaaa", "active")},`),
+			}),
+		);
+		const sha = repo.git("rev-parse", "HEAD");
+		repo.tag("v0.30.0", sha);
+		repo.commit({ "releases/release-data.json": dataFile([{ version: "0.30.0", commit: sha }]) });
+		repo.pushMain();
+		const r = runPreflight({ repoDir: repo.dir, tag: "v0.30.0" });
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.reason).toMatch(/active/);
+	});
+});
+
+describe("revisionFromIndex: the linux/amd64 image's own label, from an attested index", () => {
+	const index = JSON.parse(
+		readFileSync(join(import.meta.dir, "__fixtures__/attested-index.json"), "utf-8"),
+	);
+	const config = JSON.parse(
+		readFileSync(join(import.meta.dir, "__fixtures__/image-config-amd64.json"), "utf-8"),
+	);
+	const AMD64 = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+
+	test("picks the linux/amd64 manifest, not the attestation, and reads its revision label", () => {
+		const asked: string[] = [];
+		const r = revisionFromIndex(index, (digest) => {
+			asked.push(digest);
+			return digest === AMD64 ? config : null;
+		});
+		expect(r).toEqual({ state: "ok", revision: "0123456789abcdef0123456789abcdef01234567" });
+		expect(asked).toEqual([AMD64]);
+	});
+
+	test("a missing label is its own state, not a mismatch", () => {
+		const bare = { ...config, config: { Labels: { other: "x" } } };
+		expect(revisionFromIndex(index, () => bare)).toEqual({ state: "no_label" });
+		expect(revisionFromIndex(index, () => ({ config: {} }))).toEqual({ state: "no_label" });
+	});
+
+	test("an index with no linux/amd64 image, or an unreadable config, is refused as unreadable", () => {
+		const attestationOnly = { ...index, manifests: [index.manifests[1]] };
+		expect(revisionFromIndex(attestationOnly, () => config)).toEqual({ state: "unreadable" });
+		expect(revisionFromIndex(index, () => null)).toEqual({ state: "unreadable" });
+	});
+
+	test("a plain single-image manifest (no index) reads its config directly", () => {
+		const single = {
+			schemaVersion: 2,
+			mediaType: "application/vnd.oci.image.manifest.v1+json",
+			config: { digest: AMD64 },
+		};
+		expect(revisionFromIndex(single, () => config)).toEqual({
+			state: "ok",
+			revision: "0123456789abcdef0123456789abcdef01234567",
+		});
+	});
+});
+
+describe("stableVersionsFromRemoteTags", () => {
+	test("reads `git ls-remote --tags` output, peeled lines and junk included", () => {
+		const text = [
+			"aaa\trefs/tags/v0.12.0",
+			"bbb\trefs/tags/v0.12.0^{}",
+			"ccc\trefs/tags/v0.13.0-rc.1",
+			"ddd\trefs/tags/mcp-v0.4.0",
+			"eee\trefs/tags/v1.0.0",
+			"fff\trefs/tags/v1.0.0;x",
+		].join("\n");
+		expect(stableVersionsFromRemoteTags(text).sort()).toEqual(["0.12.0", "0.13.0-rc.1", "1.0.0"]);
+	});
+});
+
+describe("recomputeTags (images job, right before the build)", () => {
+	const sha = "0123456789abcdef0123456789abcdef01234567";
+	const remote = (...tags: string[]) => tags.map((t) => `deadbeef\trefs/tags/${t}`).join("\n");
+
+	test("the highest stable tag still gets the floating tags", () => {
+		const { tags, backupTags } = recomputeTags("1.4.0", sha, remote("v1.3.0", "v1.4.0"));
+		expect(tags.map((t) => t.split(":")[1])).toEqual([
+			"1.4.0",
+			"sha-0123456789ab",
+			"1.4",
+			"1",
+			"latest",
+		]);
+		expect(backupTags[0]).toBe("ghcr.io/jstuart0/agentpulse-backup:1.4.0");
+	});
+
+	test("a higher stable tag pushed after preflight takes the floating tags away", () => {
+		const { tags } = recomputeTags("1.4.0", sha, remote("v1.3.0", "v1.4.0", "v1.5.0"));
+		expect(tags.map((t) => t.split(":")[1])).toEqual(["1.4.0", "sha-0123456789ab"]);
 	});
 });

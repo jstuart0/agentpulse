@@ -8,3 +8,10 @@
 /src/shared/release-keys.ts @jstuart0
 /src/shared/release-manifest.ts @jstuart0
 /src/shared/relay-installer-parts.ts @jstuart0
+/src/shared/version.ts @jstuart0
+/src/shared/capped-fetch.ts @jstuart0
+/src/shared/hook-command.ts @jstuart0
+/scripts/relay.ts @jstuart0
+/scripts/install-local.sh @jstuart0
+/scripts/setup-relay.sh @jstuart0
+/package.json @jstuart0

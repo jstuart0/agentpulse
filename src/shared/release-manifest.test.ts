@@ -270,6 +270,26 @@ describe("verifyManifest: the payload schema", () => {
 				],
 			},
 		],
+		[
+			"a pulled latest",
+			{
+				releases: [
+					testRelease("0.12.0", { pulled: true, pulledReason: "bad_build" }),
+					testRelease("0.11.0"),
+				],
+			},
+		],
+		[
+			"a pre-release latest",
+			{
+				latest: "0.13.0-rc.1",
+				releases: [testRelease("0.13.0-rc.1"), testRelease("0.12.0")],
+			},
+		],
+		[
+			"validity of 11 days and one second",
+			{ issuedAt: "2026-11-19T11:00:00.000Z", expiresAt: "2026-11-30T11:00:01.000Z" },
+		],
 		["revokedKeyIds not an array", { revokedKeyIds: "k-x" as never }],
 		["a revokedKeyId that is not a key id", { revokedKeyIds: ["../x"] }],
 		["releases that is not an array", { releases: "no" as never }],
@@ -426,5 +446,30 @@ describe("updateState precedence", () => {
 		const late = updateState("0.11.0", manifest(), { now: Date.parse("2026-12-30T00:00:00.000Z") });
 		expect(late).toMatchObject({ state: "available", stale: true, latest: "0.12.0" });
 		expect(updateState("0.11.0", manifest(), { now: NOW }).stale).toBe(false);
+	});
+});
+
+describe("verifyManifest: validity bound and hostile payload keys", () => {
+	test("a validity of exactly 11 days is accepted", async () => {
+		const p = testPayload({
+			issuedAt: "2026-11-19T11:00:00.000Z",
+			expiresAt: "2026-11-30T11:00:00.000Z",
+		});
+		expect(await code(envelopeFor(p))).toBe("ok");
+	});
+
+	test("a __proto__ key in the payload is ignored, never merged", async () => {
+		const raw = JSON.stringify(testPayload()).replace(
+			'{"schema":1,',
+			'{"__proto__":{"polluted":true},"constructor":{"x":1},"schema":1,',
+		);
+		expect(raw).toContain('"__proto__"');
+		const r = await verifyManifest(envelopeFor(raw), ctx());
+		expect(r.ok).toBe(true);
+		if (!r.ok) return;
+		expect(Object.keys(r.manifest)).not.toContain("__proto__");
+		expect(Object.getPrototypeOf(r.manifest)).toBe(Object.prototype);
+		expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+		expect((r.manifest as unknown as Record<string, unknown>).polluted).toBeUndefined();
 	});
 });

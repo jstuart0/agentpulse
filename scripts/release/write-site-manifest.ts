@@ -12,8 +12,21 @@
  */
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fetchCapped } from "../../src/shared/capped-fetch.ts";
 import { RELEASE_KEYS, type ReleaseKey } from "../../src/shared/release-keys.ts";
 import { encodeEnvelope, verifyManifest } from "../../src/shared/release-manifest.ts";
+import { MANIFEST_URL } from "./verify-published.ts";
+
+export interface LiveOptions {
+	/** The disaster path: deploy without comparing to the live manifest. Never the default. */
+	noLive: boolean;
+	/** Nothing is pinned yet, so there can be no live manifest to compare to. */
+	nothingPinned: boolean;
+	url?: string;
+	fetcher?: typeof fetchCapped;
+}
+
+const MAX_MANIFEST_BYTES = 32 * 1024;
 
 const PRIVATE_KEY_HEADER = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 
@@ -27,11 +40,53 @@ function scanForPrivateKeys(dir: string): void {
 	}
 }
 
+/**
+ * An envelope signed offline can be deployed by dispatch, so it is judged against what is live exactly as a
+ * client would judge it: a lower seq, an earlier issuedAt, or the same time with different bytes is a replay,
+ * and a key the live manifest revoked is out. The one exception is a standby-signed revoking envelope, which
+ * must be able to land whatever the ordering. With no readable live manifest the deploy is refused once
+ * anything is pinned, unless the disaster path (`--no-live`) is taken on purpose.
+ */
+async function checkAgainstLive(
+	envelope: string,
+	keys: readonly ReleaseKey[],
+	now: number,
+	live: LiveOptions,
+): Promise<void> {
+	if (live.noLive) return;
+	const fetched = await (live.fetcher ?? fetchCapped)(live.url ?? MANIFEST_URL, {
+		deadlineMs: 15_000,
+		maxBytes: MAX_MANIFEST_BYTES,
+	});
+	if (!fetched.ok) {
+		if (live.nothingPinned) return;
+		throw new Error(
+			`could not read the live manifest (${fetched.code}); refusing to deploy over it. The disaster path is --no-live (docs/RELEASING.md)`,
+		);
+	}
+	const current = await verifyManifest(fetched.body, { keys, revoked: new Set(), now, last: null });
+	if (!current.ok) {
+		throw new Error(
+			`the live manifest does not verify (${current.code}); the disaster path is --no-live`,
+		);
+	}
+	const revoked = new Set(current.revoked);
+	const incoming = await verifyManifest(envelope, { keys, revoked, now, last: null });
+	if (!incoming.ok)
+		throw new Error(`the envelope does not verify against the live revocations (${incoming.code})`);
+	const signer = keys.find((k) => k.keyId === (JSON.parse(envelope) as { keyId: string }).keyId);
+	if (signer?.status === "standby" && incoming.manifest.revokedKeyIds.length > 0) return;
+	const ordered = await verifyManifest(envelope, { keys, revoked, now, last: current.next });
+	if (!ordered.ok)
+		throw new Error(`the envelope is not newer than the live manifest (${ordered.code})`);
+}
+
 export async function writeSiteManifest(options: {
 	siteDir: string;
 	envelope: string;
 	keys: readonly ReleaseKey[];
 	now: number;
+	live: LiveOptions;
 }): Promise<{ seq: number; latest: string; keyStatus: string }> {
 	const verdict = await verifyManifest(options.envelope, {
 		keys: options.keys,
@@ -41,6 +96,7 @@ export async function writeSiteManifest(options: {
 	});
 	if (!verdict.ok) throw new Error(`the envelope does not verify (${verdict.code})`);
 	if (verdict.stale) throw new Error("the manifest has already expired");
+	await checkAgainstLive(options.envelope, options.keys, options.now, options.live);
 	scanForPrivateKeys(options.siteDir);
 	mkdirSync(join(options.siteDir, "releases"), { recursive: true });
 	writeFileSync(join(options.siteDir, "releases", "manifest.json"), options.envelope);
@@ -63,6 +119,17 @@ export function envelopeFromEnv(env: Record<string, string | undefined>): string
 	);
 }
 
+function nothingPinned(): boolean {
+	try {
+		const data = JSON.parse(readFileSync("releases/release-data.json", "utf-8")) as {
+			releases?: unknown[];
+		};
+		return Array.isArray(data.releases) && data.releases.length === 0;
+	} catch {
+		return false;
+	}
+}
+
 if (import.meta.main) {
 	try {
 		const envelope = envelopeFromEnv(process.env);
@@ -74,6 +141,10 @@ if (import.meta.main) {
 				envelope,
 				keys: RELEASE_KEYS,
 				now: Date.now(),
+				live: {
+					noLive: process.argv.includes("--no-live") || process.env.NO_LIVE === "true",
+					nothingPinned: nothingPinned(),
+				},
 			});
 			console.log(
 				`write-site-manifest: verified seq ${done.seq}, latest ${done.latest}, signed by a ${done.keyStatus} key`,

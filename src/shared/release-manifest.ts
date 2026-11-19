@@ -24,7 +24,8 @@ export const MAX_ENVELOPE_BYTES = 32 * 1024;
 const MAX_RELEASES = 30;
 const MAX_REVOKED_KEY_IDS = 16;
 const FUTURE_TOLERANCE_MS = 24 * 3_600_000;
-const MAX_VALIDITY_MS = 31 * 86_400_000;
+/** The signer issues 10 days; one extra day of slack, no more. */
+const MAX_VALIDITY_MS = 11 * 86_400_000;
 
 export type VerifyFailureCode =
 	| "too_large"
@@ -222,7 +223,9 @@ function readManifest(raw: unknown): Manifest | null {
 		seen.add(release.version);
 		cleaned.push(release);
 	}
-	if (!seen.has(latest)) return null;
+	const latestEntry = cleaned.find((release) => release.version === latest);
+	// `latest` is what a client is told to move to: never a pulled or pre-release version.
+	if (!latestEntry || latestEntry.pulled || latestVersion.pre.length > 0) return null;
 	return {
 		schema: 1,
 		seq,

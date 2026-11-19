@@ -44,17 +44,29 @@ export async function verifyPublished(options: {
 	};
 }
 
+interface EnvironmentSnapshot {
+	reviewers: number;
+	customBranchPolicies: boolean;
+	branchPolicies: string[];
+}
+
 export interface AuditSnapshot {
 	/** The `release-signing` environment; null when it doesn't exist. */
-	environment: {
-		reviewers: number;
-		customBranchPolicies: boolean;
-		branchPolicies: string[];
-	} | null;
-	/** Every ruleset: its target, the refs it covers and its rule types. */
-	rulesets: { target: string; refs: string[]; rules: string[] }[];
+	environment: EnvironmentSnapshot | null;
+	/** The `github-pages` environment: only main may deploy the site and the manifest. */
+	pagesEnvironment: EnvironmentSnapshot | null;
+	/** Every ruleset: its target, the refs it covers, its rule types and how many bypass actors it has. */
+	rulesets: { target: string; refs: string[]; rules: string[]; bypassActors: number }[];
 	/** Branch protection of main; null when there is none. */
-	mainProtection: { requireCodeOwnerReviews: boolean } | null;
+	mainProtection: { requireCodeOwnerReviews: boolean; enforceAdmins: boolean } | null;
+}
+
+const MAIN_REFS = new Set(["refs/heads/main", "~DEFAULT_BRANCH", "~ALL"]);
+
+function onlyMain(env: EnvironmentSnapshot): boolean {
+	return (
+		env.customBranchPolicies && env.branchPolicies.length === 1 && env.branchPolicies[0] === "main"
+	);
 }
 
 /** One finding per missing protection; empty means the audit passes. */
@@ -63,11 +75,7 @@ export function auditFindings(snapshot: AuditSnapshot): string[] {
 	const env = snapshot.environment;
 	if (!env) findings.push("environment release-signing does not exist");
 	else {
-		if (
-			!env.customBranchPolicies ||
-			env.branchPolicies.length !== 1 ||
-			env.branchPolicies[0] !== "main"
-		) {
+		if (!onlyMain(env)) {
 			findings.push(
 				"environment release-signing must admit only the main branch (deployment-branch policy)",
 			);
@@ -78,18 +86,40 @@ export function auditFindings(snapshot: AuditSnapshot): string[] {
 			);
 		}
 	}
+	const pages = snapshot.pagesEnvironment;
+	if (!pages) findings.push("environment github-pages does not exist");
+	else if (!onlyMain(pages)) {
+		findings.push(
+			"environment github-pages must admit only the main branch (deployment-branch policy)",
+		);
+	}
 	const tagRuleset = snapshot.rulesets.find(
 		(r) => r.target === "tag" && r.refs.some((ref) => ref === "refs/tags/v*" || ref === "~ALL"),
 	);
 	if (!tagRuleset) findings.push("no tag ruleset covers refs/tags/v*");
 	else {
+		if (!tagRuleset.rules.includes("creation"))
+			findings.push("the v* tag ruleset does not restrict creation");
 		for (const rule of ["update", "deletion"]) {
 			if (!tagRuleset.rules.includes(rule))
 				findings.push(`the v* tag ruleset does not forbid ${rule}`);
 		}
+		if (tagRuleset.bypassActors > 0) findings.push("the v* tag ruleset has bypass actors");
+	}
+	for (const ruleset of snapshot.rulesets) {
+		if (
+			ruleset.target === "branch" &&
+			ruleset.bypassActors > 0 &&
+			ruleset.refs.some((ref) => MAIN_REFS.has(ref))
+		) {
+			findings.push("a ruleset covering main has bypass actors");
+		}
 	}
 	if (!snapshot.mainProtection?.requireCodeOwnerReviews) {
 		findings.push("branch protection on main does not require CODEOWNERS review");
+	}
+	if (snapshot.mainProtection && !snapshot.mainProtection.enforceAdmins) {
+		findings.push("branch protection on main does not apply to administrators");
 	}
 	return findings;
 }
@@ -99,22 +129,30 @@ function gh(args: string[]): unknown | null {
 	return proc.exitCode === 0 ? JSON.parse(proc.stdout.toString()) : null;
 }
 
-function readSnapshot(repo: string): AuditSnapshot {
-	const env = gh([`repos/${repo}/environments/release-signing`]) as {
-		protection_rules?: { type: string; reviewers?: unknown[] }[];
+function readEnvironment(repo: string, name: string): EnvironmentSnapshot | null {
+	const env = gh([`repos/${repo}/environments/${name}`]) as {
+		protection_rules?: { type: string }[];
 		deployment_branch_policy?: { custom_branch_policies?: boolean } | null;
 	} | null;
-	const policies = gh([
-		`repos/${repo}/environments/release-signing/deployment-branch-policies`,
-	]) as {
+	if (!env) return null;
+	const policies = gh([`repos/${repo}/environments/${name}/deployment-branch-policies`]) as {
 		branch_policies?: { name: string }[];
 	} | null;
+	return {
+		reviewers: (env.protection_rules ?? []).filter((p) => p.type === "required_reviewers").length,
+		customBranchPolicies: env.deployment_branch_policy?.custom_branch_policies === true,
+		branchPolicies: (policies?.branch_policies ?? []).map((p) => p.name),
+	};
+}
+
+function readSnapshot(repo: string): AuditSnapshot {
 	const list = (gh([`repos/${repo}/rulesets`]) as { id: number }[] | null) ?? [];
 	const rulesets = list.flatMap(({ id }) => {
 		const r = gh([`repos/${repo}/rulesets/${id}`]) as {
 			target: string;
 			conditions?: { ref_name?: { include?: string[] } };
 			rules?: { type: string }[];
+			bypass_actors?: unknown[];
 		} | null;
 		return r
 			? [
@@ -122,23 +160,23 @@ function readSnapshot(repo: string): AuditSnapshot {
 						target: r.target,
 						refs: r.conditions?.ref_name?.include ?? [],
 						rules: (r.rules ?? []).map((x) => x.type),
+						bypassActors: (r.bypass_actors ?? []).length,
 					},
 				]
 			: [];
 	});
 	const protection = gh([`repos/${repo}/branches/main/protection`]) as {
 		required_pull_request_reviews?: { require_code_owner_reviews?: boolean };
+		enforce_admins?: { enabled?: boolean };
 	} | null;
 	return {
-		environment: env && {
-			reviewers: (env.protection_rules ?? []).filter((p) => p.type === "required_reviewers").length,
-			customBranchPolicies: env.deployment_branch_policy?.custom_branch_policies === true,
-			branchPolicies: (policies?.branch_policies ?? []).map((p) => p.name),
-		},
+		environment: readEnvironment(repo, "release-signing"),
+		pagesEnvironment: readEnvironment(repo, "github-pages"),
 		rulesets,
 		mainProtection: protection && {
 			requireCodeOwnerReviews:
 				protection.required_pull_request_reviews?.require_code_owner_reviews === true,
+			enforceAdmins: protection.enforce_admins?.enabled === true,
 		},
 	};
 }

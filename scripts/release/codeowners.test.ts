@@ -49,6 +49,13 @@ describe(".github/CODEOWNERS", () => {
 		"src/shared/release-keys.ts",
 		"src/shared/release-manifest.ts",
 		"src/shared/relay-installer-parts.ts",
+		"src/shared/version.ts",
+		"src/shared/capped-fetch.ts",
+		"src/shared/hook-command.ts",
+		"scripts/relay.ts",
+		"scripts/install-local.sh",
+		"scripts/setup-relay.sh",
+		"package.json",
 	];
 	for (const path of trustRoot) {
 		test(`${path} has an owner (named member: src/shared/release-keys.ts)`, () => {

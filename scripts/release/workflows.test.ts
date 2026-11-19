@@ -35,6 +35,7 @@ interface Workflow {
 		workflow_dispatch?: unknown;
 	};
 	permissions?: Record<string, string>;
+	concurrency?: { group?: string; "cancel-in-progress"?: boolean };
 	jobs: Record<string, Job>;
 }
 
@@ -153,13 +154,37 @@ describe("the sign job takes every input through env", () => {
 		expect(all).toContain("refs/heads/main");
 		expect(all).toContain("git ls-remote");
 		expect(all).toContain("sourceCommit");
-		expect(all).toContain("gh workflow run pages.yml");
-		expect(all).toContain("--ref main");
 		expect(all).toMatch(/openssl pkeyutl -sign -rawin/);
 	});
 
-	test("it holds actions: write for the superseded re-dispatch, and nothing else", () => {
-		expect(sign.permissions).toEqual({ actions: "write" });
+	test("it holds no token permissions at all: the superseded re-dispatch lives in its own job (otto)", () => {
+		expect(sign.permissions).toEqual({});
+		const redispatch = pages.jobs.redispatch as Job;
+		expect(redispatch.permissions).toEqual({ actions: "write" });
+		expect(redispatch.needs).toBe("sign");
+		expect(JSON.stringify(redispatch)).not.toContain("secrets.");
+		expect(JSON.stringify(redispatch.environment ?? "")).not.toContain("release-signing");
+		const run = stepsOf(redispatch)
+			.map((s) => s.run ?? "")
+			.join("\n");
+		expect(run).toContain("gh workflow run pages.yml");
+		expect(run).not.toContain("${{");
+		expect(JSON.stringify(sign)).not.toContain("gh workflow run");
+	});
+
+	test("it checks the live manifest: seq window, the cap with no live one, and revocation of its own key", () => {
+		const all = runs.join("\n");
+		expect(all).toContain("LIVE_MANIFEST_URL");
+		expect(all).toContain("--max-filesize");
+		expect(all).toContain("--max-redirs 0");
+		expect(all).toMatch(/\+ 1000/);
+		expect(all).toContain("1000000");
+		expect(all).toContain("live-revoked.json");
+		const first = stepsOf(sign)[0];
+		expect(first?.env?.LIVE_MANIFEST_URL).toBe(
+			"https://jstuart0.github.io/agentpulse/releases/manifest.json",
+		);
+		expect(first?.env?.LIVE_PROTO).toBe("=https");
 	});
 
 	test("it needs the manifest job and its steps never check anything out", () => {
@@ -185,6 +210,26 @@ describe("the other pages jobs", () => {
 		expect(upload).toBeGreaterThan(verify);
 	});
 
+	test("deploy refuses any ref but main: a job condition and a first shell step before checkout (xander M1, otto M1)", () => {
+		const deploy = pages.jobs.deploy as Job;
+		expect(deploy.if).toContain("github.ref == 'refs/heads/main'");
+		const steps = stepsOf(deploy);
+		const first = steps[0] as Step;
+		expect(first.uses).toBeUndefined();
+		expect(first.env?.REF).toBe("${{ github.ref }}");
+		expect(first.run).toContain('"$REF" = "refs/heads/main"');
+		expect(first.run).not.toContain("${{");
+		const checkout = steps.findIndex((s) => s.uses?.startsWith("actions/checkout"));
+		expect(checkout).toBeGreaterThan(0);
+	});
+
+	test("the manual disaster path reaches deploy only as an env input", () => {
+		const deploy = pages.jobs.deploy as Job;
+		const verify = stepsOf(deploy).find((s) => s.run?.includes("write-site-manifest"));
+		expect(verify?.env?.NO_LIVE).toBe("${{ inputs.no_live }}");
+		expect(verify?.run).not.toContain("${{");
+	});
+
 	test("triggers: main pushes of the release inputs, the twice-weekly cron, and dispatch", () => {
 		expect(pages.on.push?.branches).toEqual(["main"]);
 		for (const path of [
@@ -193,6 +238,9 @@ describe("the other pages jobs", () => {
 			"scripts/release/**",
 			"src/shared/release-manifest.ts",
 			"src/shared/release-keys.ts",
+			"src/shared/relay-installer-parts.ts",
+			"src/shared/hook-command.ts",
+			"src/shared/version.ts",
 			".github/workflows/pages.yml",
 		]) {
 			expect(pages.on.push?.paths).toContain(path);
@@ -215,6 +263,45 @@ describe("release.yml", () => {
 			"id-token": "write",
 			attestations: "write",
 		});
+	});
+
+	test("one release at a time, never cancelled midway", () => {
+		expect(release.concurrency).toEqual({ group: "release", "cancel-in-progress": false });
+	});
+
+	test("images check out the preflight's commit and recompute the floating tags right before building", () => {
+		const steps = stepsOf(release.jobs.images);
+		const checkout = steps.find((s) => s.uses?.startsWith("actions/checkout"));
+		expect(checkout?.with?.ref).toBe("${{ needs.preflight.outputs.commit }}");
+		const recompute = steps.findIndex((s) => s.run?.includes("scripts/release/image-tags.ts"));
+		const firstBuild = steps.findIndex((s) => s.uses?.startsWith("docker/build-push-action"));
+		expect(recompute).toBeGreaterThan(-1);
+		expect(recompute).toBeLessThan(firstBuild);
+		for (const step of steps.filter((s) => s.uses?.startsWith("docker/build-push-action"))) {
+			expect(String(step.with?.tags)).toContain("steps.tags.outputs");
+		}
+	});
+
+	test("preflight can read the registry: a login and packages: read", () => {
+		const pre = release.jobs.preflight as Job;
+		expect(pre.permissions?.packages).toBe("read");
+		expect(stepsOf(pre).some((s) => s.uses?.startsWith("docker/login-action"))).toBe(true);
+	});
+
+	test("publish is idempotent: view before create, and the manifest dispatch always runs", () => {
+		const run = stepsOf(release.jobs.publish)
+			.map((s) => s.run ?? "")
+			.join("\n");
+		const view = run.indexOf("gh release view");
+		const create = run.indexOf("gh release create");
+		const fi = run.indexOf("\nfi", create);
+		const dispatch = run.indexOf("gh workflow run pages.yml");
+		expect(view).toBeGreaterThan(-1);
+		expect(view).toBeLessThan(create);
+		expect(fi).toBeGreaterThan(create);
+		expect(dispatch).toBeGreaterThan(fi);
+		const publish = release.jobs.publish as Job;
+		expect(JSON.stringify(publish.steps?.[0]?.env)).toContain("needs.images.outputs.tags");
 	});
 
 	test("no cache action, and the images job needs the preflight", () => {

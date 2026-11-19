@@ -28,7 +28,7 @@ export interface PreflightOptions {
 	repoDir: string;
 	tag: string;
 	mainRef?: string;
-	/** The commit an already-published `X.Y.Z` image was built from (its OCI revision label), or null when it isn't published. */
+	/** The commit an already-published `X.Y.Z` image was built from (its OCI revision label); "" when it is published without one; null when it isn't published. */
 	existingImageRevision?: (imageTag: string) => string | null;
 	shortShaLength?: number;
 }
@@ -72,6 +72,100 @@ function versionProblems(repoDir: string, commit: string, version: string): stri
 	return null;
 }
 
+const KEY_ID = /^[A-Za-z0-9_-]{1,32}$/;
+const PUBLIC_KEY_RAW = /^[A-Za-z0-9_-]{43}$/;
+
+export interface ParsedKey {
+	keyId: string;
+	publicKeyRaw: string;
+	status: "active" | "standby";
+}
+
+/**
+ * Reads the exported `RELEASE_KEYS` list out of release-keys.ts text: comments stripped, the array literal
+ * turned into JSON and every entry validated. Null when the file doesn't have the shape, so a commented-out
+ * key or a text match in prose can never count as an active key.
+ */
+export function parseReleaseKeysSource(text: string): ParsedKey[] | null {
+	const withoutComments = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+	const start = /export const RELEASE_KEYS\b[^=]*=\s*\[/.exec(withoutComments);
+	if (!start) return null;
+	const from = start.index + start[0].length;
+	const end = withoutComments.indexOf("]", from);
+	if (end === -1) return null;
+	const json = `[${withoutComments
+		.slice(from, end)
+		.replace(/\b(keyId|publicKeyRaw|status)\s*:/g, '"$1":')
+		.replace(/,\s*$/, "")}]`;
+	let raw: unknown;
+	try {
+		raw = JSON.parse(json);
+	} catch {
+		return null;
+	}
+	if (!Array.isArray(raw)) return null;
+	const seen = new Set<string>();
+	const keys: ParsedKey[] = [];
+	for (const entry of raw) {
+		if (typeof entry !== "object" || entry === null) return null;
+		const e = entry as Record<string, unknown>;
+		if (Object.keys(e).sort().join(",") !== "keyId,publicKeyRaw,status") return null;
+		if (typeof e.keyId !== "string" || !KEY_ID.test(e.keyId) || seen.has(e.keyId)) return null;
+		if (typeof e.publicKeyRaw !== "string" || !PUBLIC_KEY_RAW.test(e.publicKeyRaw)) return null;
+		if (e.status !== "active" && e.status !== "standby") return null;
+		seen.add(e.keyId);
+		keys.push({ keyId: e.keyId, publicKeyRaw: e.publicKeyRaw, status: e.status });
+	}
+	return keys;
+}
+
+export type ImageRevision =
+	| { state: "ok"; revision: string }
+	| { state: "no_label" }
+	| { state: "unreadable" };
+
+const REVISION_LABEL = "org.opencontainers.image.revision";
+
+/**
+ * The commit a published image was built from, read from the linux/amd64 image's own config, not the index
+ * (an attested index also lists attestation manifests, which carry no labels). `configFor` returns the config
+ * JSON of an image manifest digest, or null when it can't be read.
+ */
+export function revisionFromIndex(
+	index: unknown,
+	configFor: (manifestDigest: string) => unknown,
+): ImageRevision {
+	const doc = index as { manifests?: unknown; config?: { digest?: unknown } };
+	let digest: unknown;
+	if (Array.isArray(doc.manifests)) {
+		const amd64 = (
+			doc.manifests as { digest?: unknown; platform?: { os?: string; architecture?: string } }[]
+		).find((m) => m.platform?.os === "linux" && m.platform.architecture === "amd64");
+		digest = amd64?.digest;
+	} else {
+		digest = doc.config?.digest;
+	}
+	if (typeof digest !== "string") return { state: "unreadable" };
+	const config = configFor(digest) as { config?: { Labels?: Record<string, unknown> } } | null;
+	if (!config || typeof config !== "object") return { state: "unreadable" };
+	const label = config.config?.Labels?.[REVISION_LABEL];
+	return typeof label === "string" && label !== ""
+		? { state: "ok", revision: label }
+		: { state: "no_label" };
+}
+
+/** Stable and pre-release versions named by `git ls-remote --tags` output; anything outside the tag grammar is ignored. */
+export function stableVersionsFromRemoteTags(lsRemote: string): string[] {
+	return lsRemote
+		.split("\n")
+		.map((line) => /\trefs\/tags\/(\S+)$/.exec(line)?.[1] ?? "")
+		.filter(
+			(name) =>
+				!name.endsWith("^{}") && TAG_GRAMMAR.test(name) && parseReleaseVersion(name.slice(1)),
+		)
+		.map((name) => name.slice(1));
+}
+
 export function runPreflight(options: PreflightOptions): PreflightResult {
 	const { repoDir, tag } = options;
 	const mainRef = options.mainRef ?? "origin/main";
@@ -105,11 +199,17 @@ export function runPreflight(options: PreflightOptions): PreflightResult {
 			`releases/release-data.json on ${mainRef} does not pin ${version} to this commit (run release:pin)`,
 		);
 	}
-	const keys = git(repoDir, ["show", `${commit}:src/shared/release-keys.ts`]);
-	if (keys === null || !/status:\s*"active"/.test(keys)) {
+	const keySource = git(repoDir, ["show", `${commit}:src/shared/release-keys.ts`]);
+	const keys = keySource === null ? null : parseReleaseKeysSource(keySource);
+	if (!keys?.some((key) => key.status === "active")) {
 		return refuse("src/shared/release-keys.ts has no active key at this commit");
 	}
 	const published = options.existingImageRevision?.(version) ?? null;
+	if (published === "") {
+		return refuse(
+			`image ${version} already exists but carries no revision label, so what it was built from is unknown; refusing`,
+		);
+	}
 	if (published !== null && published !== commit) {
 		return refuse(
 			`image ${version} already exists, built from a different commit; a published tag is never repointed`,
@@ -129,25 +229,31 @@ export function runPreflight(options: PreflightOptions): PreflightResult {
 	};
 }
 
-/** The OCI revision label of a published image, null when the tag isn't published. Throws on any other failure. */
+function buildx(args: string[]): { ok: boolean; out: string; err: string } {
+	const proc = Bun.spawnSync(["docker", "buildx", "imagetools", "inspect", ...args], {
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	return { ok: proc.exitCode === 0, out: proc.stdout.toString(), err: proc.stderr.toString() };
+}
+
+/**
+ * The revision label of the published linux/amd64 image, null when the tag isn't published, "" when it is
+ * published with no label. Any other failure throws (a registry we can't read must not look like "absent").
+ */
 function registryRevision(imageTag: string): string | null {
 	const ref = `${IMAGE_REPOSITORY}:${imageTag}`;
-	const proc = Bun.spawnSync(
-		["docker", "buildx", "imagetools", "inspect", ref, "--format", "{{json .Image}}"],
-		{
-			stdout: "pipe",
-			stderr: "pipe",
-		},
-	);
-	if (proc.exitCode !== 0) {
-		const err = proc.stderr.toString();
-		if (/not found|manifest unknown|no such manifest/i.test(err)) return null;
+	const raw = buildx([ref, "--raw"]);
+	if (!raw.ok) {
+		if (/not found|manifest unknown|no such manifest/i.test(raw.err)) return null;
 		throw new Error(`could not inspect ${ref}`);
 	}
-	const labels = (
-		JSON.parse(proc.stdout.toString()) as { config?: { Labels?: Record<string, string> } }
-	).config?.Labels;
-	return labels?.["org.opencontainers.image.revision"] ?? "";
+	const found = revisionFromIndex(JSON.parse(raw.out), (digest) => {
+		const config = buildx([`${IMAGE_REPOSITORY}@${digest}`, "--format", "{{json .Image}}"]);
+		return config.ok ? JSON.parse(config.out) : null;
+	});
+	if (found.state === "unreadable") throw new Error(`could not read the image config of ${ref}`);
+	return found.state === "ok" ? found.revision : "";
 }
 
 if (import.meta.main) {

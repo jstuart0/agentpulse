@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { INSTALLER_SOURCES, buildRelayInstaller } from "../server/installers.js";
 import { buildBashExcludeScript, materializeExcludeScript } from "./hook-command.js";
-import { extractRelayInstallerParts } from "./relay-installer-parts.js";
+import { extractRelayInstallerParts, heredocHazard } from "./relay-installer-parts.js";
 
 const served = () => {
 	const built = buildRelayInstaller(INSTALLER_SOURCES, "https://agentpulse.example.test");
@@ -54,5 +54,29 @@ describe("extractRelayInstallerParts", () => {
 		expect(extractRelayInstallerParts("echo nothing here\n").ok).toBe(false);
 		const noExclude = good.replace("<<'AP_EXCLUDE_SCRIPT_EOF'", "<<'AP_SOMETHING_ELSE'");
 		expect(extractRelayInstallerParts(noExclude).ok).toBe(false);
+	});
+
+	test("a CRLF installer is refused, never half-extracted", () => {
+		const crlf = served().replace(/\n/g, "\r\n");
+		const r = extractRelayInstallerParts(crlf);
+		expect(r.ok).toBe(false);
+	});
+});
+
+describe("heredocHazard", () => {
+	test("a line equal to any terminator, or an installer marker, can't be carried", () => {
+		for (const t of [
+			"AGENTPULSE_RELAY_TS_EOF",
+			"AGENTPULSE_STATUSLINE_SH_EOF",
+			"AP_EXCLUDE_SCRIPT_EOF",
+		]) {
+			expect(heredocHazard(`a\n${t}\nb\n`), t).toContain(t);
+		}
+		expect(heredocHazard("x\n# @@AGENTPULSE_RELAY_TS@@\n")).toContain("marker");
+	});
+
+	test("a terminator only inside a longer line is fine, and so is ordinary text", () => {
+		expect(heredocHazard("echo AGENTPULSE_RELAY_TS_EOF_not\n")).toBeNull();
+		expect(heredocHazard("const x = 1;\n")).toBeNull();
 	});
 });

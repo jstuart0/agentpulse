@@ -15,7 +15,11 @@
  */
 import { appendFileSync, writeFileSync } from "node:fs";
 import { materializeExcludeScript } from "../../src/shared/hook-command.ts";
-import { clientDigests, extractExcludeHeredoc } from "../../src/shared/relay-installer-parts.ts";
+import {
+	clientDigests,
+	extractExcludeHeredoc,
+	heredocHazard,
+} from "../../src/shared/relay-installer-parts.ts";
 import {
 	MAX_ENVELOPE_BYTES,
 	type Manifest,
@@ -30,6 +34,12 @@ const KEY_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const HEX40 = /^[0-9a-f]{40}$/;
 const REASON_CODE = /^[a-z][a-z0-9_]{0,31}$/;
 
+export interface ReleaseInfo {
+	draft: boolean;
+	/** The release's `published_at`, as an ISO time. */
+	publishedAt?: string;
+}
+
 export class BuildError extends Error {}
 
 /** `releases/release-data.json` pins nothing yet: before the first release there is no manifest to build. */
@@ -39,8 +49,11 @@ export interface BuildOptions {
 	repoDir: string;
 	/** Epoch ms: the payload's `issuedAt`. */
 	now: number;
-	/** The GitHub release for a tag, or null when there is none. Injected so tests never touch the network. */
-	releaseLookup: (tag: string) => { draft: boolean } | null;
+	/**
+	 * The GitHub release for a tag: null only when there is none (a 404). Any other failure must throw, so a
+	 * flaky API can never drop a pin quietly. Injected so tests never touch the network.
+	 */
+	releaseLookup: (tag: string) => ReleaseInfo | null;
 	/** The commit to build for; default HEAD. */
 	rev?: string;
 	/** The protected branch the pinned commits must be on; default origin/main. */
@@ -124,23 +137,38 @@ function parseReleaseData(text: string): ReleaseData {
 	};
 }
 
-/** True when the pin passes every inclusion rule except the client files. */
-function isEligible(pin: Pin, options: BuildOptions, mainRef: string): boolean {
+/** Why a pin fails an inclusion rule, or null when it passes; `release` is what GitHub says, for publishedAt. */
+function ineligibleReason(
+	pin: Pin,
+	options: BuildOptions,
+	mainRef: string,
+): { reason: string | null; release: ReleaseInfo | null } {
 	const { repoDir } = options;
 	const tag = `v${pin.version}`;
 	const ref = `refs/tags/${tag}`;
-	if (git(repoDir, ["cat-file", "-t", ref])?.trim() !== "tag") return false; // missing, or lightweight
-	if (git(repoDir, ["rev-parse", `${ref}^{commit}`])?.trim() !== pin.commit) return false;
-	if (git(repoDir, ["merge-base", "--is-ancestor", pin.commit, mainRef]) === null) return false;
-	const pkg = git(repoDir, ["show", `${pin.commit}:package.json`]);
-	if (pkg === null) return false;
-	try {
-		if ((JSON.parse(pkg) as { version?: unknown }).version !== pin.version) return false;
-	} catch {
-		return false;
+	const refuse = (reason: string) => ({ reason, release: null });
+	const kind = git(repoDir, ["cat-file", "-t", ref])?.trim();
+	if (kind === undefined) return refuse(`tag ${tag} does not exist`);
+	if (kind !== "tag") return refuse(`tag ${tag} is not annotated`);
+	if (git(repoDir, ["rev-parse", `${ref}^{commit}`])?.trim() !== pin.commit) {
+		return refuse(`tag ${tag} does not resolve to the pinned commit`);
 	}
+	if (git(repoDir, ["merge-base", "--is-ancestor", pin.commit, mainRef]) === null) {
+		return refuse(`the pinned commit is not reachable from ${mainRef}`);
+	}
+	const pkg = git(repoDir, ["show", `${pin.commit}:package.json`]);
+	let packaged: unknown = null;
+	try {
+		packaged = pkg === null ? null : (JSON.parse(pkg) as { version?: unknown }).version;
+	} catch {
+		// reported below
+	}
+	if (packaged !== pin.version)
+		return refuse(`package.json at the pinned commit says ${String(packaged)}`);
 	const release = options.releaseLookup(tag);
-	return release !== null && !release.draft;
+	if (release === null) return refuse(`no GitHub release exists for ${tag}`);
+	if (release.draft) return refuse(`the GitHub release for ${tag} is a draft`);
+	return { reason: null, release };
 }
 
 function lastMigration(repoDir: string, commit: string, dialect: "sqlite" | "postgres"): string {
@@ -156,25 +184,47 @@ function lastMigration(repoDir: string, commit: string, dialect: "sqlite" | "pos
 	return tag;
 }
 
-async function describeRelease(pin: Pin, repoDir: string): Promise<ManifestRelease> {
+/** The release's published_at, else the tag's taggerdate, else the build time. Never the commit date. */
+function publishedAtOf(pin: Pin, options: BuildOptions, release: ReleaseInfo | null): string {
+	if (release?.publishedAt) return new Date(release.publishedAt).toISOString();
+	const tagged = git(options.repoDir, [
+		"for-each-ref",
+		"--format=%(taggerdate:iso-strict)",
+		`refs/tags/v${pin.version}`,
+	])?.trim();
+	const ms = tagged ? Date.parse(tagged) : Number.NaN;
+	return new Date(Number.isFinite(ms) ? ms : options.now).toISOString();
+}
+
+async function describeRelease(
+	pin: Pin,
+	options: BuildOptions,
+	release: ReleaseInfo | null,
+): Promise<ManifestRelease> {
+	const { repoDir } = options;
 	const at = (path: string) =>
 		mustGit(repoDir, ["show", `${pin.commit}:${path}`], `${path} missing at ${pin.version}`);
 	const heredoc = extractExcludeHeredoc(at("scripts/setup-relay.sh"));
 	if (!heredoc.ok) throw new BuildError(`${pin.version}: ${heredoc.reason}`);
+	const relay = at("scripts/relay.ts");
+	const statusline = at("scripts/statusline.sh");
+	for (const [name, text] of [
+		["scripts/relay.ts", relay],
+		["scripts/statusline.sh", statusline],
+	] as const) {
+		const hazard = heredocHazard(text);
+		if (hazard)
+			throw new BuildError(`${pin.version}: ${name} has ${hazard}; the installer can't carry it`);
+	}
 	const clients = await clientDigests({
-		relay: at("scripts/relay.ts"),
-		statusline: at("scripts/statusline.sh"),
+		relay,
+		statusline,
 		excludeCheck: materializeExcludeScript(heredoc.text),
 	});
-	const commitTime = mustGit(
-		repoDir,
-		["show", "-s", "--format=%cI", pin.commit],
-		`no commit ${pin.commit}`,
-	).trim();
 	return {
 		version: pin.version,
 		commit: pin.commit,
-		publishedAt: new Date(commitTime).toISOString(),
+		publishedAt: publishedAtOf(pin, options, release),
 		severity: pin.severity,
 		pulled: pin.pulled,
 		...(pin.pulled && pin.reason ? { pulledReason: pin.reason } : {}),
@@ -212,19 +262,33 @@ export async function buildManifest(options: BuildOptions): Promise<Manifest> {
 		throw new NoPinnedReleasesError(
 			"no release is pinned yet, so no release passes the inclusion rules",
 		);
-	const eligible = data.pins
+	// Every pin from the first signed version on is judged. One that fails fails the build, so a flaky
+	// check or a bad tag can never drop a release quietly; a pulled pin is kept either way, because
+	// "this version is bad" must survive a missing tag or release.
+	const judged = data.pins
 		.filter((pin) => compareReleaseVersions(parsed(pin.version), first) >= 0)
-		.filter((pin) => isEligible(pin, options, mainRef))
-		.sort((a, b) => compareReleaseVersions(parsed(b.version), parsed(a.version)));
-	if (eligible.length === 0) throw new BuildError("no release passes the inclusion rules");
-
-	const latestPin = eligible.find((pin) => parsed(pin.version).pre.length === 0 && !pin.pulled);
-	if (!latestPin) throw new BuildError("no non-pulled stable release to call latest");
+		.map((pin) => ({ pin, ...ineligibleReason(pin, options, mainRef) }));
+	for (const { pin, reason } of judged) {
+		if (reason && !pin.pulled)
+			throw new BuildError(`${pin.version} is pinned but fails an inclusion rule: ${reason}`);
+	}
+	const eligible = judged
+		.sort((a, b) => compareReleaseVersions(parsed(b.pin.version), parsed(a.pin.version)))
+		.map(({ pin, release }) => ({ pin, release }));
+	if (eligible.length === 0)
+		throw new BuildError("no pinned release is at or above firstSignedVersion");
+	const latestEntry = eligible.find(
+		({ pin }) => parsed(pin.version).pre.length === 0 && !pin.pulled,
+	);
+	const latestPin = latestEntry?.pin;
+	if (!latestPin || !latestEntry)
+		throw new BuildError("no non-pulled stable release to call latest");
 	if (compareReleaseVersions(parsed(data.minSupported), parsed(latestPin.version)) > 0) {
 		throw new BuildError("minSupported is above the latest release");
 	}
 	const kept = eligible.slice(0, MAX_RELEASES);
-	if (!kept.includes(latestPin)) throw new BuildError("latest fell outside the newest 30 releases");
+	if (!kept.includes(latestEntry))
+		throw new BuildError("latest fell outside the newest 30 releases");
 
 	const issuedAt = new Date(options.now);
 	const manifest: Manifest = {
@@ -236,7 +300,9 @@ export async function buildManifest(options: BuildOptions): Promise<Manifest> {
 		latest: latestPin.version,
 		minSupported: data.minSupported,
 		revokedKeyIds: data.revokedKeyIds,
-		releases: await Promise.all(kept.map((pin) => describeRelease(pin, repoDir))),
+		releases: await Promise.all(
+			kept.map(({ pin, release }) => describeRelease(pin, options, release)),
+		),
 	};
 	const envelopeEstimate = Math.ceil((JSON.stringify(manifest).length * 4) / 3) + 256;
 	if (envelopeEstimate > MAX_ENVELOPE_BYTES)
@@ -244,19 +310,50 @@ export async function buildManifest(options: BuildOptions): Promise<Manifest> {
 	return manifest;
 }
 
-/** The GitHub release for `tag` via `gh api`, or null when there is none. Needs GH_TOKEN. */
+/**
+ * Turns `gh api repos/.../releases/tags/<tag>` output into a result. Only a 404 means "no release"; every
+ * other failure (rate limit, 5xx, bad credentials, network) throws, so it can't pass for "not released".
+ */
+export function interpretGhResult(r: {
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+}): ReleaseInfo | null {
+	if (r.exitCode !== 0) {
+		if (/HTTP 404/.test(r.stderr)) return null;
+		throw new BuildError(`gh api failed: ${r.stderr.trim().slice(0, 200) || `exit ${r.exitCode}`}`);
+	}
+	let parsed: { draft?: unknown; published_at?: unknown };
+	try {
+		parsed = JSON.parse(r.stdout);
+	} catch {
+		throw new BuildError("gh api returned something that is not JSON");
+	}
+	const published =
+		typeof parsed.published_at === "string" ? Date.parse(parsed.published_at) : Number.NaN;
+	return {
+		draft: parsed.draft !== false,
+		...(Number.isFinite(published) ? { publishedAt: new Date(published).toISOString() } : {}),
+	};
+}
+
 function ghReleaseLookup(repo: string): BuildOptions["releaseLookup"] {
 	return (tag) => {
 		const proc = Bun.spawnSync(
-			["gh", "api", `repos/${repo}/releases/tags/${tag}`, "--jq", "{draft: .draft}"],
-			{
-				stdout: "pipe",
-				stderr: "pipe",
-			},
+			[
+				"gh",
+				"api",
+				`repos/${repo}/releases/tags/${tag}`,
+				"--jq",
+				"{draft: .draft, published_at: .published_at}",
+			],
+			{ stdout: "pipe", stderr: "pipe" },
 		);
-		if (proc.exitCode !== 0) return null;
-		const parsed = JSON.parse(proc.stdout.toString()) as { draft?: unknown };
-		return { draft: parsed.draft !== false };
+		return interpretGhResult({
+			exitCode: proc.exitCode ?? 1,
+			stdout: proc.stdout.toString(),
+			stderr: proc.stderr.toString(),
+		});
 	};
 }
 

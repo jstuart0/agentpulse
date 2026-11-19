@@ -112,3 +112,20 @@ export async function clientDigests(files: {
 		excludeCheck: await sha256Hex(files.excludeCheck),
 	};
 }
+
+/** The terminator lines of the heredocs a client file travels in. A file holding one on a line of its own can't be carried. */
+export const HEREDOC_TERMINATORS: readonly string[] = [
+	HEREDOCS.relay.terminator,
+	HEREDOCS.statusline.terminator,
+	HEREDOCS.excludeHeredoc.terminator,
+];
+
+/** Why a client file can't be carried inside the installer, or null when it can. */
+export function heredocHazard(text: string): string | null {
+	const lines = text.split("\n");
+	for (const terminator of HEREDOC_TERMINATORS) {
+		if (lines.includes(terminator)) return `a line equal to the heredoc terminator ${terminator}`;
+	}
+	if (text.includes("@@AGENTPULSE_")) return "an installer marker (@@AGENTPULSE_...)";
+	return null;
+}

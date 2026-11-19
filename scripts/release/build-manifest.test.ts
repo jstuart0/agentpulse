@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TEST_KEY_LIST, envelopeFor } from "../../src/shared/__fixtures__/release-test-signer.ts";
 import {
@@ -8,7 +8,7 @@ import {
 } from "../../src/shared/hook-command.ts";
 import { clientDigests } from "../../src/shared/relay-installer-parts.ts";
 import { MAX_ENVELOPE_BYTES, verifyManifest } from "../../src/shared/release-manifest.ts";
-import { NoPinnedReleasesError, buildManifest } from "./build-manifest.ts";
+import { NoPinnedReleasesError, buildManifest, interpretGhResult } from "./build-manifest.ts";
 import { type FixtureRepo, createFixtureRepo } from "./fixture-repo.ts";
 
 const NOW = Date.parse("2026-11-19T12:00:00.000Z");
@@ -61,20 +61,21 @@ function dataFile(pins: Pin[], over: Record<string, unknown> = {}) {
 	)}\n`;
 }
 
+type Lookup = (tag: string) => { draft: boolean; publishedAt?: string } | null;
+
 const releases =
-	(tags: string[], draft: string[] = []) =>
-	(tag: string) =>
+	(tags: string[], draft: string[] = []): Lookup =>
+	(tag) =>
 		tags.includes(tag) ? { draft: false } : draft.includes(tag) ? { draft: true } : null;
 
-function build(
-	repo: FixtureRepo,
-	lookup: (tag: string) => { draft: boolean } | null,
-	over: object = {},
-) {
+function build(repo: FixtureRepo, lookup: Lookup, over: object = {}) {
 	return buildManifest({ repoDir: repo.dir, now: NOW, releaseLookup: lookup, ...over });
 }
 
-/** The big scenario: one tag of every kind the builder must include or refuse. */
+const TAGGED_AT = "2026-11-05T08:00:00Z";
+const RELEASE_PUBLISHED_AT = "2026-11-10T10:00:00Z";
+
+/** One tag of every kind the builder must include, ignore or refuse. */
 function scenario() {
 	const repo = createFixtureRepo();
 	cleanup.push(repo.dir);
@@ -93,55 +94,60 @@ function scenario() {
 	const offMain = repo.commit(releaseFiles("0.12.3"), "never on main");
 	repo.git("checkout", "-q", "main");
 
-	repo.tag("v0.12.0", a);
-	repo.tag("v0.12.1", b);
+	repo.tag("v0.12.0", a, "annotated", TAGGED_AT);
+	repo.tag("v0.12.1", b, "annotated", TAGGED_AT);
 	repo.tag("v0.12.2", lightweight, "lightweight");
 	repo.tag("v0.12.3", offMain);
 	repo.tag("v0.12.4", mismatch);
 	repo.tag("v0.12.5", noRelease);
 	repo.tag("v0.13.0-rc.1", pre);
 	repo.tag("v0.12.6", unlisted);
-	repo.tag("v0.12.7", a); // listed below with a different commit
+	repo.tag("v0.12.7", a); // pinned below to a different commit
 	repo.tag("v0.12.8", draft);
 	repo.tag("v0.11.5", old);
 
-	const pins: Pin[] = [
+	const goodPins: Pin[] = [
 		{ version: "0.12.0", commit: a },
 		{ version: "0.12.1", commit: b, severity: "security" },
-		{ version: "0.12.2", commit: lightweight },
-		{ version: "0.12.3", commit: offMain },
-		{ version: "0.12.4", commit: mismatch },
-		{ version: "0.12.5", commit: noRelease },
 		{ version: "0.13.0-rc.1", commit: pre },
-		{ version: "0.12.7", commit: b },
-		{ version: "0.12.8", commit: draft },
+		// Below firstSignedVersion: never judged, even though its release check would fail.
 		{ version: "0.11.5", commit: old },
 	];
-	const head = repo.commit({ "releases/release-data.json": dataFile(pins) }, "pin releases");
-	repo.pushMain();
-	const withRelease = [
-		"v0.12.0",
-		"v0.12.1",
-		"v0.12.2",
-		"v0.12.3",
-		"v0.12.4",
-		"v0.13.0-rc.1",
-		"v0.12.6",
-		"v0.12.7",
-		"v0.11.5",
-	];
-	return { repo, a, b, head, pins, lookup: releases(withRelease, ["v0.12.8"]) };
+	const badPins: Record<string, Pin> = {
+		"a lightweight tag": { version: "0.12.2", commit: lightweight },
+		"a commit that is not on main": { version: "0.12.3", commit: offMain },
+		"a package.json that says another version": { version: "0.12.4", commit: mismatch },
+		"a tag with no GitHub release": { version: "0.12.5", commit: noRelease },
+		"a pin naming a different commit than the tag": { version: "0.12.7", commit: b },
+		"a draft release": { version: "0.12.8", commit: draft },
+		"a tag that does not exist": { version: "0.12.9", commit: a },
+	};
+	const lookup: Lookup = (tag) => {
+		if (tag === "v0.12.0") return { draft: false, publishedAt: RELEASE_PUBLISHED_AT };
+		return releases(
+			["v0.12.1", "v0.12.2", "v0.12.3", "v0.12.4", "v0.13.0-rc.1", "v0.12.7"],
+			["v0.12.8"],
+		)(tag);
+	};
+	const setPins = (pins: Pin[]) => {
+		const head = repo.commit({ "releases/release-data.json": dataFile(pins) }, "pin releases");
+		repo.pushMain();
+		return head;
+	};
+	setPins(goodPins);
+	return { repo, a, b, goodPins, badPins, lookup, setPins };
 }
 
-/** Built once: these tests only read git objects. The pull test builds its own. */
+/** Built once: the tests only read git objects. Each call puts the good pins back. */
 let shared: ReturnType<typeof scenario> | undefined;
 const readOnly = () => {
 	shared ??= scenario();
-	return shared;
+	const head = shared.setPins(shared.goodPins);
+	return { ...shared, head };
 };
 
 describe("buildManifest: which versions get in", () => {
-	test("only a listed, annotated, on-main, version-matching, released tag at its pinned commit is included", async () => {
+	test("pinned, annotated, on-main, version-matching, released tags are included; unlisted tags and pins below firstSignedVersion are ignored", async () => {
 		const { repo, a, b, head, lookup } = readOnly();
 		const m = await build(repo, lookup);
 		expect(m.releases.map((r) => r.version)).toEqual(["0.13.0-rc.1", "0.12.1", "0.12.0"]);
@@ -155,27 +161,66 @@ describe("buildManifest: which versions get in", () => {
 		expect(m.schema).toBe(1);
 	});
 
-	test("severity, pulled and the reason come from the data file; a pulled release is never latest", async () => {
-		const { repo, a, b, lookup } = scenario();
-		repo.commit(
-			{
-				"releases/release-data.json": dataFile(
-					[
-						{ version: "0.12.0", commit: a },
-						{
-							version: "0.12.1",
-							commit: b,
-							severity: "security",
-							pulled: true,
-							reason: "data_loss",
-						},
-					],
-					{ minSupported: "0.11.0" },
-				),
-			},
-			"pull 0.12.1",
+	test("a pin that fails any inclusion rule fails the build, naming the version (xander M2)", async () => {
+		const ctl = readOnly();
+		for (const [name, pin] of Object.entries(ctl.badPins)) {
+			ctl.setPins([...ctl.goodPins, pin]);
+			const attempt = build(ctl.repo, ctl.lookup);
+			await expect(attempt, name).rejects.toThrow(new RegExp(pin.version.replace(/\./g, "\\.")));
+		}
+	});
+
+	test("a pulled pin is kept even when its tag or release check fails", async () => {
+		const ctl = readOnly();
+		const gone = ctl.badPins["a tag with no GitHub release"] as Pin;
+		ctl.setPins([...ctl.goodPins, { ...gone, pulled: true, reason: "bad_build" }]);
+		const m = await build(ctl.repo, ctl.lookup);
+		const kept = m.releases.find((r) => r.version === "0.12.5");
+		expect(kept).toMatchObject({ pulled: true, pulledReason: "bad_build" });
+		expect(m.latest).toBe("0.12.1");
+	});
+
+	test("a lookup that throws (any gh failure but a 404) fails the build, never drops the pin", async () => {
+		const { repo } = readOnly();
+		const boom: Lookup = () => {
+			throw new Error("gh api failed: HTTP 502");
+		};
+		await expect(build(repo, boom)).rejects.toThrow(/HTTP 502/);
+	});
+
+	test("publishedAt is the release's published_at, else the tag's taggerdate, never the commit date", async () => {
+		const { repo, lookup } = readOnly();
+		const m = await build(repo, lookup);
+		expect(m.releases.find((r) => r.version === "0.12.0")?.publishedAt).toBe(
+			new Date(RELEASE_PUBLISHED_AT).toISOString(),
 		);
-		repo.pushMain();
+		expect(m.releases.find((r) => r.version === "0.12.1")?.publishedAt).toBe(
+			new Date(TAGGED_AT).toISOString(),
+		);
+	});
+
+	test("a client file with a line equal to a heredoc terminator makes the build refuse (the installer couldn't carry it)", async () => {
+		const ctl = readOnly();
+		const tagged = ctl.repo.commit(
+			{
+				...releaseFiles("0.12.10"),
+				"scripts/relay.ts": 'const a = 1;\nAGENTPULSE_RELAY_TS_EOF\nrm -rf "$HOME"\n',
+			},
+			"relay with a terminator line",
+		);
+		ctl.repo.tag("v0.12.10", tagged);
+		ctl.repo.pushMain();
+		ctl.setPins([...ctl.goodPins, { version: "0.12.10", commit: tagged }]);
+		const lookup: Lookup = (tag) => (tag === "v0.12.10" ? { draft: false } : ctl.lookup(tag));
+		await expect(build(ctl.repo, lookup)).rejects.toThrow(/terminator/);
+	});
+
+	test("severity, pulled and the reason come from the data file; a pulled release is never latest", async () => {
+		const { repo, a, b, lookup, setPins } = readOnly();
+		setPins([
+			{ version: "0.12.0", commit: a },
+			{ version: "0.12.1", commit: b, severity: "security", pulled: true, reason: "data_loss" },
+		]);
 		const m = await build(repo, lookup);
 		const pulled = m.releases.find((r) => r.version === "0.12.1");
 		expect(pulled).toMatchObject({ severity: "security", pulled: true, pulledReason: "data_loss" });
@@ -209,6 +254,33 @@ describe("buildManifest: which versions get in", () => {
 	});
 });
 
+describe("interpretGhResult: 404 is the only quiet no", () => {
+	test("404 is null; success parses draft and published_at; anything else throws", () => {
+		expect(
+			interpretGhResult({ exitCode: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" }),
+		).toBeNull();
+		expect(
+			interpretGhResult({
+				exitCode: 0,
+				stdout: '{"draft":false,"published_at":"2026-11-10T10:00:00Z"}',
+				stderr: "",
+			}),
+		).toEqual({ draft: false, publishedAt: "2026-11-10T10:00:00.000Z" });
+		expect(interpretGhResult({ exitCode: 0, stdout: '{"draft":true}', stderr: "" })).toEqual({
+			draft: true,
+		});
+		for (const stderr of [
+			"HTTP 502",
+			"HTTP 401: Bad credentials",
+			"HTTP 403 rate limit",
+			"connection reset",
+		]) {
+			expect(() => interpretGhResult({ exitCode: 1, stdout: "", stderr }), stderr).toThrow();
+		}
+		expect(() => interpretGhResult({ exitCode: 0, stdout: "not json", stderr: "" })).toThrow();
+	});
+});
+
 describe("buildManifest: determinism and shape", () => {
 	test("a dirty worktree changes nothing: output reads git objects only", async () => {
 		const { repo, lookup } = readOnly();
@@ -216,7 +288,12 @@ describe("buildManifest: determinism and shape", () => {
 		writeFileSync(join(repo.dir, "scripts/relay.ts"), "tampered");
 		writeFileSync(join(repo.dir, "releases/release-data.json"), "{}");
 		writeFileSync(join(repo.dir, "untracked.txt"), "x");
-		expect(JSON.stringify(await build(repo, lookup))).toBe(before);
+		try {
+			expect(JSON.stringify(await build(repo, lookup))).toBe(before);
+		} finally {
+			repo.git("checkout", "--", ".");
+			rmSync(join(repo.dir, "untracked.txt"), { force: true });
+		}
 	});
 
 	test("expiresAt is issuedAt plus 10 days, from the injected clock", async () => {

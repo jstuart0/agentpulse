@@ -16,7 +16,7 @@ export interface FixtureRepo {
 	/** Writes files (path to text), commits them, and returns the commit sha. */
 	commit(files: Record<string, string>, message?: string): string;
 	/** An annotated tag by default. */
-	tag(name: string, sha: string, kind?: "annotated" | "lightweight"): void;
+	tag(name: string, sha: string, kind?: "annotated" | "lightweight", date?: string): void;
 	pushMain(): void;
 }
 
@@ -41,8 +41,13 @@ export function createFixtureRepo(): FixtureRepo {
 	const dir = join(root, "work");
 	const origin = join(root, "origin.git");
 	const env = gitEnv();
-	const run = (cwd: string, args: string[]): string => {
-		const proc = Bun.spawnSync(["git", ...args], { cwd, env, stdout: "pipe", stderr: "pipe" });
+	const run = (cwd: string, args: string[], extraEnv: Record<string, string> = {}): string => {
+		const proc = Bun.spawnSync(["git", ...args], {
+			cwd,
+			env: { ...env, ...extraEnv },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
 		if (proc.exitCode !== 0) {
 			throw new Error(`git ${args.join(" ")} failed: ${proc.stderr.toString()}`);
 		}
@@ -68,8 +73,15 @@ export function createFixtureRepo(): FixtureRepo {
 			run(dir, ["commit", "--allow-empty", "-m", message]);
 			return run(dir, ["rev-parse", "HEAD"]);
 		},
-		tag(name, sha, kind = "annotated") {
-			run(dir, kind === "annotated" ? ["tag", "-a", name, "-m", name, sha] : ["tag", name, sha]);
+		tag(name, sha, kind, date) {
+			const when: Record<string, string> = date ? { GIT_COMMITTER_DATE: date } : {};
+			run(
+				dir,
+				(kind ?? "annotated") === "annotated"
+					? ["tag", "-a", name, "-m", name, sha]
+					: ["tag", name, sha],
+				when,
+			);
 		},
 		pushMain() {
 			run(dir, ["push", "--force", "origin", "main"]);

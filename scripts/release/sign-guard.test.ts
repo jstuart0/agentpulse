@@ -1,11 +1,20 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	NOW,
 	TEST_KEYS,
 	TEST_KEY_LIST,
+	envelopeFor,
 	pkcs8Pem,
 	testPayload,
 } from "../../src/shared/__fixtures__/release-test-signer.ts";
@@ -85,14 +94,14 @@ interface Step {
 	uses?: string;
 }
 
-function signSteps(): Step[] {
+function jobSteps(job: string): Step[] {
 	const workflow = Bun.YAML.parse(
 		readFileSync(join(REPO_ROOT, ".github/workflows/pages.yml"), "utf-8"),
 	) as {
 		jobs?: Record<string, { steps?: Step[] }>;
 	};
-	const steps = workflow.jobs?.sign?.steps;
-	expect(steps, "pages.yml has a sign job with steps").toBeDefined();
+	const steps = workflow.jobs?.[job]?.steps;
+	expect(steps, `pages.yml has a ${job} job with steps`).toBeDefined();
 	return steps as Step[];
 }
 
@@ -103,6 +112,11 @@ interface Scenario {
 	key?: string;
 	/** What `git ls-remote` of the repo's main reports. */
 	origin: string;
+	/** The live manifest's envelope text; null or absent means there is none. */
+	live?: string | null;
+	/** Tools to hide from PATH, to prove the step says so when one is missing. */
+	without?: string[];
+	job?: string;
 }
 
 interface Outcome {
@@ -110,6 +124,39 @@ interface Outcome {
 	outputs: Record<string, Record<string, string>>;
 	ghCalls: string[];
 	work: string;
+}
+
+const TOOLS = [
+	"git",
+	"cut",
+	"grep",
+	"tr",
+	"openssl",
+	"date",
+	"jq",
+	"curl",
+	"sed",
+	"tail",
+	"rm",
+	"cat",
+	"head",
+	"mkdir",
+	"dirname",
+	"awk",
+];
+
+/** A PATH holding every tool the shell needs except `without`, plus the stub bin. */
+function restrictedPath(work: string, bin: string, without: string[]): string {
+	const dir = join(work, "tools");
+	mkdirSync(dir);
+	for (const tool of TOOLS) {
+		if (without.includes(tool)) continue;
+		const found = Bun.spawnSync(["/usr/bin/which", tool], { stdout: "pipe" })
+			.stdout.toString()
+			.trim();
+		if (found) symlinkSync(found, join(dir, tool));
+	}
+	return `${bin}:${dir}`;
 }
 
 function runSign(scenario: Scenario): Outcome {
@@ -135,7 +182,9 @@ function runSign(scenario: Scenario): Outcome {
 		"needs.manifest.outputs.payload": Buffer.from(payloadBytes).toString("base64url"),
 		"secrets.AGENTPULSE_RELEASE_SIGNING_KEY": scenario.key ?? pkcs8Pem("active"),
 	};
-	const steps = signSteps();
+	const steps = jobSteps(scenario.job ?? "sign");
+	const livePath = join(work, "live-manifest.json");
+	if (scenario.live) writeFileSync(livePath, scenario.live);
 	const outputs: Outcome["outputs"] = {};
 	const result: Outcome["steps"] = [];
 	for (const [index, step] of steps.entries()) {
@@ -153,7 +202,9 @@ function runSign(scenario: Scenario): Outcome {
 			}
 		}
 		const env: Record<string, string> = {
-			PATH: `${bin}:${process.env.PATH}`,
+			PATH: scenario.without
+				? restrictedPath(work, bin, scenario.without)
+				: `${bin}:${process.env.PATH}`,
 			HOME: work,
 			RUNNER_TEMP: runnerTemp,
 			GITHUB_OUTPUT: join(work, `out-${id}`),
@@ -170,9 +221,14 @@ function runSign(scenario: Scenario): Outcome {
 				return expressions[expr] as string;
 			});
 		}
+		// The live manifest is served from a file for the test: only these two inputs are redirected.
+		if (env.LIVE_MANIFEST_URL !== undefined) {
+			env.LIVE_MANIFEST_URL = `file://${livePath}`;
+			env.LIVE_PROTO = "=file";
+		}
 		const script = join(work, `${id}.sh`);
 		writeFileSync(script, step.run);
-		const proc = Bun.spawnSync(["bash", "--noprofile", "--norc", "-eo", "pipefail", script], {
+		const proc = Bun.spawnSync(["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", script], {
 			cwd: work,
 			env,
 			stdout: "pipe",
@@ -250,15 +306,28 @@ describe("the sign job's shell (extracted from pages.yml)", () => {
 		expect(verdict.ok).toBe(true);
 	});
 
-	test("(b) when GITHUB_SHA is an older commit, signs nothing, dispatches pages.yml on main once and exits 0", () => {
+	test("(b) when GITHUB_SHA is an older commit, the sign job signs nothing, holds no gh token use, and reports the newer tip", () => {
 		const { repo, second, tip } = mainRepo();
 		const out = runSign({ githubSha: second, payload: livePayload(second), origin: repo.origin });
 		expect(out.steps.map((s) => s.status)).toEqual([0, null]);
 		expect(out.steps[0]?.stdout).toContain(`superseded by ${tip}`);
+		expect(out.outputs.checks?.superseded).toBe(tip);
+		expect(out.ghCalls).toEqual([]);
+		expect(Object.values(out.outputs).some((o) => o.signed === "true")).toBe(false);
+	});
+
+	test("(b2) the separate redispatch job (actions: write only) starts pages.yml on main once", () => {
+		const { repo, second } = mainRepo();
+		const out = runSign({
+			githubSha: second,
+			payload: livePayload(second),
+			origin: repo.origin,
+			job: "redispatch",
+		});
+		expect(out.steps.map((s) => s.status)).toEqual([0]);
 		expect(out.ghCalls).toHaveLength(1);
 		expect(out.ghCalls[0]).toContain("workflow run pages.yml");
 		expect(out.ghCalls[0]).toContain("--ref main");
-		expect(Object.values(out.outputs).some((o) => o.signed === "true")).toBe(false);
 	});
 
 	test("(c) refuses a ref other than refs/heads/main, and never dispatches or signs", () => {
@@ -308,4 +377,94 @@ describe("the sign job's shell (extracted from pages.yml)", () => {
 			});
 		}
 	});
+});
+
+describe("the sign job's live-manifest sanity (xander M3/M4)", () => {
+	const liveAt = (
+		seq: number,
+		over: Record<string, unknown> = {},
+		signer: "active" | "standby" = "active",
+	) => envelopeFor(testPayload({ seq, ...over }), signer);
+
+	const signedWith = (out: Outcome) => out.steps.some((s) => out.outputs[s.id]?.signed === "true");
+
+	test("with a live manifest, seq may be the live seq up to live+1000", () => {
+		const { repo, tip } = mainRepo();
+		for (const seq of [100, 101, 1100]) {
+			const out = runSign({
+				githubSha: tip,
+				payload: livePayload(tip, { seq }),
+				origin: repo.origin,
+				live: liveAt(100),
+			});
+			expect(signedWith(out), `seq ${seq}`).toBe(true);
+		}
+	});
+
+	test("a seq below the live seq, or more than 1000 above it, is refused (named member: live+1001)", () => {
+		const { repo, tip } = mainRepo();
+		for (const seq of [99, 1101, 500000]) {
+			const out = runSign({
+				githubSha: tip,
+				payload: livePayload(tip, { seq }),
+				origin: repo.origin,
+				live: liveAt(100),
+			});
+			expect(out.steps[0]?.status, `seq ${seq}`).not.toBe(0);
+			expect(signedWith(out), `seq ${seq}`).toBe(false);
+		}
+	});
+
+	test("with no live manifest (missing file) or one that isn't an envelope, seq is capped at 1,000,000", () => {
+		const { repo, tip } = mainRepo();
+		for (const live of [null, "this is not json", '{"payload":"@@@"}']) {
+			const ok = runSign({
+				githubSha: tip,
+				payload: livePayload(tip, { seq: 1_000_000 }),
+				origin: repo.origin,
+				live,
+			});
+			expect(signedWith(ok), String(live)).toBe(true);
+			const over = runSign({
+				githubSha: tip,
+				payload: livePayload(tip, { seq: 1_000_001 }),
+				origin: repo.origin,
+				live,
+			});
+			expect(over.steps[0]?.status, String(live)).not.toBe(0);
+			expect(signedWith(over), String(live)).toBe(false);
+		}
+	});
+
+	test("a signing key the live manifest has revoked never signs", () => {
+		const { repo, tip } = mainRepo();
+		const live = liveAt(100, { revokedKeyIds: [TEST_KEYS.active.keyId] }, "standby");
+		const out = runSign({ githubSha: tip, payload: livePayload(tip), origin: repo.origin, live });
+		expect(out.steps.map((s) => s.status)).toEqual([0, 1]);
+		expect(out.steps[1]?.stderr).toMatch(/revoked/);
+		expect(signedWith(out)).toBe(false);
+		const other = liveAt(100, { revokedKeyIds: [TEST_KEYS.standby.keyId] }, "active");
+		expect(
+			signedWith(
+				runSign({ githubSha: tip, payload: livePayload(tip), origin: repo.origin, live: other }),
+			),
+		).toBe(true);
+	});
+});
+
+describe("the sign job needs its tools and says so (tessa)", () => {
+	for (const tool of ["jq", "openssl", "git", "curl"]) {
+		test(`without ${tool} the checks step fails with a clear message and signs nothing`, () => {
+			const { repo, tip } = mainRepo();
+			const out = runSign({
+				githubSha: tip,
+				payload: livePayload(tip),
+				origin: repo.origin,
+				without: [tool],
+			});
+			expect(out.steps[0]?.status).not.toBe(0);
+			expect(out.steps[0]?.stderr).toContain(`${tool} is not installed`);
+			expect(Object.values(out.outputs).some((o) => o.signed === "true")).toBe(false);
+		});
+	}
 });
