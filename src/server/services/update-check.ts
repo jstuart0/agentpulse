@@ -30,6 +30,7 @@ import {
 } from "../../shared/capped-fetch.js";
 import { detectInstallKind, readInstallRecord } from "../../shared/install-record.js";
 import type { InstallKind } from "../../shared/install-record.js";
+import { MANIFEST_URL } from "../../shared/release-feed.js";
 import { RELEASE_KEYS, type ReleaseKey } from "../../shared/release-keys.js";
 import {
 	type LastSeen,
@@ -50,7 +51,7 @@ import { installProbeOverride } from "./install-probe.js";
 import { upsertSetting } from "./settings-service.js";
 
 /** The one place a manifest is fetched from. Never taken from a response, an env var or a setting. */
-export const MANIFEST_URL = "https://jstuart0.github.io/agentpulse/releases/manifest.json";
+export { MANIFEST_URL };
 
 const FETCH_DEADLINE_MS = 10_000;
 const FETCH_MAX_BYTES = 32 * 1024;

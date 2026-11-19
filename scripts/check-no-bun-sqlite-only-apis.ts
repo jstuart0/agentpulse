@@ -39,6 +39,12 @@ const ROOT = new URL("..", import.meta.url).pathname;
 const ALLOWLISTED_SUFFIXES = [
 	// Core DB adapter and test helpers
 	"src/server/db/client.ts",
+	// AGEN-155: the updater opens a SQLite file directly (snapshot, restore, the smoke boot's ledger read and the
+	// installation id behind the fingerprint). It runs on the machine that owns the file, never in the server, and
+	// a Postgres install is refused before any of it runs.
+	"src/updater/snapshot.ts",
+	"src/updater/smoke.ts",
+	"src/updater/test-utils/fixture.ts",
 	// AGEN-67: reads and writes drizzle's SQLite ledger table with raw bun:sqlite.
 	"src/server/db/sqlite-migration-ledger.ts",
 	// AGEN-67: the structural-shape oracle the SQLite schema tests compare databases with (moved out of

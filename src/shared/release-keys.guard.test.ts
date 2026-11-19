@@ -41,7 +41,14 @@ describe("the release trust root never holds a test key", () => {
 		for (const dir of ["src", "scripts", "bin", "packages"]) {
 			for (const file of sourceFiles(join(root, dir))) {
 				const rel = relative(root, file);
-				if (/\.test\.ts$/.test(rel) || rel.includes("__fixtures__/release-test-")) continue;
+				// A test-utils/ directory is test code: check-no-test-seam-leaks.ts fails if production imports anything from one.
+				if (
+					/\.test\.ts$/.test(rel) ||
+					rel.includes("__fixtures__/release-test-") ||
+					rel.includes("/test-utils/")
+				) {
+					continue;
+				}
 				if (/release-test-(key|signer)/.test(readFileSync(file, "utf-8"))) offenders.push(rel);
 			}
 		}

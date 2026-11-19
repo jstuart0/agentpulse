@@ -72,6 +72,15 @@ describe("readInstallRecord", () => {
 		expect(got?.serverTransport).toBe("loopback");
 	});
 
+	test("the port is a whole number of a port, null when absent or null (a supervisor-only install), and anything else makes the record unreadable", () => {
+		expect(readInstallRecord(home(record({ port: 3000 })))?.port).toBe(3000);
+		expect(readInstallRecord(home(record()))?.port).toBeNull();
+		expect(readInstallRecord(home(record({ port: null })))?.port).toBeNull();
+		for (const port of [0, 65536, -1, 3000.5, "3000", true, {}]) {
+			expect(readInstallRecord(home(record({ port })))).toBeNull();
+		}
+	});
+
 	test("serverTransport is recomputed from serverUrl, never read from the file", () => {
 		const cases: Array<[string, "https" | "loopback" | "http"]> = [
 			["https://agentpulse.example.invalid", "https"],

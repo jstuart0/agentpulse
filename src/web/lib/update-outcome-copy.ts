@@ -179,6 +179,10 @@ export const OUTCOME_COPY: Record<UpdateOutcomeCode, OutcomeCopy> = {
 		sentence: "The update failed and restoring the previous version failed too.",
 		next: "Services are stopped. Follow the recovery steps the updater printed.",
 	},
+	nothing_to_roll_back: {
+		sentence: "There is no earlier copy to go back to.",
+		next: "Nothing was changed.",
+	},
 	updated: {
 		sentence: "AgentPulse was updated.",
 		next: "Reload this page to use the new version.",

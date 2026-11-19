@@ -27,6 +27,8 @@ export interface InstallRecord {
 	service: "launchd" | "systemd" | "none";
 	serverUrl: string;
 	serverTransport: "https" | "loopback" | "http";
+	/** The port the local server listens on (the updater probes `127.0.0.1:<port>`); null for a supervisor-only install. */
+	port: number | null;
 	bunBin: string;
 }
 
@@ -103,6 +105,13 @@ function parseRecord(raw: unknown): InstallRecord | null {
 	}
 	const serverTransport = serverTransportOf(r.serverUrl);
 	if (!serverTransport) return null;
+	const port = r.port === undefined || r.port === null ? null : r.port;
+	if (
+		port !== null &&
+		(typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535)
+	) {
+		return null;
+	}
 	return {
 		schema: 1,
 		kind: "local",
@@ -117,6 +126,7 @@ function parseRecord(raw: unknown): InstallRecord | null {
 		service: r.service,
 		serverUrl: r.serverUrl,
 		serverTransport,
+		port,
 		bunBin: r.bunBin,
 	};
 }
