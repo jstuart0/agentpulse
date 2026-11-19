@@ -70,10 +70,15 @@ function currentOs() {
 				: "unknown";
 }
 
-/** `local_updater` only on a host install-local.sh set up with a supervisor: that is where `agentpulse update` runs. */
+/**
+ * `local_updater` only on a host install-local.sh set up with a supervisor under a service manager: that is where
+ * `agentpulse update` can run (with no service manager the updater refuses every swap, so the host can't update itself).
+ */
 function localUpdaterFeature(): string[] {
 	const record = readInstallRecord(resolveHomeDir());
-	return record?.components.includes("supervisor") ? [LOCAL_UPDATER] : [];
+	return record?.components.includes("supervisor") && record.service !== "none"
+		? [LOCAL_UPDATER]
+		: [];
 }
 
 export function buildDefaultConfig(): SupervisorConfig {

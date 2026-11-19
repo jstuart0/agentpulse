@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DELIVERY_ID_HEADER, REPLAY_HEADER } from "../shared/hook-headers.js";
+import { HOST_UPDATING_MESSAGE } from "../shared/managed-messages.js";
 import type { ControlAction, LaunchRequest, ManagedSession } from "../shared/types.js";
 import {
 	ensureSupervisorConfigPrivate,
@@ -79,6 +80,7 @@ import {
 	resolveNeutralCwd,
 } from "./services/session-resume.js";
 import { assertTrustedRootsExcludeAgentpulseDir } from "./services/spawn-cwd.js";
+import { createUpdateDrain, routeClaimed } from "./services/update-drain.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 /** How often the exclude rules are re-read for a changed symlink, the stamp is refreshed and sessions a new rule covers are closed. */
@@ -301,6 +303,24 @@ async function main() {
 	});
 	setInterval(() => void bridgeSpool.drain(), BRIDGE_DRAIN_MS).unref();
 
+	// What an update needs to know: a status file saying when this host was last busy, and the drain request
+	// the updater may write once the host has been idle for a minute (see services/update-drain.ts).
+	const updateDrain = createUpdateDrain({
+		home,
+		version: config.version,
+		counts: async () => {
+			const codex = managedCodexRuntimeCount();
+			const headless = headlessRuntimeCount() + claudeStreamRuntimeCount();
+			const bridges =
+				codex > 0 || headless > 0
+					? 0
+					: await countBridgesBounded(() => bridgeSpool.liveBridgeCount(), BRIDGE_COUNT_TIMEOUT_MS);
+			return { codex, headless, bridges, approvals: approvalsWiring.approvals.pendingCount() };
+		},
+	});
+	updateDrain.markRegistered();
+	void updateDrain.tick();
+
 	// The watchdog: a heartbeat that has not succeeded for a while normally means the server is
 	// unreachable, which is no reason to stop the agents running here. It exits for the service manager to
 	// restart only when it holds nothing to look after (shouldExitOnStaleHeartbeat). Queued reports do not
@@ -310,6 +330,7 @@ async function main() {
 	let staleLogged = false;
 	const watchdogStaleMs = Math.max(registration.heartbeatIntervalMs * 3, 90_000);
 	setInterval(() => {
+		void updateDrain.tick();
 		void (async () => {
 			const { staleMs, resumedAfterMs } = staleClock.tick();
 			if (resumedAfterMs !== null) {
@@ -403,6 +424,16 @@ async function main() {
 		finalReport,
 	});
 
+	// A launch claimed during a drain fails with a fixed sentence; while exclude rules exist the generic refusal
+	// goes instead, so a refusal never says anything about the rules.
+	async function refuseLaunchForUpdate(launchId: string) {
+		if (gate.rulesState() !== "none") {
+			await gate.refuseLaunch(launchId);
+		} else {
+			await gate.reportLaunchStatus(launchId, { status: "failed", error: HOST_UPDATING_MESSAGE });
+		}
+	}
+
 	void gate.scan();
 	setInterval(() => {
 		gate.scan().catch((error) => console.error("[supervisor] exclude scan failed", error));
@@ -414,7 +445,13 @@ async function main() {
 				method: "POST",
 			})) as { launchRequest: LaunchRequest | null };
 			if (result.launchRequest) {
-				await dispatchLaunch(result.launchRequest);
+				const launch = result.launchRequest;
+				await routeClaimed({
+					drain: updateDrain,
+					kind: "launch",
+					handle: () => dispatchLaunch(launch),
+					refuse: () => refuseLaunchForUpdate(launch.id),
+				});
 			}
 		} catch (error) {
 			console.error("[supervisor] claim failed", error);
@@ -484,7 +521,20 @@ async function main() {
 				`/supervisors/${registration.supervisor.id}/control-actions/claim`,
 				{ method: "POST" },
 			)) as { action: ControlAction | null };
-			if (result.action) await handleControlAction(result.action);
+			const action = result.action;
+			if (action) {
+				await routeClaimed({
+					drain: updateDrain,
+					kind: action.actionType,
+					handle: () => handleControlAction(action),
+					refuse: async () => {
+						await gate.reportControlStatus(action.id, action.sessionId ?? null, {
+							status: "failed",
+							error: HOST_UPDATING_MESSAGE,
+						});
+					},
+				});
+			}
 		} catch (error) {
 			console.error("[supervisor] control action failed", error);
 		}

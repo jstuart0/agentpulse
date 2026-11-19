@@ -49,7 +49,7 @@ function writeRecord(over: Record<string, unknown> = {}, mode = 0o600) {
 			dataDir: join(homeDir, ".agentpulse", "data"),
 			sqlitePath: join(homeDir, ".agentpulse", "data", "agentpulse.db"),
 			dialect: "sqlite",
-			service: "none",
+			service: "launchd",
 			serverUrl: "http://localhost:3000",
 			serverTransport: "loopback",
 			bunBin: "/bun/bin/bun",
@@ -71,6 +71,11 @@ describe("the local_updater host feature", () => {
 	});
 
 	test("is absent with no record (a hand-started or older install)", async () => {
+		expect(await features()).not.toContain(LOCAL_UPDATER);
+	});
+
+	test("is absent when the install runs without a service manager: the updater refuses every swap there", async () => {
+		writeRecord({ service: "none" });
 		expect(await features()).not.toContain(LOCAL_UPDATER);
 	});
 
