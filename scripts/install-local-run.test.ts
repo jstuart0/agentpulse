@@ -25,6 +25,7 @@ import {
 	mkdirSync,
 	readFileSync,
 	readdirSync,
+	readlinkSync,
 	realpathSync,
 	rmSync,
 	statSync,
@@ -107,6 +108,7 @@ const CORE_TOOLS = [
 	"head",
 	"id",
 	...(HAS_ICONV ? ["iconv"] : []),
+	"ln",
 	"ls",
 	"mkdir",
 	"mktemp",
@@ -134,6 +136,20 @@ const loggingStub = (name: string, extra = "") =>
 		extra,
 		"exit 0",
 	].join("\n");
+
+/**
+ * What the stub git answers beyond logging: the tag list for \`ls-remote\` (AP_LS_REMOTE, as \`sha<TAB>ref\` lines with
+ * \\n escapes, else one release; AP_LS_REMOTE_FAIL makes it fail), a HEAD for \`rev-parse\`, and a failing
+ * \`merge-base --is-ancestor\` while AP_GIT_NOT_ANCESTOR is set.
+ */
+const GIT_ANSWERS = [
+	'if [ "${1-}" = ls-remote ]; then if [ -n "${AP_LS_REMOTE_FAIL-}" ]; then exit 2; fi; if [ -n "${AP_LS_REMOTE-}" ]; then printf "%b" "$AP_LS_REMOTE"; else printf "1111111111111111111111111111111111111111\\trefs/tags/v0.12.0\\n"; fi; fi',
+	'if [ "${1-}" = -C ] && [ "${3-}" = rev-parse ]; then echo 2222222222222222222222222222222222222222; fi',
+	'if [ "${1-}" = -C ] && [ "${3-}" = merge-base ] && [ -n "${AP_GIT_NOT_ANCESTOR-}" ]; then exit 1; fi',
+	'if [ "${1-}" = -C ] && [ "${3-}" = pull ] && [ -n "${AP_GIT_PULL_FAIL-}" ]; then exit 3; fi',
+	// A checkout that has the updater's source (a release from 0.12.0 on).
+	'if [ "${1-}" = clone ] && [ -n "${AP_TREE_UPDATER-}" ]; then for a in "$@"; do d="$a"; done; mkdir -p "$d/src/updater"; echo x > "$d/src/updater/cli.ts"; fi',
+].join("; ");
 
 const CURL_STUB = [
 	'echo "curl $*" >> "$AP_STUB_LOG"',
@@ -200,7 +216,7 @@ function buildStubDir(o: Omit<PathOpts, "prefix">): string {
 			: {
 					git: loggingStub(
 						"git",
-						'echo "$(umask)" >> "$AP_STUB_LOG.git-umask"; if [ "${1-}" = -C ]; then ls -ld "$2" "$2/.git" >> "$AP_STUB_LOG.git-modes" 2>&1; find "$2" ! -type l \\( -perm -g=w -o -perm -o=w \\) -print >> "$AP_STUB_LOG.git-writable" 2>&1; fi; if [ "${1-}" = clone ]; then for a in "$@"; do d="$a"; done; mkdir -p "$d/src/deep"; echo \'{"name":"agentpulse"}\' > "$d/package.json"; echo x > "$d/src/deep/a.ts"; fi',
+						`echo "$(umask)" >> "$AP_STUB_LOG.git-umask"; if [ "\${1-}" = -C ]; then ls -ld "$2" "$2/.git" >> "$AP_STUB_LOG.git-modes" 2>&1; find "$2" ! -type l \\( -perm -g=w -o -perm -o=w \\) -print >> "$AP_STUB_LOG.git-writable" 2>&1; fi; if [ "\${1-}" = clone ]; then for a in "$@"; do d="$a"; done; mkdir -p "$d/src/deep"; echo \'{"name":"agentpulse","version":"0.12.0"}\' > "$d/package.json"; echo x > "$d/src/deep/a.ts"; fi; ${GIT_ANSWERS}`,
 					),
 				}),
 		...o.stubs,
@@ -227,7 +243,8 @@ function installBun(prefix: string, version = "1.3.12"): string {
 			'echo "$0 $* stdin=$n" >> "$AP_STUB_LOG"',
 			'case "$*" in "run start"|"run supervisor") echo "ENV $2 PUBLIC_URL=$PUBLIC_URL HOST=$HOST PATH=$PATH" >> "$AP_STUB_LOG" ;; esac',
 			// What a real install and build leave in the checkout, written under the caller's umask.
-			'case "$*" in install) mkdir -p node_modules/.bin; echo x > node_modules/.bin/f ;; "run build") mkdir -p dist; echo x > dist/f ;; esac',
+			'case "$*" in "install --frozen-lockfile") mkdir -p node_modules/.bin; echo x > node_modules/.bin/f ;; install) mkdir -p node_modules/.bin; echo x > node_modules/.bin/f ;; "run build") mkdir -p dist; echo x > dist/f ;; esac',
+			'case "$*" in "build --target=bun"*) while [ $# -gt 0 ]; do if [ "$1" = --outfile ]; then echo x > "$2"; fi; shift; done ;; esac',
 			"exit 0",
 			"",
 		].join("\n"),
@@ -507,7 +524,7 @@ describe("the Bun the installer uses", () => {
 		});
 		expect(r.code).toBe(0);
 		expect(r.stdout).toContain(`  ✓ Bun: ${bun} (1.3.12)`);
-		expect(r.log).toContain(`${bun} install stdin=0`);
+		expect(r.log).toContain(`${bun} install --frozen-lockfile stdin=0`);
 		expect(r.log).toContain(`${bun} run build stdin=0`);
 		const unit = readFileSync(unitFile(r.home), "utf-8");
 		expect(unit).toContain(`\nExecStart=${bun} run start\n`);
@@ -1592,7 +1609,8 @@ describe("what git and bun write into the checkout is never group-writable", () 
 			env: bunEnv(),
 		});
 		expect(fresh1.code).toBe(0);
-		expect(gitUmasks(fresh1)).toEqual(["0022"]);
+		// ls-remote (the latest release), then the clone
+		expect(gitUmasks(fresh1)).toEqual(["0022", "0022"]);
 		mkdirSync(`${t}/upd/.git`, { recursive: true });
 		const upd = go(bash, [...PLAIN, "--skip-supervisor", "--dir", `${t}/upd`], {
 			path: mkPath(),
@@ -1600,7 +1618,8 @@ describe("what git and bun write into the checkout is never group-writable", () 
 			env: bunEnv(),
 		});
 		expect(upd.code).toBe(0);
-		expect(gitUmasks(upd)).toEqual(["0022", "0022", "0022"]);
+		// ls-remote, fetch, rev-parse and merge-base (never move backwards), checkout: no pull for a tag
+		expect(gitUmasks(upd)).toEqual(["0022", "0022", "0022", "0022", "0022"]);
 	});
 	for (const [name, unit] of [
 		["default", ""],
@@ -2042,6 +2061,8 @@ describe("service files are written 0600, end in one newline, and are applied on
 		expect(calls.filter((c) => c.includes("restart"))).toEqual([
 			"systemctl --user restart agentpulse stdin=0",
 			"systemctl --user restart agentpulse-supervisor stdin=0",
+			// once more after install.json is written, so the supervisor reports the install (local_updater)
+			"systemctl --user restart agentpulse-supervisor stdin=0",
 		]);
 		expect(r.log).not.toContain("--now");
 		for (const n of ["agentpulse", "agentpulse-supervisor"]) {
@@ -2405,7 +2426,9 @@ describe("--ref and --repo reach git as options-safe arguments", () => {
 			{ path: mkPath(), env: bunEnv() },
 		);
 		expect(r.code).toBe(0);
-		expect(r.stdout).toContain("  Repo:       https://git.example.test/x@y/z@w.git (main)");
+		expect(r.stdout).toContain(
+			"  Repo:       https://git.example.test/x@y/z@w.git (latest release)",
+		);
 	});
 	for (const host of ["localhost", "0.0.0.0", "my-host_1.example", "[::1]", "::1"]) {
 		once(`--host ${host} is accepted`, (bash) => {
@@ -2836,7 +2859,7 @@ describe("W6: `curl | bash` is safe", () => {
 			expect(calls.length).toBeGreaterThanOrEqual(3);
 			for (const call of calls) expect(call).toEndWith("stdin=0");
 			expect(r.log).toContain("git clone ");
-			expect(r.log).toContain(" install stdin=0");
+			expect(r.log).toContain(" install --frozen-lockfile stdin=0");
 			expect(r.log).toContain(" run build stdin=0");
 		},
 	);
@@ -2948,8 +2971,8 @@ describe("install.json and ~/.agentpulse/bin/agentpulse", () => {
 			kind: "local",
 			components: ["server", "supervisor"],
 			repoUrl: "https://github.com/jstuart0/agentpulse.git",
-			track: "ref",
-			ref: "main",
+			track: "release",
+			ref: "v0.12.0",
 			installDir: realpathSync(join(r.home, ".agentpulse", "app")),
 			dataDir: join(r.home, ".agentpulse", "data"),
 			sqlitePath: join(r.home, ".agentpulse", "data", "agentpulse.db"),
@@ -2957,6 +2980,7 @@ describe("install.json and ~/.agentpulse/bin/agentpulse", () => {
 			service: "none",
 			serverUrl: "http://localhost:3000",
 			serverTransport: "loopback",
+			port: 3000,
 			bunBin: join(env.BUN_INSTALL, "bin", "bun"),
 		});
 		expect(readFileSync(file, "utf-8").endsWith("}\n")).toBe(true);
@@ -3102,5 +3126,281 @@ describe("install.json and ~/.agentpulse/bin/agentpulse", () => {
 		expect(existsSync(unitFile(home))).toBe(true);
 		expect(r.log).toContain("systemctl --user restart agentpulse");
 		expect(readFileSync(join(home, "target"), "utf-8")).toBe("keep");
+	});
+});
+
+// ── installers track release tags; --supervisor-only (AGEN-155, phase 4) ──
+
+describe("the installer follows releases, never moves a checkout backwards, and can install only a supervisor", () => {
+	const bunEnv = () => {
+		const bunx = fresh("bunx");
+		installBun(bunx);
+		return { BUN_INSTALL: bunx, BUN: join(bunx, "bin", "bun") };
+	};
+	const recordOf = (home: string) =>
+		JSON.parse(readFileSync(join(home, ".agentpulse", "install.json"), "utf-8"));
+	const TAGS = [
+		"aaa\trefs/tags/v0.9.0",
+		"aaa\trefs/tags/v0.9.0^{}",
+		"bbb\trefs/tags/v0.10.0",
+		"bbb\trefs/tags/v0.10.0^{}",
+		"ccc\trefs/tags/v0.11.0-rc.1",
+		"ddd\trefs/tags/v0.10.0-beta",
+		"eee\trefs/tags/vNEXT",
+		"fff\trefs/tags/v0.2.0",
+		"",
+	].join("\\n");
+
+	each(
+		"the default is the highest stable release tag, numerically (0.10.0 beats 0.9.0; pre-releases and ^{} lines are ignored)",
+		(bash) => {
+			const r = go(bash, [...PLAIN, "--skip-supervisor"], {
+				path: mkPath(),
+				env: { ...bunEnv(), AP_LS_REMOTE: TAGS },
+			});
+			expect(r.code).toBe(0);
+			expect(r.log).toContain("git clone --branch v0.10.0 --single-branch --");
+			expect(r.stdout).toContain("✓ Latest release: v0.10.0");
+			expect(recordOf(r.home)).toMatchObject({ track: "release", ref: "v0.10.0" });
+		},
+	);
+
+	once("no tags, or a failing ls-remote, is fatal and clones nothing", (bash) => {
+		for (const env of [
+			{ AP_LS_REMOTE: "ccc\trefs/tags/v0.11.0-rc.1\\n" },
+			{ AP_LS_REMOTE_FAIL: "1" },
+		]) {
+			const r = go(bash, [...PLAIN, "--skip-supervisor"], {
+				path: mkPath(),
+				env: { ...bunEnv(), ...env },
+			});
+			expect(r.code).toBe(1);
+			expect(r.stderr).toContain("couldn't find a release of AgentPulse");
+			expect(r.log).not.toContain("git clone");
+			expect(existsSync(join(r.home, ".agentpulse", "install.json"))).toBe(false);
+		}
+	});
+
+	once("--ref follows that ref: no tag lookup, and the record says so", (bash) => {
+		const r = go(bash, [...PLAIN, "--skip-supervisor", "--ref", "main"], {
+			path: mkPath(),
+			env: bunEnv(),
+		});
+		expect(r.code).toBe(0);
+		expect(r.log).not.toContain("ls-remote");
+		expect(r.log).toContain("git clone --branch main --single-branch --");
+		expect(recordOf(r.home)).toMatchObject({ track: "ref", ref: "main" });
+	});
+
+	once("an existing checkout moves to the release tag with no pull", (bash) => {
+		const t = fresh("t");
+		mkdirSync(`${t}/app/.git`, { recursive: true });
+		const r = go(bash, [...PLAIN, "--skip-supervisor", "--dir", `${t}/app`], {
+			path: mkPath(),
+			env: bunEnv(),
+		});
+		expect(r.code).toBe(0);
+		expect(r.log).toContain(`git -C ${t}/app checkout v0.12.0 -- stdin=0`);
+		expect(r.log).not.toContain(" pull ");
+	});
+
+	once(
+		"a checkout that is ahead of the tag stays where it is, says why, and still installs",
+		(bash) => {
+			const t = fresh("t");
+			mkdirSync(`${t}/app/.git`, { recursive: true });
+			const r = go(bash, [...PLAIN, "--skip-supervisor", "--dir", `${t}/app`], {
+				path: mkPath(),
+				env: { ...bunEnv(), AP_GIT_NOT_ANCESTOR: "1" },
+			});
+			expect(r.code).toBe(0);
+			expect(r.stdout).toContain("so it stays where it is");
+			expect(r.log).not.toContain("checkout v0.12.0");
+			expect(r.log).toContain("install --frozen-lockfile");
+		},
+	);
+
+	once("a failing pull on a branch ref stops the install (no `|| true`)", (bash) => {
+		const t = fresh("t");
+		mkdirSync(`${t}/app/.git`, { recursive: true });
+		// show-ref says it isn't a tag, so --ref main is a branch that gets pulled
+		const r = go(bash, [...PLAIN, "--skip-supervisor", "--dir", `${t}/app`, "--ref", "main"], {
+			path: mkPath({
+				stubs: {
+					git: loggingStub(
+						"git",
+						`if [ "\${1-}" = -C ] && [ "\${3-}" = show-ref ]; then exit 1; fi; ${GIT_ANSWERS}`,
+					),
+				},
+			}),
+			env: { ...bunEnv(), AP_GIT_PULL_FAIL: "1" },
+		});
+		expect(r.code).not.toBe(0);
+		expect(r.log).toContain("pull --ff-only origin main");
+		expect(r.log).not.toContain("install --frozen-lockfile");
+	});
+
+	once(
+		"the updater is bundled outside the checkout when the tree has its source, and not otherwise",
+		(bash) => {
+			const withSource = go(bash, [...PLAIN, "--skip-supervisor"], {
+				path: mkPath(),
+				env: { ...bunEnv(), AP_TREE_UPDATER: "1" },
+			});
+			expect(withSource.code).toBe(0);
+			const dir = join(withSource.home, ".agentpulse", "updater");
+			expect(readFileSync(join(dir, "0.12.0", "updater.js"), "utf-8")).toBe("x\n");
+			expect(modeOf(join(dir, "0.12.0", "updater.js"))).toBe(0o600);
+			expect(modeOf(dir)).toBe(0o700);
+			expect(readlinkSync(join(dir, "current"))).toBe("0.12.0");
+			expect(withSource.log).toContain(
+				`build --target=bun src/updater/cli.ts --outfile ${join(dir, "0.12.0", "updater.js")}`,
+			);
+			const without = go(bash, [...PLAIN, "--skip-supervisor"], { path: mkPath(), env: bunEnv() });
+			expect(without.stdout).toContain("updates arrive with 0.12.0");
+			expect(existsSync(join(without.home, ".agentpulse", "updater"))).toBe(false);
+		},
+	);
+
+	describe("--supervisor-only", () => {
+		const TOKEN = "tok-3f9a-SECRETSECRET";
+		const base = ["--service", "systemd", "--supervisor-only", "--server-url"];
+		const pythonLog = `echo "python3 $*" >> "$AP_STUB_LOG"; exec ${real("python3")} "$@"`;
+		const supPath = () => mkPath({ python3: false, stubs: { python3: pythonLog } });
+
+		once(
+			"installs the checkout, the supervisor unit, the shim and a supervisor-only record, and no server",
+			(bash) => {
+				const r = go(bash, [...base, "https://agentpulse.example.invalid"], {
+					path: supPath(),
+					env: { ...bunEnv(), AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN: TOKEN, AP_TREE_UPDATER: "1" },
+				});
+				expect(r.code).toBe(0);
+				expect(
+					existsSync(join(r.home, ".config", "systemd", "user", "agentpulse-supervisor.service")),
+				).toBe(true);
+				expect(existsSync(join(r.home, ".config", "systemd", "user", "agentpulse.service"))).toBe(
+					false,
+				);
+				expect(r.log).not.toContain("systemctl --user enable agentpulse ");
+				expect(r.log).not.toContain("api/v1/health");
+				expect(recordOf(r.home)).toMatchObject({
+					components: ["supervisor"],
+					dataDir: null,
+					sqlitePath: null,
+					dialect: null,
+					port: null,
+					serverUrl: "https://agentpulse.example.invalid",
+					serverTransport: "https",
+					service: "systemd",
+					track: "release",
+				});
+				expect(existsSync(join(r.home, ".agentpulse", "data"))).toBe(false);
+				expect(existsSync(join(r.home, ".agentpulse", "bin", "agentpulse"))).toBe(true);
+				expect(existsSync(join(r.home, ".agentpulse", "updater", "0.12.0", "updater.js"))).toBe(
+					true,
+				);
+				const config = JSON.parse(
+					readFileSync(join(r.home, ".agentpulse", "supervisor.json"), "utf-8"),
+				);
+				expect(config.serverUrl).toBe("https://agentpulse.example.invalid");
+				expect(config.enrollmentToken).toBe(TOKEN);
+				expect(modeOf(join(r.home, ".agentpulse", "supervisor.json"))).toBe(0o600);
+			},
+		);
+
+		once("the token never reaches a command line, a log line or the output", (bash) => {
+			const r = go(bash, [...base, "https://agentpulse.example.invalid"], {
+				path: supPath(),
+				env: { ...bunEnv(), AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN: TOKEN },
+			});
+			expect(r.code).toBe(0);
+			expect(r.log).not.toContain(TOKEN);
+			expect(r.log).toContain("python3 -");
+			expect(r.stdout).not.toContain(TOKEN);
+			expect(r.stderr).not.toContain(TOKEN);
+		});
+
+		once(
+			"a plain-http server is allowed, with the unencrypted-link line and the record saying so",
+			(bash) => {
+				const r = go(bash, [...base, "http://192.0.2.10:3000"], {
+					path: supPath(),
+					env: { ...bunEnv(), AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN: TOKEN },
+				});
+				expect(r.code).toBe(0);
+				expect(r.stdout).toContain("This link to the server isn't encrypted");
+				expect(recordOf(r.home).serverTransport).toBe("http");
+			},
+		);
+
+		once(
+			"needs --server-url, the token, and not --skip-supervisor, and refuses nothing half-done",
+			(bash) => {
+				const noUrl = go(bash, ["--service", "systemd", "--supervisor-only"], {
+					path: supPath(),
+					env: { ...bunEnv(), AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN: TOKEN },
+				});
+				expect(noUrl.code).toBe(1);
+				expect(noUrl.stderr).toContain("needs --server-url");
+				const skip = go(bash, [...base, "https://a.example.invalid", "--skip-supervisor"], {
+					path: supPath(),
+					env: { ...bunEnv(), AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN: TOKEN },
+				});
+				expect(skip.code).toBe(1);
+				expect(skip.stderr).toContain("can't be combined with --skip-supervisor");
+				const stray = go(bash, [...PLAIN, "--server-url", "https://a.example.invalid"], {
+					path: supPath(),
+					env: bunEnv(),
+				});
+				expect(stray.code).toBe(1);
+				expect(stray.stderr).toContain("only used with --supervisor-only");
+				// no token in the environment and no terminal: refused before anything is written
+				const noToken = go(bash, [...base, "https://a.example.invalid"], {
+					path: supPath(),
+					env: bunEnv(),
+				});
+				expect(noToken.code).toBe(1);
+				expect(noToken.stderr).toContain("needs the enrollment token");
+				expect(existsSync(join(noToken.home, ".agentpulse", "install.json"))).toBe(false);
+				expect(existsSync(join(noToken.home, ".agentpulse", "app"))).toBe(false);
+				const badToken = go(bash, [...base, "https://a.example.invalid"], {
+					path: supPath(),
+					env: { ...bunEnv(), AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN: "bad token;" },
+				});
+				expect(badToken.code).toBe(1);
+				expect(badToken.stderr).not.toContain("bad token");
+			},
+		);
+
+		once("a server URL with a user name or odd characters is refused", (bash) => {
+			for (const url of [
+				"https://user:pw@a.example.invalid",
+				"ftp://a.example.invalid",
+				"https://a.example.invalid/x y",
+			]) {
+				const r = go(bash, [...base, url], {
+					path: supPath(),
+					env: { ...bunEnv(), AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN: TOKEN },
+				});
+				expect(r.code).toBe(1);
+				expect(r.stderr).toContain("--server-url");
+			}
+		});
+
+		once(
+			"the supervisor is restarted once the record exists, so it reports the install",
+			(bash) => {
+				const r = go(bash, [...base, "https://agentpulse.example.invalid"], {
+					path: supPath(),
+					env: { ...bunEnv(), AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN: TOKEN },
+				});
+				const restarts = r.log
+					.split("\n")
+					.filter((l) => l.includes("restart agentpulse-supervisor"));
+				expect(restarts).toHaveLength(2);
+				expect(r.stdout).toContain("Restarted the supervisor so it reports this install");
+			},
+		);
 	});
 });

@@ -181,6 +181,40 @@ export interface HostUpdateNotice {
 const LEGACY_PLACEHOLDER_VERSION = "0.1.0";
 const LOCAL_UPDATE_COMMAND = "~/.agentpulse/bin/agentpulse update";
 const SUPERVISOR_ONLY_COMMAND = "install-local.sh --supervisor-only";
+/** The characters an enrollment token has, so it can sit in a shell command as a bare word. */
+const SHELL_SAFE_TOKEN = /^[A-Za-z0-9._-]+$/;
+const TOKEN_PLACEHOLDER = "<token>";
+
+/**
+ * The command that installs only a supervisor on another machine, for the server at `origin`. The token is a
+ * variable on the `bash` side of the pipe, never before `curl` (which would put it in curl's own environment
+ * and on a line some shells keep), and never an argument: the installer reads it from the environment or asks
+ * for it. A token that isn't made of plain characters, or an origin that isn't an http(s) address, gives a
+ * placeholder or no command at all rather than something that needs quoting.
+ */
+export function supervisorOnlyInstallCommand(origin: string, token: string | null): string | null {
+	let url: URL;
+	try {
+		url = new URL(origin);
+	} catch {
+		return null;
+	}
+	if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+	if (
+		url.username !== "" ||
+		url.password !== "" ||
+		url.pathname !== "/" ||
+		url.search !== "" ||
+		url.hash !== ""
+	) {
+		return null;
+	}
+	const base = url.origin;
+	if (!/^[A-Za-z0-9.:/\[\]_-]+$/.test(base)) return null;
+	const word = token !== null && SHELL_SAFE_TOKEN.test(token) ? token : TOKEN_PLACEHOLDER;
+	return `curl -fsSL ${base}/install-local.sh | AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=${word} bash -s -- --supervisor-only --server-url ${base}`;
+}
+
 /** Server states that mean the server itself has a newer release to move to. */
 const SERVER_BEHIND_STATES: ReadonlySet<string> = new Set([
 	"available",

@@ -1,5 +1,6 @@
 param(
-  [string]$Ref = "main",
+  # Empty follows the latest release; a branch or tag named here is followed instead.
+  [string]$Ref = "",
   [string]$Repo = "https://github.com/jstuart0/agentpulse.git",
   [string]$Dir = "$HOME\.agentpulse\app",
   [string]$DataDir = "$HOME\.agentpulse\data",
@@ -4296,6 +4297,30 @@ function Start-TaskNow {
   Start-Process -WindowStyle Hidden -FilePath "powershell.exe" -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File",$ScriptPath) | Out-Null
 }
 
+# The highest stable release tag (vMAJOR.MINOR.PATCH, nothing after it) of the repository, or $null. Pre-releases
+# and the peeled ^{} lines of annotated tags are dropped; the order is numeric, by padded parts compared as text.
+function Get-ApLatestReleaseTag {
+  param([string]$GitExe, [string]$RepoUrl)
+  $lines = & $GitExe ls-remote --tags $RepoUrl "v*"
+  if ($LASTEXITCODE -ne 0) { return $null }
+  $best = $null
+  $bestKey = $null
+  foreach ($line in $lines) {
+    $parts = ("$line" -split "`t", 2)
+    if ($parts.Count -lt 2) { continue }
+    $ref = $parts[1].Trim()
+    if ($ref.EndsWith("^{}")) { continue }
+    $tag = $ref -replace '^refs/tags/', ''
+    if ($tag -notmatch '^v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$') { continue }
+    $key = ('{0:D5}{1:D5}{2:D5}' -f [int]$Matches[1], [int]$Matches[2], [int]$Matches[3])
+    if ($null -eq $bestKey -or [string]::CompareOrdinal($key, $bestKey) -gt 0) {
+      $bestKey = $key
+      $best = $tag
+    }
+  }
+  return $best
+}
+
 # Phase 5: every function above is now defined. Dot-sourcing with
 # -FunctionsOnly stops here, before the main install flow runs, so tests can
 # load New-ApHookCommand / New-ApCodexHooksFile / New-ApHookAuthHeaderFile
@@ -4307,7 +4332,9 @@ if ($FunctionsOnly) {
 Write-Host ""
 Write-Host "  AgentPulse Local Install"
 Write-Host "  ────────────────────────"
-Write-Host "  Repo:       $Repo ($Ref)"
+$TrackRelease = (-not $Ref)
+if ($TrackRelease) { $RepoRefText = "latest release" } else { $RepoRefText = $Ref }
+Write-Host "  Repo:       $Repo ($RepoRefText)"
 Write-Host "  Install:    $Dir"
 Write-Host "  Data:       $DataDir"
 Write-Host "  URL:        $PublicUrl"
@@ -4322,21 +4349,55 @@ Ensure-Dir $DataDir
 Ensure-Dir $AgentPulseDir
 Ensure-Dir $LogDir
 
+# The latest release, from the repository's tags. A branch is never the default.
+if ($TrackRelease) {
+  Write-Step "Finding the latest release..."
+  $Ref = Get-ApLatestReleaseTag -GitExe $git -RepoUrl $Repo
+  if (-not $Ref) {
+    throw "Couldn't find a release of AgentPulse at $Repo. Nothing was installed. To follow a branch or a tag instead, pass -Ref <name>."
+  }
+  Write-Step "✓ Latest release: $Ref"
+}
+
 if (Test-Path (Join-Path $Dir ".git")) {
   Write-Step "Updating existing checkout..."
   & $git -C $Dir fetch --tags origin
-  & $git -C $Dir checkout $Ref
-  try { & $git -C $Dir pull --ff-only origin $Ref } catch {}
+  if ($LASTEXITCODE -ne 0) { throw "git fetch failed" }
+  $stayOnHead = $false
+  if ($TrackRelease) {
+    # Never move a checkout backwards: one holding commits the release doesn't (local work, or a newer
+    # release) stays where it is.
+    $head = (& $git -C $Dir rev-parse HEAD | Out-String).Trim()
+    & $git -C $Dir merge-base --is-ancestor $head "refs/tags/$Ref"
+    if ($LASTEXITCODE -ne 0) {
+      $stayOnHead = $true
+      Write-Step "! This checkout has commits that aren't part of $Ref, so it stays where it is."
+    }
+  }
+  if (-not $stayOnHead) {
+    & $git -C $Dir checkout $Ref
+    if ($LASTEXITCODE -ne 0) { throw "git checkout $Ref failed" }
+    if (-not $TrackRelease) {
+      # A branch is brought up to date; a tag is exactly what it names. A failed pull stops the install.
+      & $git -C $Dir show-ref --verify --quiet "refs/tags/$Ref"
+      if ($LASTEXITCODE -ne 0) {
+        & $git -C $Dir pull --ff-only origin $Ref
+        if ($LASTEXITCODE -ne 0) { throw "git pull failed" }
+      }
+    }
+  }
 } else {
   Write-Step "Cloning repository..."
   if (Test-Path $Dir) { Remove-Item -Recurse -Force $Dir }
   & $git clone --branch $Ref --single-branch $Repo $Dir
+  if ($LASTEXITCODE -ne 0) { throw "git clone failed" }
 }
 
 Set-Location $Dir
 
 Write-Step "Installing dependencies..."
-& $bun install
+& $bun install --frozen-lockfile
+if ($LASTEXITCODE -ne 0) { throw "bun install failed" }
 
 Write-Step "Building application..."
 & $bun run build

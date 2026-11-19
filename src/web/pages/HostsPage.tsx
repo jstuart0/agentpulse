@@ -27,6 +27,7 @@ import {
 	enrollmentOwnershipNote,
 	hostActionConfirm,
 	serverUpdateOf,
+	supervisorOnlyInstallCommand,
 } from "./hosts-view-state.js";
 
 /**
@@ -309,6 +310,14 @@ export function HostsPage() {
 									<div>
 										Then run: <code className="text-foreground">bun run supervisor</code>
 									</div>
+									{supervisorOnlyInstallCommand(window.location.origin, createdToken.token) ? (
+										<div>
+											Or install just the supervisor on that machine:
+											<code className="mt-1 block break-all rounded-md bg-background px-2 py-1.5 text-foreground">
+												{supervisorOnlyInstallCommand(window.location.origin, createdToken.token)}
+											</code>
+										</div>
+									) : null}
 									{createdToken.mode === "rotate" && (
 										<div>
 											This token re-enrolls the existing host and replaces its scoped credential.
@@ -401,6 +410,15 @@ export function HostsPage() {
 								AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=&lt;token&gt; bun run supervisor
 							</code>
 							to attach it here.
+							{supervisorOnlyInstallCommand(window.location.origin, null) ? (
+								<>
+									{" "}
+									On a machine that has no AgentPulse yet, this installs just the supervisor:
+									<code className="mt-1 block break-all rounded bg-background px-1.5 py-1 text-foreground">
+										{supervisorOnlyInstallCommand(window.location.origin, null)}
+									</code>
+								</>
+							) : null}
 						</div>
 					</div>
 				) : (

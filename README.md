@@ -340,8 +340,8 @@ What it does:
 
 - checks its prerequisites up front and names anything missing, with the package-manager command to install it, before it installs or writes any file (it may first remove group and other write permission from its own `~/.agentpulse` directories, which a umask of 002 leaves group-writable): `curl`, `git`, `python3` (when the supervisor or the agent hooks will be set up, so not with `--skip-supervisor --skip-hooks`, nor with `--disable-auth false` and no `--api-key`, which skips both), and, only when it has to install Bun, `unzip` and `shasum` or `sha256sum`
 - uses a Bun 1.3.12 or newer that's already there (`~/.bun`, or on your `PATH`), as long as it is owned by you or root, isn't writable by anyone else (Homebrew's, in macOS group `admin`, is fine) and sits on a path of letters, digits and `/ . _ + - @`. If it's a symbolic link, the directory of each link and of the target, and every directory above each, must meet the same rule. Otherwise it installs the pinned Bun 1.3.12 release, checked against its SHA-256, into `~/.agentpulse/bun`, or into `$BUN_INSTALL/bin` if you set `BUN_INSTALL`. It doesn't edit your shell rc files, so `bun` isn't added to your interactive `PATH`; the services are given the path of the Bun that was chosen. To pick the location, run `curl -fsSL … | BUN_INSTALL=/opt/bun bash` (supply it again on a re-run; any `BUN_INSTALL` other than `~/.bun` that holds an unusable Bun is refused)
-- clones AgentPulse to `~/.agentpulse/app`
-- builds the app
+- clones AgentPulse to `~/.agentpulse/app` at the latest release tag (not a branch), installs with a frozen lockfile, and builds the app. `--ref <branch-or-tag>` follows that ref instead (`--ref main` for the development branch); such an install is never updated by `agentpulse update`
+- writes `~/.agentpulse/bin/agentpulse`, a small script that runs AgentPulse's own commands with the Bun the installer chose. It never edits your shell rc files; add `export PATH="$HOME/.agentpulse/bin:$PATH"` yourself to type `agentpulse` from any shell. It refuses to run as root
 - stores SQLite data in `~/.agentpulse/data`
 - starts AgentPulse as a local service
   - macOS: `launchd`
@@ -408,6 +408,28 @@ That observability-only mode still gives you:
 - prompts, responses, and progress in the dashboard
 - notes and instruction-file editing
 - remote viewing if you later use the relay path
+
+Installing only a supervisor, for a server that runs elsewhere (Linux or macOS):
+
+```bash
+curl -fsSL https://agentpulse.example.invalid/install-local.sh | AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=<token> bash -s -- --supervisor-only --server-url https://agentpulse.example.invalid
+```
+
+Create the enrollment token on the Hosts page. The token goes on the `bash` side of the pipe, as a variable: the installer never takes it from the command line, and without the variable it asks for it at a hidden prompt. This installs the checkout, the supervisor service, the shim and the updater, and no server and no database. A plain `http://` server URL works on a trusted network, with a line saying the link isn't encrypted: anyone on that network can read what this host and the server say to each other, and could hold the host back from an update or move it early to a newer signed release, but can't supply code (code always comes from GitHub, pinned by commit).
+
+### Updating a local install
+
+`~/.agentpulse/bin/agentpulse update`, run on the machine that runs the server (or, for `--supervisor-only`, on that host), moves a release-tracking local install to the latest release:
+
+- It checks the signed release list, refuses anything it can't verify, and never moves to a withdrawn, older or previously failed version (`--to vX.Y.Z` names one; `--allow-downgrade` is the explicit flag for going older).
+- It stages the release beside the running copy (`bun install --frozen-lockfile --ignore-scripts`, then the build), starts that copy once on a throwaway copy of the database, and only then waits for the supervisor to be idle, stops the services, swaps the directories and starts the new ones. The previous copy stays as `~/.agentpulse/app.previous`.
+- It refuses a checkout with changes (`dirty_tree`) or stray files (`untracked_files`). Build output, `node_modules`, `.env*` files, `.DS_Store`, `__pycache__` and `.claude/` are tolerated; the `.env*` files are copied to the new copy unchanged.
+- The supervisor must be idle (no session running, no open approval, no terminal) for a minute. The update waits up to 10 minutes (`--wait`: 2 hours), then drains for at most 2 minutes, during which a new launch or prompt on that host is refused with "This host is updating AgentPulse" and Stop keeps working.
+- If the new copy doesn't answer its health check (or its database identity changed), it puts the previous copy back, restarts what was running and never tries that version again. Events the server was sent while it was down are not recorded.
+- A SQLite update that adds a migration first takes a snapshot of the database in `~/.agentpulse/update-snapshots/` (the newest two are kept; they hold deleted-session data until replaced). `agentpulse update rollback` then restores it and goes back to the previous copy, losing what was written since. **A Postgres install is never updated across a migration:** back up the database, then re-run `install-local.sh` yourself.
+- `agentpulse update status` says what this machine knows. A run that was cut short (a crash, a power cut) is finished or undone first by the next `agentpulse update`.
+- It needs a service manager (launchd or `systemd --user`; with `loginctl enable-linger` on a server) and refuses in a container or a Kubernetes pod. The git it runs ignores your own git config, so set `HTTPS_PROXY` in the environment if you need a proxy.
+- On Windows there is no updater: re-run `install-local.ps1` (it follows releases too, and never moves a checkout that has commits the release doesn't).
 
 ### 2. Local Docker container
 

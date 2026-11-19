@@ -31,7 +31,11 @@ import { useLabsStore } from "../stores/labs-store.js";
 import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
 import { useUpdateStore } from "../stores/update-store.js";
 import { useUserStore } from "../stores/user-store.js";
-import { deriveHostAccess, serverUpdateOf } from "./hosts-view-state.js";
+import {
+	deriveHostAccess,
+	serverUpdateOf,
+	supervisorOnlyInstallCommand,
+} from "./hosts-view-state.js";
 import { panelAnchorId } from "./settings-panels.js";
 import {
 	type FetchStatus,
@@ -240,6 +244,16 @@ export function SettingsPage() {
 						<div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
 							No supervisor registered. Run <code className="font-mono">bun run supervisor</code> to
 							register this machine.
+							{supervisorOnlyInstallCommand(window.location.origin, null) ? (
+								<>
+									{" "}
+									To install just the supervisor on another machine, create an enrollment token on
+									the Hosts page and run:
+									<code className="mt-1 block break-all font-mono text-foreground">
+										{supervisorOnlyInstallCommand(window.location.origin, null)}
+									</code>
+								</>
+							) : null}
 						</div>
 					) : (
 						<div className="space-y-3">

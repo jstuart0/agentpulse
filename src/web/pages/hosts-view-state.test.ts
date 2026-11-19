@@ -13,6 +13,7 @@ import {
 	hostOwnerDialogNote,
 	hostOwnerUnchanged,
 	launchHostLabel,
+	supervisorOnlyInstallCommand,
 } from "./hosts-view-state.js";
 
 function supervisor(id: string): SupervisorRecord {
@@ -472,5 +473,60 @@ describe("deriveHostUpdateNotice (AGEN-155)", () => {
 	test("the old 0.1.0 placeholder a supervisor used to report says nothing about the host", () => {
 		expect(deriveHostUpdateNotice(host("0.1.0"), current, manager)).toBeNull();
 		expect(deriveHostUpdateNotice(host("0.1.0", ["local_updater"]), current, manager)).toBeNull();
+	});
+});
+
+describe("supervisorOnlyInstallCommand", () => {
+	const CMD =
+		/^curl -fsSL (\S+)\/install-local\.sh \| AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=(\S+) bash -s -- --supervisor-only --server-url (\S+)$/;
+
+	test("the token is a variable on the bash side of the pipe, never before curl and never an argument", () => {
+		const text = supervisorOnlyInstallCommand(
+			"https://agentpulse.example.invalid",
+			"aps_abc-123.XYZ",
+		) as string;
+		const m = CMD.exec(text);
+		expect(m).not.toBeNull();
+		const [, base, token, url] = m as RegExpExecArray;
+		expect(token).toBe("aps_abc-123.XYZ");
+		expect(base).toBe("https://agentpulse.example.invalid");
+		expect(url).toBe(base);
+		// after the `|`, not before `curl`
+		expect(text.indexOf("AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN")).toBeGreaterThan(
+			text.indexOf("|"),
+		);
+		expect(text.startsWith("curl ")).toBe(true);
+		expect(text.match(/aps_abc/g)).toHaveLength(1);
+	});
+
+	test("with no token it shows a placeholder; a token that would need quoting is never put in", () => {
+		expect(supervisorOnlyInstallCommand("http://192.0.2.10:3000", null)).toContain(
+			"ENROLLMENT_TOKEN=<token> bash",
+		);
+		expect(supervisorOnlyInstallCommand("http://192.0.2.10:3000", "a b; rm -rf /")).toContain(
+			"ENROLLMENT_TOKEN=<token> bash",
+		);
+	});
+
+	test("an origin that isn't a plain http(s) address gives no command", () => {
+		for (const origin of [
+			"javascript:alert(1)",
+			"ftp://x.example.invalid",
+			"https://u:p@x.example.invalid",
+			"https://x.example.invalid/path",
+			"not a url",
+			"https://x.example.invalid/?q=1",
+		]) {
+			expect(supervisorOnlyInstallCommand(origin, "t")).toBeNull();
+		}
+	});
+
+	test("the Hosts and Settings pages build it through the helper, with the token after the pipe", () => {
+		for (const file of ["HostsPage.tsx", "SettingsPage.tsx"]) {
+			const text = readFileSync(join(import.meta.dir, file), "utf-8");
+			expect(text, file).toContain("supervisorOnlyInstallCommand(");
+			// no page spells the variable before a curl by hand
+			expect(text, file).not.toMatch(/AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=\S+\s+curl/);
+		}
 	});
 });
