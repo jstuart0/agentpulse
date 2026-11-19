@@ -88,10 +88,36 @@ export const UPDATE_OUTCOME_CODES = [
 	"rollback_failed",
 	"updated",
 ] as const;
+/**
+ * The updater's `Outcome` (phase 4) is this type itself, not a second union: the web copy table is held equal to
+ * `UPDATE_OUTCOME_CODES`, so a code the updater invents that isn't listed here fails to compile.
+ */
 export type UpdateOutcomeCode = (typeof UPDATE_OUTCOME_CODES)[number];
 
-/** How the last check ended. `older` and `replayed` mean "valid, but nothing newer than what we hold". */
-export type UpdateCheckResult = "ok" | "unreachable" | VerifyFailureCode;
+/**
+ * How the last check ended. `older` and `replayed` mean "valid, but nothing newer than what we hold".
+ * `not_published` means no signed release information exists yet: the feed answered 404, or this build ships no
+ * release keys, so nothing could be verified. It is the pre-first-release state of every install, and it is
+ * quiet by design: no log line, no backoff, and the web shows it in the Updates panel only, never as a badge.
+ * `unknown_key` (a fetched manifest signed by a key this build doesn't hold) is therefore a real failure.
+ */
+export type UpdateCheckResult = "ok" | "unreachable" | "not_published" | VerifyFailureCode;
+
+/** Every value `lastResult` can take, for allowlisting what is read back from storage or the wire. */
+export const UPDATE_CHECK_RESULTS: readonly UpdateCheckResult[] = [
+	"ok",
+	"unreachable",
+	"not_published",
+	"too_large",
+	"bad_envelope",
+	"unknown_key",
+	"revoked_key",
+	"bad_signature",
+	"replayed",
+	"older",
+	"future",
+	"bad_payload",
+];
 
 /** What the machine's own updater last did (phase 5 fills it; absent on every other install). */
 export interface LocalApplyStatus {
@@ -124,6 +150,22 @@ export interface UpdateStatus {
 
 /** `UpdateStatus` as a client receives it: `state` is open and every field may be missing (an older or newer server). */
 export type UpdateStatusWire = Partial<Omit<UpdateStatus, "state">> & { state: string };
+
+/** What a caller with no authority to operate the server may read: versions, the state and when it was checked. */
+export type PublicUpdateStatus = Pick<
+	UpdateStatus,
+	"current" | "latest" | "state" | "stale" | "severity" | "checkedAt"
+>;
+
+/**
+ * The status trimmed for a caller that is neither a manage key nor a signed-in admin. An allowlist, so a field
+ * added to `UpdateStatus` later (the install kind, the track, the last result, phase 5's `localApply`) stays
+ * private until someone lists it here.
+ */
+export function publicUpdateStatus(status: UpdateStatus): PublicUpdateStatus {
+	const { current, latest, state, stale, severity, checkedAt } = status;
+	return { current, latest, state, stale, severity, checkedAt };
+}
 
 export function isKnownUpdateState(state: string): state is UpdateStateName {
 	return (UPDATE_STATE_NAMES as readonly string[]).includes(state);

@@ -12,7 +12,7 @@ import type {
 	UpdateStore,
 } from "../services/update-check.js";
 
-export type Scripted = string | { fail: SourceFailureCode };
+export type Scripted = string | { fail: SourceFailureCode; status?: number };
 
 /** Serves each scripted answer once, then repeats the last. Counts every fetch. */
 export function fixtureSource(...answers: Scripted[]): ManifestSource & {
@@ -30,7 +30,9 @@ export function fixtureSource(...answers: Scripted[]): ManifestSource & {
 			source.fetches++;
 			const next = queue.length > 0 ? (queue.shift() as Scripted) : lastAnswer;
 			lastAnswer = next;
-			return typeof next === "string" ? { ok: true, body: next } : { ok: false, code: next.fail };
+			return typeof next === "string"
+				? { ok: true, body: next }
+				: { ok: false, code: next.fail, ...(next.status ? { status: next.status } : {}) };
 		},
 	};
 	return source;

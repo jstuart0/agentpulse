@@ -176,7 +176,7 @@ export function Layout() {
 			{/* Mobile top bar (z-40: stays above the menu overlay and any
 			    sticky page chrome at z-10/z-20 so the hamburger-close
 			    button is always reachable). */}
-			<div className="md:hidden fixed top-0 left-0 right-0 z-40 surface-glass border-b border-border px-3 py-2.5 flex items-center justify-between">
+			<div className="md:hidden fixed top-0 left-0 right-0 z-40 surface-glass border-b border-border px-3 h-14 flex items-center justify-between">
 				<div className="flex items-center gap-2.5 min-w-0">
 					<div className="w-8 h-8 rounded-lg flex items-center justify-center overflow-hidden glow-primary-sm">
 						<img src={brandIcon} alt="" className="w-8 h-8" />

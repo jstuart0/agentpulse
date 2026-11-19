@@ -98,3 +98,28 @@ describe("anything the table doesn't hold falls back, and never throws or echoes
 		expect(outcomeCopy("dirty_tree")).toEqual(OUTCOME_COPY.dirty_tree);
 	});
 });
+
+describe("copy fixes from the phase 3 review", () => {
+	test("the stale-tab line is accurate after a rollback", async () => {
+		const { UPDATE_NOTICE_COPY } = await import("./update-outcome-copy.js");
+		expect(UPDATE_NOTICE_COPY.staleTab("0.12.0")).toBe(
+			"AgentPulse is now running 0.12.0. Reload to use it.",
+		);
+	});
+
+	test("the window, downgrade, disabled and up-to-date sentences", () => {
+		expect(OUTCOME_COPY.outside_window.sentence).toBe("This is outside the allowed update window.");
+		expect(OUTCOME_COPY.downgrade.next).toContain("--allow-downgrade");
+		expect(stateCopy("disabled", null).next).toBe(
+			"Remove AGENTPULSE_UPDATE_CHECK=off to turn them back on.",
+		);
+		expect(JSON.stringify(OUTCOME_COPY)).not.toContain("nothing to do");
+	});
+
+	test("the main-chunk copy module imports nothing of the panel or the host copy", async () => {
+		const text = await Bun.file(new URL("./update-notice-copy.ts", import.meta.url)).text();
+		const imports = text.split("\n").filter((line) => line.startsWith("import "));
+		expect(imports.join("\n")).not.toContain("update-outcome-copy");
+		expect(text).not.toMatch(/UPDATE_PANEL_COPY|UPDATE_HOST_COPY|OUTCOME_COPY/);
+	});
+});

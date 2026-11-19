@@ -30,14 +30,19 @@ const { createUpdateChecker, setUpdateCheckerForTests } = await import(
 	"../services/update-check.js"
 );
 
+import pkg from "../../../package.json" with { type: "json" };
+
+const pkgVersion: string = pkg.version;
 const originalDisableAuth = config.disableAuth;
 let observeKey: string;
+let manageKey: string;
 
 beforeAll(async () => {
 	await initializeDatabase();
 	markDbReady();
 	(config as Record<string, unknown>).disableAuth = false;
 	observeKey = (await createApiKey("update-routes-observe", ["observe"])).key;
+	manageKey = (await createApiKey("update-routes-manage", ["manage"])).key;
 });
 afterAll(() => {
 	_resetDbReadyForTest(false);
@@ -168,6 +173,39 @@ describe("GET /health", () => {
 		expect((await res.json()).update.state).toBe("available");
 	});
 
+	test("a checker that throws falls back to the unverified block and health stays ok", async () => {
+		setUpdateCheckerForTests({
+			start: () => () => {},
+			whenReady: async () => {},
+			whenIdle: async () => {},
+			checkNow: async () => {
+				throw new Error("boom");
+			},
+			status: () => {
+				throw new Error("boom");
+			},
+			envelope: () => {
+				throw new Error("boom");
+			},
+		});
+		for (const url of ["/api/v1/health", "/api/v1/health?manifest=1"]) {
+			const res = await healthApp.request(url);
+			const body = await res.json();
+			expect({ url, status: res.status, health: body.status }).toEqual({
+				url,
+				status: 200,
+				health: "ok",
+			});
+			expect(body.update).toEqual({
+				current: pkgVersion,
+				latest: null,
+				state: "unverified",
+				stale: false,
+				checkedAt: null,
+			});
+		}
+	});
+
 	test("clients keeps its 16-hex keys and gains nothing", async () => {
 		checker();
 		const body = await (await healthApp.request("/api/v1/health")).json();
@@ -203,14 +241,14 @@ describe("GET /health", () => {
 });
 
 describe("GET /capabilities", () => {
-	const get = () =>
-		app.request("/api/v1/capabilities", { headers: { Authorization: `Bearer ${observeKey}` } });
+	const get = (key = observeKey) =>
+		app.request("/api/v1/capabilities", { headers: { Authorization: `Bearer ${key}` } });
 
 	test("carries the full UpdateStatus and advertises updateStatus", async () => {
 		const { c, source } = checker();
 		source.push(envelopeFor(testPayload()));
 		await c.checkNow();
-		const body = await (await get()).json();
+		const body = await (await get(manageKey)).json();
 		expect(body.features.updateStatus).toBe(true);
 		expect(body.update).toMatchObject({
 			current: "0.11.0",
@@ -238,6 +276,26 @@ describe("GET /capabilities", () => {
 				ok: true,
 				got: state,
 			});
+		}
+	});
+
+	test("an observe key gets only the public fields; a manage key gets everything", async () => {
+		const { c, source } = checker();
+		source.push(envelopeFor(testPayload()));
+		await c.checkNow();
+		const limited = (await (await get()).json()).update;
+		expect(Object.keys(limited).sort()).toEqual(
+			["checkedAt", "current", "latest", "severity", "stale", "state"].sort(),
+		);
+		const full = (
+			await (
+				await app.request("/api/v1/capabilities", {
+					headers: { Authorization: `Bearer ${manageKey}` },
+				})
+			).json()
+		).update;
+		for (const key of ["installKind", "track", "lastResult", "localApply", "manifestIssuedAt"]) {
+			expect(key in full).toBe(true);
 		}
 	});
 

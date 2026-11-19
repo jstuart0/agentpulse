@@ -69,5 +69,7 @@ export function updateCommandFor(
 					before: "Restart the server. To get automatic updates, install with install-local.sh.",
 				},
 			];
+		default:
+			return null;
 	}
 }

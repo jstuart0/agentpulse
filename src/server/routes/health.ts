@@ -33,6 +33,46 @@ const APP_VERSION: string = pkg.version;
 
 const health = new Hono();
 
+/**
+ * The `update` block for /health, from memory. Anything that goes wrong reading it reads as "nothing known": the
+ * block still has its shape and `status` is never affected (a probe must not fail because of an update check).
+ */
+function safeUpdateBlock(): {
+	block: {
+		current: string;
+		latest: string | null;
+		state: string;
+		stale: boolean;
+		checkedAt: string | null;
+	};
+	envelope: () => string | null;
+} {
+	try {
+		const { current, latest, state, stale, checkedAt } = getUpdateStatus();
+		return {
+			block: { current, latest, state, stale, checkedAt },
+			envelope: () => {
+				try {
+					return getSignedEnvelope();
+				} catch {
+					return null;
+				}
+			},
+		};
+	} catch {
+		return {
+			block: {
+				current: APP_VERSION,
+				latest: null,
+				state: "unverified",
+				stale: false,
+				checkedAt: null,
+			},
+			envelope: () => null,
+		};
+	}
+}
+
 // ── DB-ready gate (S-24) ──────────────────────────────────────────────────────
 //
 // The startupProbe polls /api/v1/health. We must return 503 until
@@ -137,7 +177,7 @@ health.get("/health", async (c) => {
 	}
 	const clients = await computeClientChecksums();
 	const dbFingerprint = await getDbFingerprint();
-	const update = getUpdateStatus();
+	const update = safeUpdateBlock();
 	return c.json({
 		status: "ok",
 		service: "agentpulse",
@@ -165,14 +205,10 @@ health.get("/health", async (c) => {
 		instance: { dbFingerprint, dialect: config.dialect },
 		// From memory: no database read, and no state here ever changes `status`.
 		update: {
-			current: update.current,
-			latest: update.latest,
-			state: update.state,
-			stale: update.stale,
-			checkedAt: update.checkedAt,
+			...update.block,
 		},
 		// The signed envelope as it was served, for an updater that can't reach the release feed itself.
-		...(c.req.query("manifest") === "1" ? { releaseManifest: getSignedEnvelope() } : {}),
+		...(c.req.query("manifest") === "1" ? { releaseManifest: update.envelope() } : {}),
 	});
 });
 

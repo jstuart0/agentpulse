@@ -186,9 +186,52 @@ describe("the empty production key list", () => {
 		const status = await t.checker.checkNow();
 		expect(status.state).toBe("unverified");
 		expect(status.latest).toBeNull();
-		expect(status.lastResult).toBe("unknown_key");
+		expect(status.lastResult).toBe("not_published");
+		expect(t.source.fetches).toBe(0);
+		expect(t.logs).toHaveLength(0);
 		expect(t.checker.envelope()).toBeNull();
 		expect(t.store.snapshot().envelope).toBeNull();
+	});
+});
+
+describe("nothing published yet is its own signal, and a quiet one", () => {
+	test("a 404 from the feed is not_published: no log, no backoff, state unverified", async () => {
+		const t = setup();
+		t.source.push({ fail: "status", status: 404 });
+		t.checker.start();
+		await runScheduled(t);
+		expect(t.checker.status()).toMatchObject({ state: "unverified", lastResult: "not_published" });
+		expect(t.logs).toHaveLength(0);
+		expect(t.scheduler.nextDelay()).toBe(DAY);
+	});
+
+	test("a 500 is still unreachable, logged and backed off", async () => {
+		const t = setup();
+		t.source.push({ fail: "status", status: 503 });
+		t.checker.start();
+		await runScheduled(t);
+		expect(t.checker.status().lastResult).toBe("unreachable");
+		expect(t.logs).toHaveLength(1);
+		expect(t.scheduler.nextDelay()).toBe(HOUR);
+	});
+
+	test("an empty key list never fetches: nothing could be verified", async () => {
+		const t = setup({ keys: [] });
+		t.source.push(good());
+		t.checker.start();
+		await runScheduled(t);
+		expect(t.source.fetches).toBe(0);
+		expect(t.checker.status().lastResult).toBe("not_published");
+		expect(t.scheduler.nextDelay()).toBe(DAY);
+	});
+
+	test("a 404 after a good manifest was held leaves its state in place", async () => {
+		const t = setup();
+		t.source.push(good());
+		await t.checker.checkNow();
+		t.source.push({ fail: "status", status: 404 });
+		const status = await t.checker.checkNow();
+		expect(status).toMatchObject({ state: "available", lastResult: "not_published" });
 	});
 });
 
@@ -481,7 +524,7 @@ describe("schedule and backoff", () => {
 		while (t.clock.now < end) await runScheduled(t);
 		expect(t.source.fetches).toBeLessThanOrEqual(10);
 		expect(t.logs.length).toBeGreaterThanOrEqual(1);
-		expect(t.logs.length).toBeLessThanOrEqual(8);
+		expect(t.logs.length).toBeLessThanOrEqual(7);
 		for (const line of t.logs) expect(line).toMatch(/^\[update-check\] check failed: [a-z_]+$/);
 		// Never a banner-worthy state: the install just reads as one that can't verify.
 		expect(t.checker.status().state).toBe("unverified");
@@ -496,6 +539,82 @@ describe("schedule and backoff", () => {
 		expect(t.source.fetches).toBeLessThanOrEqual(8);
 		expect(t.source.fetches).toBeGreaterThanOrEqual(6);
 		expect(t.logs).toHaveLength(0);
+	});
+});
+
+describe("boot never stops the timer", () => {
+	test("a store whose load throws: the check still runs from empty state and reschedules", async () => {
+		const store = memoryUpdateStore();
+		store.load = async () => {
+			throw new Error("db not ready");
+		};
+		const t = setup({ store });
+		t.source.push(good());
+		t.checker.start();
+		await t.checker.whenReady();
+		await runScheduled(t);
+		expect(t.checker.status().state).toBe("available");
+		expect(t.scheduler.nextDelay()).toBe(DAY);
+	});
+
+	test("a load that rejects outright is caught: one fixed log line, whenReady resolves, the timer reschedules", async () => {
+		const store = memoryUpdateStore({ envelope: good(), state: EMPTY_STORED.state });
+		let broken = true;
+		const keys = Object.assign([...TEST_KEY_LIST], {
+			map(...args: unknown[]) {
+				if (broken) throw new Error("keys unreadable");
+				return Array.prototype.map.apply(this, args as never);
+			},
+		}) as unknown as typeof TEST_KEY_LIST;
+		const t = setup({ store, keys });
+		t.checker.start();
+		await t.checker.whenReady();
+		expect(t.logs).toEqual(["[update-check] check failed: boot_failed"]);
+		broken = false;
+		t.source.push({ fail: "network" });
+		await runScheduled(t);
+		expect(t.scheduler.nextDelay()).toBe(HOUR);
+	});
+});
+
+describe("two replicas sharing one store merge, never overwrite", () => {
+	test("a replica that holds an older manifest cannot rewind last, revoked or the envelope", async () => {
+		const store = memoryUpdateStore();
+		const a = setup({ store });
+		const b = setup({ store });
+		a.source.push(good());
+		await a.checker.checkNow();
+		const revoking = envelopeFor(
+			testPayload({ seq: 101, revokedKeyIds: [TEST_KEYS.active.keyId] }),
+			"standby",
+		);
+		b.source.push(revoking);
+		await b.checker.checkNow();
+		// A still holds seq 100 in memory and checks again later.
+		a.clock.now += HOUR;
+		await a.checker.checkNow();
+		const stored = store.snapshot();
+		expect(stored.state.last?.seq).toBe(101);
+		expect(stored.state.revoked).toEqual([TEST_KEYS.active.keyId]);
+		expect(stored.envelope).toBe(revoking);
+		expect(stored.state.lastCheckedAt).toBe(new Date(NOW + HOUR).toISOString());
+	});
+
+	test("the newer lastCheckedAt wins, and the merged replay memory is adopted in memory", async () => {
+		const store = memoryUpdateStore();
+		const a = setup({ store });
+		const b = setup({ store });
+		b.clock.now = NOW + 5 * HOUR;
+		b.source.push(good({ seq: 105 }));
+		await b.checker.checkNow();
+		a.source.push(good({ seq: 103 }));
+		await a.checker.checkNow();
+		expect(store.snapshot().state.last?.seq).toBe(105);
+		expect(store.snapshot().state.lastCheckedAt).toBe(new Date(NOW + 5 * HOUR).toISOString());
+		// Having merged, A now refuses what 105 already superseded.
+		a.clock.now = NOW + 6 * HOUR;
+		a.source.push(good({ seq: 104 }));
+		expect((await a.checker.checkNow()).lastResult).toBe("replayed");
 	});
 });
 
@@ -677,7 +796,7 @@ describe("the https adapter", () => {
 	test("a 302 to another origin is refused and that origin gets no request", async () => {
 		otherHits = 0;
 		const result = await source("/redirect").fetchEnvelope();
-		expect(result).toEqual({ ok: false, code: "redirect" });
+		expect(result).toEqual({ ok: false, code: "redirect", status: 302 });
 		expect(otherHits).toBe(0);
 	});
 

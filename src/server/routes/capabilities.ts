@@ -1,9 +1,14 @@
 import { Hono } from "hono";
 import pkg from "../../../package.json" with { type: "json" };
 import { parseForkOptionsRequest } from "../../shared/session-resume.js";
+import { publicUpdateStatus } from "../../shared/update-status.js";
 import { SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE, SCOPE_RESPOND } from "../auth/api-key.js";
 import { getAuthUser, requireAuth } from "../auth/middleware.js";
-import { requireOperatorScope, resolveEffectiveRole } from "../auth/route-scope-policy.js";
+import {
+	requireOperatorScope,
+	resolveEffectiveRole,
+	scopesIncludeManage,
+} from "../auth/route-scope-policy.js";
 import { config } from "../config.js";
 import { isAiActive, isAiBuildEnabled, isVectorSearchActive } from "../services/ai/feature.js";
 import { getDefaultProvider } from "../services/ai/providers-service.js";
@@ -235,6 +240,12 @@ capabilitiesRouter.get("/capabilities", async (c) => {
 	const snapshot: CapabilitySnapshot = { push: pushAvailability(), aiActive };
 	const push = snapshot.push;
 	const features = advertisedFeatures(snapshot);
+	// The install kind, track, last result and (phase 5) local apply state are for people who operate the server.
+	const effectiveRole = authUser ? await resolveEffectiveRole(authUser, mode) : null;
+	const mayOperate =
+		effectiveRole === "admin" ||
+		(authUser?.source === "api_key" && scopesIncludeManage(authUser.scopes ?? []));
+	const update = getUpdateStatus();
 
 	return c.json({
 		apiLevel: CAPABILITIES_API_LEVEL,
@@ -264,7 +275,7 @@ capabilitiesRouter.get("/capabilities", async (c) => {
 		...(push.available ? { push: { relayOrigin: push.relayOrigin } } : {}),
 		pushEvents: [...new Set(features.flatMap((f) => f.pushEvents ?? []))],
 		// From memory. `state` is open-valued on the wire: a client maps a name it doesn't know to "unknown".
-		update: getUpdateStatus(),
+		update: mayOperate ? update : publicUpdateStatus(update),
 	});
 });
 

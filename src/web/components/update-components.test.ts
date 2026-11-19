@@ -91,7 +91,7 @@ describe("UpdateBadge", () => {
 	});
 
 	test("unverified is the quiet 'Can't verify updates. Update by hand.', never red", () => {
-		setStatus({ state: "unverified", latest: null });
+		setStatus({ state: "unverified", latest: null, lastResult: "bad_signature" });
 		const html = badgeHtml("desktop");
 		expect(html).toContain("Can&#x27;t verify updates. Update by hand.");
 		expect(html).not.toMatch(/red|amber/);
@@ -105,6 +105,29 @@ describe("UpdateBadge", () => {
 		expect(badgeHtml("desktop")).toBe("");
 		setStatus({ state: "security" });
 		expect(badgeHtml("desktop")).toContain("Security update");
+	});
+
+	test("no top-bar badge when nothing was published, the feed was unreachable or nothing was checked", () => {
+		for (const lastResult of ["not_published", "unreachable", null]) {
+			setStatus({ state: "unverified", latest: null, lastResult });
+			expect(badgeHtml("desktop")).toBe("");
+			expect(badgeHtml("mobile")).toBe("");
+		}
+	});
+
+	test("the mobile bar shows the short words, with the full name for a screen reader, in a 44px area with ml-2", () => {
+		setStatus({ state: "security" });
+		const html = badgeHtml("mobile");
+		expect(html).toContain("Security");
+		expect(html).not.toContain("Security update<");
+		expect(html).toContain('aria-label="Security update available: 0.12.0"');
+		expect(html).toContain("ml-2");
+		expect(html).toContain("min-h-[44px]");
+		expect(html).toContain("whitespace-nowrap");
+		expect(html).toContain("shrink-0");
+		setStatus();
+		expect(badgeHtml("mobile")).toContain(">Update<");
+		expect(badgeHtml("desktop")).toContain("Update available<");
 	});
 
 	test("nothing before the first answer", () => {
@@ -123,6 +146,15 @@ describe("UpdateNotices: the red banner and the stale-tab line", () => {
 				onDismiss: () => {},
 			}),
 		);
+
+	test("the sr-only output is outside the banner and present whether or not a banner is", () => {
+		setStatus({ state: "security" });
+		const html = render("0.11.0");
+		expect(html.indexOf("<output")).toBeLessThan(html.indexOf("<section"));
+		expect(html.slice(html.indexOf("<section"))).not.toContain("<output");
+		setStatus({ state: "current" });
+		expect(render("0.11.0")).toContain("<output");
+	});
 
 	test("a red state is a labelled region with a dismiss button, and never role=alert", () => {
 		setStatus({ state: "security" });
@@ -165,7 +197,10 @@ describe("UpdateNotices: the red banner and the stale-tab line", () => {
 	test("the quiet states have no banner", () => {
 		for (const state of ["available", "unverified", "current", "disabled"]) {
 			setStatus({ state, current: "0.11.0" });
-			expect({ state, html: render("0.11.0") }).toEqual({ state, html: "" });
+			expect({ state, html: render("0.11.0") }).toEqual({
+				state,
+				html: '<output class="sr-only"></output>',
+			});
 		}
 	});
 
@@ -173,23 +208,24 @@ describe("UpdateNotices: the red banner and the stale-tab line", () => {
 		setStatus({ state: "current", current: "0.12.0" });
 		const html = render("0.11.0");
 		expect(html).toContain('role="status"');
-		expect(html).toContain("AgentPulse was updated to 0.12.0. Reload to use the new version.");
+		expect(html).toContain("AgentPulse is now running 0.12.0. Reload to use it.");
 		expect(html).toMatch(/<button[^>]*type="button"[^>]*>Reload<\/button>/);
 		expect(html).toContain("min-h-[44px]");
 	});
 
 	test("no stale-tab line in a dev build, or when the versions match", () => {
 		setStatus({ state: "current", current: "0.12.0" });
-		expect(render("dev")).toBe("");
-		expect(render("0.12.0")).toBe("");
-		expect(render(undefined)).toBe("");
+		const quiet = '<output class="sr-only"></output>';
+		expect(render("dev")).toBe(quiet);
+		expect(render("0.12.0")).toBe(quiet);
+		expect(render(undefined)).toBe(quiet);
 	});
 
 	test("both together: the stale-tab line first, then the red banner", () => {
 		setStatus({ state: "security", current: "0.12.0" });
 		const html = render("0.11.0");
-		expect(html.indexOf("AgentPulse was updated")).toBeGreaterThan(-1);
-		expect(html.indexOf("AgentPulse was updated")).toBeLessThan(
+		expect(html.indexOf("AgentPulse is now running")).toBeGreaterThan(-1);
+		expect(html.indexOf("AgentPulse is now running")).toBeLessThan(
 			html.indexOf('aria-label="Update notice"'),
 		);
 	});
@@ -223,8 +259,8 @@ describe("UpdatesPanel", () => {
 	test("rows, the state sentence and the local command with its framing lines, as text", () => {
 		setStatus();
 		const html = render();
-		expect(html).toContain("0.11.0");
 		expect(html).toContain("0.12.0");
+		expect(html).not.toContain("Running");
 		expect(html).toContain("Run this on the machine that runs the AgentPulse server.");
 		expect(html).toContain("~/.agentpulse/bin/agentpulse update");
 		expect(html).toContain(
@@ -248,8 +284,10 @@ describe("UpdatesPanel", () => {
 		expect(render()).toContain("min-h-[44px]");
 		disableAuth = true;
 		const remote = render("192.168.1.5");
-		expect(remote).not.toContain("Check now");
-		expect(remote).toContain("Run the check from this machine (localhost).");
+		expect(remote).not.toMatch(/<button[^>]*>Check now<\/button>/);
+		expect(remote).toContain(
+			"Check now works only when you open AgentPulse on the server&#x27;s own machine (localhost).",
+		);
 		expect(render("localhost")).toContain("Check now");
 	});
 
@@ -270,7 +308,7 @@ describe("UpdatesPanel", () => {
 	});
 
 	test("unverified: the quiet words and no command", () => {
-		setStatus({ state: "unverified", latest: null });
+		setStatus({ state: "unverified", latest: null, lastResult: "bad_signature" });
 		const html = render();
 		expect(html).toContain("Can&#x27;t verify updates. Update by hand.");
 		expect(html).not.toContain("agentpulse update");
@@ -293,6 +331,27 @@ describe("UpdatesPanel", () => {
 			"Couldn&#x27;t check just now. Try again later.",
 		);
 		expect(render()).toMatch(/<output[^>]*class="[^"]*text-muted-foreground[^"]*"[^>]*><\/output>/);
+	});
+
+	test("nothing published yet says so, quietly, and nothing is red", () => {
+		setStatus({ state: "unverified", latest: null, lastResult: "not_published" });
+		const html = render();
+		expect(html).toContain(
+			"No signed release information is available yet, so this server can&#x27;t tell you about new versions.",
+		);
+		expect(html).not.toMatch(/text-red|text-amber/);
+	});
+
+	test("with several commands each copy button has its own accessible name", () => {
+		setStatus({ installKind: "container", track: null });
+		const html = render();
+		for (const n of [1, 2, 3]) expect(html).toContain(`aria-label="Copy command ${n} of 3"`);
+		expect(html).not.toContain('aria-label="Copy command"');
+	});
+
+	test("the last-checked time carries its full time in a title", () => {
+		setStatus();
+		expect(render()).toMatch(/<dd[^>]*title="2026-11-19T12:00:00.000Z"/);
 	});
 
 	test("the panel has its anchor id and a heading", () => {
@@ -335,9 +394,20 @@ describe("HostUpdateNotice", () => {
 		expect(html).toContain("&lt;img");
 	});
 
-	test("nothing when up to date or when the viewer can't manage the host", () => {
-		expect(render(host("0.12.0"))).toBe("");
-		expect(render(host("0.11.0"), false)).toBe("");
+	test("nothing visible when up to date or when the viewer can't manage the host, but the live region stays", () => {
+		const quiet = '<output class="sr-only"></output>';
+		expect(render(host("0.12.0"))).toBe(quiet);
+		expect(render(host("0.11.0"), false)).toBe(quiet);
+	});
+
+	test("it leads with the two versions and has a copy button named for the host", () => {
+		const html = render(host("0.11.0", ["local_updater"]));
+		expect(html).toContain("This host runs 0.11.0; the server runs 0.12.0. ");
+		expect(html).toContain('aria-label="Copy the update command for build-01"');
+	});
+
+	test("a host that reports the old placeholder version has no notice", () => {
+		expect(render(host("0.1.0", ["local_updater"]))).toBe('<output class="sr-only"></output>');
 	});
 
 	test("no red: a host that is behind is a notice, not an alarm", () => {

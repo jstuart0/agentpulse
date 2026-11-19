@@ -21,10 +21,13 @@
  * Hides: the schedule, the caps, the backoff, the storage, the re-verification and the revocation memory.
  * The `ManifestSource` port is the only way bytes arrive, so tests use a fixture and never the network.
  */
-import { homedir } from "node:os";
 import { eq } from "drizzle-orm";
 import pkg from "../../../package.json" with { type: "json" };
-import { type CappedFetchResult, fetchCapped } from "../../shared/capped-fetch.js";
+import {
+	type CappedFetchOptions,
+	type CappedFetchResult,
+	fetchCapped,
+} from "../../shared/capped-fetch.js";
 import { detectInstallKind, readInstallRecord } from "../../shared/install-record.js";
 import type { InstallKind } from "../../shared/install-record.js";
 import { RELEASE_KEYS, type ReleaseKey } from "../../shared/release-keys.js";
@@ -35,9 +38,15 @@ import {
 	updateState,
 	verifyManifest,
 } from "../../shared/release-manifest.js";
-import type { UpdateCheckResult, UpdateStatus } from "../../shared/update-status.js";
+import {
+	UPDATE_CHECK_RESULTS,
+	type UpdateCheckResult,
+	type UpdateStatus,
+} from "../../shared/update-status.js";
+import { resolveHomeDir } from "../../supervisor/config.js";
 import { getDb } from "../db/client.js";
 import { settings } from "../db/schema/index.js";
+import { installProbeOverride } from "./install-probe.js";
 import { upsertSetting } from "./settings-service.js";
 
 /** The one place a manifest is fetched from. Never taken from a response, an env var or a setting. */
@@ -56,43 +65,54 @@ export const UPDATE_ENVELOPE_SETTING = "update.envelope";
 export const UPDATE_STATE_SETTING = "update.state";
 
 export type SourceFailureCode = Extract<CappedFetchResult, { ok: false }>["code"];
-export type SourceResult = { ok: true; body: string } | { ok: false; code: SourceFailureCode };
+export type SourceResult =
+	| { ok: true; body: string }
+	| {
+			ok: false;
+			code: SourceFailureCode /** The HTTP status, for `code: "status"`. */;
+			status?: number;
+	  };
 
 /** Where envelope bytes come from. The https adapter and the test fixtures are the only implementations. */
 export interface ManifestSource {
 	fetchEnvelope(): Promise<SourceResult>;
 }
 
-/** What the https adapter takes beyond the fixed URL; only the test factory passes anything. */
-interface HttpsSourceOptions {
-	url: string;
-	deadlineMs?: number;
-	ca?: string;
-}
-
-function httpsSource(options: HttpsSourceOptions): ManifestSource {
+function httpsSource(url: string, extra: Partial<CappedFetchOptions> = {}): ManifestSource {
 	return {
 		async fetchEnvelope(): Promise<SourceResult> {
 			// https only, loopback included: `fetchCapped` alone would let a loopback http URL through.
-			if (!options.url.startsWith("https://")) return { ok: false, code: "insecure" };
-			const result = await fetchCapped(options.url, {
-				deadlineMs: options.deadlineMs ?? FETCH_DEADLINE_MS,
+			if (!url.startsWith("https://")) return { ok: false, code: "insecure" };
+			const result = await fetchCapped(url, {
+				deadlineMs: FETCH_DEADLINE_MS,
 				maxBytes: FETCH_MAX_BYTES,
 				httpsOrLoopbackOnly: true,
-				...(options.ca ? { tls: { ca: options.ca } } : {}),
+				...extra,
 			});
-			return result.ok ? { ok: true, body: result.body } : { ok: false, code: result.code };
+			if (result.ok) return { ok: true, body: result.body };
+			return {
+				ok: false,
+				code: result.code,
+				...(result.status !== undefined ? { status: result.status } : {}),
+			};
 		},
 	};
 }
 
 export function createHttpsManifestSource(): ManifestSource {
-	return httpsSource({ url: MANIFEST_URL });
+	return httpsSource(MANIFEST_URL);
 }
 
 /** Test only: the same adapter pointed at a local TLS server that a test CA vouches for. */
-export function createHttpsManifestSourceForTests(options: HttpsSourceOptions): ManifestSource {
-	return httpsSource(options);
+export function createHttpsManifestSourceForTests(options: {
+	url: string;
+	deadlineMs?: number;
+	ca?: string;
+}): ManifestSource {
+	return httpsSource(options.url, {
+		...(options.deadlineMs ? { deadlineMs: options.deadlineMs } : {}),
+		...(options.ca ? { tls: { ca: options.ca } } : {}),
+	});
 }
 
 export interface StoredUpdateState {
@@ -146,8 +166,9 @@ function parseStoredState(value: unknown): StoredUpdateState {
 			typeof value.lastCheckedAt === "string" && Number.isFinite(Date.parse(value.lastCheckedAt))
 				? value.lastCheckedAt
 				: null,
-		lastResult:
-			typeof value.lastResult === "string" ? (value.lastResult as UpdateCheckResult) : null,
+		lastResult: (UPDATE_CHECK_RESULTS as readonly unknown[]).includes(value.lastResult)
+			? (value.lastResult as UpdateCheckResult)
+			: null,
 		last: parseLast(value.last),
 		revoked,
 	};
@@ -217,8 +238,13 @@ export interface UpdateChecker {
 	envelope(): string | null;
 }
 
-/** A source failure and a verifier failure that isn't "nothing newer" both count against the backoff. */
-const NO_NEWER_RESULTS: ReadonlySet<UpdateCheckResult> = new Set(["ok", "older", "replayed"]);
+/** Results that don't count against the backoff: a source or verifier failure does; "nothing newer" and "nothing published yet" don't. */
+const NO_NEWER_RESULTS: ReadonlySet<UpdateCheckResult> = new Set([
+	"ok",
+	"older",
+	"replayed",
+	"not_published",
+]);
 
 export function createUpdateChecker(deps: UpdateCheckDeps): UpdateChecker {
 	let manifest: Manifest | null = null;
@@ -243,12 +269,49 @@ export function createUpdateChecker(deps: UpdateCheckDeps): UpdateChecker {
 		}
 	}
 
-	async function persist(next: {
-		envelope?: string | null;
-		state?: StoredUpdateState;
-	}): Promise<void> {
+	/** The later of two replay memories, by (seq, issuedAt). */
+	function laterOf(a: LastSeen | null, b: LastSeen | null): LastSeen | null {
+		if (!a || !b) return a ?? b;
+		if (a.seq !== b.seq) return a.seq > b.seq ? a : b;
+		return Date.parse(a.issuedAt) >= Date.parse(b.issuedAt) ? a : b;
+	}
+
+	/**
+	 * Writes what this replica learned without rewinding what another replica already stored: the later `last`,
+	 * the union of revoked ids, the newer check time (and its result). An envelope is written only when it is at
+	 * least as new as the stored replay memory. The merged memory is adopted here too, so this replica refuses
+	 * what another has already superseded. Read-merge-write, not one transaction: two writers in the same
+	 * instant can still interleave, and the only thing that costs is one extra daily check.
+	 */
+	async function persist(next: { envelope?: string | null }): Promise<void> {
 		try {
-			await deps.store.save(next);
+			let other: StoredUpdate | null = null;
+			try {
+				other = await deps.store.load();
+			} catch {
+				other = null;
+			}
+			const mine = state.last;
+			const merged: StoredUpdateState = { ...state, revoked: [...state.revoked] };
+			if (other) {
+				merged.last = laterOf(mine, other.state.last);
+				merged.revoked = [...new Set([...state.revoked, ...other.state.revoked])];
+				const otherChecked = Date.parse(other.state.lastCheckedAt ?? "");
+				const ownChecked = Date.parse(state.lastCheckedAt ?? "");
+				if (Number.isFinite(otherChecked) && !(otherChecked <= ownChecked)) {
+					merged.lastCheckedAt = other.state.lastCheckedAt;
+					merged.lastResult = other.state.lastResult;
+				}
+			}
+			state = merged;
+			const write: { envelope?: string | null; state: StoredUpdateState } = {
+				state: { ...merged, revoked: [...merged.revoked] },
+			};
+			if (next.envelope === null) write.envelope = null;
+			else if (next.envelope !== undefined && laterOf(mine, other?.state.last ?? null) === mine) {
+				write.envelope = next.envelope;
+			}
+			await deps.store.save(write);
 		} catch {
 			logOnce("store_failed");
 		}
@@ -285,33 +348,42 @@ export function createUpdateChecker(deps: UpdateCheckDeps): UpdateChecker {
 
 	async function runCheck(): Promise<void> {
 		if (!deps.enabled()) return;
-		await ready;
 		const checkedAt = new Date(deps.now()).toISOString();
 		let result: UpdateCheckResult;
 		let nextEnvelope: string | undefined;
 		try {
-			const fetched = await deps.source.fetchEnvelope();
-			if (!fetched.ok) {
-				result = "unreachable";
-				logOnce(fetched.code);
+			await ready;
+			if (deps.keys.length === 0) {
+				// No release key ships in this build: nothing could be verified, so there is nothing to fetch.
+				result = "not_published";
 			} else {
-				const verdict = await verifyManifest(fetched.body, {
-					keys: deps.keys,
-					revoked: new Set(state.revoked),
-					now: deps.now(),
-					last: state.last,
-				});
-				if (verdict.ok) {
-					result = "ok";
-					if (verdict.fingerprint !== fingerprint) nextEnvelope = fetched.body;
-					manifest = verdict.manifest;
-					envelopeText = fetched.body;
-					fingerprint = verdict.fingerprint;
-					state.last = verdict.next;
-					state.revoked = verdict.revoked;
+				const fetched = await deps.source.fetchEnvelope();
+				if (!fetched.ok) {
+					if (fetched.code === "status" && fetched.status === 404) {
+						result = "not_published";
+					} else {
+						result = "unreachable";
+						logOnce(fetched.code);
+					}
 				} else {
-					result = verdict.code;
-					if (!NO_NEWER_RESULTS.has(result)) logOnce(result);
+					const verdict = await verifyManifest(fetched.body, {
+						keys: deps.keys,
+						revoked: new Set(state.revoked),
+						now: deps.now(),
+						last: state.last,
+					});
+					if (verdict.ok) {
+						result = "ok";
+						if (verdict.fingerprint !== fingerprint) nextEnvelope = fetched.body;
+						manifest = verdict.manifest;
+						envelopeText = fetched.body;
+						fingerprint = verdict.fingerprint;
+						state.last = verdict.next;
+						state.revoked = verdict.revoked;
+					} else {
+						result = verdict.code;
+						if (!NO_NEWER_RESULTS.has(result)) logOnce(result);
+					}
 				}
 			}
 		} catch {
@@ -321,10 +393,7 @@ export function createUpdateChecker(deps: UpdateCheckDeps): UpdateChecker {
 		failures = NO_NEWER_RESULTS.has(result) ? 0 : failures + 1;
 		state.lastCheckedAt = checkedAt;
 		state.lastResult = result;
-		await persist({
-			...(nextEnvelope !== undefined ? { envelope: nextEnvelope } : {}),
-			state: { ...state, revoked: [...state.revoked] },
-		});
+		await persist(nextEnvelope !== undefined ? { envelope: nextEnvelope } : {});
 	}
 
 	function checkOnce(): Promise<void> {
@@ -342,9 +411,10 @@ export function createUpdateChecker(deps: UpdateCheckDeps): UpdateChecker {
 
 	function scheduleNext(delayMs: number): void {
 		cancelTimer = deps.schedule(() => {
-			void checkOnce().then(() => {
+			const again = () => {
 				if (started) scheduleNext(nextDelayMs());
-			});
+			};
+			void checkOnce().then(again, again);
 		}, delayMs);
 	}
 
@@ -375,7 +445,11 @@ export function createUpdateChecker(deps: UpdateCheckDeps): UpdateChecker {
 		start() {
 			if (!deps.enabled() || started) return () => {};
 			started = true;
-			ready = load();
+			ready = load().catch(() => {
+				// Whatever went wrong reading what was stored, start from nothing and keep the timer.
+				state = { ...EMPTY_STATE, revoked: [] };
+				logOnce("boot_failed");
+			});
 			scheduleNext(FIRST_CHECK_MIN_MS + Math.floor(deps.random() * FIRST_CHECK_SPREAD_MS));
 			return () => {
 				started = false;
@@ -402,8 +476,10 @@ let installOnce: { kind: InstallKind; track: "release" | "ref" | null } | null =
 
 /** Detected once, the first time a status is built: it reads a small file under the home directory. */
 function detectInstall(): { kind: InstallKind; track: "release" | "ref" | null } {
+	const probe = installProbeOverride();
+	if (probe) return probe();
 	if (installOnce) return installOnce;
-	const home = process.env.HOME || homedir();
+	const home = resolveHomeDir();
 	let kind: InstallKind = "source";
 	let track: "release" | "ref" | null = null;
 	try {

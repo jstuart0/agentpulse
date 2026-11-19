@@ -111,6 +111,19 @@ describe("the update store", () => {
 		expect(useUpdateStore.getState().checking).toBe(false);
 	});
 
+	test("under auth off a 403 bad_origin is the localhost sentence's notice, not a generic failure", async () => {
+		client.checkForUpdates = async () => {
+			throw new ApiError(403, "bad_origin", { error: "bad_origin" });
+		};
+		await useUpdateStore.getState().checkNow();
+		expect(useUpdateStore.getState().notice).toBe("localhost_only");
+		client.checkForUpdates = async () => {
+			throw new ApiError(403, "admin_required", { error: "admin_required" });
+		};
+		await useUpdateStore.getState().checkNow();
+		expect(useUpdateStore.getState().notice).toBe("failed");
+	});
+
 	test("any other failure is a failed notice, and checking clears", async () => {
 		client.checkForUpdates = async () => {
 			throw new ApiError(500, "boom");

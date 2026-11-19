@@ -8,7 +8,7 @@ export const REFETCH_INTERVAL_MS = 6 * 3_600_000;
 export const FOCUS_REFETCH_AFTER_MS = 3_600_000;
 
 /** What "Check now" last said, for the panel to show under the button. */
-export type CheckNotice = "none" | "checked" | "rate_limited" | "failed";
+export type CheckNotice = "none" | "checked" | "rate_limited" | "localhost_only" | "failed";
 
 interface UpdateStoreState {
 	/** Null until the first answer. `{ state: "unknown" }` when the server predates the update check. */
@@ -74,10 +74,14 @@ export const useUpdateStore = create<UpdateStoreState>((set, get) => ({
 			if (!isStatus(answer.update)) throw new Error("not a status");
 			set({ status: answer.update, loadedAt: Date.now(), checking: false, notice: "checked" });
 		} catch (err) {
-			set({
-				checking: false,
-				notice: err instanceof ApiError && err.status === 429 ? "rate_limited" : "failed",
-			});
+			// Under auth off the server only answers Check now to a localhost Host: say that, not "failed".
+			const notice: CheckNotice =
+				err instanceof ApiError && err.status === 429
+					? "rate_limited"
+					: err instanceof ApiError && err.status === 403 && err.code === "bad_origin"
+						? "localhost_only"
+						: "failed";
+			set({ checking: false, notice });
 		}
 	},
 

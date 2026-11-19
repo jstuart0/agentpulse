@@ -32,20 +32,27 @@ export function UpdateBadgeLink({
 				: badge.tone === "red"
 					? TriangleAlert
 					: ArrowUpCircle;
+	const mobile = surface === "mobile";
+	// The link is the 44px tap area; the pill inside is what is seen, so the bar stays slim.
 	return (
 		<Link
 			to="/settings?panel=updates"
 			aria-label={badge.name}
 			data-update-badge={surface}
-			className={cn(
-				"inline-flex min-h-[44px] min-w-[44px] items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-				badge.tone === "red"
-					? "border-red-500/40 bg-red-500/10 text-red-800 dark:text-red-300"
-					: "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground",
-			)}
+			className="ml-2 inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center whitespace-nowrap rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 		>
-			<Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
-			<span>{badge.text}</span>
+			<span
+				className={cn(
+					"inline-flex items-center gap-1 rounded-md border font-medium",
+					mobile ? "px-1.5 py-0.5 text-[11px]" : "px-2.5 py-1.5 text-xs",
+					badge.tone === "red"
+						? "border-red-500/40 bg-red-500/10 text-red-800 dark:text-red-300"
+						: "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground",
+				)}
+			>
+				<Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+				<span>{mobile ? badge.shortText : badge.text}</span>
+			</span>
 		</Link>
 	);
 }

@@ -1,17 +1,17 @@
 import { TriangleAlert, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
+import { useAnnouncement } from "../hooks/useAnnouncement.js";
 import { useOwnershipUi } from "../hooks/useOwnershipUi.js";
-import { UPDATE_NOTICE_COPY } from "../lib/update-outcome-copy.js";
+import { UPDATE_NOTICE_COPY } from "../lib/update-notice-copy.js";
 import { useUpdateStore } from "../stores/update-store.js";
 import {
 	type StaleTabView,
 	type UpdateBannerView,
-	bannerAnnouncement,
 	deriveStaleTab,
 	deriveUpdateBanner,
 	dismissBanner,
-	focusAfterDismiss,
+	focusAfterBannerDismiss,
 	isBannerDismissed,
 	orderNotices,
 } from "./update-view.js";
@@ -44,26 +44,12 @@ export function UpdateNotices({
 	const dismissed = banner ? isBannerDismissed(sessionStore(), banner) : false;
 	const shown = banner && !dismissed ? banner : null;
 
-	const previousState = useRef<string | null>(null);
-	const [announcement, setAnnouncement] = useState("");
-	const state = status?.state ?? null;
-	useEffect(() => {
-		const said = shown ? bannerAnnouncement(previousState.current, shown) : null;
-		if (said) setAnnouncement(said);
-		previousState.current = state;
-	}, [state, shown]);
+	const announcement = useAnnouncement(status?.state ?? null, shown ? shown.text : null);
 
 	function dismiss() {
 		if (!banner) return;
 		dismissBanner(sessionStore(), banner);
-		// Focus goes to the badge that is on screen, else the page heading: the banner is about to leave the page.
-		const badges = Array.from(document.querySelectorAll<HTMLElement>("[data-update-badge]"));
-		const heading = document.querySelector<HTMLElement>("h1");
-		const target = focusAfterDismiss(badges, heading);
-		if (target && !target.hasAttribute("tabindex") && target === heading) {
-			target.setAttribute("tabindex", "-1");
-		}
-		target?.focus();
+		focusAfterBannerDismiss(document);
 		setDismissals((n) => n + 1);
 	}
 
@@ -89,9 +75,10 @@ export function UpdateNoticesView({
 	onDismiss: () => void;
 }) {
 	const order = orderNotices({ staleTab, banner: shown });
-	if (order.length === 0) return null;
 	return (
 		<>
+			{/* Always present, outside the banner, so a screen reader hears a change in it. */}
+			<output className="sr-only">{announcement}</output>
 			{order.map((kind) =>
 				kind === "stale_tab" && staleTab ? (
 					<div
@@ -143,7 +130,6 @@ export function UpdateNoticesView({
 						>
 							<X aria-hidden="true" className="h-4 w-4" />
 						</button>
-						<output className="sr-only">{announcement}</output>
 					</section>
 				) : null,
 			)}

@@ -177,6 +177,8 @@ export interface HostUpdateNotice {
 	parts: HostUpdateNoticePart[];
 }
 
+/** What supervisors reported before they carried the real version. */
+const LEGACY_PLACEHOLDER_VERSION = "0.1.0";
 const LOCAL_UPDATE_COMMAND = "~/.agentpulse/bin/agentpulse update";
 const SUPERVISOR_ONLY_COMMAND = "install-local.sh --supervisor-only";
 /** Server states that mean the server itself has a newer release to move to. */
@@ -200,20 +202,27 @@ export function deriveHostUpdateNotice(
 	access: { canManage: boolean },
 ): HostUpdateNotice | null {
 	if (!access.canManage || !server || supervisor.enrollmentState === "revoked") return null;
+	// Supervisors before the real version reported a placeholder "0.1.0": that says nothing about the host.
+	if (supervisor.version === LEGACY_PLACEHOLDER_VERSION) return null;
 	const host = parseReleaseVersion(supervisor.version);
 	const running = parseReleaseVersion(server.current);
 	if (!host || !running || compareReleaseVersions(host, running) >= 0) return null;
 
+	const versions: HostUpdateNoticePart = {
+		kind: "text",
+		text: UPDATE_HOST_COPY.versions(supervisor.version, server.current),
+	};
 	if (SERVER_BEHIND_STATES.has(server.state)) {
 		return {
 			kind: "update_server_first",
-			parts: [{ kind: "text", text: UPDATE_HOST_COPY.updateServerFirst }],
+			parts: [versions, { kind: "text", text: UPDATE_HOST_COPY.serverFirst }],
 		};
 	}
 	if (supervisor.capabilities?.features?.includes(LOCAL_UPDATER)) {
 		return {
 			kind: "update_host",
 			parts: [
+				versions,
 				{ kind: "text", text: UPDATE_HOST_COPY.runBefore },
 				{ kind: "code", text: LOCAL_UPDATE_COMMAND },
 				{ kind: "text", text: UPDATE_HOST_COPY.runAfter },
@@ -225,6 +234,7 @@ export function deriveHostUpdateNotice(
 	return {
 		kind: "reinstall",
 		parts: [
+			versions,
 			{ kind: "text", text: UPDATE_HOST_COPY.reinstallBefore },
 			{ kind: "code", text: SUPERVISOR_ONLY_COMMAND },
 			{ kind: "text", text: UPDATE_HOST_COPY.end },

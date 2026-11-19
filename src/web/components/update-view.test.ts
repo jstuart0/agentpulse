@@ -7,8 +7,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { RED_UPDATE_STATES } from "../../shared/update-status.js";
-import { MEMBER_RED_COPY } from "../lib/update-outcome-copy.js";
-import { derivePanelView, isLoopbackBrowserHost } from "./update-panel-view.js";
+import { MEMBER_RED_COPY } from "../lib/update-notice-copy.js";
+import { checkNoticeText, derivePanelView, isLoopbackBrowserHost } from "./update-panel-view.js";
 import {
 	type UpdateWire,
 	bannerAnnouncement,
@@ -17,6 +17,7 @@ import {
 	deriveUpdateBanner,
 	dismissBanner,
 	dismissalKey,
+	focusAfterBannerDismiss,
 	focusAfterDismiss,
 	isBannerDismissed,
 	orderNotices,
@@ -45,13 +46,17 @@ describe("the badge", () => {
 			tone: "quiet",
 			state: "available",
 			text: "Update available",
+			shortText: "Update",
 			name: "Update available: 0.12.0",
 		});
 	});
 
 	test("the visible words are inside the accessible name (label in name)", () => {
 		for (const state of ["available", ...RED_UPDATE_STATES, "unverified"]) {
-			const badge = deriveUpdateBadge(status({ state }), admin);
+			const badge = deriveUpdateBadge(status({ state, lastResult: "bad_signature" }), admin);
+			expect(
+				(badge?.name ?? "").toLowerCase().includes((badge?.shortText ?? "x").toLowerCase()),
+			).toBe(true);
 			expect(badge).not.toBeNull();
 			expect((badge?.name ?? "").startsWith(badge?.text ?? "x")).toBe(true);
 		}
@@ -63,10 +68,33 @@ describe("the badge", () => {
 		}
 	});
 
-	test("unverified is quiet for an admin, with the plan's words, and never red", () => {
-		const badge = deriveUpdateBadge(status({ state: "unverified", latest: null }), admin);
-		expect(badge?.tone).toBe("quiet");
-		expect(badge?.name).toBe("Can't verify updates. Update by hand.");
+	test("a manifest that was fetched and failed verification is a quiet badge, never red", () => {
+		for (const lastResult of [
+			"bad_signature",
+			"unknown_key",
+			"bad_payload",
+			"revoked_key",
+			"bad_envelope",
+		]) {
+			const badge = deriveUpdateBadge(
+				status({ state: "unverified", latest: null, lastResult: lastResult as never }),
+				admin,
+			);
+			expect(badge?.tone).toBe("quiet");
+			expect(badge?.name).toBe("Can't verify updates. Update by hand.");
+			expect(badge?.shortText).toBe("Can't verify");
+		}
+	});
+
+	test("nothing published, feed unreachable, never checked: no badge at all (the panel says it)", () => {
+		for (const lastResult of ["not_published", "unreachable", null, "ok", undefined]) {
+			expect(
+				deriveUpdateBadge(
+					status({ state: "unverified", latest: null, lastResult: lastResult as never }),
+					admin,
+				),
+			).toBeNull();
+		}
 	});
 
 	test("current, disabled and unknown show nothing", () => {
@@ -78,7 +106,9 @@ describe("the badge", () => {
 
 	test("a member gets no quiet badge (available, unverified) but does get the red ones", () => {
 		expect(deriveUpdateBadge(status({ state: "available" }), member)).toBeNull();
-		expect(deriveUpdateBadge(status({ state: "unverified" }), member)).toBeNull();
+		expect(
+			deriveUpdateBadge(status({ state: "unverified", lastResult: "bad_signature" }), member),
+		).toBeNull();
 		for (const state of RED_UPDATE_STATES) {
 			expect(deriveUpdateBadge(status({ state }), member)?.tone).toBe("red");
 		}
@@ -195,10 +225,58 @@ describe("focus after a dismissal", () => {
 	});
 });
 
+describe("focus after a dismissal, against a stand-in document", () => {
+	const el = (id: string, shown: boolean) => {
+		const attrs = new Map<string, string>();
+		const node = {
+			id,
+			focused: false,
+			offsetParent: shown ? {} : null,
+			hasAttribute: (n: string) => attrs.has(n),
+			setAttribute: (n: string, v: string) => void attrs.set(n, v),
+			attrs,
+			focus() {
+				node.focused = true;
+			},
+		};
+		return node;
+	};
+	const docWith = (badges: ReturnType<typeof el>[], h1: ReturnType<typeof el> | null) => ({
+		querySelectorAll: () => badges,
+		querySelector: () => h1,
+	});
+
+	test("the visible badge takes focus and gets no tabindex", () => {
+		const desktop = el("d", false);
+		const mobile = el("m", true);
+		const h1 = el("h1", true);
+		expect(focusAfterBannerDismiss(docWith([desktop, mobile], h1))).toBe(mobile);
+		expect(mobile.focused).toBe(true);
+		expect(mobile.attrs.has("tabindex")).toBe(false);
+		expect(h1.focused).toBe(false);
+	});
+
+	test("with no visible badge the page heading takes focus and is made focusable with tabindex=-1", () => {
+		const hidden = el("d", false);
+		const h1 = el("h1", true);
+		expect(focusAfterBannerDismiss(docWith([hidden], h1))).toBe(h1);
+		expect(h1.focused).toBe(true);
+		expect(h1.attrs.get("tabindex")).toBe("-1");
+	});
+
+	test("a heading that already has a tabindex keeps it; no heading and no badge focuses nothing", () => {
+		const h1 = el("h1", true);
+		h1.setAttribute("tabindex", "0");
+		focusAfterBannerDismiss(docWith([], h1));
+		expect(h1.attrs.get("tabindex")).toBe("0");
+		expect(focusAfterBannerDismiss(docWith([], null))).toBeNull();
+	});
+});
+
 describe("the stale-tab line", () => {
 	test("shows when the server's version differs from the build this tab loaded", () => {
 		expect(deriveStaleTab("0.12.0", "0.11.0")).toEqual({
-			text: "AgentPulse was updated to 0.12.0. Reload to use the new version.",
+			text: "AgentPulse is now running 0.12.0. Reload to use it.",
 			reloadLabel: "Reload",
 		});
 	});
@@ -327,7 +405,9 @@ describe("the Updates panel", () => {
 	test("under auth off, from a non-loopback host, Check now is replaced by the localhost line", () => {
 		const view = derivePanelView(status(), ctx({ disableAuth: true, hostname: "192.168.1.5" }));
 		expect(view.checkNow).toBe("localhost_only");
-		expect(view.localhostLine).toBe("Run the check from this machine (localhost).");
+		expect(view.localhostLine).toBe(
+			"Check now works only when you open AgentPulse on the server's own machine (localhost).",
+		);
 		expect(
 			derivePanelView(status(), ctx({ disableAuth: true, hostname: "localhost" })).checkNow,
 		).toBe("button");
@@ -344,20 +424,74 @@ describe("the Updates panel", () => {
 	});
 
 	test("the state sentence is the quiet unverified words for an install nothing can verify", () => {
-		const view = derivePanelView(status({ state: "unverified", latest: null }), ctx());
+		const view = derivePanelView(
+			status({ state: "unverified", latest: null, lastResult: "bad_signature" }),
+			ctx(),
+		);
 		expect(view.stateSentence).toBe("Can't verify updates. Update by hand.");
 	});
 
-	test("the rows carry current, latest and last checked, and a state it doesn't know reads as unknown", () => {
-		const view = derivePanelView(status(), ctx());
+	test("the rows are the latest release and when it was last checked (the running version is in Server Info)", () => {
+		const view = derivePanelView(status(), ctx(), {
+			ago: () => "3h ago",
+			full: (iso) => `full ${iso}`,
+		});
 		expect(view.rows).toEqual([
-			{ label: "Running", value: "0.11.0" },
 			{ label: "Latest release", value: "0.12.0" },
-			{ label: "Last checked", value: "2026-11-19T12:00:00.000Z" },
+			{ label: "Last checked", value: "3h ago", title: "full 2026-11-19T12:00:00.000Z" },
 		]);
 		expect(derivePanelView(status({ state: "mystery" }), ctx()).stateSentence).toBe(
 			derivePanelView({ state: "unknown" }, ctx()).stateSentence,
 		);
 		expect(derivePanelView(null, ctx()).stateSentence.length).toBeGreaterThan(0);
+	});
+
+	test("an unverified install says why: not published, unreachable, never checked, or a real failure", () => {
+		const say = (lastResult: unknown) =>
+			derivePanelView(
+				status({ state: "unverified", latest: null, lastResult: lastResult as never }),
+				ctx(),
+			).stateSentence;
+		expect(say("not_published")).toBe(
+			"No signed release information is available yet, so this server can't tell you about new versions.",
+		);
+		expect(say("unreachable")).toBe(
+			"Couldn't reach the release feed, so this server can't tell you about new versions.",
+		);
+		expect(say(null)).toBe("Update information hasn't been checked yet.");
+		for (const failure of ["bad_signature", "unknown_key", "bad_payload"]) {
+			expect(say(failure)).toBe("Can't verify updates. Update by hand.");
+		}
+	});
+
+	test("what Check now found is said in words: just now, feed unreachable, nothing published, refused, too soon", () => {
+		expect(checkNoticeText("checked", "ok")).toBe("Checked just now.");
+		expect(checkNoticeText("checked", "older")).toBe("Checked just now.");
+		expect(checkNoticeText("checked", "unreachable")).toBe(
+			"Couldn't reach the release feed. Showing the last verified information.",
+		);
+		expect(checkNoticeText("checked", "not_published")).toBe(
+			"No signed release information is available yet, so this server can't tell you about new versions.",
+		);
+		expect(checkNoticeText("localhost_only", null)).toBe(
+			"Check now works only when you open AgentPulse on the server's own machine (localhost).",
+		);
+		expect(checkNoticeText("rate_limited", null)).toBe(
+			"Checked a moment ago. Try again in a minute.",
+		);
+		expect(checkNoticeText("failed", null)).toBe("Couldn't check just now. Try again later.");
+		expect(checkNoticeText("none", "ok")).toBeNull();
+	});
+
+	test("an install kind the build doesn't know gives no command", () => {
+		expect(derivePanelView(status({ installKind: "weird" as never }), ctx()).command).toBeNull();
+	});
+
+	test("the stale line says how long ago, from the injected formatter", () => {
+		const view = derivePanelView(status({ stale: true }), ctx(), {
+			ago: () => "11d ago",
+			full: (i) => i,
+		});
+		expect(view.staleLine).toBe("This update information is out of date (last published 11d ago).");
 	});
 });

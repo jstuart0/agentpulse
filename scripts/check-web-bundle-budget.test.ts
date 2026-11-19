@@ -50,11 +50,11 @@ describe("CodexApprovalCard (AGEN-87)", () => {
 		expect(row?.maxGzip).toBeGreaterThan(0);
 	});
 
-	test("the entry chunk and the session page are held at their limits (index 124,200 for AGEN-155 phase 3: the update store, sync, badge, notices and their copy measured 123,818 on 119,678; session page 38,800 after the AGEN-142 fix pass: 38,477 measured; see the budget file)", () => {
+	test("the entry chunk and the session page are held at their limits (index 123,800 for AGEN-155 phase 3: the update store, sync, badge, notices and their copy measured 123,674 on 119,678; session page 38,800 after the AGEN-142 fix pass: 38,477 measured; see the budget file)", () => {
 		const index = BUDGETS.find((b) => b.chunk === "index");
 		const page = BUDGETS.find((b) => b.chunk === "SessionDetailPage");
-		expect(index?.measured as number).toBeLessThanOrEqual(123_818);
-		expect(index?.maxGzip as number).toBeLessThanOrEqual(124_200);
+		expect(index?.measured as number).toBeLessThanOrEqual(123_674);
+		expect(index?.maxGzip as number).toBeLessThanOrEqual(123_800);
 		expect(page?.maxGzip as number).toBeLessThanOrEqual(38_800);
 	});
 

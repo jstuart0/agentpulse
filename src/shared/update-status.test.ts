@@ -6,6 +6,7 @@ import {
 	UPDATE_OUTCOME_CODES,
 	UPDATE_STATE_NAMES,
 	isKnownUpdateState,
+	publicUpdateStatus,
 	releaseNotesUrl,
 } from "./update-status.js";
 
@@ -141,6 +142,10 @@ describe("updateCommandFor: fixed templates, the version inserted only after val
 		]);
 	});
 
+	test("an install kind this build doesn't know gets no command", () => {
+		expect(updateCommandFor("bogus" as never, "0.12.0", null)).toBeNull();
+	});
+
 	test("a version that is not a release version produces no command at all", () => {
 		for (const kind of ["local", "container", "kubernetes", "source"] as const) {
 			for (const bad of ["", "$(reboot)", "1.2.3; rm -rf /", "1.2", "v1.2.3", "1.2.3\n&& id"]) {
@@ -152,5 +157,34 @@ describe("updateCommandFor: fixed templates, the version inserted only after val
 	test("the local release-track command doesn't depend on the version, but a bad one is still refused", () => {
 		expect(updateCommandFor("local", "0.12.0", "release")).not.toBeNull();
 		expect(updateCommandFor("local", "oops", "release")).toBeNull();
+	});
+});
+
+describe("publicUpdateStatus", () => {
+	const full = {
+		current: "0.11.0",
+		latest: "0.12.0",
+		state: "available" as const,
+		stale: false,
+		severity: "normal" as const,
+		checkedAt: "2026-11-19T12:00:00.000Z",
+		lastResult: "ok" as const,
+		manifestIssuedAt: "2026-11-19T11:00:00.000Z",
+		installKind: "local" as const,
+		track: "release" as const,
+		localApply: { auto: true, lastOutcome: "updated" as const, lastTarget: "0.12.0" },
+	};
+
+	test("keeps exactly the six public fields and drops everything else, localApply included", () => {
+		const out = publicUpdateStatus(full);
+		expect(Object.keys(out).sort()).toEqual(
+			["checkedAt", "current", "latest", "severity", "stale", "state"].sort(),
+		);
+		expect(JSON.stringify(out)).not.toContain("updated");
+	});
+
+	test("a field added to UpdateStatus later is private until someone lists it", () => {
+		const out = publicUpdateStatus({ ...full, somethingNew: "x" } as never);
+		expect("somethingNew" in out).toBe(false);
 	});
 });

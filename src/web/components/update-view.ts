@@ -18,7 +18,7 @@ import {
 	UPDATE_BADGE_COPY,
 	UPDATE_NOTICE_COPY,
 	stateCopy,
-} from "../lib/update-outcome-copy.js";
+} from "../lib/update-notice-copy.js";
 
 export type UpdateWire = UpdateStatusWire;
 
@@ -44,11 +44,23 @@ function validLatest(status: UpdateWire): string | null {
 export interface UpdateBadgeView {
 	tone: "quiet" | "red";
 	state: string;
-	/** What is shown: words, not colour alone. */
+	/** What is shown on a wide screen: words, not colour alone. */
 	text: string;
+	/** The shorter words for the narrow bar; the accessible name still carries the full ones. */
+	shortText: string;
 	/** The accessible name; it begins with `text`, so the visible label is inside it. */
 	name: string;
 }
+
+/** Check results that mean a manifest arrived and could not be trusted. */
+export const VERIFICATION_FAILED: ReadonlySet<string> = new Set([
+	"bad_envelope",
+	"unknown_key",
+	"revoked_key",
+	"bad_signature",
+	"bad_payload",
+	"future",
+]);
 
 export function deriveUpdateBadge(
 	status: UpdateWire | null,
@@ -59,17 +71,31 @@ export function deriveUpdateBadge(
 	const latest = validLatest(status);
 	if (isRed(state)) {
 		const label = UPDATE_BADGE_COPY[state];
-		return { tone: "red", state, text: label.text, name: label.name(latest) };
+		return {
+			tone: "red",
+			state,
+			text: label.text,
+			shortText: label.short,
+			name: label.name(latest),
+		};
 	}
 	// Members can't update the server: a quiet "available" or "can't verify" is noise for them.
 	if (viewer.adminSettingsLocked) return null;
 	if (state === "available") {
 		const label = UPDATE_BADGE_COPY.available;
-		return { tone: "quiet", state, text: label.text, name: label.name(latest) };
+		return {
+			tone: "quiet",
+			state,
+			text: label.text,
+			shortText: label.short,
+			name: label.name(latest),
+		};
 	}
-	if (state === "unverified") {
+	// A badge for "can't verify" only when a manifest was fetched and failed verification. "Nothing published
+	// yet", "feed unreachable" and "not checked yet" live in the Updates panel, never in the top bar.
+	if (state === "unverified" && VERIFICATION_FAILED.has(status.lastResult ?? "")) {
 		const label = UPDATE_BADGE_COPY.unverified;
-		return { tone: "quiet", state, text: label.text, name: label.name() };
+		return { tone: "quiet", state, text: label.text, shortText: label.short, name: label.name() };
 	}
 	return null;
 }
@@ -146,6 +172,33 @@ export function bannerAnnouncement(
 ): string | null {
 	if (!banner || previous === null || previous === banner.state) return null;
 	return banner.text;
+}
+
+/** The part of `document` the dismissal needs, so a test can hand in a stand-in. */
+export interface FocusDocument {
+	querySelectorAll(selector: string): ArrayLike<FocusTarget>;
+	querySelector(selector: string): FocusTarget | null;
+}
+export interface FocusTarget {
+	offsetParent: unknown;
+	hasAttribute(name: string): boolean;
+	setAttribute(name: string, value: string): void;
+	focus(): void;
+}
+
+/**
+ * Moves focus off a banner that is about to leave the page: to the badge that is on screen, else to the page
+ * heading (made focusable with tabindex=-1 when it isn't already). Returns what it focused, or null.
+ */
+export function focusAfterBannerDismiss(doc: FocusDocument): FocusTarget | null {
+	const badges = Array.from(doc.querySelectorAll("[data-update-badge]"));
+	const heading = doc.querySelector("h1");
+	const target = focusAfterDismiss(badges, heading);
+	if (target && target === heading && !target.hasAttribute("tabindex")) {
+		target.setAttribute("tabindex", "-1");
+	}
+	target?.focus();
+	return target;
 }
 
 /** Where focus goes when the banner is dismissed: the first badge actually on screen, else the page heading. */

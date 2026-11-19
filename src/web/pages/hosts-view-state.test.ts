@@ -397,6 +397,8 @@ describe("deriveHostUpdateNotice (AGEN-155)", () => {
 		expect(notice?.kind).toBe("update_host");
 	});
 
+	const V = { kind: "text", text: "This host runs 0.11.0; the server runs 0.12.0. " } as const;
+
 	test("with local_updater: run the command on that host, the host name as its own text part", () => {
 		const notice = deriveHostUpdateNotice(
 			host("0.11.0", ["local_updater"], { hostName: "build-01" }),
@@ -404,6 +406,7 @@ describe("deriveHostUpdateNotice (AGEN-155)", () => {
 			manager,
 		);
 		expect(notice?.parts).toEqual([
+			V,
 			{ kind: "text", text: "Run " },
 			{ kind: "code", text: "~/.agentpulse/bin/agentpulse update" },
 			{ kind: "text", text: " on " },
@@ -426,6 +429,7 @@ describe("deriveHostUpdateNotice (AGEN-155)", () => {
 		const notice = deriveHostUpdateNotice(host("0.11.0", []), current, manager);
 		expect(notice?.kind).toBe("reinstall");
 		expect(notice?.parts).toEqual([
+			V,
 			{
 				kind: "text",
 				text: "This host wasn't installed with install-local.sh, so it can't update itself. Re-install it with ",
@@ -443,7 +447,10 @@ describe("deriveHostUpdateNotice (AGEN-155)", () => {
 				manager,
 			);
 			expect({ state, kind: notice?.kind }).toEqual({ state, kind: "update_server_first" });
-			expect(notice?.parts).toEqual([{ kind: "text", text: "Update the server first." }]);
+			expect(notice?.parts).toEqual([
+				V,
+				{ kind: "text", text: "A newer release is out. Update the server first, then this host." },
+			]);
 		}
 	});
 
@@ -462,7 +469,8 @@ describe("deriveHostUpdateNotice (AGEN-155)", () => {
 		expect(deriveHostUpdateNotice(host("0.11.0"), null, manager)).toBeNull();
 	});
 
-	test("the old 0.1.0 a supervisor used to report reads as behind, which is true", () => {
-		expect(deriveHostUpdateNotice(host("0.1.0"), current, manager)?.kind).toBe("reinstall");
+	test("the old 0.1.0 placeholder a supervisor used to report says nothing about the host", () => {
+		expect(deriveHostUpdateNotice(host("0.1.0"), current, manager)).toBeNull();
+		expect(deriveHostUpdateNotice(host("0.1.0", ["local_updater"]), current, manager)).toBeNull();
 	});
 });

@@ -1257,6 +1257,8 @@ export type UpdateInstallKind = "local" | "kubernetes" | "container" | "source";
 export type UpdateCheckResult =
 	| "ok"
 	| "unreachable"
+	/** No signed release information exists yet (the feed answered 404, or this build ships no release keys). Quiet by design. */
+	| "not_published"
 	| "too_large"
 	| "bad_envelope"
 	| "unknown_key"
@@ -1283,11 +1285,12 @@ export interface UpdateStatus {
 	stale: boolean;
 	severity: "normal" | "security" | null;
 	checkedAt: string | null;
-	lastResult: UpdateCheckResult | null;
-	manifestIssuedAt: string | null;
-	installKind: UpdateInstallKind;
-	track: "release" | "ref" | null;
-	localApply: UpdateLocalApplyStatus | null;
+	/** The fields from here on go to a manage key or an admin only: a caller without that gets the six above and no more. */
+	lastResult?: UpdateCheckResult | null;
+	manifestIssuedAt?: string | null;
+	installKind?: UpdateInstallKind;
+	track?: "release" | "ref" | null;
+	localApply?: UpdateLocalApplyStatus | null;
 }
 
 /** What `get_update_status` answers on a server that predates the update check. */

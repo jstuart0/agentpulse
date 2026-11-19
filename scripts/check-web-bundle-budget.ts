@@ -62,14 +62,14 @@
  * nothing of them, held by setup-steps.test.ts). Measured SetupPage 9,774 (a new budget entry) and
  * OpenCodePluginFiles 23,196 (the two plugin texts, which a person who never picks OpenCode never fetches).
  * AGEN-155 phase 3 (the update notice: the update store, the sync that rereads it, the badge in both top bars, the
- * stale-tab line and the red banner, and the copy they show) measured index 123,818 (+4,140 on 119,678). The store
- * and sync are 571 of it; the badge, the notices, their view logic and the sentences are the other 3,569, because
- * they render in Layout and the top bars on every page. The Updates panel, the command templates and the host
- * notice are only in the lazy Settings and Hosts chunks (the templates are their own module so the index chunk
- * doesn't carry them), and the updater's outcome table is imported by nothing yet, so it is not in any chunk.
- * The limit moved to 124,200 (measured + about 380). Making the badge and notices a lazy chunk behind a small gate
- * would recover most of the 3,569, at the cost of tracking the state change outside the lazy part so a screen
- * reader is still told when a state turns red; not done here.
+ * stale-tab line, the red banner and the words they show) measured index 123,674 (+3,996 on 119,678). The store and
+ * sync are about 570 of it; the badge, the notices, their view logic, the announcement hook and the notice copy are
+ * the rest, because they render in Layout and the top bars on every page. Everything only the lazy Settings and Hosts
+ * pages show is kept out of index: the Updates panel and its logic, the command templates, the panel and host
+ * sentences (update-outcome-copy.ts; index imports only update-notice-copy.ts) and the copy button. The updater's
+ * outcome table is in no chunk yet. The limit moved to 123,800 (measured + about 125). Making the badge and notices a
+ * lazy chunk behind a small gate would recover most of the roughly 3,400 they cost, at the price of tracking the
+ * state change outside the lazy part so a screen reader is still told when a state turns red; not done here.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -98,7 +98,7 @@ export const BUDGETS: Budget[] = [
 	{ chunk: "CodexApprovalCard", maxGzip: 15_300, measured: 15_022 },
 	{ chunk: "SessionTakeoverCard", maxGzip: 8_200, measured: 7_904 },
 	{ chunk: "DashboardPage", maxGzip: 27_200, measured: 26_341 },
-	{ chunk: "index", maxGzip: 124_200, measured: 123_818 },
+	{ chunk: "index", maxGzip: 123_800, measured: 123_674 },
 	{ chunk: "SetupPage", maxGzip: 10_300, measured: 9_774 },
 	{ chunk: "OpenCodePluginFiles", maxGzip: 24_000, measured: 23_905 },
 ];

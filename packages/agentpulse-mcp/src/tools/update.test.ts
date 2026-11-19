@@ -129,4 +129,78 @@ describe("the client's getUpdateStatus", () => {
 		const { client } = clientFor({ update: { ...STATUS, state: "from_the_future" } });
 		expect(((await client.getUpdateStatus()) as { state: string }).state).toBe("from_the_future");
 	});
+
+	test("only known fields come through: an extra key, a command or a URL is dropped", async () => {
+		const { client } = clientFor({
+			update: {
+				...STATUS,
+				command: "rm -rf /",
+				url: "https://evil.example",
+				localApply: { auto: true, shell: "x" },
+			},
+		});
+		const out = (await client.getUpdateStatus()) as unknown as Record<string, unknown>;
+		expect(JSON.stringify(out)).not.toMatch(/rm -rf|evil|shell/);
+		expect(Object.keys(out).sort()).toEqual(
+			[
+				"checkedAt",
+				"current",
+				"installKind",
+				"lastResult",
+				"latest",
+				"localApply",
+				"manifestIssuedAt",
+				"severity",
+				"stale",
+				"state",
+				"track",
+			].sort(),
+		);
+	});
+
+	test("current and latest must be release versions: a bad current is unknown, a bad latest is null", async () => {
+		for (const bad of [
+			"",
+			"1.2",
+			"v1.2.3",
+			"01.2.3",
+			"1.2.3; id",
+			"1.2.3\n",
+			`1.2.3-${"a".repeat(60)}`,
+		]) {
+			expect(
+				await clientFor({ update: { ...STATUS, current: bad } }).client.getUpdateStatus(),
+			).toEqual({ state: "unknown" });
+			expect(
+				(
+					(await clientFor({
+						update: { ...STATUS, latest: bad },
+					}).client.getUpdateStatus()) as UpdateStatus
+				).latest,
+			).toBeNull();
+		}
+	});
+
+	test("a caller without authority gets the six public fields and nothing is invented for the rest", async () => {
+		const pub = {
+			current: "0.11.0",
+			latest: "0.12.0",
+			state: "available",
+			stale: false,
+			severity: "normal",
+			checkedAt: STATUS.checkedAt,
+		};
+		const out = (await clientFor({ update: pub }).client.getUpdateStatus()) as unknown as Record<
+			string,
+			unknown
+		>;
+		expect(out).toEqual(pub);
+	});
+
+	test("not_published passes through as a check result", async () => {
+		const out = (await clientFor({
+			update: { ...STATUS, state: "unverified", latest: null, lastResult: "not_published" },
+		}).client.getUpdateStatus()) as UpdateStatus;
+		expect(out.lastResult).toBe("not_published");
+	});
 });

@@ -1,21 +1,22 @@
-import type { UpdateStateName } from "../../shared/release-manifest.js";
 /**
- * Every sentence the web says about updates, in one place: what each updater outcome means and what to do,
- * what each update state means, what a member (who can't update the server) is told, and the labels,
- * names and templates the badge, notices, panel and host notice use. Nothing here comes from the release
- * feed: the one datum a template takes is a version number, inserted only after it parses as a release
- * version, and every string reaches the page as a React text node.
+ * Every sentence the web says about updates that the main chunk doesn't need: what each updater outcome means
+ * and what to do, the Updates panel's words and the host notice's. The sentences the badge, the banner and the
+ * stale-tab line use are in update-notice-copy.ts (re-exported here, so the copy reads as one table).
  *
- * `OUTCOME_COPY` has exactly one entry per `UpdateOutcomeCode` and `STATE_COPY` one per `UpdateStateName`;
- * `MEMBER_RED_COPY` has one per red state. update-outcome-copy.test.ts holds the three sets equal to the
- * unions, so a code added on the server fails here until it has words.
+ * `OUTCOME_COPY` has exactly one entry per `UpdateOutcomeCode`; update-outcome-copy.test.ts holds it, the state
+ * table and the member sentences equal to their unions, so a code added on the server fails here until it has
+ * words. Nothing here comes from the release feed; every string reaches the page as a React text node.
  */
-import {
-	type RED_UPDATE_STATES,
-	UPDATE_OUTCOME_CODES,
-	type UpdateOutcomeCode,
-} from "../../shared/update-status.js";
-import { parseReleaseVersion } from "../../shared/version.js";
+import { UPDATE_OUTCOME_CODES, type UpdateOutcomeCode } from "../../shared/update-status.js";
+
+export {
+	MEMBER_RED_COPY,
+	STATE_COPY,
+	UNKNOWN_STATE_COPY,
+	UPDATE_BADGE_COPY,
+	UPDATE_NOTICE_COPY,
+	stateCopy,
+} from "./update-notice-copy.js";
 
 export interface OutcomeCopy {
 	sentence: string;
@@ -71,7 +72,7 @@ export const OUTCOME_COPY: Record<UpdateOutcomeCode, OutcomeCopy> = {
 	},
 	downgrade: {
 		sentence: "That would move AgentPulse to an older version.",
-		next: "Pass the explicit downgrade flag if you mean it.",
+		next: "Pass --allow-downgrade if you mean it.",
 	},
 	refused_before: {
 		sentence: "This version failed before and won't be tried again.",
@@ -83,7 +84,7 @@ export const OUTCOME_COPY: Record<UpdateOutcomeCode, OutcomeCopy> = {
 	},
 	up_to_date: {
 		sentence: "AgentPulse is already up to date.",
-		next: "There is nothing to do.",
+		next: "Check again after the next release.",
 	},
 	canary_wait: {
 		sentence: "This release is being held back for a short time.",
@@ -124,7 +125,7 @@ export const OUTCOME_COPY: Record<UpdateOutcomeCode, OutcomeCopy> = {
 		next: "Nothing was changed. Check install.json, then try again.",
 	},
 	outside_window: {
-		sentence: "It isn't inside the allowed update window.",
+		sentence: "This is outside the allowed update window.",
 		next: "It will run in the next window.",
 	},
 	locked: {
@@ -196,123 +197,40 @@ export function outcomeCopy(code: string): OutcomeCopy {
 		: UNKNOWN_OUTCOME_COPY;
 }
 
-export interface StateCopy {
-	sentence: string;
-	/** The next step, given the latest version when it is a valid one. */
-	next: (latest: string | null) => string | null;
-}
-
-const validVersion = (version: string | null): version is string =>
-	version !== null && parseReleaseVersion(version) !== null;
-
-export const STATE_COPY: Record<UpdateStateName, StateCopy> = {
-	disabled: {
-		sentence: "Update checks are off on this server.",
-		next: () => "Set AGENTPULSE_UPDATE_CHECK to turn them back on.",
-	},
-	unverified: {
-		sentence: "Can't verify updates. Update by hand.",
-		next: () => null,
-	},
-	current_pulled: {
-		sentence: "This version was withdrawn.",
-		next: (latest) => (validVersion(latest) ? `Update to ${latest}.` : "Update the server."),
-	},
-	below_minimum: {
-		sentence: "This version is no longer supported.",
-		next: (latest) => (validVersion(latest) ? `Update to ${latest}.` : "Update the server."),
-	},
-	security: {
-		sentence: "A newer version fixes a security problem.",
-		next: (latest) => (validVersion(latest) ? `Update to ${latest}.` : "Update the server."),
-	},
-	available: {
-		sentence: "A new version is available.",
-		next: (latest) => (validVersion(latest) ? `Version ${latest} is out.` : null),
-	},
-	current: {
-		sentence: "AgentPulse is up to date.",
-		next: () => null,
-	},
-};
-
-export const UNKNOWN_STATE_COPY: { sentence: string; next: null } = {
-	sentence: "Can't read the update status for this server.",
-	next: null,
-};
-
-/** The words for an update state, with the version inserted only when it is a release version. */
-export function stateCopy(
-	state: string,
-	latest: string | null,
-): { sentence: string; next: string | null } {
-	if (!(state in STATE_COPY) || !Object.hasOwn(STATE_COPY, state)) return UNKNOWN_STATE_COPY;
-	const copy = STATE_COPY[state as UpdateStateName];
-	return { sentence: copy.sentence, next: copy.next(latest) };
-}
-
-/** What a member (who can't update the server) is told, one sentence per red state. */
-export const MEMBER_RED_COPY: Record<(typeof RED_UPDATE_STATES)[number], string> = {
-	security:
-		"The server is running a version with a known security problem. An admin needs to update it.",
-	current_pulled: "This version was withdrawn. An admin needs to update the server.",
-	below_minimum: "This version is no longer supported. An admin needs to update the server.",
-};
-
-/**
- * Labels, accessible names and small templates, split by where they are used: the badge and notices ship in
- * the main chunk, the panel and the host notice only in the lazy pages that show them (a bundler drops an
- * export nothing in a chunk references).
- */
-export const UPDATE_BADGE_COPY = {
-	available: {
-		text: "Update available",
-		name: (v: string | null) => (v ? `Update available: ${v}` : "Update available"),
-	},
-	security: {
-		text: "Security update",
-		name: (v: string | null) =>
-			v ? `Security update available: ${v}` : "Security update available",
-	},
-	current_pulled: { text: "Version withdrawn", name: () => "Version withdrawn: update the server" },
-	below_minimum: {
-		text: "Unsupported version",
-		name: () => "Unsupported version: update the server",
-	},
-	unverified: { text: "Can't verify updates", name: () => "Can't verify updates. Update by hand." },
-} as const;
-
-export const UPDATE_NOTICE_COPY = {
-	regionLabel: "Update notice",
-	dismissLabel: "Dismiss update notice for this session",
-	howTo: "How to update",
-	notesLink: "Release notes (GitHub)",
-	staleTab: (version: string) =>
-		`AgentPulse was updated to ${version}. Reload to use the new version.`,
-	reload: "Reload",
-} as const;
-
 export const UPDATE_PANEL_COPY = {
 	title: "Updates",
-	running: "Running",
 	latest: "Latest release",
 	lastChecked: "Last checked",
 	checkNow: "Check now",
 	checking: "Checking…",
 	copy: "Copy command",
+	copyN: (n: number, total: number) => `Copy command ${n} of ${total}`,
 	copied: "Command copied",
+	copyFailed: "Couldn't copy. Select the command and copy it.",
+	checkedJustNow: "Checked just now.",
 	rateLimited: "Checked a moment ago. Try again in a minute.",
 	checkFailed: "Couldn't check just now. Try again later.",
-	localhostOnly: "Run the check from this machine (localhost).",
-	stale: (publishedDate: string) =>
-		`This update information is out of date (last published ${publishedDate}).`,
+	feedUnreachable: "Couldn't reach the release feed. Showing the last verified information.",
+	notPublished:
+		"No signed release information is available yet, so this server can't tell you about new versions.",
+	notChecked: "Update information hasn't been checked yet.",
+	unreachableNoInfo:
+		"Couldn't reach the release feed, so this server can't tell you about new versions.",
+	localhostOnly:
+		"Check now works only when you open AgentPulse on the server's own machine (localhost).",
+	stale: (publishedAgo: string) =>
+		`This update information is out of date (last published ${publishedAgo}).`,
 } as const;
 
 export const UPDATE_HOST_COPY = {
-	updateServerFirst: "Update the server first.",
+	versions: (host: string, server: string) => `This host runs ${host}; the server runs ${server}. `,
+	serverFirst: "A newer release is out. Update the server first, then this host.",
 	runBefore: "Run ",
 	runAfter: " on ",
 	end: ".",
 	reinstallBefore:
 		"This host wasn't installed with install-local.sh, so it can't update itself. Re-install it with ",
+	copy: (hostName: string) => `Copy the update command for ${hostName}`,
+	copied: "Command copied",
+	copyFailed: "Couldn't copy. Select the command and copy it.",
 } as const;
