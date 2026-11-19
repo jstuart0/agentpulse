@@ -12,7 +12,6 @@ import { WRITE_CAPABLE_RIGHTS_MASK, WRITE_CAPABLE_RIGHT_NAMES } from "./exclude-
 import {
 	CODEX_EVENT_ORDER,
 	COPILOT_EVENT_ORDER,
-	INSTALLER_SNIPPET_PLACEHOLDERS,
 	assertValidHookBaseUrl,
 	buildBashExcludeScript,
 	buildBashExcludeScriptForInstaller,
@@ -24,6 +23,7 @@ import {
 	buildPowerShellExcludeSnippet,
 	buildPowerShellHookCommand,
 	excludeScriptHeaderHash,
+	materializeExcludeScript,
 } from "./hook-command.js";
 import { EXCLUDE_MAX_RULES, EXCLUDE_SCRIPT_RELATIVE_PATH } from "./hook-headers.js";
 
@@ -833,13 +833,7 @@ describe("buildBashExcludeScript — the installed check", () => {
 	test("the installer form is ASCII only and round-trips to the real script", () => {
 		const forInstaller = buildBashExcludeScriptForInstaller();
 		expect([...forInstaller].every((c) => c === "\n" || (c >= " " && c <= "~"))).toBe(true);
-		const restored = forInstaller
-			.split(INSTALLER_SNIPPET_PLACEHOLDERS.tab)
-			.join("\t")
-			.split(INSTALLER_SNIPPET_PLACEHOLDERS.cr)
-			.join("\r")
-			.split(INSTALLER_SNIPPET_PLACEHOLDERS.bom)
-			.join("\uFEFF");
+		const restored = materializeExcludeScript(forInstaller);
 		expect(restored).toBe(buildBashExcludeScript());
 	});
 });

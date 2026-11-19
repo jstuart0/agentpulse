@@ -1,0 +1,18 @@
+{
+	"comment": "TEST KEYS ONLY. Throwaway Ed25519 seeds that sign nothing real. Never a production key; src/shared/release-keys.ts must not import this file (release-keys.guard.test.ts).",
+	"active": {
+		"keyId": "k-fa9a126cddf9",
+		"publicKeyRaw": "y9uamTimQ8LxYD1fqxqWmbxADKiclq6q9FCat5Mvbqw",
+		"seed": "rTF8723ORzs1UMY31ZwiiPJhMkTvmbLYQfrsxOy0EF8"
+	},
+	"standby": {
+		"keyId": "k-a051263d103e",
+		"publicKeyRaw": "qs7C96qzP0zP_oAvkLWSZJOfmOuEJZUFWERAaQz7BXA",
+		"seed": "AkJKreSOduyAhz5cZIP61jTu6eG5p6E1wGGPqoxCkpg"
+	},
+	"unknown": {
+		"keyId": "k-d3b5bbbbb0eb",
+		"publicKeyRaw": "sWT8dKTmu54ESzHdiRb7Nk-MLauxg36SvfbzJ6CY1QE",
+		"seed": "3c9W8ova_SP3OMyob0r2BZ9uNQ6ry8mLdpXqMpvKJRs"
+	}
+}

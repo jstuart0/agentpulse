@@ -1,0 +1,7 @@
+{
+	"schema": 1,
+	"firstSignedVersion": "0.12.0",
+	"minSupported": "0.11.0",
+	"revokedKeyIds": [],
+	"releases": []
+}

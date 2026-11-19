@@ -1,36 +1,174 @@
 name: Pages
 
-# Publishes the static project site in site/ to GitHub Pages. Runs only when
-# the site changes, so it never adds work to ordinary pushes.
+# Publishes the static project site in site/ and the signed release manifest at
+# site/releases/manifest.json, in three jobs so the signing key never meets code that
+# came from a checkout:
+#
+#   manifest  no secret. Builds the unsigned payload from git objects and checks it.
+#   sign      environment release-signing. No actions, no checkout, no bun: shell, jq,
+#             openssl and git only. Every input arrives through env:, never ${{ }} in run:.
+#   deploy    no signing secret. Verifies the signed envelope with the trust root in
+#             src/shared/release-keys.ts, writes it into the site, and deploys.
+#
+# Re-signed on every release, on every change to the files below, and twice a week so a
+# manifest never expires while nobody is releasing. docs/RELEASING.md explains the design,
+# why release-signing has no required reviewer, and what to do when GitHub pauses the cron.
 on:
   push:
     branches: [main]
     paths:
       - "site/**"
+      - "releases/**"
+      - "scripts/release/**"
+      - "src/shared/release-manifest.ts"
+      - "src/shared/release-keys.ts"
       - ".github/workflows/pages.yml"
+  schedule:
+    - cron: "17 4 * * 1,4"
   workflow_dispatch:
+    inputs:
+      signed_envelope:
+        description: "A manifest signed offline (for example a key revocation). Skips build and sign; deploy still verifies it."
+        required: false
+        default: ""
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  manifest:
+    if: ${{ inputs.signed_envelope == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      payload: ${{ steps.build.outputs.payload }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.12"
+      - id: build
+        name: Build and check the unsigned payload
+        env:
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bun scripts/release/build-manifest.ts --unsigned --repo "$REPO" --out "$RUNNER_TEMP/payload.json" --github-output --allow-none
+
+  sign:
+    needs: manifest
+    if: ${{ needs.manifest.outputs.payload != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release-signing
+    permissions:
+      actions: write
+    outputs:
+      signed: ${{ steps.sign.outputs.signed }}
+      key_id: ${{ steps.sign.outputs.key_id }}
+      sig: ${{ steps.sign.outputs.sig }}
+    steps:
+      - id: checks
+        name: Refuse anything but the main tip, and check the payload
+        env:
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          PAYLOAD: ${{ needs.manifest.outputs.payload }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          fail() { echo "refusing to sign: $1" >&2; exit 1; }
+          [ "$REF" = "refs/heads/main" ] || fail "the ref is not refs/heads/main"
+          printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$' || fail "the commit is not a full sha"
+          tip=$(git ls-remote "https://github.com/$REPO" refs/heads/main | cut -f1)
+          [ -n "$tip" ] || fail "could not read the tip of main"
+          if [ "$tip" != "$SHA" ]; then
+            echo "superseded by $tip"
+            gh workflow run pages.yml --repo "$REPO" --ref main
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s' "$PAYLOAD" | grep -Eq '^[A-Za-z0-9_-]+$' || fail "the payload is not base64url"
+          padded="$PAYLOAD"
+          while [ $(( ${#padded} % 4 )) -ne 0 ]; do padded="$padded="; done
+          printf '%s' "$padded" | tr '_-' '/+' | openssl base64 -d -A > "$RUNNER_TEMP/payload.bin" || fail "the payload does not decode"
+          now=$(date -u +%s)
+          jq -e --arg sha "$SHA" --argjson now "$now" '
+            def t: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
+            .schema == 1
+            and .sourceCommit == $sha
+            and (.seq | type == "number" and . >= 1 and . == floor)
+            and (.issuedAt | type == "string")
+            and (.expiresAt | type == "string")
+            and ((.expiresAt | t) - (.issuedAt | t) == 864000)
+            and ((((.issuedAt | t) - $now) | fabs) <= 600)
+            and (.releases | type == "array" and length >= 1 and length <= 30)
+            and (.latest as $l | .releases | any(.version == $l))
+            and (.revokedKeyIds | type == "array")
+          ' "$RUNNER_TEMP/payload.bin" > /dev/null || fail "the payload failed the checks"
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+      - id: sign
+        name: Sign the payload
+        if: ${{ steps.checks.outputs.proceed == 'true' }}
+        env:
+          SIGNING_KEY: ${{ secrets.AGENTPULSE_RELEASE_SIGNING_KEY }}
+        run: |
+          umask 077
+          key="$RUNNER_TEMP/release-signing.pem"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          openssl pkeyutl -sign -rawin -inkey "$key" -in "$RUNNER_TEMP/payload.bin" -out "$RUNNER_TEMP/payload.sig"
+          key_id="k-$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | openssl dgst -sha256 -hex | sed 's/^.* //' | cut -c1-12)"
+          sig=$(openssl base64 -A < "$RUNNER_TEMP/payload.sig" | tr '+/' '-_' | tr -d '=')
+          [ "${#sig}" -eq 86 ] || { echo "the signature is not 64 bytes" >&2; exit 1; }
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+          echo "key_id=$key_id" >> "$GITHUB_OUTPUT"
+          echo "sig=$sig" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: [manifest, sign]
+    if: >-
+      ${{ !cancelled() && (
+        (inputs.signed_envelope != '') ||
+        (needs.manifest.result == 'success' &&
+          (needs.manifest.outputs.payload == '' || needs.sign.outputs.signed == 'true'))
+      ) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.12"
+      - name: Verify the signed manifest and put it in the site
+        env:
+          SIGNED_ENVELOPE: ${{ inputs.signed_envelope }}
+          PAYLOAD: ${{ needs.manifest.outputs.payload }}
+          KEY_ID: ${{ needs.sign.outputs.key_id }}
+          SIG: ${{ needs.sign.outputs.sig }}
+        run: |
+          bun scripts/release/write-site-manifest.ts site
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: site
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

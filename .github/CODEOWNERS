@@ -1,0 +1,10 @@
+# Required review for the files that decide what a release is and who may sign it.
+# Branch protection on main must have "Require review from Code Owners" turned on for this to bind
+# (docs/RELEASING.md; `bun scripts/release/verify-published.ts --audit` checks it).
+/.github/workflows/ @jstuart0
+/.github/CODEOWNERS @jstuart0
+/releases/ @jstuart0
+/scripts/release/ @jstuart0
+/src/shared/release-keys.ts @jstuart0
+/src/shared/release-manifest.ts @jstuart0
+/src/shared/relay-installer-parts.ts @jstuart0
