@@ -9,6 +9,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { readUpdateState } from "../shared/update-files.js";
 import { type Fixture, createFixture, makeLockStale } from "./test-utils/fixture.js";
 import { UpdaterCrash, runRecovery, runUpdate } from "./updater.js";
 
@@ -209,7 +210,7 @@ describe("a crash after every journaled step", () => {
 	);
 
 	test(
-		"the next normal run recovers first, then carries on",
+		"the next normal run recovers first, and the version that was cut short is not tried again",
 		async () => {
 			fx = await setup();
 			const f = fx;
@@ -219,8 +220,11 @@ describe("a crash after every journaled step", () => {
 			await makeLockStale(f);
 			// a live process still holds a fresh lock: not stale, so locked
 			const result = await runUpdate(f.deps(), { mode: "manual" });
-			expect(result.code).toBe("updated");
-			await assertWorking(f, "0.13.0");
+			// recovery put the install back and refused the version that was cut short (an update that dies
+			// after the services stopped would otherwise stop them again every time)
+			expect(result.code).toBe("refused_before");
+			await assertWorking(f, "0.12.0");
+			expect(readUpdateState(f.home).refused["0.13.0"]).toBe("rolled_back");
 		},
 		TIMEOUT,
 	);

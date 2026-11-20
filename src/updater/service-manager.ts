@@ -77,8 +77,18 @@ function xmlEscape(text: string): string {
 		.replaceAll("'", "&apos;");
 }
 
+/** A unit or plist is text a manager parses line by line: a newline or another control character in a path would end the line and start a directive of its own. */
+function assertNoControlCharacters(spec: TimerSpec): void {
+	for (const value of [spec.bunBin, spec.bundlePath, spec.home, spec.path]) {
+		if ([...value].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f)) {
+			throw new Error("a path for the updater's timer holds a control character");
+		}
+	}
+}
+
 /** The plist of the updater's timer job: runs `update --auto` every six hours and at load. */
 export function renderLaunchdTimerPlist(spec: TimerSpec): string {
+	assertNoControlCharacters(spec);
 	const workDir = join(spec.home, ".agentpulse");
 	const args = [spec.bunBin, spec.bundlePath, "update", "--auto"];
 	return `<?xml version="1.0" encoding="UTF-8"?>
@@ -112,16 +122,18 @@ ${args.map((a) => `    <string>${xmlEscape(a)}</string>`).join("\n")}
 `;
 }
 
-/** A word for a systemd `Exec` line: quoted, with `\`, `"` and `%` escaped. */
-function systemdWord(text: string): string {
-	return `"${text.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%")}"`;
-}
-
+/** A value for an `Environment=` line: quoted, with `\`, `"` and `%` escaped. systemd expands no variables there. */
 function systemdValue(text: string): string {
 	return text.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%");
 }
 
+/** A word for an `ExecStart=` line: as above, and `$` doubled, because `$NAME` is expanded there. */
+function systemdWord(text: string): string {
+	return `"${systemdValue(text).replaceAll("$", "$$$$")}"`;
+}
+
 export function renderSystemdTimerUnits(spec: TimerSpec): { service: string; timer: string } {
+	assertNoControlCharacters(spec);
 	const workDir = join(spec.home, ".agentpulse");
 	const service = `[Unit]
 Description=AgentPulse updater

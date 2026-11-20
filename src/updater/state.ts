@@ -50,6 +50,8 @@ export function recordOutcome(
 		at: number;
 		refuse?: string;
 		waitingSince?: string | null;
+		/** Undefined leaves the backoff as it is; null clears it; a value sets it. Written with the outcome, in one write. */
+		backoff?: UpdaterState["backoff"] | null;
 	},
 ): void {
 	const state = loadState(home);
@@ -62,5 +64,7 @@ export function recordOutcome(
 	if (input.refuse) next.refused = { ...state.refused, [input.refuse]: input.code };
 	if (input.waitingSince === null) next.waitingSince = undefined;
 	else if (input.waitingSince) next.waitingSince = input.waitingSince;
+	if (input.backoff === null) next.backoff = undefined;
+	else if (input.backoff) next.backoff = input.backoff;
 	saveState(home, next);
 }

@@ -158,6 +158,31 @@ describe("the client's getUpdateStatus", () => {
 		);
 	});
 
+	test("lastOutcome must be one of the known codes; backoffUntil is a time", async () => {
+		const out = async (apply: unknown) =>
+			(
+				(await clientFor({
+					update: { ...STATUS, localApply: apply },
+				}).client.getUpdateStatus()) as {
+					localApply?: Record<string, unknown>;
+				}
+			).localApply;
+		expect(await out({ auto: true, lastOutcome: "supervisor_busy" })).toEqual({
+			auto: true,
+			lastOutcome: "supervisor_busy",
+		});
+		expect(await out({ auto: true, lastOutcome: "backoff" })).toEqual({
+			auto: true,
+			lastOutcome: "backoff",
+		});
+		// a name that merely looks like a code is dropped
+		expect(await out({ auto: true, lastOutcome: "rm_rf_slash" })).toEqual({ auto: true });
+		expect(
+			await out({ auto: false, backoffUntil: "2026-11-19T16:00:00.000Z", extra: "x" }),
+		).toEqual({ auto: false, backoffUntil: "2026-11-19T16:00:00.000Z" });
+		expect(await out({ auto: false, backoffUntil: "tomorrow-ish" })).toEqual({ auto: false });
+	});
+
 	test("a server that leaves localApply out (a member's view) gives no localApply key", async () => {
 		const { localApply: _omitted, ...withoutApply } = { ...STATUS, localApply: null };
 		const out = (await clientFor({

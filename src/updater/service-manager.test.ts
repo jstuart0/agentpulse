@@ -340,3 +340,41 @@ describe("hardened service handling (stub runners)", () => {
 		expect(seen).toEqual(["192.0.2.7", undefined]);
 	});
 });
+
+describe("the timer renderers refuse what would end a line, and escape what is expanded", () => {
+	const spec = {
+		bunBin: "/home/u/.bun/bin/bun",
+		bundlePath: "/home/u/.agentpulse/updater/current/updater.js",
+		home: "/home/u",
+		path: "/usr/bin:/bin",
+	};
+	test("a newline or another control character in any path is a refusal, in both renderers", () => {
+		for (const field of ["bunBin", "bundlePath", "home", "path"] as const) {
+			for (const bad of [
+				"/x\nExecStartPre=/bin/evil",
+				"/x\r",
+				"/x\u0000",
+				"/x\u001b[0m",
+				"/x\u007f",
+			]) {
+				const broken = { ...spec, [field]: bad };
+				expect(() => renderSystemdTimerUnits(broken)).toThrow();
+				expect(() => renderLaunchdTimerPlist(broken)).toThrow();
+			}
+		}
+		expect(() => renderSystemdTimerUnits(spec)).not.toThrow();
+		expect(() => renderLaunchdTimerPlist(spec)).not.toThrow();
+	});
+	test("a dollar sign is doubled on the Exec line (variables expand there) and left alone in Environment=", () => {
+		const { service } = renderSystemdTimerUnits({
+			...spec,
+			bunBin: "/home/$USER/bun",
+			home: "/home/$USER",
+			path: "/opt/$X/bin",
+		});
+		expect(service).toContain('ExecStart="/home/$$USER/bun"');
+		expect(service).toContain('Environment="HOME=/home/$USER"');
+		expect(service).toContain('Environment="PATH=/opt/$X/bin"');
+		expect(service).not.toMatch(/ExecStart=[^\n]*[^$]\$[A-Z]/);
+	});
+});

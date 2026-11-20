@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	MAX_ENV_VALUE_BYTES,
+	agentSessionMarker,
 	deniedLaunchEnvNames,
 	isDeniedLaunchEnvName,
 	isValidEnvName,
@@ -243,5 +244,37 @@ describe("forkChildEnv (AGEN-117 T18)", () => {
 	test("drops undefined values", async () => {
 		const { forkChildEnv } = await import("./launch-env-policy.js");
 		expect(forkChildEnv({ A: "1", B: undefined })).toEqual({ A: "1", ...OURS });
+	});
+});
+
+describe("agentSessionMarker", () => {
+	test("names the first agent-session variable that is set, from any agent", () => {
+		for (const name of [
+			"CLAUDECODE",
+			"CLAUDE_CODE_SESSION_ID",
+			"AI_AGENT",
+			"CODEX_THREAD_ID",
+			"CODEX_SANDBOX_NETWORK_DISABLED",
+			"OPENCODE",
+			"OPENCODE_CONFIG_DIR",
+			"COPILOT_AGENT_ID",
+			"AGENTPULSE_SKIP",
+		]) {
+			expect(agentSessionMarker({ PATH: "/usr/bin", [name]: "1" })).toBe(name);
+		}
+	});
+	test("an empty value, a credential, the person's own config and the shim's variable are not markers", () => {
+		expect(agentSessionMarker({ CLAUDECODE: "", PATH: "/usr/bin" })).toBeNull();
+		for (const name of [
+			"CLAUDE_CODE_OAUTH_TOKEN",
+			"ANTHROPIC_API_KEY",
+			"CODEX_HOME",
+			"AGENTPULSE_UPDATER_REAL_SERVICES",
+		]) {
+			expect({ name, got: agentSessionMarker({ [name]: "x" }) }).toEqual({ name, got: null });
+		}
+	});
+	test("never returns a value", () => {
+		expect(agentSessionMarker({ CLAUDECODE: "secret-value" })).not.toContain("secret");
 	});
 });

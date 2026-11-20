@@ -245,10 +245,12 @@ capabilitiesRouter.get("/capabilities", async (c) => {
 	const mayOperate =
 		effectiveRole === "admin" ||
 		(authUser?.source === "api_key" && scopesIncludeManage(authUser.scopes ?? []));
-	// `localApply` is for an admin alone, in both modes: a member's manage key reads the rest, not that.
+	// `localApply` is for an effective admin who is a person or holds `manage`, in both modes: a member's manage
+	// key, and an admin's key that is only `respond` or `observe`, read the rest and not that.
+	const holdsManage = authUser?.source !== "api_key" || scopesIncludeManage(authUser.scopes ?? []);
 	const update = updateStatusFor(getUpdateStatus(), {
 		operator: mayOperate,
-		admin: effectiveRole === "admin",
+		localApply: effectiveRole === "admin" && holdsManage,
 	});
 
 	return c.json({

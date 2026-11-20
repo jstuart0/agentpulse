@@ -3,13 +3,33 @@
  * `runUpdate({mode: "auto"})` end to end in a throwaway HOME on an injected clock (the fixture's).
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { readUpdateState } from "../shared/update-files.js";
 import { UPDATE_OUTCOME_CODES, type UpdateOutcomeCode } from "../shared/update-status.js";
 import { BACKOFF_MS, backoffActive, isAutoFailure, isWaiting, nextBackoff } from "./auto-apply.js";
-import { type Fixture, createFixture, expectUntouched } from "./test-utils/fixture.js";
-import { DEFAULT_TIMING, runUpdate } from "./updater.js";
+import { runCli } from "./cli.js";
+import {
+	type Fixture,
+	createFixture,
+	expectUntouched,
+	makeLockStale,
+} from "./test-utils/fixture.js";
+import {
+	DEFAULT_TIMING,
+	UpdaterCrash,
+	inWindow,
+	inWindowAt,
+	runRecovery,
+	runUpdate,
+} from "./updater.js";
 
 const HOUR = 3_600_000;
 const TIMEOUT = 120_000;
@@ -337,6 +357,443 @@ describe("backoff end to end", () => {
 			expect((await runUpdate(f.deps(), { mode: "auto" })).code).toBe("dirty_tree");
 			expect((await runUpdate(f.deps(), { mode: "auto" })).code).toBe("backoff");
 			expect((await runUpdate(f.deps(), { mode: "manual" })).code).toBe("dirty_tree");
+		},
+		TIMEOUT,
+	);
+});
+
+const stateFile = (f: Fixture) => join(f.dir, "update-state.json");
+const writeState = (f: Fixture, body: Record<string, unknown>) =>
+	writeFileSync(stateFile(f), `${JSON.stringify({ schema: 1, ...body })}\n`, { mode: 0o600 });
+const moves = (f: Fixture) => f.fake.calls.filter((c) => /^(stop|start):/.test(c));
+
+describe("the window", () => {
+	test("inWindowAt: a window that wraps midnight, one that doesn't, and the edges (start in, end out)", () => {
+		const at = (h: number, m = 0) => h * 60 + m;
+		expect(inWindowAt("22:00-04:00", at(23, 30))).toBe(true);
+		expect(inWindowAt("22:00-04:00", at(3, 59))).toBe(true);
+		expect(inWindowAt("22:00-04:00", at(4, 0))).toBe(false);
+		expect(inWindowAt("22:00-04:00", at(12, 0))).toBe(false);
+		expect(inWindowAt("22:00-04:00", at(22, 0))).toBe(true);
+		expect(inWindowAt("22:00-04:00", at(21, 59))).toBe(false);
+		expect(inWindowAt("02:00-04:30", at(2, 0))).toBe(true);
+		expect(inWindowAt("02:00-04:30", at(4, 29))).toBe(true);
+		expect(inWindowAt("02:00-04:30", at(4, 30))).toBe(false);
+		expect(inWindowAt("02:00-04:30", at(1, 59))).toBe(false);
+		expect(inWindowAt(null, at(13, 0))).toBe(true);
+	});
+
+	test("inWindow reads the machine's local clock, whatever TZ the test runs in", () => {
+		// built from local components, so the answer is the same in every zone
+		const local = (h: number, m: number) => new Date(2026, 10, 19, h, m).getTime();
+		expect(inWindow("02:00-04:30", local(2, 0))).toBe(true);
+		expect(inWindow("02:00-04:30", local(4, 30))).toBe(false);
+		expect(inWindow("22:00-04:00", local(23, 30))).toBe(true);
+		expect(inWindow("22:00-04:00", local(12, 0))).toBe(false);
+	});
+
+	test(
+		"inside the window an aged release is applied",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			f.addRelease("0.12.0", { publishedAt: iso(f.clock.t - 72 * HOUR) });
+			f.publish();
+			const hour = new Date(f.clock.t).getHours();
+			const before = String((hour + 23) % 24).padStart(2, "0");
+			const after = String((hour + 1) % 24).padStart(2, "0");
+			consent(f, { on: true, allowMigrations: false, window: `${before}:00-${after}:00` });
+			expect(inWindow(`${before}:00-${after}:00`, f.clock.t)).toBe(true);
+			expect((await runUpdate(f.deps(), { mode: "auto" })).code).toBe("updated");
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"a window the file holds malformed is never: nothing is applied",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			f.addRelease("0.12.0", { publishedAt: iso(f.clock.t - 72 * HOUR) });
+			f.publish();
+			consent(f, { on: true, allowMigrations: false, window: "later" });
+			expect((await runUpdate(f.deps(), { mode: "auto" })).code).toBe("outside_window");
+			expectUntouched(f);
+		},
+		TIMEOUT,
+	);
+});
+
+describe("the exit code of a scheduled run", () => {
+	const lines = () => ({ out: () => {}, err: () => {} });
+	test(
+		"a failure exits 1; canary_wait, supervisor_busy and nothing to do exit 0",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			consent(f);
+			f.addRelease("0.12.0", { publishedAt: iso(f.clock.t - 23 * HOUR) });
+			f.publish();
+			expect(await runCli(["update", "--auto"], lines(), f.deps())).toBe(0);
+			expect(readUpdateState(f.home).lastOutcome).toBe("canary_wait");
+			// the same machine with a failure
+			const release = f.releases.get("0.12.0");
+			if (release) release.publishedAt = iso(f.clock.t - 72 * HOUR);
+			f.publish();
+			appendFileSync(join(f.app, "package.json"), " \n");
+			expect(await runCli(["update", "--auto"], lines(), f.deps())).toBe(1);
+			expect(readUpdateState(f.home).lastOutcome).toBe("dirty_tree");
+			// skipped by the backoff is not a failure
+			expect(await runCli(["update", "--auto"], lines(), f.deps())).toBe(0);
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"supervisor_busy exits 0",
+		async () => {
+			fx = await createFixture({ units: ["server", "supervisor"] });
+			const f = fx;
+			consent(f);
+			f.addRelease("0.12.0", { publishedAt: iso(f.clock.t - 72 * HOUR) });
+			f.publish();
+			if (f.sim) {
+				f.sim.busyUntil = f.clock.t + 6 * HOUR;
+				f.sim.idleSince = null;
+			}
+			const slow = f.deps({ timing: { ...DEFAULT_TIMING, pollMs: 120_000 } });
+			expect(await runCli(["update", "--auto"], lines(), slow)).toBe(0);
+			expect(readUpdateState(f.home).lastOutcome).toBe("supervisor_busy");
+		},
+		TIMEOUT,
+	);
+});
+
+describe("what a refusal does to the failure count", () => {
+	test(
+		"refused_before and migration_needs_consent leave the run of failures as it was",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			consent(f);
+			f.addRelease("0.12.0", { publishedAt: iso(f.clock.t - 72 * HOUR), migration: "0001_b" });
+			f.publish();
+			const held = { failures: 2, notBefore: iso(f.clock.t - 1_000) };
+			writeState(f, { backoff: held });
+			expect((await runUpdate(f.deps(), { mode: "auto" })).code).toBe("migration_needs_consent");
+			expect(readUpdateState(f.home).backoff).toEqual(held);
+			writeState(f, { backoff: held, refused: { "0.12.0": "health_failed" } });
+			expect((await runUpdate(f.deps(), { mode: "auto" })).code).toBe("refused_before");
+			expect(readUpdateState(f.home).backoff).toEqual(held);
+			expectUntouched(f);
+		},
+		TIMEOUT,
+	);
+});
+
+describe("fail, refused, backoff over, still not tried again", () => {
+	test(
+		"a version that rolled back is never attempted again once the backoff has run out",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			consent(f);
+			f.addRelease("0.12.0", {
+				files: { BAD_IN_SERVICE: "1\n" },
+				publishedAt: iso(f.clock.t - 72 * HOUR),
+			});
+			f.publish();
+			const first = await runUpdate(f.deps(), { mode: "auto" });
+			expect(first.code).toBe("rolled_back");
+			f.rebaseline();
+			let state = readUpdateState(f.home);
+			expect(state.refused["0.12.0"]).toBe("rolled_back");
+			expect(state.backoff?.failures).toBe(1);
+			const callsAfterFailure = moves(f).length;
+			// the hold runs out
+			f.clock.t += HOUR + 1_000;
+			expect(backoffActive(state, f.clock.t)).toBe(false);
+			const second = await runUpdate(f.deps(), { mode: "auto" });
+			expect(second.code).toBe("refused_before");
+			expect(moves(f)).toHaveLength(callsAfterFailure);
+			expect(version(f.app)).toBe("0.11.0");
+			state = readUpdateState(f.home);
+			expect(state.backoff?.failures).toBe(1);
+		},
+		TIMEOUT,
+	);
+});
+
+describe("a failure after the services stopped", () => {
+	test(
+		"stop_failed refuses the version, and so does snapshot_failed",
+		async () => {
+			fx = await createFixture();
+			let f = fx;
+			f.addRelease("0.12.0");
+			f.publish();
+			let stops = 0;
+			const origStop = f.fake.stop;
+			f.fake.goneOverride = async (unit) => !f.fake.active.has(unit) || stops > 1;
+			f.fake.stop = async (unit) => {
+				stops++;
+				if (stops === 1) {
+					f.fake.calls.push(`stop:${unit}`);
+					return;
+				}
+				await origStop(unit);
+			};
+			expect((await runUpdate(f.deps(), { mode: "manual" })).code).toBe("stop_failed");
+			expect(readUpdateState(f.home).refused["0.12.0"]).toBe("stop_failed");
+			f.fake.stop = origStop;
+			f.fake.goneOverride = undefined;
+			expect((await runUpdate(f.deps(), { mode: "manual" })).code).toBe("refused_before");
+			await f.cleanup();
+
+			fx = await createFixture();
+			f = fx;
+			f.addRelease("0.12.0", { migration: "0001_b" });
+			f.publish();
+			// a file where the snapshot directory goes: the snapshot can't be taken, after the services have stopped
+			writeFileSync(join(f.dir, "update-snapshots"), "in the way");
+			const result = await runUpdate(f.deps(), { mode: "manual" });
+			expect(result.code).toBe("snapshot_failed");
+			expect(readUpdateState(f.home).refused["0.12.0"]).toBe("snapshot_failed");
+			expect(version(f.app)).toBe("0.11.0");
+			expect((await runUpdate(f.deps(), { mode: "manual" })).code).toBe("refused_before");
+		},
+		TIMEOUT * 2,
+	);
+
+	test(
+		"an update cut short after the services were stopped refuses its version when recovery puts the install back",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			f.addRelease("0.12.0");
+			f.publish();
+			await expect(
+				runUpdate(
+					f.deps({
+						afterStep: (step) => {
+							if (step === "stopped") throw new UpdaterCrash("stopped");
+						},
+					}),
+					{ mode: "manual" },
+				),
+			).rejects.toBeInstanceOf(UpdaterCrash);
+			await makeLockStale(f);
+			expect(await runRecovery(f.deps())).toBeNull();
+			expect(version(f.app)).toBe("0.11.0");
+			expect(readUpdateState(f.home).refused["0.12.0"]).toBe("rolled_back");
+			f.rebaseline();
+			expect((await runUpdate(f.deps(), { mode: "manual" })).code).toBe("refused_before");
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"a scheduled run that dies after stopping leaves its backoff behind, so the next one doesn't loop",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			consent(f);
+			f.addRelease("0.12.0", { publishedAt: iso(f.clock.t - 72 * HOUR) });
+			f.publish();
+			await expect(
+				runUpdate(
+					f.deps({
+						afterStep: (step) => {
+							if (step === "stopped") throw new UpdaterCrash("stopped");
+						},
+					}),
+					{ mode: "auto" },
+				),
+			).rejects.toBeInstanceOf(UpdaterCrash);
+			const armed = readUpdateState(f.home).backoff;
+			expect(armed?.failures).toBe(1);
+			await makeLockStale(f);
+			// recovery puts the install back first, then the held-back run does nothing more
+			const next = await runUpdate(f.deps(), { mode: "auto" });
+			expect(next.code).toBe("backoff");
+			expect(version(f.app)).toBe("0.11.0");
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"when the backoff can't be written a scheduled run doesn't go on to stop anything",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			consent(f);
+			f.addRelease("0.12.0", { publishedAt: iso(f.clock.t - 72 * HOUR) });
+			f.publish();
+			const deps = f.deps({
+				afterStep: (step) => {
+					// the state file becomes unwritable (a directory sits where it goes) just before the risky phase
+					if (step === "smoked") {
+						rmSync(stateFile(f), { force: true });
+						mkdirSync(stateFile(f));
+					}
+				},
+			});
+			const result = await runUpdate(deps, { mode: "auto" });
+			expect(result.code).toBe("install_failed");
+			expect(moves(f)).toEqual([]);
+			expect(version(f.app)).toBe("0.11.0");
+			expect(await Bun.file(join(f.app, "package.json")).exists()).toBe(true);
+		},
+		TIMEOUT,
+	);
+});
+
+describe("consent is looked at again before anything is stopped", () => {
+	test(
+		"consent withdrawn while the run staged ends it as no_consent with nothing stopped",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			consent(f);
+			f.addRelease("0.12.0", { publishedAt: iso(f.clock.t - 72 * HOUR) });
+			f.publish();
+			const result = await runUpdate(
+				f.deps({
+					afterStep: (step) => {
+						if (step === "smoked") rmSync(join(f.dir, "update-consent.json"));
+					},
+				}),
+				{ mode: "auto" },
+			);
+			expect(result.code).toBe("no_consent");
+			expect(moves(f)).toEqual([]);
+			expect(version(f.app)).toBe("0.11.0");
+			expectUntouched(f);
+		},
+		TIMEOUT,
+	);
+});
+
+describe("the staged tree's own migrations", () => {
+	test(
+		"a manifest that says no migration for a tree that has one is refused, and the version is not offered again",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			consent(f);
+			f.addRelease("0.12.0", { publishedAt: iso(f.clock.t - 72 * HOUR), migration: "0001_b" });
+			// the manifest lists the old migration: it understates
+			f.publish({ migrationOverride: { "0.12.0": "0000_a" } });
+			const result = await runUpdate(f.deps(), { mode: "auto" });
+			expect(result.code).toBe("migration_needs_consent");
+			expect(moves(f)).toEqual([]);
+			expect(version(f.app)).toBe("0.11.0");
+			expect(readUpdateState(f.home).refused["0.12.0"]).toBe("migration_needs_consent");
+			expectUntouched(f);
+			// manual mode is held to it too
+			const manual = await runUpdate(f.deps(), { mode: "manual" });
+			expect(manual.code).toBe("refused_before");
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"the same lie in the other direction (the manifest says migration, the tree has none) is refused too",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			f.addRelease("0.12.0");
+			f.publish({ migrationOverride: { "0.12.0": "0001_b" } });
+			expect((await runUpdate(f.deps(), { mode: "manual" })).code).toBe("migration_needs_consent");
+			expectUntouched(f);
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"a manifest that agrees with the tree is untouched by the check (consent given, migration crossed)",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			consent(f, { on: true, allowMigrations: true, window: null });
+			f.addRelease("0.12.0", { publishedAt: iso(f.clock.t - 72 * HOUR), migration: "0001_b" });
+			f.publish();
+			expect(await runUpdate(f.deps(), { mode: "auto" })).toMatchObject({
+				code: "updated",
+				migrated: true,
+			});
+		},
+		TIMEOUT,
+	);
+});
+
+describe("what a person's own run does to the scheduled run's state", () => {
+	test(
+		"a successful manual run ends the wait and the failure streak; a failed one leaves them",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			f.addRelease("0.12.0", { publishedAt: iso(f.clock.t - 72 * HOUR) });
+			f.publish();
+			writeState(f, {
+				waitingSince: iso(f.clock.t - 5 * HOUR),
+				backoff: { failures: 2, notBefore: iso(f.clock.t + 3 * HOUR) },
+			});
+			appendFileSync(join(f.app, "package.json"), " \n");
+			expect((await runUpdate(f.deps(), { mode: "manual" })).code).toBe("dirty_tree");
+			let state = readUpdateState(f.home);
+			expect(state.backoff?.failures).toBe(2);
+			expect(state.waitingSince).toBeDefined();
+			f.git("-C", f.app, "checkout", "--", ".");
+			expect((await runUpdate(f.deps(), { mode: "manual" })).code).toBe("updated");
+			state = readUpdateState(f.home);
+			expect(state.backoff).toBeUndefined();
+			expect(state.waitingSince).toBeUndefined();
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"up_to_date from a manual run clears them too",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			f.publish({ latest: "0.11.0" });
+			writeState(f, {
+				waitingSince: iso(f.clock.t - 5 * HOUR),
+				backoff: { failures: 1, notBefore: iso(f.clock.t + HOUR) },
+			});
+			expect((await runUpdate(f.deps(), { mode: "manual" })).code).toBe("up_to_date");
+			const state = readUpdateState(f.home);
+			expect(state.backoff).toBeUndefined();
+			expect(state.waitingSince).toBeUndefined();
+		},
+		TIMEOUT,
+	);
+});
+
+describe("the state is written inside the lock", () => {
+	test(
+		"the last thing the run does under the lock is write its outcome",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			consent(f);
+			f.publish({ latest: "0.11.0" });
+			const lock = join(f.dir, "update.lock");
+			const heldAt: boolean[] = [];
+			const deps = f.deps();
+			const clock = deps.now;
+			deps.now = () => {
+				heldAt.push(existsSync(lock));
+				return clock();
+			};
+			expect((await runUpdate(deps, { mode: "auto" })).code).toBe("up_to_date");
+			// settle() reads the clock for `at` and for the backoff, under the lock; only the log line's timing read comes after it
+			expect(heldAt.at(-1)).toBe(false);
+			expect(heldAt.at(-2)).toBe(true);
+			expect(heldAt.at(-3)).toBe(true);
+			expect(readUpdateState(f.home).lastOutcome).toBe("up_to_date");
 		},
 		TIMEOUT,
 	);

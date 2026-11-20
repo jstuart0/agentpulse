@@ -71,6 +71,10 @@ describe("reading the consent", () => {
 	});
 });
 
+/**
+ * A terminal that answers the prompt: `"correct"` types the phrase the prompt asks for (it has a random part, so
+ * it is read off the prompt), anything else is typed as given.
+ */
 function ttyIo(answer: string, tty = true): ConsentIo & { asked: string[] } {
 	const asked: string[] = [];
 	return {
@@ -78,7 +82,7 @@ function ttyIo(answer: string, tty = true): ConsentIo & { asked: string[] } {
 		isTty: () => tty,
 		prompt: async (question) => {
 			asked.push(question);
-			return answer;
+			return answer === "correct" ? (/"([^"]+)"/.exec(question)?.[1] ?? "") : answer;
 		},
 	};
 }
@@ -91,7 +95,7 @@ describe("auto on", () => {
 	test("with a terminal and the typed word it writes a private consent file and installs the timer", async () => {
 		fx = await createFixture();
 		const f = fx;
-		const io = ttyIo("enable");
+		const io = ttyIo("correct");
 		setConsentIoForTests(io);
 		const result = await enableAuto(
 			f.deps(),
@@ -124,7 +128,7 @@ describe("auto on", () => {
 			ok: false,
 			code: "not_a_terminal",
 		});
-		for (const word of ["yes", "ENABLE", "", "enable now"]) {
+		for (const word of ["yes", "ENABLE", "", "enable", "enable 000000", "allow migrations"]) {
 			setConsentIoForTests(ttyIo(word));
 			expect(await enableAuto(f.deps(), { allowMigrations: false, window: null }, say)).toEqual({
 				ok: false,
@@ -136,7 +140,7 @@ describe("auto on", () => {
 		expect(f.fake.calls).not.toContain("installTimer");
 	}, 60_000);
 
-	test("an agent-session marker is refused before anything is asked", async () => {
+	test("an agent-session marker, from any of the agents, is refused before anything is asked, naming the variable", async () => {
 		fx = await createFixture();
 		const f = fx;
 		for (const marker of [
@@ -144,35 +148,76 @@ describe("auto on", () => {
 			"AI_AGENT",
 			"CLAUDE_CODE_SESSION_ID",
 			"CLAUDE_CODE_ENTRYPOINT",
+			"CODEX_THREAD_ID",
+			"CODEX_SANDBOX",
+			"CODEX_SANDBOX_NETWORK_DISABLED",
+			"OPENCODE",
+			"OPENCODE_SERVER_PASSWORD",
+			"COPILOT_AGENT_SESSION",
+			"GITHUB_COPILOT_CLI",
+			"AGENTPULSE_KEY",
+			"AGENTPULSE_SKIP",
 		]) {
-			const io = ttyIo("enable");
+			const io = ttyIo("correct");
 			setConsentIoForTests(io);
 			const deps = f.deps({ env: { PATH: process.env.PATH, HOME: f.home, [marker]: "1" } });
 			expect(await enableAuto(deps, { allowMigrations: false, window: null }, say)).toEqual({
 				ok: false,
 				code: "agent_session",
+				detail: marker,
 			});
 			expect(io.asked).toEqual([]);
 		}
 		expect(existsSync(consentPath(f))).toBe(false);
 		expect(f.fake.calls).not.toContain("installTimer");
-		// control: the same run without a marker passes, so the refusals above were the marker's
-		setConsentIoForTests(ttyIo("enable"));
-		expect(await enableAuto(f.deps(), { allowMigrations: false, window: null }, say)).toEqual({
-			ok: true,
-		});
+		// controls: the variables a person legitimately has pass, and so does the one the shim sets
+		for (const ok of [
+			"CODEX_HOME",
+			"CLAUDE_CODE_OAUTH_TOKEN",
+			"ANTHROPIC_API_KEY",
+			"AGENTPULSE_UPDATER_REAL_SERVICES",
+		]) {
+			setConsentIoForTests(ttyIo("correct"));
+			const deps = f.deps({ env: { PATH: process.env.PATH, HOME: f.home, [ok]: "1" } });
+			expect({
+				ok,
+				got: await enableAuto(deps, { allowMigrations: false, window: null }, say),
+			}).toEqual({ ok, got: { ok: true } });
+			rmSync(consentPath(f), { force: true });
+		}
+	}, 60_000);
+
+	test("the phrase has a random part that changes from one run to the next", async () => {
+		fx = await createFixture();
+		const f = fx;
+		const seen = new Set<string>();
+		for (let i = 0; i < 6; i++) {
+			const io = ttyIo("wrong");
+			setConsentIoForTests(io);
+			await enableAuto(f.deps(), { allowMigrations: false, window: null }, say);
+			seen.add(/"([^"]+)"/.exec(io.asked[0] ?? "")?.[1] ?? "");
+		}
+		expect(seen.size).toBeGreaterThan(1);
+		for (const phrase of seen) expect(phrase).toMatch(/^enable [0-9a-f]{6}$/);
 	}, 60_000);
 
 	test("--allow-migrations needs its own typed words, not just 'enable'", async () => {
 		fx = await createFixture();
 		const f = fx;
+		// the plain phrase isn't the migrations phrase
 		setConsentIoForTests(ttyIo("enable"));
 		expect(await enableAuto(f.deps(), { allowMigrations: true, window: null }, say)).toEqual({
 			ok: false,
 			code: "not_confirmed",
 		});
 		expect(existsSync(consentPath(f))).toBe(false);
-		setConsentIoForTests(ttyIo("allow migrations"));
+		const io = ttyIo("correct");
+		setConsentIoForTests(io);
+		expect(await enableAuto(f.deps(), { allowMigrations: true, window: null }, say)).toEqual({
+			ok: true,
+		});
+		expect(io.asked[0]).toContain("allow migrations");
+		setConsentIoForTests(ttyIo("correct"));
 		expect(await enableAuto(f.deps(), { allowMigrations: true, window: null }, say)).toEqual({
 			ok: true,
 		});
@@ -183,7 +228,7 @@ describe("auto on", () => {
 		fx = await createFixture();
 		const f = fx;
 		for (const window of ["25:00-26:00", "2:00-4:00", "02:00-02:00", "02:00", "02:00-04:30;x"]) {
-			const io = ttyIo("enable");
+			const io = ttyIo("correct");
 			setConsentIoForTests(io);
 			expect(await enableAuto(f.deps(), { allowMigrations: false, window }, say)).toEqual({
 				ok: false,
@@ -197,7 +242,7 @@ describe("auto on", () => {
 	test("an install that would refuse to update is refused: a branch, no service manager, a container, Windows, a fork", async () => {
 		fx = await createFixture();
 		const f = fx;
-		setConsentIoForTests(ttyIo("enable"));
+		setConsentIoForTests(ttyIo("correct"));
 		const request = { allowMigrations: false, window: null };
 		f.writeInstallRecord({ track: "ref" });
 		expect(await enableAuto(f.deps(), request, say)).toEqual({ ok: false, code: "tracking_ref" });
@@ -238,7 +283,7 @@ describe("auto on", () => {
 		const f = fx;
 		const clients = { on: true, components: ["relay", "statusline"] };
 		writeFileSync(consentPath(f), `${JSON.stringify({ schema: 1, clients })}\n`, { mode: 0o600 });
-		setConsentIoForTests(ttyIo("enable"));
+		setConsentIoForTests(ttyIo("correct"));
 		expect(await enableAuto(f.deps(), { allowMigrations: false, window: null }, say)).toEqual({
 			ok: true,
 		});
@@ -251,18 +296,55 @@ describe("auto on", () => {
 		expect(readJson(f)).toEqual({ schema: 1, app: OFF, clients });
 	}, 60_000);
 
-	test("when the timer can't be installed the consent goes back to what it was", async () => {
+	test("when the timer can't be installed the consent file is byte for byte what it was", async () => {
 		fx = await createFixture();
 		const f = fx;
 		f.fake.installTimer = async () => {
 			throw new Error("boom");
 		};
-		setConsentIoForTests(ttyIo("enable"));
+		// on, with a window and a migrations flag, plus the relay's section, in a spelling this writer wouldn't produce
+		const original = `{\n  "schema": 1,\n  "app": {"on": true, "allowMigrations": true, "window": "01:00-02:00"},\n  "clients": {"on": true, "components": ["relay"]}\n}\n`;
+		writeFileSync(consentPath(f), original, { mode: 0o600 });
+		setConsentIoForTests(ttyIo("correct"));
 		expect(await enableAuto(f.deps(), { allowMigrations: false, window: null }, say)).toEqual({
 			ok: false,
 			code: "timer_failed",
 		});
-		expect(readConsent(f.home)).toEqual(OFF);
+		expect(readFileSync(consentPath(f), "utf-8")).toBe(original);
+		expect(statSync(consentPath(f)).mode & 0o777).toBe(0o600);
+		// and with no file before, none after
+		rmSync(consentPath(f));
+		setConsentIoForTests(ttyIo("correct"));
+		await enableAuto(f.deps(), { allowMigrations: false, window: null }, say);
+		expect(existsSync(consentPath(f))).toBe(false);
+	}, 60_000);
+
+	test("consent the updater wouldn't believe is consent_unwritable, with no timer left behind", async () => {
+		fx = await createFixture();
+		const f = fx;
+		setConsentIoForTests(ttyIo("correct"));
+		// a directory others can write into appears after the install record was read: what is written there reads as off
+		f.fake.preflight = async () => {
+			chmodSync(f.dir, 0o777);
+			return "ok";
+		};
+		try {
+			expect(await enableAuto(f.deps(), { allowMigrations: false, window: null }, say)).toEqual({
+				ok: false,
+				code: "consent_unwritable",
+			});
+		} finally {
+			chmodSync(f.dir, 0o700);
+		}
+		expect(f.fake.timerInstalled).toBeNull();
+		expect(f.fake.calls).not.toContain("installTimer");
+		expect(f.fake.calls).toContain("removeTimer");
+		f.fake.preflight = async () => "ok";
+		// control: the same machine with a private directory is accepted
+		setConsentIoForTests(ttyIo("correct"));
+		expect(await enableAuto(f.deps(), { allowMigrations: false, window: null }, say)).toEqual({
+			ok: true,
+		});
 	}, 60_000);
 });
 
@@ -270,7 +352,7 @@ describe("auto off", () => {
 	test("removes the timer and clears the consent, with no terminal and no word", async () => {
 		fx = await createFixture();
 		const f = fx;
-		setConsentIoForTests(ttyIo("allow migrations"));
+		setConsentIoForTests(ttyIo("correct"));
 		await enableAuto(f.deps(), { allowMigrations: true, window: "01:00-02:00" }, say);
 		expect(f.fake.timerInstalled).not.toBeNull();
 		setConsentIoForTests(ttyIo("", false));
@@ -281,17 +363,54 @@ describe("auto off", () => {
 	}, 60_000);
 });
 
+describe("auto off, when the timer can't be removed", () => {
+	test("the consent is already cleared, and the failure is said", async () => {
+		fx = await createFixture();
+		const f = fx;
+		setConsentIoForTests(ttyIo("correct"));
+		await enableAuto(f.deps(), { allowMigrations: false, window: null }, say);
+		expect(readConsent(f.home).on).toBe(true);
+		f.fake.removeTimer = async () => {
+			throw new Error("boom");
+		};
+		expect(await disableAuto(f.deps())).toEqual({ ok: false, code: "timer_failed" });
+		expect(readConsent(f.home)).toEqual(OFF);
+	}, 60_000);
+});
+
 describe("the timer's PATH", () => {
-	test("starts with the Bun that runs the updater, keeps only absolute entries and adds the system's", () => {
-		const path = timerPath({ PATH: "/opt/x/bin:relative/bin::/usr/bin" }, "/home/u/.bun/bin/bun");
+	test("is the Bun's and git's directories then fixed system ones, never the caller's whole PATH", () => {
+		const path = timerPath("/home/u/.bun/bin/bun", "/opt/x/bin");
 		expect(path.split(":")).toEqual([
 			"/home/u/.bun/bin",
 			"/opt/x/bin",
-			"/usr/bin",
+			"/opt/homebrew/bin",
 			"/usr/local/bin",
+			"/usr/bin",
 			"/bin",
+			"/usr/sbin",
+			"/sbin",
 		]);
+		// a directory with a separator or a newline in it is dropped, a relative one too
+		expect(timerPath("/b/bun", "rel/bin")).not.toContain("rel");
+		expect(timerPath("/b/bun", "/x\ny")).not.toContain("x");
 	});
+
+	test("the job's PATH holds git's directory from the caller's PATH and none of its other entries", async () => {
+		fx = await createFixture();
+		const f = fx;
+		setConsentIoForTests(ttyIo("correct"));
+		const gitDir = Bun.which("git")?.replace(/\/git$/, "") ?? "";
+		const deps = f.deps({
+			env: { PATH: `/tmp/attacker-writable:${gitDir}`, HOME: f.home },
+		});
+		expect(await enableAuto(deps, { allowMigrations: false, window: null }, say)).toEqual({
+			ok: true,
+		});
+		const path = f.fake.timerInstalled?.path ?? "";
+		expect(path).not.toContain("attacker-writable");
+		expect(path.split(":")).toContain(gitDir);
+	}, 60_000);
 });
 
 describe("who may call the timer", () => {

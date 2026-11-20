@@ -104,3 +104,37 @@ describe("chooseTarget", () => {
 		).toBe("server_version_unknown");
 	});
 });
+
+describe("the 24 hour wait, at its edge", () => {
+	const hours24 = 24 * 3_600_000;
+	const at = (ageMs: number, over: Partial<TargetInput> = {}) => {
+		const published = new Date(NOW - ageMs).toISOString();
+		const m = manifest({
+			latest: "0.13.0",
+			releases: [
+				testRelease("0.13.0", { publishedAt: published }),
+				testRelease("0.12.0", { publishedAt: OLD }),
+			],
+		});
+		return code({ manifest: m, mode: "auto", ...over });
+	};
+	test("a millisecond short of 24 hours waits; exactly 24 hours applies", () => {
+		expect(at(hours24 - 1)).toBe("canary_wait");
+		expect(at(hours24)).toBe("ok:0.13.0");
+		expect(at(hours24 + 1)).toBe("ok:0.13.0");
+		expect(at(0)).toBe("canary_wait");
+	});
+	test("a security release skips the wait at any age", () => {
+		const m = manifest({
+			latest: "0.13.0",
+			releases: [
+				testRelease("0.13.0", { publishedAt: new Date(NOW).toISOString(), severity: "security" }),
+				testRelease("0.12.0", { publishedAt: OLD }),
+			],
+		});
+		expect(code({ manifest: m, mode: "auto" })).toBe("ok:0.13.0");
+	});
+	test("a person's run never waits", () => {
+		expect(at(0, { mode: "manual" })).toBe("ok:0.13.0");
+	});
+});

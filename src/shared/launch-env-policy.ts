@@ -185,6 +185,47 @@ export const FORK_ENV_STRIP_EXACT: readonly string[] = [
 /** Matched case-insensitively. A fork reports nothing through AgentPulse's own variables. */
 export const FORK_ENV_STRIP_PREFIXES: readonly string[] = ["AGENTPULSE_"];
 
+/**
+ * Variables that say "this process runs inside an agent session", for the commands that must not be run by an
+ * agent on a person's behalf (turning on automatic updates). Exact names plus prefixes; the Claude Code names are
+ * the fork strip list above. A name another agent adds later is the residual: this is a tripwire, not a boundary,
+ * because anything running as the same user can scrub its own environment. `AGENTPULSE_UPDATER_REAL_SERVICES` is
+ * the one AgentPulse variable the installed shim sets on purpose, so it doesn't count.
+ */
+export const AGENT_SESSION_MARKER_EXACT: readonly string[] = [
+	...FORK_ENV_STRIP_EXACT,
+	"CODEX_THREAD_ID",
+	"CODEX_SANDBOX",
+	"CODEX_CI",
+	"OPENCODE",
+	"GITHUB_COPILOT_CLI",
+	"COPILOT_CLI",
+	"GEMINI_CLI",
+];
+export const AGENT_SESSION_MARKER_PREFIXES: readonly string[] = [
+	"CODEX_SANDBOX_",
+	"OPENCODE_",
+	"COPILOT_AGENT_",
+	"AGENTPULSE_",
+];
+const AGENT_SESSION_MARKER_ALLOWED: readonly string[] = ["AGENTPULSE_UPDATER_REAL_SERVICES"];
+
+/** The name of the first agent-session marker set (non-empty) in `env`, or null. Names only: a value is never returned. */
+export function agentSessionMarker(env: Record<string, string | undefined>): string | null {
+	for (const [name, value] of Object.entries(env)) {
+		if (value === undefined || value === "") continue;
+		const upper = name.toUpperCase();
+		if (AGENT_SESSION_MARKER_ALLOWED.includes(upper)) continue;
+		if (
+			AGENT_SESSION_MARKER_EXACT.includes(upper) ||
+			AGENT_SESSION_MARKER_PREFIXES.some((prefix) => upper.startsWith(prefix))
+		) {
+			return upper;
+		}
+	}
+	return null;
+}
+
 export function isForkStrippedEnvName(name: string): boolean {
 	const upper = name.toUpperCase();
 	return (

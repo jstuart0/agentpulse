@@ -5,13 +5,23 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isReleaseVersion } from "../../packages/agentpulse-mcp/src/client.js";
+import {
+	UPDATE_CHECK_RESULT_NAMES,
+	UPDATE_INSTALL_KIND_NAMES,
+	UPDATE_OUTCOME_CODE_NAMES,
+	isReleaseVersion,
+} from "../../packages/agentpulse-mcp/src/client.js";
 import {
 	extractConstTuple,
 	extractInterfaceFields,
 	extractUnion,
 } from "../../scripts/lib/parity-utils.js";
-import { RED_UPDATE_STATES, UPDATE_CHECK_RESULTS, UPDATE_STATE_NAMES } from "./update-status.js";
+import {
+	RED_UPDATE_STATES,
+	UPDATE_CHECK_RESULTS,
+	UPDATE_OUTCOME_CODES,
+	UPDATE_STATE_NAMES,
+} from "./update-status.js";
 import { parseReleaseVersion } from "./version.js";
 
 const root = new URL("../..", import.meta.url).pathname;
@@ -66,6 +76,20 @@ describe("the vendored update status", () => {
 		expect(sorted(extractUnion(MCP, "UpdateCheckResult", { allowUnderscore: true }))).toEqual(
 			sorted(UPDATE_CHECK_RESULTS),
 		);
+	});
+
+	test("the arrays the sanitiser checks against are the shared sets, not just the types", () => {
+		expect(sorted(UPDATE_CHECK_RESULT_NAMES)).toEqual(sorted(UPDATE_CHECK_RESULTS));
+		expect(sorted(UPDATE_OUTCOME_CODE_NAMES)).toEqual(sorted(UPDATE_OUTCOME_CODES));
+		const installRecord = read("src/shared/install-record.ts");
+		expect(sorted(UPDATE_INSTALL_KIND_NAMES)).toEqual(
+			sorted(extractUnion(installRecord, "InstallKind", { allowUnderscore: true })),
+		);
+		// the track values the sanitiser accepts are the install record's
+		expect(read("packages/agentpulse-mcp/src/client.ts")).toContain(
+			'raw.track === "release" || raw.track === "ref"',
+		);
+		expect(installRecord).toContain('track: "release" | "ref";');
 	});
 
 	test("the vendored release-version grammar answers like the shared one", () => {

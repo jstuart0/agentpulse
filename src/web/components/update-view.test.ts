@@ -456,6 +456,7 @@ describe("the Updates panel", () => {
 				lastTarget: "0.12.0",
 				at: "2026-11-19T10:00:00.000Z",
 				waitingSince: "2026-11-19T04:00:00.000Z",
+				backoffUntil: "2026-11-19T16:00:00.000Z",
 			}),
 			ctx(),
 			fmt,
@@ -463,9 +464,14 @@ describe("the Updates panel", () => {
 		expect(view.autoRows).toEqual([
 			{ label: "Automatic updates", value: "On, on this machine" },
 			{
-				label: "Last automatic run",
+				label: "Last update run",
 				value: "This host's supervisor is busy with a session. (0.12.0) ago(10:00)",
 				title: "2026-11-19T10:00:00.000Z",
+			},
+			{
+				label: "Next automatic try",
+				value: "not before 2026-11-19T16:00:00.000Z",
+				title: "2026-11-19T16:00:00.000Z",
 			},
 			{ label: "Waiting since", value: "ago(04:00)", title: "2026-11-19T04:00:00.000Z" },
 		]);

@@ -367,6 +367,26 @@ describe("localApply is for an admin only", () => {
 		expect("localApply" in (await read(loose.key))).toBe(false);
 	});
 
+	test("an admin's key that is only respond or observe has no localApply key (the role is the owner's, the scope is the key's)", async () => {
+		await localChecker();
+		await setStoredMode("team");
+		const admin = await seedLocalUser("la-admin-scoped", "admin");
+		for (const scope of ["respond", "observe"] as const) {
+			const key = await seedKey(`la-admin-${scope}`, [scope], admin.id);
+			const body = await read(key.key);
+			expect({ scope, has: "localApply" in body }).toEqual({ scope, has: false });
+		}
+		// control: the same admin's manage key gets it
+		const manage = await seedKey("la-admin-manage-ctl", ["manage"], admin.id);
+		expect((await read(manage.key)).localApply).toEqual(APPLY);
+	});
+
+	test("solo: an observe key isn't an admin's and gets the six public fields only", async () => {
+		await localChecker();
+		const observe = await read(observeKey);
+		expect("localApply" in observe).toBe(false);
+	});
+
 	test("/health never carries it, to anyone", async () => {
 		await localChecker();
 		const body = await (await healthApp.request("/api/v1/health?manifest=1")).json();
@@ -385,5 +405,64 @@ describe("localApply is for an admin only", () => {
 		});
 		expect(res.status).toBe(403);
 		expect(JSON.stringify(await res.json())).not.toContain("localApply");
+	});
+});
+
+describe("localApply from the real wiring, with a temporary HOME", () => {
+	const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = require("node:fs");
+	const { tmpdir } = require("node:os");
+	const { join } = require("node:path");
+	const { setInstallProbeForTests } = require("../services/install-probe.js");
+	let home: string;
+	let savedHome: string | undefined;
+	afterEach(() => {
+		setInstallProbeForTests(null);
+		if (savedHome === undefined) {
+			process.env.HOME = undefined as never;
+			// biome-ignore lint/performance/noDelete: an env var must be removed, not set to the string "undefined"
+			delete process.env.HOME;
+		} else process.env.HOME = savedHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+
+	test("the default checker reads this HOME's consent and state into capabilities.update.localApply for an admin", async () => {
+		savedHome = process.env.HOME;
+		home = mkdtempSync(join(tmpdir(), "ap-wiring-"));
+		const dir = join(home, ".agentpulse");
+		mkdirSync(dir, { mode: 0o700 });
+		writeFileSync(
+			join(dir, "update-consent.json"),
+			JSON.stringify({ schema: 1, app: { on: true, allowMigrations: false, window: null } }),
+			{ mode: 0o600 },
+		);
+		writeFileSync(
+			join(dir, "update-state.json"),
+			JSON.stringify({ schema: 1, lastOutcome: "canary_wait", lastTarget: "0.12.0" }),
+			{ mode: 0o600 },
+		);
+		process.env.HOME = home;
+		setInstallProbeForTests(() => ({ kind: "local", track: "release" }));
+		setUpdateCheckerForTests(null); // the checker the server builds for itself, not a fixture's
+		const key = await createApiKey("update-wiring-manage", ["manage"]);
+		const res = await app.request("/api/v1/capabilities", {
+			headers: { Authorization: `Bearer ${key.key}` },
+		});
+		const update = (await res.json()).update;
+		expect(update.localApply).toEqual({
+			auto: true,
+			lastOutcome: "canary_wait",
+			lastTarget: "0.12.0",
+		});
+		// and a machine whose container probe says it isn't a local install has none
+		setInstallProbeForTests(() => ({ kind: "container", track: null }));
+		setUpdateCheckerForTests(null);
+		const again = (
+			await (
+				await app.request("/api/v1/capabilities", {
+					headers: { Authorization: `Bearer ${key.key}` },
+				})
+			).json()
+		).update;
+		expect(again.localApply).toBeNull();
 	});
 });

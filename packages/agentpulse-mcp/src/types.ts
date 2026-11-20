@@ -1275,6 +1275,7 @@ export interface UpdateLocalApplyStatus {
 	lastTarget?: string;
 	at?: string;
 	waitingSince?: string;
+	backoffUntil?: string;
 }
 
 export interface UpdateStatus {

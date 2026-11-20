@@ -177,6 +177,7 @@ export async function runCli(argv: string[], io: CliIo, deps?: UpdaterDeps): Pro
 			OUTCOME_COPY[outcome.code as UpdateOutcomeCode]?.sentence ??
 			"That wasn't possible.";
 		io.err(words);
+		if (outcome.detail) io.err(`The variable that gave it away: ${outcome.detail}.`);
 		return 1;
 	}
 	if (parsed.kind === "status") {
@@ -191,6 +192,9 @@ export async function runCli(argv: string[], io: CliIo, deps?: UpdaterDeps): Pro
 			io.out(
 				`Last run: ${copy?.sentence ?? status.lastOutcome}${status.at ? ` (${status.at})` : ""}`,
 			);
+		}
+		if (status.backoffUntil) {
+			io.out(`A failed automatic run is holding the next one back until ${status.backoffUntil}.`);
 		}
 		if (status.refused.length > 0) io.out(`Not tried again: ${status.refused.join(", ")}`);
 		if (status.journalPhase && !["done", "rolled_back"].includes(status.journalPhase)) {

@@ -206,18 +206,20 @@ describe("updateStatusFor", () => {
 		localApply: { auto: true, lastOutcome: "rolled_back" as const },
 	};
 
-	test("an admin gets everything; an operator who isn't an admin gets everything but localApply; anyone else the public six", () => {
-		expect(updateStatusFor(status, { operator: true, admin: true })).toEqual(status);
-		const member = updateStatusFor(status, { operator: true, admin: false });
+	test("an operator who may see localApply gets everything; one who may not gets everything but localApply; anyone else the public six", () => {
+		expect(updateStatusFor(status, { operator: true, localApply: true })).toEqual(status);
+		const member = updateStatusFor(status, { operator: true, localApply: false });
 		expect("localApply" in member).toBe(false);
 		expect((member as { installKind?: string }).installKind).toBe("local");
-		const reader = updateStatusFor(status, { operator: false, admin: false });
+		const reader = updateStatusFor(status, { operator: false, localApply: false });
 		expect(Object.keys(reader).sort()).toEqual(
 			["checkedAt", "current", "latest", "severity", "stale", "state"].sort(),
 		);
 	});
 
-	test("an admin can't be read as less than an operator: admin alone still gets everything", () => {
-		expect(updateStatusFor(status, { operator: false, admin: true })).toEqual(status);
+	test("localApply never reaches a reader who isn't an operator, whatever else is claimed", () => {
+		const out = updateStatusFor(status, { operator: false, localApply: true });
+		expect("localApply" in out).toBe(false);
+		expect("installKind" in out).toBe(false);
 	});
 });

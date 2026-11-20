@@ -216,6 +216,8 @@ export interface PublishOptions {
 	signer?: "active" | "standby" | "unknown";
 	/** Lists this commit for a version instead of the real one. */
 	commitOverride?: Record<string, string>;
+	/** Lists this last migration for a version instead of the tree's own (a manifest that lies about a migration). */
+	migrationOverride?: Record<string, string>;
 }
 
 const FIXTURE_GIT_ENV = {
@@ -364,7 +366,10 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
 						severity: r.severity,
 						publishedAt: r.publishedAt,
 						pulled: opts.pulled?.includes(r.version) ?? false,
-						migrations: { sqlite: r.migration, postgres: r.migration },
+						migrations: {
+							sqlite: opts.migrationOverride?.[r.version] ?? r.migration,
+							postgres: opts.migrationOverride?.[r.version] ?? r.migration,
+						},
 					}),
 				),
 			});

@@ -14,19 +14,25 @@ import type { InstallKind } from "../../shared/install-record.js";
 import { readConsent, readUpdateStateChecked } from "../../shared/update-files.js";
 import type { LocalApplyStatus } from "../../shared/update-status.js";
 
-export function readLocalApply(home: string, kind: InstallKind): LocalApplyStatus | null {
+export function readLocalApply(
+	home: string,
+	kind: InstallKind,
+	nowMs: number = Date.now(),
+): LocalApplyStatus | null {
 	if (kind !== "local") return null;
 	const state = readUpdateStateChecked(home);
 	if (state.kind === "invalid") return null;
 	const auto = readConsent(home).on;
 	if (state.kind === "absent") return { auto };
-	const { lastOutcome, lastTarget, at, waitingSince } = state.state;
+	const { lastOutcome, lastTarget, at, waitingSince, backoff } = state.state;
+	const until = backoff ? Date.parse(backoff.notBefore) : Number.NaN;
 	return {
 		auto,
 		...(lastOutcome ? { lastOutcome } : {}),
 		...(lastTarget ? { lastTarget } : {}),
 		...(at ? { at } : {}),
 		...(waitingSince ? { waitingSince } : {}),
+		...(backoff && until > nowMs ? { backoffUntil: backoff.notBefore } : {}),
 	};
 }
 
@@ -41,7 +47,7 @@ export function readLocalApplyCached(
 ): LocalApplyStatus | null {
 	const key = `${home}\0${kind}`;
 	if (cached && cached.key === key && nowMs - cached.at < CACHE_MS) return cached.value;
-	const value = readLocalApply(home, kind);
+	const value = readLocalApply(home, kind, nowMs);
 	cached = { at: nowMs, key, value };
 	return value;
 }

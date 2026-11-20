@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inWindowAt } from "../updater/updater.js";
 import {
 	UPDATE_CONSENT_FILE,
 	UPDATE_DRAIN_FILE,
 	UPDATE_STATE_FILE,
+	WINDOW_NEVER,
 	readConsent,
 	readDrainRequest,
 	readSupervisorStatus,
@@ -61,8 +63,19 @@ describe("readConsent", () => {
 			app: { on: true, allowMigrations: true, window: "02:00-05:00" },
 		});
 		expect(readConsent(home)).toEqual({ on: true, allowMigrations: true, window: "02:00-05:00" });
-		put(UPDATE_CONSENT_FILE, { schema: 1, app: { on: true, window: "25:00-05:00" } });
-		expect(readConsent(home)).toEqual({ on: true, allowMigrations: false, window: null });
+		// no window is any time; a window that is there but malformed is never (fail closed), not any time
+		put(UPDATE_CONSENT_FILE, { schema: 1, app: { on: true } });
+		expect(readConsent(home).window).toBeNull();
+		for (const window of ["25:00-05:00", "2:00-5:00", "02:00", 7, "", "02:00-05:00;x"]) {
+			put(UPDATE_CONSENT_FILE, { schema: 1, app: { on: true, window } });
+			expect({ window, got: readConsent(home) }).toEqual({
+				window,
+				got: { on: true, allowMigrations: false, window: WINDOW_NEVER },
+			});
+		}
+		// and the window it reads as holds no minute of the day
+		for (const minute of [0, 1, 719, 720, 1439])
+			expect(inWindowAt(WINDOW_NEVER, minute)).toBe(false);
 	});
 });
 

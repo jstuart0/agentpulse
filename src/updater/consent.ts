@@ -13,20 +13,32 @@
  * The timer goes in through the service-manager port. If the timer can't be installed the consent is put back.
  * `auto off` needs no confirmation (it only takes a power away): it removes the timer and clears the consent.
  *
- * Stated residual: an agent that can drive a pty with a scrubbed environment, or that writes the file itself
- * as the same user, can still turn it on. Same-user code is outside what this guards.
+ * Stated residuals, per agent. Every agent that runs commands as this account (Claude Code, Codex, Copilot CLI,
+ * OpenCode, anything else) can do what this account can, so none of this is a boundary:
+ *  - the marker check (`agentSessionMarker`: Claude Code, Codex, OpenCode, Copilot and AgentPulse's own variables)
+ *    only catches an agent that leaves its variables in the command's environment; one that scrubs them, or runs
+ *    the command through a login shell that resets them, passes;
+ *  - the typed phrase has a random part that changes every run, so a script that types a fixed word fails, but an
+ *    agent that drives a pty reads it off the prompt like a person does;
+ *  - an agent can write `update-consent.json` and install the timer itself with the permissions it already has;
+ *  - a parent-process walk (is any ancestor an agent?) was considered and left out: it is bounded only by the
+ *    process table the agent can also reshape (a double fork reparents to init), so it would add a refusal that
+ *    looks stronger than it is.
+ * What the guard does buy: a consent that needs a person at a keyboard in the ordinary case, and a refusal that
+ * says why when an agent tries the obvious thing.
  *
  * The terminal check and the prompt reader are one module-level value that only a test replaces
  * (`setConsentIoForTests`); no environment variable can stand in for a terminal.
  */
-import { constants, accessSync, mkdirSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { constants, accessSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 import { readInstallRecord } from "../shared/install-record.js";
-import { FORK_ENV_STRIP_EXACT } from "../shared/launch-env-policy.js";
+import { agentSessionMarker } from "../shared/launch-env-policy.js";
 import { writePrivateFileAtomicNoFollow } from "../shared/private-file.js";
 import { isCanonicalRepoUrl } from "../shared/release-feed.js";
-import { UPDATE_WINDOW_PATTERN, readConsentDocument } from "../shared/update-files.js";
+import { UPDATE_WINDOW_PATTERN, readConsent, readConsentDocument } from "../shared/update-files.js";
 import type { UpdateOutcomeCode } from "../shared/update-status.js";
 import { updaterPaths } from "./paths.js";
 import type { UpdaterDeps } from "./updater.js";
@@ -68,7 +80,8 @@ export type ConsentOnlyRefusal =
 	| "consent_unwritable";
 
 export type ConsentRefusal = UpdateOutcomeCode | ConsentOnlyRefusal;
-export type ConsentResult = { ok: true } | { ok: false; code: ConsentRefusal };
+/** `detail` is a variable name, never a value, so a person can see what to unset. */
+export type ConsentResult = { ok: true } | { ok: false; code: ConsentRefusal; detail?: string };
 
 export const CONSENT_REFUSAL_COPY: Record<ConsentOnlyRefusal, string> = {
 	not_a_terminal:
@@ -96,37 +109,45 @@ export function windowIsValid(window: string): boolean {
 	return start !== end;
 }
 
-function agentMarkerPresent(env: Record<string, string | undefined>): boolean {
-	const markers = new Set(FORK_ENV_STRIP_EXACT);
-	return Object.entries(env).some(
-		([name, value]) => value !== undefined && value !== "" && markers.has(name.toUpperCase()),
-	);
-}
-
-function findOnPath(name: string, path: string): boolean {
+/** The directory of the first executable `name` on `path` (absolute entries only), or null. */
+function findOnPath(name: string, path: string): string | null {
 	for (const dir of path.split(delimiter)) {
 		if (!isAbsolute(dir)) continue;
 		try {
 			accessSync(join(dir, name), constants.X_OK);
-			return true;
+			return dir;
 		} catch {
 			// not in this directory
 		}
 	}
-	return false;
+	return null;
 }
 
-/** The timer job's PATH: the Bun that runs the updater first, then the caller's own absolute directories, then the system's. */
-export function timerPath(env: Record<string, string | undefined>, bunBin: string): string {
-	const entries = [
-		dirname(bunBin),
-		...(env.PATH ?? "").split(delimiter),
-		"/usr/local/bin",
-		"/usr/bin",
-		"/bin",
-	];
-	const clean = entries.filter((dir) => isAbsolute(dir) && !/[\0\n\r]/.test(dir));
-	return [...new Set(clean)].join(delimiter);
+const SYSTEM_DIRS = [
+	"/opt/homebrew/bin",
+	"/usr/local/bin",
+	"/usr/bin",
+	"/bin",
+	"/usr/sbin",
+	"/sbin",
+];
+
+/**
+ * The timer job's PATH: the directories of the Bun that runs the updater and of the git found on the caller's
+ * PATH, then fixed system directories. Never the caller's whole PATH: a directory somebody else can write into
+ * that happened to be on it would otherwise be on the path of a job that runs unattended.
+ */
+export function timerPath(bunBin: string, gitDir: string): string {
+	const dirs = [dirname(bunBin), gitDir, ...SYSTEM_DIRS];
+	return [...new Set(dirs.filter((dir) => isAbsolute(dir) && !/[\0\n\r:]/.test(dir)))].join(
+		delimiter,
+	);
+}
+
+/** A confirmation phrase with a random part that changes every run, so a fixed script can't type it. */
+function confirmationPhrase(allowMigrations: boolean): string {
+	const part = randomBytes(3).toString("hex");
+	return `${allowMigrations ? "allow migrations" : "enable"} ${part}`;
 }
 
 /** Why this install can't be updated by itself, or null. The same gates `runUpdate` applies, so consent is never given for what would refuse anyway. */
@@ -164,20 +185,24 @@ function writeConsent(
 	}
 }
 
-function currentApp(deps: UpdaterDeps): {
-	on: boolean;
-	allowMigrations: boolean;
-	window: string | null;
-} {
-	const raw = readConsentDocument(deps.home)?.app;
-	if (typeof raw !== "object" || raw === null)
-		return { on: false, allowMigrations: false, window: null };
-	const app = raw as Record<string, unknown>;
-	return {
-		on: app.on === true,
-		allowMigrations: app.allowMigrations === true,
-		window: typeof app.window === "string" ? app.window : null,
-	};
+/** The consent file's bytes as they are now, or null when there is none to put back. */
+function consentBytes(deps: UpdaterDeps): string | null {
+	try {
+		return readFileSync(updaterPaths(deps.home).consent, "utf-8");
+	} catch {
+		return null;
+	}
+}
+
+/** Puts the consent file back exactly as it was: the same bytes, or no file. */
+function restoreConsent(deps: UpdaterDeps, original: string | null): void {
+	const path = updaterPaths(deps.home).consent;
+	try {
+		if (original === null) rmSync(path, { force: true });
+		else writePrivateFileAtomicNoFollow(path, original);
+	} catch {
+		// nothing more can be done; the read-back below tells the person
+	}
 }
 
 export async function enableAuto(
@@ -185,15 +210,17 @@ export async function enableAuto(
 	request: AutoOnRequest,
 	say: (line: string) => void,
 ): Promise<ConsentResult> {
-	if (agentMarkerPresent(deps.env)) return { ok: false, code: "agent_session" };
+	const marker = agentSessionMarker(deps.env);
+	if (marker) return { ok: false, code: "agent_session", detail: marker };
 	if (!io.isTty()) return { ok: false, code: "not_a_terminal" };
 	if (request.window !== null && !windowIsValid(request.window)) {
 		return { ok: false, code: "bad_window" };
 	}
 	const refusal = await installRefusal(deps);
 	if (refusal) return { ok: false, code: refusal };
-	const path = timerPath(deps.env, deps.bunBin);
-	if (!findOnPath("git", path)) return { ok: false, code: "git_not_found" };
+	const gitDir = findOnPath("git", deps.env.PATH ?? "");
+	if (!gitDir) return { ok: false, code: "git_not_found" };
+	const path = timerPath(deps.bunBin, gitDir);
 
 	say("Automatic updates let this machine install new signed AgentPulse releases by itself.");
 	say(
@@ -209,13 +236,21 @@ export async function enableAuto(
 		say("Migrations are allowed: an update may change the SQLite database. A copy is taken first,");
 		say("but going back afterwards loses what was written since.");
 	}
-	const word = request.allowMigrations ? "allow migrations" : "enable";
-	const typed = (await io.prompt(`Type ${word} to continue: `)).trim();
-	if (typed !== word) return { ok: false, code: "not_confirmed" };
+	const phrase = confirmationPhrase(request.allowMigrations);
+	const typed = (await io.prompt(`Type "${phrase}" to continue: `)).trim();
+	if (typed !== phrase) return { ok: false, code: "not_confirmed" };
 
-	const previous = currentApp(deps);
+	const original = consentBytes(deps);
 	const next = { on: true, allowMigrations: request.allowMigrations, window: request.window };
 	if (!writeConsent(deps, next)) return { ok: false, code: "consent_unwritable" };
+	// Read it back the way the updater will: a file the updater wouldn't believe (a directory others can write
+	// into, a link) reads as off, and a timer over consent that reads as off would do nothing, quietly.
+	const back = readConsent(deps.home);
+	if (!back.on || back.allowMigrations !== next.allowMigrations || back.window !== next.window) {
+		restoreConsent(deps, original);
+		await deps.serviceManager.removeTimer().catch(() => {});
+		return { ok: false, code: "consent_unwritable" };
+	}
 	try {
 		await deps.serviceManager.installTimer({
 			bunBin: deps.bunBin,
@@ -224,7 +259,7 @@ export async function enableAuto(
 			path,
 		});
 	} catch {
-		writeConsent(deps, previous);
+		restoreConsent(deps, original);
 		return { ok: false, code: "timer_failed" };
 	}
 	return { ok: true };

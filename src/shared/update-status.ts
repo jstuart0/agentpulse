@@ -129,6 +129,8 @@ export interface LocalApplyStatus {
 	lastTarget?: string;
 	at?: string;
 	waitingSince?: string;
+	/** Set while a failure is holding the next scheduled run back: not before this time. */
+	backoffUntil?: string;
 }
 
 export interface UpdateStatus {
@@ -172,16 +174,17 @@ export function publicUpdateStatus(status: UpdateStatus): PublicUpdateStatus {
 
 /**
  * The status as one caller may read it. `operator` is a manage key or an admin (the install kind, track and last
- * result); `admin` is an effective admin, the only reader of `localApply`: what this machine's updater did last is
- * about the machine, so a member in team mode, and a manage key that belongs to a member, don't see it (a key's
- * role is its owner's). Everyone else gets the six public fields.
+ * result); `localApply` is for an effective admin who is also a person or holds a `manage` key: what this machine's
+ * updater did last is about the machine, so a member in team mode, a manage key that belongs to a member (a key's
+ * role is its owner's), and an admin-owned key that is only `respond` or `observe` don't see it. Everyone else gets
+ * the six public fields.
  */
 export function updateStatusFor(
 	status: UpdateStatus,
-	reader: { operator: boolean; admin: boolean },
+	reader: { operator: boolean; localApply: boolean },
 ): UpdateStatus | Omit<UpdateStatus, "localApply"> | PublicUpdateStatus {
-	if (!reader.operator && !reader.admin) return publicUpdateStatus(status);
-	if (reader.admin) return status;
+	if (!reader.operator) return publicUpdateStatus(status);
+	if (reader.localApply) return status;
 	const { localApply: _hidden, ...withoutLocalApply } = status;
 	return withoutLocalApply;
 }

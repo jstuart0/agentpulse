@@ -50,13 +50,21 @@ export interface AppConsent {
 	window: string | null;
 }
 
+/** A window that never opens: what a malformed one reads as (fail closed). Start equal to end is empty. */
+export const WINDOW_NEVER = "00:00-00:00";
+
 function consentFrom(raw: Record<string, unknown> | null): AppConsent {
 	const off: AppConsent = { on: false, allowMigrations: false, window: null };
 	if (!raw || raw.schema !== 1 || !isRecord(raw.app)) return off;
 	const app = raw.app;
 	if (app.on !== true) return off;
+	// No window is "any time"; a window that is there but malformed is "never", not "any time".
 	const window =
-		typeof app.window === "string" && UPDATE_WINDOW_PATTERN.test(app.window) ? app.window : null;
+		app.window === null || app.window === undefined
+			? null
+			: typeof app.window === "string" && UPDATE_WINDOW_PATTERN.test(app.window)
+				? app.window
+				: WINDOW_NEVER;
 	return { on: true, allowMigrations: app.allowMigrations === true, window };
 }
 

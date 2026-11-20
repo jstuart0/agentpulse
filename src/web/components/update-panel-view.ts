@@ -125,6 +125,13 @@ function autoRows(status: UpdateWire | null, format: TimeFormat): UpdatePanelVie
 			...(at ? { title: format.full(at) } : {}),
 		});
 	}
+	if (typeof apply.backoffUntil === "string") {
+		rows.push({
+			label: UPDATE_PANEL_COPY.nextTry,
+			value: `not before ${format.full(apply.backoffUntil)}`,
+			title: format.full(apply.backoffUntil),
+		});
+	}
 	if (typeof apply.waitingSince === "string") {
 		rows.push({
 			label: UPDATE_PANEL_COPY.waitingSince,

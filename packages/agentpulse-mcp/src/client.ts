@@ -369,7 +369,7 @@ export function isReleaseVersion(text: unknown): text is string {
 }
 
 const STATE_NAME_RE = /^[a-z][a-z_]{0,31}$/;
-const CHECK_RESULTS: readonly string[] = [
+export const UPDATE_CHECK_RESULT_NAMES: readonly string[] = [
 	"ok",
 	"unreachable",
 	"not_published",
@@ -383,7 +383,56 @@ const CHECK_RESULTS: readonly string[] = [
 	"future",
 	"bad_payload",
 ];
-const INSTALL_KINDS: readonly string[] = ["local", "kubernetes", "container", "source"];
+export const UPDATE_INSTALL_KIND_NAMES: readonly string[] = [
+	"local",
+	"kubernetes",
+	"container",
+	"source",
+];
+/** The updater's outcome codes (a vendored copy of the shared closed set; the parity test holds them equal). */
+export const UPDATE_OUTCOME_CODE_NAMES: readonly string[] = [
+	"no_consent",
+	"container",
+	"kubernetes",
+	"no_service_manager",
+	"tracking_ref",
+	"fork_install",
+	"no_install_record",
+	"symlinked_install",
+	"unverified",
+	"stale",
+	"pulled",
+	"downgrade",
+	"refused_before",
+	"server_version_unknown",
+	"up_to_date",
+	"canary_wait",
+	"migration_needs_consent",
+	"postgres_migration",
+	"dirty_tree",
+	"untracked_files",
+	"disk_space",
+	"not_fast_forward",
+	"commit_mismatch",
+	"db_path_mismatch",
+	"outside_window",
+	"locked",
+	"backoff",
+	"install_failed",
+	"build_failed",
+	"smoke_failed",
+	"snapshot_failed",
+	"supervisor_busy",
+	"drain_timeout",
+	"stop_failed",
+	"health_failed",
+	"supervisor_failed",
+	"rolled_back",
+	"rollback_failed",
+	"nothing_to_roll_back",
+	"downgrade_schema",
+	"updated",
+];
 const MAX_TIME_CHARS = 40;
 
 const isTime = (v: unknown): v is string =>
@@ -411,9 +460,9 @@ function sanitizeUpdateStatus(value: unknown): UpdateStatus | UnknownUpdateStatu
 	};
 	if ("manifestIssuedAt" in raw)
 		out.manifestIssuedAt = isTime(raw.manifestIssuedAt) ? raw.manifestIssuedAt : null;
-	if (typeof raw.lastResult === "string" && CHECK_RESULTS.includes(raw.lastResult))
+	if (typeof raw.lastResult === "string" && UPDATE_CHECK_RESULT_NAMES.includes(raw.lastResult))
 		out.lastResult = raw.lastResult;
-	if (typeof raw.installKind === "string" && INSTALL_KINDS.includes(raw.installKind))
+	if (typeof raw.installKind === "string" && UPDATE_INSTALL_KIND_NAMES.includes(raw.installKind))
 		out.installKind = raw.installKind;
 	if (raw.track === "release" || raw.track === "ref") out.track = raw.track;
 	if (raw.lastResult === null) out.lastResult = null;
@@ -424,12 +473,13 @@ function sanitizeUpdateStatus(value: unknown): UpdateStatus | UnknownUpdateStatu
 		const a = apply as Record<string, unknown>;
 		out.localApply = {
 			auto: a.auto === true,
-			...(typeof a.lastOutcome === "string" && /^[a-z_]{1,32}$/.test(a.lastOutcome)
+			...(typeof a.lastOutcome === "string" && UPDATE_OUTCOME_CODE_NAMES.includes(a.lastOutcome)
 				? { lastOutcome: a.lastOutcome }
 				: {}),
 			...(isReleaseVersion(a.lastTarget) ? { lastTarget: a.lastTarget } : {}),
 			...(isTime(a.at) ? { at: a.at } : {}),
 			...(isTime(a.waitingSince) ? { waitingSince: a.waitingSince } : {}),
+			...(isTime(a.backoffUntil) ? { backoffUntil: a.backoffUntil } : {}),
 		};
 	}
 	return out as unknown as UpdateStatus;

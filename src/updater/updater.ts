@@ -38,6 +38,7 @@ import type { ReleaseKey } from "../shared/release-keys.js";
 import { type Manifest, verifyManifest } from "../shared/release-manifest.js";
 import {
 	type SupervisorStatus,
+	type UpdaterState,
 	readConsent,
 	readSupervisorStatus,
 } from "../shared/update-files.js";
@@ -251,15 +252,20 @@ function stageDeps(deps: UpdaterDeps): StageDeps {
 	return { run: deps.run, env: deps.env, home: deps.home };
 }
 
-function inWindow(window: string | null, nowMs: number): boolean {
+/** Whether `minutes` (since local midnight) falls in `HH:MM-HH:MM`; a window that wraps midnight is fine, and start == end is empty. */
+export function inWindowAt(window: string | null, minutes: number): boolean {
 	if (!window) return true;
 	const [start, end] = window.split("-") as [string, string];
-	const minutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+	const at = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+	const a = at(start);
+	const b = at(end);
+	return a <= b ? minutes >= a && minutes < b : minutes >= a || minutes < b;
+}
+
+/** `inWindowAt` for a moment, in the machine's local time. */
+export function inWindow(window: string | null, nowMs: number): boolean {
 	const date = new Date(nowMs);
-	const current = date.getHours() * 60 + date.getMinutes();
-	const a = minutes(start);
-	const b = minutes(end);
-	return a <= b ? current >= a && current < b : current >= a || current < b;
+	return inWindowAt(window, date.getHours() * 60 + date.getMinutes());
 }
 
 // ------------------------------------------------------------------ context
@@ -276,6 +282,8 @@ interface Ctx {
 	serverFetchLoose: boolean;
 	endpoint: LocalEndpoint;
 	journal: Journal | null;
+	/** The backoff as this run found it, before it armed a provisional one: what the final bookkeeping counts from. */
+	priorBackoff: UpdaterState["backoff"] | null | undefined;
 }
 
 function save(ctx: Ctx, step: string): void {
@@ -632,10 +640,13 @@ async function recover(ctx: Ctx, read: JournalRead): Promise<UpdateResult | null
 	}
 	// swapping / rolling_back: the previous copy goes back.
 	const result = await rollbackFromJournal(ctx, journal.from);
+	// An update that was cut short after the services were stopped is a failed update: its version is never
+	// offered again (a crash loop of stop, swap, die, repeat would be downtime every time).
 	recordOutcome(ctx.deps.home, {
 		code: result ? result.code : "rolled_back",
 		target: journal.to,
 		at: ctx.deps.now(),
+		refuse: journal.to,
 	});
 	return result;
 }
@@ -692,6 +703,56 @@ async function loadManifest(
 
 // ------------------------------------------------------------------ the update
 
+/** Outcomes whose version is never offered again, besides the ones that roll back: the install was touched. */
+const REFUSE_VERSION_CODES: ReadonlySet<UpdateOutcomeCode> = new Set<UpdateOutcomeCode>([
+	"stop_failed",
+	"snapshot_failed",
+	"rollback_failed",
+]);
+
+/**
+ * Records how a run ended, in one read-modify-write of the state file: the outcome, a version that is never to be
+ * tried again, `waitingSince` and the backoff. Called inside the lock (and for the refusals that come before it),
+ * so it can't interleave with another run's `recordVerified`. A run skipped by the backoff, one that found another
+ * running, and a container or a cluster record nothing.
+ */
+function settle(
+	deps: UpdaterDeps,
+	options: UpdateOptions,
+	result: UpdateResult,
+	priorBackoff: UpdaterState["backoff"] | null | undefined,
+): UpdateResult {
+	if (["locked", "container", "kubernetes", "backoff"].includes(result.code)) return result;
+	try {
+		const before = loadState(deps.home);
+		const prior = priorBackoff === undefined ? before.backoff : (priorBackoff ?? undefined);
+		const success = result.code === "updated" || result.code === "up_to_date";
+		const auto = options.mode === "auto";
+		recordOutcome(deps.home, {
+			code: result.code,
+			target: result.to,
+			at: deps.now(),
+			...(REFUSE_VERSION_CODES.has(result.code) && result.to ? { refuse: result.to } : {}),
+			// A scheduled run's "not yet" keeps its first time; anything else ends the wait. A person's own
+			// successful run ends the wait and the failure streak too, whatever started them.
+			...(auto
+				? {
+						waitingSince: isWaiting(result.code)
+							? (before.waitingSince ?? new Date(deps.now()).toISOString())
+							: null,
+						backoff: nextBackoff(prior, result.code, deps.now()),
+					}
+				: success
+					? { waitingSince: null, backoff: null }
+					: {}),
+		});
+	} catch {
+		// Best effort here: a scheduled run armed its backoff before it did anything risky, so a lost write
+		// can't turn into a loop.
+	}
+	return result;
+}
+
 export async function runUpdate(deps: UpdaterDeps, options: UpdateOptions): Promise<UpdateResult> {
 	const started = deps.now();
 	// A scheduled run only ever takes the latest release forward: the flags that name a version, allow a
@@ -706,51 +767,30 @@ export async function runUpdate(deps: UpdaterDeps, options: UpdateOptions): Prom
 		mode: effective.mode,
 		ms: deps.now() - started,
 	});
-	// A run skipped by the backoff changed nothing, so it records nothing: the failure that caused it stays the last outcome.
-	if (!["locked", "container", "kubernetes", "backoff"].includes(result.code)) {
-		try {
-			const before = loadState(deps.home);
-			const waiting = effective.mode === "auto" && isWaiting(result.code);
-			recordOutcome(deps.home, {
-				code: result.code,
-				target: result.to,
-				at: deps.now(),
-				...(effective.mode === "auto"
-					? {
-							waitingSince: waiting
-								? (before.waitingSince ?? new Date(deps.now()).toISOString())
-								: null,
-						}
-					: {}),
-			});
-			if (effective.mode === "auto") {
-				saveBackoff(deps.home, nextBackoff(before.backoff, result.code, deps.now()));
-			}
-		} catch {
-			// the state file is best effort
-		}
-	}
 	return result;
 }
 
 async function runUpdateInner(deps: UpdaterDeps, options: UpdateOptions): Promise<UpdateResult> {
 	const paths = updaterPaths(deps.home);
-	if (deps.platform === "win32") return fail("no_service_manager");
+	// What ends before the lock is taken (a wrong install) is recorded here; what ends inside it, inside it.
+	const early = (code: UpdateOutcomeCode): UpdateResult =>
+		settle(deps, options, fail(code), undefined);
+	if (deps.platform === "win32") return early("no_service_manager");
 	// What the process runs inside comes first: a container or a pod is never updated by this tool.
 	const kind = deps.detectKind(deps.env, deps.cwd, deps.home);
-	if (kind === "kubernetes") return fail("kubernetes");
-	if (kind === "container") return fail("container");
+	if (kind === "kubernetes") return early("kubernetes");
+	if (kind === "container") return early("container");
 
 	const record = readInstallRecord(deps.home);
-	if (!record) return fail("no_install_record");
-	if (record.service === "none") return fail("no_service_manager");
-	if (record.track === "ref") return fail("tracking_ref");
-	if (!isCanonicalRepoUrl(record.repoUrl, deps.canonicalRepoUrl)) return fail("fork_install");
+	if (!record) return early("no_install_record");
+	if (record.service === "none") return early("no_service_manager");
+	if (record.track === "ref") return early("tracking_ref");
+	if (!isCanonicalRepoUrl(record.repoUrl, deps.canonicalRepoUrl)) return early("fork_install");
 	// The recorded path is a realpath. It may be missing right now (a crash between the two renames of a swap
 	// leaves no `app`): recovery runs first and puts it back, so only a present path is judged here.
 	const app = record.installDir;
 	if (existsSync(app) && (isSymlink(app) || realpathSync(app) !== app)) {
-		return fail("symlinked_install");
+		return early("symlinked_install");
 	}
 
 	const release = acquireLock(paths.lock, {
@@ -774,19 +814,21 @@ async function runUpdateInner(deps: UpdaterDeps, options: UpdateOptions): Promis
 			serverFetchLoose: urls.loose,
 			endpoint: urls.endpoint,
 			journal: null,
+			priorBackoff: undefined,
 		};
+		const done = (result: UpdateResult) => settle(deps, options, result, ctx.priorBackoff);
 		mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
 
 		// 0. Recover first.
 		const read = readJournal(paths.dir);
 		if (needsRecovery(read)) {
 			const recovered = await recover(ctx, read);
-			if (recovered) return recovered;
+			if (recovered) return done(recovered);
 		}
-		if (!existsSync(app)) return fail("no_install_record");
+		if (!existsSync(app)) return done(fail("no_install_record"));
 		cleanupLeftovers(ctx);
 		ctx.journal = null;
-		return await updateLocked(ctx, options);
+		return done(await updateLocked(ctx, options));
 	} catch (error) {
 		if (error instanceof UpdaterCrash) {
 			crashed = true;
@@ -928,6 +970,23 @@ async function updateLocked(ctx: Ctx, options: UpdateOptions): Promise<UpdateRes
 			return abort(ctx, "downgrade_schema", { from, to });
 		}
 	}
+	// The manifest said whether this release migrates; the tree that was fetched says it too, and the two must
+	// agree. A manifest that understates a migration would otherwise skip the consent gate and the snapshot.
+	if (hasServer) {
+		const stagedMigrates =
+			dialect === "sqlite"
+				? lastMigration(app, "sqlite") !== lastMigration(staging, "sqlite")
+				: lastMigration(app, "postgres") !== lastMigration(staging, "postgres") ||
+					lastMigration(app, "sqlite") !== lastMigration(staging, "sqlite");
+		if (stagedMigrates !== migrates) {
+			return abort(
+				ctx,
+				dialect === "postgres" && stagedMigrates ? "postgres_migration" : "migration_needs_consent",
+				{ from, to },
+				to,
+			);
+		}
+	}
 	const built = await buildStaged(stageDeps(deps), { staging, bunBin: record.bunBin });
 	if (!built.ok)
 		return abort(ctx, built.code, { from, to }, built.code === "build_failed" ? to : undefined);
@@ -979,7 +1038,19 @@ async function updateLocked(ctx: Ctx, options: UpdateOptions): Promise<UpdateRes
 		save(ctx, "drained");
 	}
 
-	// 11. Stop.
+	// 11. Stop. A scheduled run first looks at its consent once more (it may have been withdrawn while this one
+	// staged and waited) and writes the failure it is about to risk: if that write fails it doesn't go on, and if
+	// the process dies from here on, the next scheduled run finds the backoff already in place.
+	if (options.mode === "auto") {
+		if (!readConsent(deps.home).on) return abort(ctx, "no_consent", { from, to });
+		const current = loadState(deps.home);
+		try {
+			saveBackoff(deps.home, nextBackoff(current.backoff, "health_failed", deps.now()));
+		} catch {
+			return abort(ctx, "install_failed", { from, to });
+		}
+		ctx.priorBackoff = current.backoff ?? null;
+	}
 	journal.phase = "swapping";
 	save(ctx, "stopping");
 	const stopped = await stopUnits(ctx, units, {
@@ -1124,6 +1195,7 @@ export async function runRecovery(deps: UpdaterDeps): Promise<UpdateResult | nul
 			serverFetchLoose: urls.loose,
 			endpoint: urls.endpoint,
 			journal: null,
+			priorBackoff: undefined,
 		};
 		const read = readJournal(paths.dir);
 		return needsRecovery(read) ? await recover(ctx, read) : null;
@@ -1168,6 +1240,7 @@ export async function runRollback(deps: UpdaterDeps): Promise<UpdateResult> {
 			serverFetchLoose: urls.loose,
 			endpoint: urls.endpoint,
 			journal: null,
+			priorBackoff: undefined,
 		};
 		const read = readJournal(paths.dir);
 		if (needsRecovery(read)) {
@@ -1272,12 +1345,14 @@ export interface UpdaterStatus {
 	lastTarget: string | null;
 	at: string | null;
 	refused: string[];
+	/** While a failed automatic run is holding the next one back: not before this time. */
+	backoffUntil: string | null;
 	journalPhase: string | null;
 	hasPrevious: boolean;
 	bundle: string | null;
 }
 
-export function updaterStatus(deps: Pick<UpdaterDeps, "home">): UpdaterStatus {
+export function updaterStatus(deps: Pick<UpdaterDeps, "home" | "now">): UpdaterStatus {
 	const paths = updaterPaths(deps.home);
 	const record = readInstallRecord(deps.home);
 	const state = loadState(deps.home);
@@ -1292,6 +1367,10 @@ export function updaterStatus(deps: Pick<UpdaterDeps, "home">): UpdaterStatus {
 		lastTarget: state.lastTarget ?? null,
 		at: state.at ?? null,
 		refused: Object.keys(state.refused),
+		backoffUntil:
+			state.backoff && Date.parse(state.backoff.notBefore) > deps.now()
+				? state.backoff.notBefore
+				: null,
 		journalPhase:
 			journal.kind === "ok"
 				? journal.journal.phase

@@ -59,6 +59,18 @@ describe("readLocalApply", () => {
 		);
 	});
 
+	test("backoffUntil is there only while the hold is still ahead", () => {
+		const now = Date.parse("2026-11-19T12:00:00.000Z");
+		put("update-state.json", {
+			schema: 1,
+			lastOutcome: "rolled_back",
+			backoff: { failures: 1, notBefore: "2026-11-19T13:00:00.000Z" },
+		});
+		expect(readLocalApply(home, "local", now)?.backoffUntil).toBe("2026-11-19T13:00:00.000Z");
+		expect(readLocalApply(home, "local", now + 3_600_000)?.backoffUntil).toBeUndefined();
+		expect("backoffUntil" in (readLocalApply(home, "local", now + 7_200_000) ?? {})).toBe(false);
+	});
+
 	test("an outcome that isn't one of the closed codes, a made-up version or time is dropped, not passed on", () => {
 		put("update-state.json", {
 			schema: 1,
