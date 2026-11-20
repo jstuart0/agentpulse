@@ -61,8 +61,9 @@
   -e HOST=0.0.0.0 \
   -e AGENTPULSE_LOCAL_ADMIN_USERNAME=admin \
   -e AGENTPULSE_LOCAL_ADMIN_PASSWORD='&lt;strong-password&gt;' \
-  --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse</code></pre>
+  --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse:0.12</code></pre>
 		<p>Never combine a LAN-facing port with <code>DISABLE_AUTH=true</code>. That would give everyone on the network full control with no password.</p>
+		<p>Pin a release (<code>0.12</code> above is a release line; <code>X.Y.Z</code> is exact) and back up the <code>agentpulse-data</code> volume before moving to a newer tag. See the <a href="https://github.com/jstuart0/agentpulse#docker-image-tags-and-updates">README</a> for update recipes.</p>
 		<p>To reach it from outside your home, put AgentPulse on a server behind HTTPS and single sign-on instead. AgentPulse works with any forwardauth identity provider: Authentik, Authelia, oauth2-proxy, Pomerium or Cloudflare Access. See <a href="../self-hosted-ai-coding-agent-dashboard/">self-hosting AgentPulse</a>.</p>
 
 		<h2>Step 2: connect each machine</h2>

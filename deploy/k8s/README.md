@@ -724,7 +724,67 @@ kubectl apply -k deploy/k8s-homelab/
 
 ---
 
+## Updating AgentPulse (AGEN-155)
+
+**Notify only.** The server checks once a day for a newer release and tells an admin (a badge in the
+dashboard, and **Settings > Updates**, which says "Set both images (agentpulse and agentpulse-backup) to tag
+X.Y.Z." for a pod). Nothing in a pod updates itself; the local updater refuses to run in a container. You
+move the tags.
+
+**Move both containers together.** The pod runs `agentpulse` and the `agentpulse-backup` sidecar from images
+published under the same tags. Set both to the same `X.Y.Z`. The base uses `imagePullPolicy: IfNotPresent`,
+so use an exact `X.Y.Z` tag (a floating `X.Y` would not be pulled again by a node that already has it).
+In an overlay:
+
+```yaml
+images:
+  - name: ghcr.io/jstuart0/agentpulse
+    newTag: 0.12.3
+  - name: ghcr.io/jstuart0/agentpulse-backup
+    newTag: 0.12.3
+```
+
+Then apply and watch the rollout (confirm `kubectl config current-context` first, and pass the namespace):
+
+```bash
+kubectl apply -k deploy/<your-overlay>/
+kubectl -n agentpulse rollout status deployment/agentpulse
+```
+
+**Back up first, and know that rollback means restore.** Trigger the manual backup in
+`BACKUP-RESTORE.md` before you change the tags. After a release that adds a database migration an older image
+can refuse to start on the migrated database, so going back is the restore procedure with that backup and
+the older tags, not just an older tag. The upgrade notes below (`Upgrading to migration ...`) say what each
+migration does. Verify an image before you run it with
+`gh attestation verify oci://ghcr.io/jstuart0/agentpulse:0.12.3 --repo jstuart0/agentpulse` (the signed
+release list doesn't cover container images). Images are `linux/amd64` only.
+
+**Getting told in the cluster.** [Diun](https://crazymax.dev/diun/) runs in the cluster, watches the registry
+and sends you a message; it changes nothing. Run it with `DIUN_PROVIDERS_KUBERNETES=true`, a ServiceAccount
+with `get`, `list` and `watch` on pods, and these annotations on the pod template of the `agentpulse`
+Deployment:
+
+```yaml
+spec:
+  template:
+    metadata:
+      annotations:
+        diun.enable: "true"
+        diun.watch_mode: "all"
+        diun.include_tags: '^\d+\.\d+\.\d+$'
+```
+
+**If the pod can't reach the internet.** The check does one HTTPS `GET` of a signed file on GitHub Pages. The
+shipped NetworkPolicy leaves egress open, but if you restrict it (or the cluster has no outbound route), the
+check ends as `unreachable` and says nothing: no banner, `/api/v1/health` stays `ok`, and at most one log
+line a day. An admin sees the quiet "Can't verify updates. Update by hand." note until a check succeeds. To
+stop the check outright, set `AGENTPULSE_UPDATE_CHECK=off` (uncomment it in `02-configmap.yaml`).
+
 ## Build-and-push workflow (S-23)
+
+Release images (`X.Y.Z`, `X.Y`, `X`, `latest`) are built and pushed by `.github/workflows/release.yml`
+(see `docs/RELEASING.md`). `scripts/build-and-push.sh` is for your own builds only: it tags by commit SHA and
+never produces a release tag.
 
 agentpulse uses `imagePullPolicy: IfNotPresent` with SHA-pinned tags. The
 `scripts/build-and-push.sh` script handles the build:

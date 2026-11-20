@@ -97,7 +97,7 @@ When it finishes, open [http://localhost:3000](http://localhost:3000) and start 
 If you prefer Docker, this starts the container, waits for health, and configures hooks:
 
 ```bash
-docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -fsSL http://localhost:3000/setup.sh | bash
+docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse:0.12 && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -fsSL http://localhost:3000/setup.sh | bash
 ```
 
 > **Security note:** `-p 127.0.0.1:3000:3000` binds the host port to localhost only. The older `-p 3000:3000` form would publish on all host interfaces, exposing the auth-disabled server to your LAN. Use the `127.0.0.1:` prefix whenever `DISABLE_AUTH=true`.
@@ -109,7 +109,7 @@ docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUT
 
 > **Why localhost?** Claude Code and Codex block HTTP hooks to remote/private IPs as a security measure. Only `localhost` / `127.0.0.1` is allowed. This keeps things simple -- one Docker container on your machine, no networking to configure. If port 3000 is taken, use any free port:
 > ```bash
-> docker run -d -p 127.0.0.1:4000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e PUBLIC_URL=http://localhost:4000 --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
+> docker run -d -p 127.0.0.1:4000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e PUBLIC_URL=http://localhost:4000 --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse:0.12
 > curl -fsSL http://localhost:4000/setup.sh | bash
 > ```
 
@@ -449,11 +449,103 @@ What that guards, and what it doesn't. Any agent that runs commands as your acco
 Best if you already use Docker locally.
 
 ```bash
-docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
+docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse:0.12
 curl -fsSL http://localhost:3000/setup.sh | bash
 ```
 
 > **Security note:** `-p 127.0.0.1:3000:3000` binds the host port to localhost only when `DISABLE_AUTH=true`. Use this form for local-only Docker; the older `-p 3000:3000` shorthand publishes on all host interfaces.
+
+#### Docker image tags and updates
+
+The examples use `:0.12`, a release line. Replace it with the version you want. A container never updates itself: AgentPulse tells you a newer release exists (see [Version check](#version-check)), and you move the tag.
+
+| Tag | Moves? | Notes |
+|---|---|---|
+| `X.Y.Z` (for example `0.12.3`) | Never | The exact release. Recommended for production. |
+| `X.Y` (for example `0.12`) | Yes, to the newest `0.12.z` | Recommended if you want patch fixes without a manual edit. |
+| `X` | Yes, to the newest `0.y.z` | Takes new minor releases, which can include database migrations. |
+| `latest` | Yes | Always the highest stable release. Don't use it for anything you rely on. |
+| `sha-<12 hex>` | Never | One build of one commit. |
+
+`X.Y`, `X` and `latest` move only for the highest stable release, so a backport to an older line never takes `latest`. A pre-release (`X.Y.Z-rc.1`) gets only its own tag and a `sha-` tag. The `agentpulse-backup` image used by the Kubernetes manifests carries the same tags.
+
+**Back up the volume first.** Stop the container, then copy the data volume:
+
+```bash
+docker stop agentpulse
+docker run --rm -v agentpulse-data:/data -v "$PWD":/backup alpine tar czf /backup/agentpulse-data-$(date +%F).tgz -C /data .
+```
+
+After a release that adds a database migration, an older image can refuse to start on the migrated database. Rolling back an image is therefore not a guaranteed undo: the rollback is to restore that backup (into the volume, with the container stopped) and start the older tag.
+
+**Updating by hand:**
+
+```bash
+docker pull ghcr.io/jstuart0/agentpulse:0.12.3
+docker stop agentpulse && docker rm agentpulse
+# run again with the same options, the new tag, and the same -v agentpulse-data:/app/data
+```
+
+**With the compose files.** `docker-compose.yml` builds from your checkout. To run the published image, add the override file, which sets only the image (and a Watchtower label) and needs `AGENTPULSE_TAG`:
+
+```bash
+AGENTPULSE_TAG=0.12.3 docker compose -f docker-compose.yml -f docker-compose.image.yml pull
+AGENTPULSE_TAG=0.12.3 docker compose -f docker-compose.yml -f docker-compose.image.yml up -d
+```
+
+(The override needs Docker Compose 2.24 or later; it unsets the base file's `build`.) The `agentpulse-data` volume stays in place.
+
+**Checking the image.** The signed release list that drives the update notice doesn't cover container images. Both images carry a build-provenance attestation; verify one with the GitHub CLI before you run it:
+
+```bash
+gh attestation verify oci://ghcr.io/jstuart0/agentpulse:0.12.3 --repo jstuart0/agentpulse
+```
+
+**Limits.** Images are `linux/amd64` only (on Apple silicon Docker runs them under emulation, or use the Bun install). The image has no `HEALTHCHECK`, so `docker ps` shows no health state and an orchestrator that restarts unhealthy containers needs its own probe of `GET /api/v1/health` (by IP or `localhost`: see [Opening an auth-off server by name](#opening-an-auth-off-server-by-name)). Migrations run at start, so a container can be briefly unhealthy while an update applies.
+
+##### Getting told about a new image
+
+Pick one. All of them only notice or pull; none can back up your volume or undo a migration, so the first three suit a pinned `X.Y.Z`/`X.Y` that you move on purpose.
+
+1. **Diun (recommended): notifies, never changes a container.** It watches the registry for new tags and messages you. Run it next to your containers and label AgentPulse:
+
+   ```yaml
+   services:
+     diun:
+       image: crazymax/diun:latest
+       command: serve
+       volumes:
+         - diun-data:/data
+         - /var/run/docker.sock:/var/run/docker.sock:ro
+       environment:
+         - DIUN_WATCH_SCHEDULE=0 */6 * * *
+         - DIUN_PROVIDERS_DOCKER=true
+         # Add a notifier, for example DIUN_NOTIF_TELEGRAM_TOKEN / DIUN_NOTIF_TELEGRAM_CHATIDS.
+     agentpulse:
+       image: ghcr.io/jstuart0/agentpulse:0.12.3
+       labels:
+         - diun.enable=true
+         - diun.watch_mode=all
+         - diun.include_tags=^\d+\.\d+\.\d+$$
+   volumes:
+     diun-data:
+   ```
+
+   `watch_mode=all` watches every tag in the repository and the regex keeps only plain `X.Y.Z` tags (no pre-releases, no `sha-` tags). The `$$` is how compose writes a literal `$`; in a plain Diun file write `$`. For Kubernetes, Diun's Kubernetes provider works the same way with `diun.enable` annotations on the deployment.
+2. **Compose on a timer.** A cron job or systemd timer that runs the two `docker compose ... pull` and `up -d` commands above with the tag you've decided on. Nothing moves until you change `AGENTPULSE_TAG`.
+3. **Podman.** Add `--label io.containers.autoupdate=registry` to the container (or `AutoUpdate=registry` in a Quadlet unit) and enable `podman-auto-update.timer`. With a pinned `X.Y.Z` tag it never moves; with `X.Y` it takes patch releases. Podman restarts the container on the new image and rolls back if the new one fails to start under systemd.
+4. **Watchtower (automatic pulls, use with care).** `containrrr/watchtower` is archived; its maintained successor is `nickfedor/watchtower`. Scope it to AgentPulse with its label so it touches nothing else, and use an `X.Y` tag so it can only take patch releases:
+
+   ```bash
+   AGENTPULSE_TAG=0.12 docker compose -f docker-compose.yml -f docker-compose.image.yml up -d
+   docker run -d --name watchtower --restart unless-stopped \
+     -v /var/run/docker.sock:/var/run/docker.sock \
+     -e WATCHTOWER_LABEL_ENABLE=true -e WATCHTOWER_CLEANUP=true \
+     -e WATCHTOWER_POLL_INTERVAL=21600 \
+     nickfedor/watchtower
+   ```
+
+   **Mounting the Docker socket gives the container root on the host.** Anyone who can run code in Watchtower, or who can make it run something, owns the machine. Watchtower takes no backup, so a patch release that migrates your database is applied with no restore point. Prefer Diun.
 
 ### 3. Remote dashboard + local hooks
 
@@ -495,7 +587,7 @@ docker run -d -p 0.0.0.0:3000:3000 -v agentpulse-data:/app/data \
   -e HOST=0.0.0.0 \
   -e AGENTPULSE_LOCAL_ADMIN_USERNAME=admin \
   -e AGENTPULSE_LOCAL_ADMIN_PASSWORD=<strong-password> \
-  --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
+  --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse:0.12
 ( ap_key=$(if [ -t 0 ]; then s=$(stty -g 2>/dev/null) && stty -echo 2>/dev/null || { echo "Can't hide the key while you type it, so it won't be asked for here. Use the scripted form in the docs instead." >&2; exit 1; }; trap 'echo >&2; exit 130' INT TERM HUP; trap 'stty "$s" 2>/dev/null' EXIT; fi; printf 'AgentPulse API key: ' >&2; IFS= read -r k; if [ -t 0 ]; then echo >&2; fi; printf %s "$k") && case "$ap_key" in '') echo "No API key entered; nothing was installed." >&2; false;; *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*) echo "The API key can only contain letters, digits, '.', '_' and '-'; nothing was installed." >&2; false;; *) export AGENTPULSE_KEY="$ap_key"; curl -fsSL http://localhost:3000/setup.sh | bash;; esac )
 # Dashboard: http://localhost:3000 (local) or http://your-ip:3000 (LAN)
 ```
@@ -730,6 +822,7 @@ The manifest is signed with a key whose public half ships in the code. A server 
 
 Nothing updates itself. The check only tells you.
 
+- In a container or Kubernetes pod the Updates card shows the commands for your install kind and nothing runs by itself; see [Docker image tags and updates](#docker-image-tags-and-updates).
 - Turn it off with `AGENTPULSE_UPDATE_CHECK=off`. `DO_NOT_TRACK=1` doesn't turn it off, because this request identifies nothing.
 - `GET /api/v1/health` carries `update` and `GET /api/v1/capabilities` carries the full status (`state` may be a name a newer server adds; treat anything you don't know as unknown). `GET /api/v1/health?manifest=1` also returns the verified envelope.
 - The MCP tool `get_update_status` reads the same status.

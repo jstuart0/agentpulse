@@ -1,3 +1,5 @@
+# This file builds from the checkout. To run the published image instead, add
+#   -f docker-compose.image.yml   (and set AGENTPULSE_TAG, for example AGENTPULSE_TAG=0.12)
 services:
   agentpulse:
     build: .

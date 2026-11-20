@@ -21,8 +21,8 @@ The `agentpulse` pod runs two containers:
 
 | Container | Image | Role |
 |-----------|-------|------|
-| `agentpulse` | `<registry>/agentpulse:<SHA>` | Application |
-| `backup-sidecar` | `<registry>/agentpulse-backup:<SHA>` | Scheduled backup |
+| `agentpulse` | `<registry>/agentpulse:<X.Y.Z or SHA>` | Application |
+| `backup-sidecar` | `<registry>/agentpulse-backup:<X.Y.Z or SHA>` | Scheduled backup |
 
 Both containers mount the same `agentpulse-data` PVC at their respective
 paths (`/app/data` for the app; `/data` for the sidecar). The sidecar also
@@ -123,6 +123,16 @@ After each successful backup, `retention.sh` applies:
   that month as a monthly survivor, regardless of age.
 - Remove all other backups (and their `.counts.txt` / `.sha256` sidecars).
 
+### Before you update the image
+
+Trigger the manual backup above before you move both containers to a new tag
+(see "Updating AgentPulse" in `deploy/k8s/README.md`), and note the file name it
+reports. After a release that adds a database migration, an older image can
+refuse to start on the migrated database, so rolling the tag back is not a
+guaranteed undo. The way back is the restore procedure below with that backup,
+then the older tag on both containers. This backup is SQLite only; a Postgres
+deployment is backed up with the database's own tools.
+
 ---
 
 ## Restore procedure
@@ -192,7 +202,7 @@ spec:
     fsGroup: 1000
   containers:
     - name: restore
-      image: <registry>/agentpulse-backup:<SHA>
+      image: <registry>/agentpulse-backup:<X.Y.Z or SHA>
       command: ["sleep", "3600"]
       securityContext:
         allowPrivilegeEscalation: false
