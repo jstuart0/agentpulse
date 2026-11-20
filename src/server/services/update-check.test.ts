@@ -694,7 +694,13 @@ describe("the https adapter", () => {
 
 	// The suite's setup shells out to openssl: under a loaded full run the default 5 s hook limit expired, the TLS
 	// server never started, and every test below failed on "network". An EC key is quick, and the limit is generous.
+	// These tests talk to servers on 127.0.0.1. Another test file may have set a proxy variable (scripts/claude-live-safety
+	// sets HTTPS_PROXY on purpose and restores it, and Bun can keep what it read), which would send every request to a
+	// proxy that doesn't exist: loopback is exempted for the whole suite so run order can't matter.
+	const savedProxy = { NO_PROXY: process.env.NO_PROXY, no_proxy: process.env.no_proxy };
 	beforeAll(async () => {
+		process.env.NO_PROXY = "127.0.0.1,localhost,[::1]";
+		process.env.no_proxy = process.env.NO_PROXY;
 		const key = join(dir, "key.pem");
 		const crt = join(dir, "cert.pem");
 		const made = Bun.spawnSync([
@@ -769,6 +775,10 @@ describe("the https adapter", () => {
 		});
 	}, 120_000);
 	afterAll(() => {
+		for (const [name, value] of Object.entries(savedProxy)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
 		tlsServer.stop(true);
 		plainServer.stop(true);
 		otherServer.stop(true);
