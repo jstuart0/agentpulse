@@ -1076,8 +1076,12 @@ describe("every outbound call site goes through the gate or is on the not-sessio
 		const snippet = (at: number) => code.slice(Math.max(0, at - 20), at + 40).replace(/\s+/g, " ");
 		const out: string[] = [];
 		// a bare fetch call
-		for (const m of code.matchAll(/(?<![\w.$])fetch\s*\(/g))
+		// (the one allowed is the embedded `fetchCapped`: a bare GET with no body, header or credential; its
+		// callers are checked in `fetchCappedProblems`)
+		for (const m of code.matchAll(/(?<![\w.$])fetch\s*\(/g)) {
+			if (enclosingFunction(code, m.index ?? 0) === "fetchCapped") continue;
 			out.push(`bare fetch call: ${snippet(m.index ?? 0)}`);
+		}
 		// any property named fetch other than ctx.fetch( and the context's own default (opts.fetch ?? fetch)
 		for (const m of code.matchAll(
 			/(?<![\w$])(\w+)\s*(?:\.|\?\.)\s*fetch\b|\[\s*["'`]fetch["'`]\s*\]/g,
@@ -1109,13 +1113,26 @@ describe("every outbound call site goes through the gate or is on the not-sessio
 		for (const m of code.matchAll(
 			/import\s*\{([^}]*)\}\s*from\s*["'](?:node:)?child_process["']/g,
 		)) {
-			if (m[1]?.trim() !== "execFileSync") out.push(`spawn import: ${snippet(m.index ?? 0)}`);
+			// `spawn` is for the self-refresh's checks of a staged file, through `runChild` only (below).
+			if (!["execFileSync", "execFileSync, spawn"].includes(m[1]?.trim() ?? "")) {
+				out.push(`spawn import: ${snippet(m.index ?? 0)}`);
+			}
 		}
 		for (const m of code.matchAll(
 			/\bBun\s*\.\s*(?:(?:spawn|spawnSync)\b|\$)|(?<![\w$.])(?:spawn|spawnSync|exec|execSync|execFile|fork)\s*\(/g,
 		)) {
+			const isChildCheck = /^spawn\s*\(/.test(code.slice(m.index ?? 0, (m.index ?? 0) + 8));
+			if (isChildCheck && enclosingFunction(code, m.index ?? 0) === "runChild") continue;
 			out.push(`process spawn: ${snippet(m.index ?? 0)}`);
 		}
+		// `runChild` runs fixed programs only: the shells, jq, and the Bun that is running this file.
+		for (const m of code.matchAll(/(?<![\w$.])(?<!function\s)runChild\s*\(\s*([^,)]*)/g)) {
+			if (!['"bash"', '"sh"', '"jq"', "execPath"].includes(m[1]?.trim() ?? "")) {
+				out.push(`runChild of ${m[1]}: ${snippet(m.index ?? 0)}`);
+			}
+		}
+		const spawns = [...code.matchAll(/(?<![\w$.])spawn\s*\(/g)];
+		if (spawns.length > 1) out.push(`${spawns.length} spawn calls (one is expected, in runChild)`);
 		const execs = [...code.matchAll(/(?<![\w$.])execFileSync\s*\(\s*([^,)]*)/g)];
 		for (const m of execs) {
 			if (m[1]?.trim() !== '"powershell"')
@@ -1183,6 +1200,27 @@ describe("every outbound call site goes through the gate or is on the not-sessio
 
 	test("the real relay: every outbound call is classified, every gated one asks the gate first, nothing else can send, and the primitives are only called by name", () => {
 		expect(outboundProblems(realSource)).toEqual([]);
+	});
+
+	test("the embedded capped GET sends nothing of the relay's: no header, body or key, and only the self-refresh and its loopback health check call it", () => {
+		const code = withoutComments(realSource);
+		const start = code.search(/export async function fetchCapped\(/);
+		expect(start).toBeGreaterThan(0);
+		const body = code.slice(start, code.indexOf("\n}\n", start));
+		expect(body).not.toMatch(/Authorization|apiKey|headers|\n\s*body:/);
+		expect(body).toMatch(/method: "GET"/);
+		expect(body).toMatch(/redirect: "manual"/);
+		const callers = [...code.matchAll(/(?<!function\s)(?<![\w$.])fetchCapped\s*\(/g)].map((m) =>
+			enclosingFunction(code, m.index ?? 0),
+		);
+		expect(callers.sort()).toEqual(["confirmPendingStart"]);
+		const selfUpdate = code.slice(
+			code.search(/export async function relaySelfUpdate\(/),
+			code.search(/async function runSelfUpdateTick\(/),
+		);
+		const fetches = [...selfUpdate.matchAll(/deps\.fetchText\(([^)]*)\)/g)];
+		expect(fetches).toHaveLength(2);
+		for (const [call] of fetches) expect(call).not.toMatch(/apiKey|Authorization|headers/);
 	});
 
 	test("every classification carries a reason", () => {

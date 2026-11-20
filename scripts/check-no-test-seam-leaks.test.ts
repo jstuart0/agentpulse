@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -391,6 +391,26 @@ describe("check-no-test-seam-leaks CLI exit code", () => {
 		const { code, stdout } = runGuard(root);
 		expect(code).toBe(0);
 		expect(stdout).toContain("OK");
+	});
+
+	test("the relay's own seam is read: a shipped file that reaches it exits 1, the relay's own test does not", () => {
+		const relaySeam = "export function setRelayConsentIoForTests(io: null): void {}\n";
+		const reach =
+			'import { setRelayConsentIoForTests } from "../../scripts/relay-consent-shim.js";\nsetRelayConsentIoForTests(null);';
+		const dirty = tree({ "scripts/relay.ts": relaySeam, "src/server/routes/handler.ts": reach });
+		const { code, stderr } = runGuard(dirty);
+		expect(code).toBe(1);
+		expect(stderr).toContain("setRelayConsentIoForTests");
+		const clean = tree({
+			"scripts/relay.ts": relaySeam,
+			"src/server/routes/handler.test.ts": reach,
+		});
+		expect(runGuard(clean).code).toBe(0);
+	});
+
+	test("the real relay declares the consent seam the guard is there for", () => {
+		const real = readFileSync(join(import.meta.dir, "relay.ts"), "utf-8");
+		expect(extractTestSeamExports(real)).toContain("setRelayConsentIoForTests");
 	});
 
 	test("a production caller exits 1 and names the file, line and seam", () => {

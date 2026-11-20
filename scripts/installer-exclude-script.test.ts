@@ -26,7 +26,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import "../src/server/db/__test_db.js";
-import { buildBashExcludeScript } from "../src/shared/hook-command.js";
+import { INSTALLER_SOURCES, buildRelayInstaller } from "../src/server/installers.js";
+import { installExcludeScript } from "../src/shared/exclude-script.js";
+import { buildBashExcludeScript, materializeExcludeScript } from "../src/shared/hook-command.js";
+import { extractRelayInstallerParts } from "../src/shared/relay-installer-parts.js";
 
 // Each case runs a real installer in a subprocess; leave room for a loaded machine.
 setDefaultTimeout(60_000);
@@ -227,3 +230,42 @@ for (const site of SITES) {
 		});
 	});
 }
+
+// The relay refreshes the check only to bytes it has hashed against the release manifest, so the writers a person
+// can have used must all produce `buildBashExcludeScript()`: the three shell installers (above), the `bin/cli.ts`
+// path (`installExcludeScript`) and the relay's own read of the served installer.
+describe("every writer of exclude-check.sh writes the generator's bytes", () => {
+	test("bin/cli.ts's writer (installExcludeScript) writes exactly the generator's script", () => {
+		const home = newHome();
+		const result = installExcludeScript(home);
+		expect(result.status).toBe("installed");
+		expect(readFileSync(join(home, ".agentpulse", "exclude-check.sh"), "utf-8")).toBe(
+			buildBashExcludeScript(),
+		);
+	});
+
+	test("the relay's extract of the served installer, materialized, is the generator's script", () => {
+		const built = buildRelayInstaller(INSTALLER_SOURCES, "https://agentpulse.example.test");
+		expect(built.ok).toBe(true);
+		if (!built.ok) return;
+		const extracted = extractRelayInstallerParts(built.script);
+		expect(extracted.ok).toBe(true);
+		if (!extracted.ok) return;
+		expect(materializeExcludeScript(extracted.parts.excludeHeredoc)).toBe(buildBashExcludeScript());
+	});
+
+	test("population floor: the five writers still name the check, bin/cli.ts included", () => {
+		const named = (rel: string) => readFileSync(join(ROOT, rel), "utf-8").includes("exclude-check");
+		for (const rel of [
+			"scripts/setup-hooks.sh",
+			"scripts/setup-relay.sh",
+			"src/server/routes/setup.ts",
+			"scripts/install-local.ps1",
+			"src/shared/exclude-script.ts",
+		]) {
+			expect(named(rel), rel).toBe(true);
+		}
+		// bin/cli.ts writes it through installExcludeScript
+		expect(readFileSync(join(ROOT, "bin/cli.ts"), "utf-8")).toContain("installExcludeScript");
+	});
+});

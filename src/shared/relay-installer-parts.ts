@@ -90,7 +90,7 @@ export interface ClientDigests {
 	excludeCheck: string;
 }
 
-async function sha256Hex(text: string): Promise<string> {
+async function sha256HexOfText(text: string): Promise<string> {
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
 	return Buffer.from(digest).toString("hex");
 }
@@ -107,9 +107,9 @@ export async function clientDigests(files: {
 	excludeCheck: string;
 }): Promise<ClientDigests> {
 	return {
-		relay: await sha256Hex(files.relay.trimEnd()),
-		statusline: await sha256Hex(files.statusline.trimEnd()),
-		excludeCheck: await sha256Hex(files.excludeCheck),
+		relay: await sha256HexOfText(files.relay.trimEnd()),
+		statusline: await sha256HexOfText(files.statusline.trimEnd()),
+		excludeCheck: await sha256HexOfText(files.excludeCheck),
 	};
 }
 
@@ -126,6 +126,7 @@ export function heredocHazard(text: string): string | null {
 	for (const terminator of HEREDOC_TERMINATORS) {
 		if (lines.includes(terminator)) return `a line equal to the heredoc terminator ${terminator}`;
 	}
-	if (text.includes("@@AGENTPULSE_")) return "an installer marker (@@AGENTPULSE_...)";
+	// Built in two pieces: this file is embedded into scripts/relay.ts, which must not itself hold the marker.
+	if (text.includes(`${"@@"}AGENTPULSE_`)) return "an installer marker (the @@ AGENTPULSE_ kind)";
 	return null;
 }

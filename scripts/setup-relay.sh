@@ -1854,11 +1854,82 @@ fi
 BUN_PATH="$BUN_BIN"
 echo "  ✓ Bun: $BUN_PATH ($("$BUN_PATH" --version 2>/dev/null || true))"
 
+# The launcher (AGEN-155): what the service units run. It starts the relay with AGENTPULSE_RELAY_LAUNCHER=1,
+# the only condition under which the relay refreshes its own files, and it is what puts the previous relay back
+# when a freshly installed one fails to start twice. It is written here and never replaced by the relay itself.
+# Paths are single-quoted literals: ap_safe_path (checked above) allows no quote, backslash, $ or backtick in them.
+ap_relay_launcher_text() {
+	IFS= read -r -d '' ap_launcher_text <<'AP_RELAY_LAUNCHER_EOF' || true
+#!/bin/sh
+# AgentPulse relay launcher. Installed by setup-relay.sh; the relay never rewrites this file.
+AP_DIR='@@AP_RELAY_DIR@@'
+AP_BUN='@@AP_BUN@@'
+AP_CONFIG='@@AP_CONFIG@@'
+AP_PENDING="$AP_DIR/relay-pending.json"
+AP_UID="$(id -u)"
+
+# True when $1 is a plain file in AP_DIR that I own (never a link), optionally smaller than $2 KiB.
+ap_mine() {
+  if [ -n "$2" ]; then
+    [ -n "$(find -H "$AP_DIR" -maxdepth 1 -name "$1" -type f -user "$AP_UID" -size -"$2"k 2>/dev/null)" ]
+  else
+    [ -n "$(find -H "$AP_DIR" -maxdepth 1 -name "$1" -type f -user "$AP_UID" 2>/dev/null)" ]
+  fi
+}
+
+# A private file written in one step, never through a link already there.
+ap_put() {
+  rm -f "$1.tmp" 2>/dev/null
+  ( umask 077; set -C; printf '%s\n' "$2" > "$1.tmp" ) 2>/dev/null && mv -f "$1.tmp" "$1" 2>/dev/null
+}
+
+# The pending file counts only when it is mine, small, plain, and holds a version and a whole attempts number;
+# anything else (corrupt, negative, non-numeric, a link, someone else's) is "no pending".
+ap_text=""
+ap_version=""
+ap_attempts=""
+if ap_mine relay-pending.json 4; then
+  ap_text="$(cat "$AP_PENDING" 2>/dev/null)"
+  ap_version="$(printf '%s' "$ap_text" | sed -n 's/.*"version":"\([0-9A-Za-z.+-]\{1,48\}\)".*/\1/p' | head -n 1)"
+  ap_attempts="$(printf '%s' "$ap_text" | sed -n 's/.*"attempts":\([0-9]\{1,6\}\)[^0-9].*/\1/p' | head -n 1)"
+fi
+
+if [ -n "$ap_version" ] && [ -n "$ap_attempts" ]; then
+  if [ "$ap_attempts" -ge 2 ]; then
+    # Two starts in a row never got to serve: put the previous relay back, say which version was given up on
+    # (the relay reads it and never tries that version again), and drop the pending file.
+    if ap_mine relay.ts.prev; then
+      mv -f "$AP_DIR/relay.ts.prev" "$AP_DIR/relay.ts" 2>/dev/null
+    fi
+    ap_put "$AP_DIR/relay-update-refused.json" "{\"version\":\"$ap_version\"}"
+    rm -f "$AP_PENDING" 2>/dev/null
+  else
+    ap_put "$AP_PENDING" "{\"version\":\"$ap_version\",\"attempts\":$((ap_attempts + 1))}"
+  fi
+fi
+
+AGENTPULSE_RELAY_LAUNCHER=1
+export AGENTPULSE_RELAY_LAUNCHER
+exec "$AP_BUN" "$AP_DIR/relay.ts" --config "$AP_CONFIG"
+AP_RELAY_LAUNCHER_EOF
+	ap_launcher_text=${ap_launcher_text//@@AP_RELAY_DIR@@/$RELAY_DIR}
+	ap_launcher_text=${ap_launcher_text//@@AP_BUN@@/$BUN_PATH}
+	ap_launcher_text=${ap_launcher_text//@@AP_CONFIG@@/$CONFIG_FILE}
+}
+
 # ── Install the relay ──
 
 mkdir -p "$RELAY_DIR/logs"
 chmod 700 "$RELAY_DIR"
 cp "$SRC_DIR/relay.ts" "$RELAY_DIR/relay.ts"
+
+# A re-install starts from a clean slate: a pending marker (and the files of an update in flight) left by an
+# earlier run would otherwise be counted against the relay just installed.
+rm -f "$RELAY_DIR/relay-pending.json" "$RELAY_DIR/relay.ts.new" "$RELAY_DIR/relay.ts.prev" "$RELAY_DIR/relay-update-refused.json"
+LAUNCHER_FILE="$RELAY_DIR/relay-launch.sh"
+ap_relay_launcher_text
+ap_write_private_no_follow "$LAUNCHER_FILE" "$ap_launcher_text" || fail "couldn't write $(printf %q "$LAUNCHER_FILE")"
+chmod 700 "$LAUNCHER_FILE"
 
 # The key lives only in config.json (mode 600), never in argv, the plist or
 # the unit. Existing keys this script doesn't manage are kept.
@@ -1887,7 +1958,7 @@ with os.fdopen(fd, "w") as f:
 os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 '
-echo "  ✓ Relay installed to $RELAY_DIR/relay.ts"
+echo "  ✓ Relay installed to $RELAY_DIR/relay.ts (started through $RELAY_DIR/relay-launch.sh)"
 
 if [[ -e "$RELAY_DIR/codex-hook.sh" || -L "$RELAY_DIR/codex-hook.sh" ]]; then
   rm -f "$RELAY_DIR/codex-hook.sh"
@@ -1968,10 +2039,8 @@ case "$OS_NAME" in
   <string>dev.agentpulse.relay</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${BUN_PATH}</string>
-    <string>${RELAY_DIR}/relay.ts</string>
-    <string>--config</string>
-    <string>${CONFIG_FILE}</string>
+    <string>/bin/sh</string>
+    <string>${LAUNCHER_FILE}</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -1999,7 +2068,7 @@ Description=AgentPulse Relay
 After=network.target
 
 [Service]
-ExecStart="${BUN_PATH}" "${RELAY_DIR}/relay.ts" --config "${CONFIG_FILE}"
+ExecStart=/bin/sh "${LAUNCHER_FILE}"
 WorkingDirectory=${RELAY_DIR}
 Restart=always
 RestartSec=5
@@ -2187,6 +2256,8 @@ fi
 echo ""
 echo "  Open a new Claude Code or Codex session to see it on the dashboard."
 echo "  Re-run this command anytime to update the relay and statusline."
+echo "  Or let the relay refresh its own files from a signed release (off by default; it asks you to confirm):"
+echo "    \"$BUN_PATH\" \"$RELAY_DIR/relay.ts\" update auto on"
 echo ""
 echo "  Manage:"
 case "$OS_NAME" in

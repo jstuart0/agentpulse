@@ -431,7 +431,7 @@ Create the enrollment token on the Hosts page. The token goes on the `bash` side
 - It needs a service manager (launchd or `systemd --user`; with `loginctl enable-linger` on a server) and refuses in a container or a Kubernetes pod. The git it runs ignores your own git config, so set `HTTPS_PROXY` in the environment if you need a proxy.
 - Disk: besides the running copy it keeps `app.previous`, stages a second tree while it works, keeps a failed copy after a rollback until the next update, and (SQLite, when a migration is crossed) up to two database snapshots, so plan for about three copies of the checkout plus two databases. The updater's log (`~/.agentpulse/logs/updater.log`) rotates at about 1 MiB and keeps one older file.
 - It finds where the server listens from `PORT` and `HOST` in the checkout's `.env.local` (then `.env`), falling back to what the installer recorded; it never probes a public server URL over plain http.
-- What it does not do: it doesn't manage the relay, the statusline or the exclude check (a relay may lag behind the server until phase 6's refresh); it identifies the server's stop by the service label and the loopback port only; it doesn't check `loginctl enable-linger`. Re-running `install-local.sh` on an existing install follows the newest release tag read from the git remote without the signed release list, so on an existing install prefer `agentpulse update`. The real `launchctl` and `systemctl` calls are covered by stub runners in tests, not exercised against live services.
+- What it does not do: it doesn't manage the relay, the statusline or the exclude check (a relay can refresh its own files if you let it: see [Letting the relay refresh itself](#letting-the-relay-refresh-itself-opt-in)); it identifies the server's stop by the service label and the loopback port only; it doesn't check `loginctl enable-linger`. Re-running `install-local.sh` on an existing install follows the newest release tag read from the git remote without the signed release list, so on an existing install prefer `agentpulse update`. The real `launchctl` and `systemctl` calls are covered by stub runners in tests, not exercised against live services.
 - On Windows there is no updater: re-run `install-local.ps1` (it follows releases too, and never moves a checkout that has commits the release doesn't).
 
 #### Automatic updates (opt-in, off by default)
@@ -563,6 +563,16 @@ Both:
   Config:  cat ~/.agentpulse/config.json
 ```
 
+#### Letting the relay refresh itself (opt-in)
+
+Off by default. `bun ~/.agentpulse/relay.ts update auto on` (use the Bun path the installer printed if `bun` isn't on your PATH) lets this relay replace its own files, only these three: `relay.ts`, `~/.claude/statusline-agentpulse.sh` and `~/.agentpulse/exclude-check.sh`. Agent config files (hooks in `~/.claude`, `~/.codex`, ...) are never touched; re-run the installer for those. Run it in your own terminal: it asks you to type a phrase with a random part that changes every run, refuses without a terminal, and refuses when it sees an agent-session variable (the same tripwire, and the same limits, as the app's `update auto on` above). `update auto off` and `update auto status` do what they say. The choice is the `clients` part of `~/.agentpulse/update-consent.json` on this machine; the `app` part, if you set it, is left exactly as it is.
+
+- **One-time re-install.** A relay installed before this can't do it. Re-run the relay installer once: it installs `~/.agentpulse/relay-launch.sh` and points the launchd or systemd unit at it. The relay refreshes itself only when the launcher started it (`AGENTPULSE_RELAY_LAUNCHER=1`); one you start by hand never does.
+- **What it needs to hold.** Every hour, with nothing sent but two plain GETs to your own server (no key, cookie or custom header; no redirect is followed; https, or a loopback address, only): the server's `/api/v1/health?manifest=1` and `/setup-relay.sh`. The signed release manifest must verify against the key built into the relay and not be stale or older than one the relay already accepted; your server's version must be a newer, signed, stable release that isn't withdrawn and isn't below the manifest's minimum; and every file your server serves must hash to that release's digest. Anything else writes nothing.
+- **Which files change.** The statusline and the exclude check are replaced only if the copy on disk is byte for byte a copy some earlier release shipped; a file you edited, or a newer one, is left alone. Each new file is written beside the old one (`.new`), tried in a throwaway home with a scrubbed environment (the relay checks it excludes what it should; the shell files must parse and behave), and only then renamed into place. If any check fails, nothing is replaced, the version is remembered as refused (`relay-update-state.json`) and not tried again.
+- **If the new relay doesn't start.** The old relay is kept as `relay.ts.prev` and the relay exits so the launcher starts the new one. The new relay removes `relay-pending.json` once it is listening on `127.0.0.1` and its own `/health` answers within 30 seconds, whatever your remote server is doing. If it hasn't done that after two starts, the launcher puts `relay.ts.prev` back and that version isn't tried again.
+- **Where it doesn't help.** A statusline or exclude check from a release that has left the manifest's list of 30 is left alone; a machine with no relay never refreshes those two; hooks written into agent configs are yours to re-install when a release changes them. Nothing here has been run against a real launchd or systemd service in this repo's tests (the units are stubbed); `exit(0)` being restarted by `KeepAlive` / `Restart=always` is the documented behaviour and is checked by hand on a real machine before relying on it.
+
 **Reset or uninstall the relay.** Everything the relay keeps lives in `~/.agentpulse/`:
 
 | Path | What it is |
@@ -570,6 +580,8 @@ Both:
 | `config.json` | Server URL, API key, port, `codex_name_policy` |
 | `installed.json` | When the installer last wrote the agent hooks |
 | `relay.ts`, `logs/` | The relay and its logs |
+| `relay-launch.sh` | What the service unit runs: starts the relay and puts the previous one back if a refreshed one fails to start twice |
+| `relay.ts.prev`, `relay-pending.json`, `relay-update-state.json`, `relay-update-refused.json`, `update-consent.json` | Self-refresh: the previous relay, a refresh waiting to be confirmed, what the relay has accepted or refused, and your consent |
 | `bun/` | The pinned Bun 1.3.12 that the relay and the local install use when no usable Bun (1.3.12+, owned by you or root, not writable by others) was found |
 | `status` | The one-line hint the statusline shows (absent when all is well) |
 | `local-sessions.json` | Sessions this relay forwarded hooks for (the only ones it syncs CLAUDE.md for) |
