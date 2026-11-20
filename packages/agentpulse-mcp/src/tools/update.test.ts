@@ -158,6 +158,14 @@ describe("the client's getUpdateStatus", () => {
 		);
 	});
 
+	test("a server that leaves localApply out (a member's view) gives no localApply key", async () => {
+		const { localApply: _omitted, ...withoutApply } = { ...STATUS, localApply: null };
+		const out = (await clientFor({
+			update: withoutApply,
+		}).client.getUpdateStatus()) as unknown as Record<string, unknown>;
+		expect("localApply" in out).toBe(false);
+	});
+
 	test("current and latest must be release versions: a bad current is unknown, a bad latest is null", async () => {
 		for (const bad of [
 			"",

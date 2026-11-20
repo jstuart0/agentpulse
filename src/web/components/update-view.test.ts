@@ -446,6 +446,50 @@ describe("the Updates panel", () => {
 		expect(derivePanelView(null, ctx()).stateSentence.length).toBeGreaterThan(0);
 	});
 
+	test("localApply shows as its own rows, in the copy table's words, for an admin only", () => {
+		const fmt = { ago: (iso: string) => `ago(${iso.slice(11, 16)})`, full: (iso: string) => iso };
+		const withApply = (localApply: unknown) => status({ localApply: localApply as never });
+		const view = derivePanelView(
+			withApply({
+				auto: true,
+				lastOutcome: "supervisor_busy",
+				lastTarget: "0.12.0",
+				at: "2026-11-19T10:00:00.000Z",
+				waitingSince: "2026-11-19T04:00:00.000Z",
+			}),
+			ctx(),
+			fmt,
+		);
+		expect(view.autoRows).toEqual([
+			{ label: "Automatic updates", value: "On, on this machine" },
+			{
+				label: "Last automatic run",
+				value: "This host's supervisor is busy with a session. (0.12.0) ago(10:00)",
+				title: "2026-11-19T10:00:00.000Z",
+			},
+			{ label: "Waiting since", value: "ago(04:00)", title: "2026-11-19T04:00:00.000Z" },
+		]);
+		// the rows are not part of the release rows
+		expect(view.rows.map((r) => r.label)).toEqual(["Latest release", "Last checked"]);
+		expect(derivePanelView(withApply({ auto: false }), ctx(), fmt).autoRows).toEqual([
+			{ label: "Automatic updates", value: "Off" },
+		]);
+		// a made-up code gets the generic words, a made-up version is left out
+		const odd = derivePanelView(
+			withApply({ auto: true, lastOutcome: "zzz", lastTarget: "x; id" }),
+			ctx(),
+		);
+		expect(odd.autoRows[1]?.value).toBe(
+			"The updater reported something this page doesn't recognise.",
+		);
+		// no localApply (a member's view, an older server, a container): no rows; and none for a viewer locked out of admin settings
+		expect(derivePanelView(withApply(null), ctx()).autoRows).toEqual([]);
+		expect(derivePanelView(status(), ctx()).autoRows).toEqual([]);
+		expect(
+			derivePanelView(withApply({ auto: true }), ctx({ adminSettingsLocked: true })).autoRows,
+		).toEqual([]);
+	});
+
 	test("an unverified install says why: not published, unreachable, never checked, or a real failure", () => {
 		const say = (lastResult: unknown) =>
 			derivePanelView(

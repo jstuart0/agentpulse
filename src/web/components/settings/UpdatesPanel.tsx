@@ -98,6 +98,19 @@ export function UpdatesPanelView({
 				</dl>
 			)}
 
+			{view.autoRows.length > 0 && (
+				<dl className="mt-3 grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
+					{view.autoRows.map((row) => (
+						<div key={row.label}>
+							<dt className="text-xs text-muted-foreground">{row.label}</dt>
+							<dd className="text-foreground" title={row.title}>
+								{row.value}
+							</dd>
+						</div>
+					))}
+				</dl>
+			)}
+
 			{view.command && (
 				<div className="mt-4 space-y-2 text-xs text-muted-foreground">
 					{view.command.map((line, index) => (

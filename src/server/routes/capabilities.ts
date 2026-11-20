@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import pkg from "../../../package.json" with { type: "json" };
 import { parseForkOptionsRequest } from "../../shared/session-resume.js";
-import { publicUpdateStatus } from "../../shared/update-status.js";
+import { updateStatusFor } from "../../shared/update-status.js";
 import { SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE, SCOPE_RESPOND } from "../auth/api-key.js";
 import { getAuthUser, requireAuth } from "../auth/middleware.js";
 import {
@@ -245,7 +245,11 @@ capabilitiesRouter.get("/capabilities", async (c) => {
 	const mayOperate =
 		effectiveRole === "admin" ||
 		(authUser?.source === "api_key" && scopesIncludeManage(authUser.scopes ?? []));
-	const update = getUpdateStatus();
+	// `localApply` is for an admin alone, in both modes: a member's manage key reads the rest, not that.
+	const update = updateStatusFor(getUpdateStatus(), {
+		operator: mayOperate,
+		admin: effectiveRole === "admin",
+	});
 
 	return c.json({
 		apiLevel: CAPABILITIES_API_LEVEL,
@@ -275,7 +279,7 @@ capabilitiesRouter.get("/capabilities", async (c) => {
 		...(push.available ? { push: { relayOrigin: push.relayOrigin } } : {}),
 		pushEvents: [...new Set(features.flatMap((f) => f.pushEvents ?? []))],
 		// From memory. `state` is open-valued on the wire: a client maps a name it doesn't know to "unknown".
-		update: mayOperate ? update : publicUpdateStatus(update),
+		update,
 	});
 });
 

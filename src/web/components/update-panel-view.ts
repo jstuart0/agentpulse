@@ -7,7 +7,7 @@ import { type UpdateCommandLine, updateCommandFor } from "../../shared/update-co
 import { RED_UPDATE_STATES, releaseNotesUrl } from "../../shared/update-status.js";
 import { parseReleaseVersion } from "../../shared/version.js";
 import { ADMIN_ONLY_SETTINGS_NOTICE } from "../lib/ownership-ui.js";
-import { UPDATE_PANEL_COPY, stateCopy } from "../lib/update-outcome-copy.js";
+import { UPDATE_PANEL_COPY, outcomeCopy, stateCopy } from "../lib/update-outcome-copy.js";
 import type { CheckNotice } from "../stores/update-store.js";
 import { type UpdateViewer, type UpdateWire, VERIFICATION_FAILED } from "./update-view.js";
 
@@ -54,6 +54,8 @@ export interface UpdatePanelView {
 		value: string /** The full time, for a tooltip. */;
 		title?: string;
 	}>;
+	/** What this machine's own updater has done: only an admin's view carries it. Empty when there is nothing to say. */
+	autoRows: UpdatePanelView["rows"];
 	stateSentence: string;
 	stateNext: string | null;
 	staleLine: string | null;
@@ -101,6 +103,38 @@ export function checkNoticeText(
 	}
 }
 
+/** The rows for `localApply`: whether automatic updates are on, how the last run ended, and since when it has been waiting. */
+function autoRows(status: UpdateWire | null, format: TimeFormat): UpdatePanelView["rows"] {
+	const apply = status?.localApply;
+	if (typeof apply !== "object" || apply === null) return [];
+	const rows: UpdatePanelView["rows"] = [
+		{
+			label: UPDATE_PANEL_COPY.automatic,
+			value: apply.auto === true ? UPDATE_PANEL_COPY.automaticOn : UPDATE_PANEL_COPY.automaticOff,
+		},
+	];
+	if (typeof apply.lastOutcome === "string") {
+		const target =
+			typeof apply.lastTarget === "string" && parseReleaseVersion(apply.lastTarget)
+				? ` (${apply.lastTarget})`
+				: "";
+		const at = typeof apply.at === "string" ? apply.at : null;
+		rows.push({
+			label: UPDATE_PANEL_COPY.lastRun,
+			value: `${outcomeCopy(apply.lastOutcome).sentence}${target}${at ? ` ${format.ago(at)}` : ""}`,
+			...(at ? { title: format.full(at) } : {}),
+		});
+	}
+	if (typeof apply.waitingSince === "string") {
+		rows.push({
+			label: UPDATE_PANEL_COPY.waitingSince,
+			value: format.ago(apply.waitingSince),
+			title: format.full(apply.waitingSince),
+		});
+	}
+	return rows;
+}
+
 export function derivePanelView(
 	status: UpdateWire | null,
 	ctx: PanelContext,
@@ -140,6 +174,7 @@ export function derivePanelView(
 
 	return {
 		rows,
+		autoRows: ctx.adminSettingsLocked ? [] : autoRows(status, format),
 		stateSentence:
 			state === "unverified" ? unverifiedSentence(status, copy.sentence) : copy.sentence,
 		stateNext: copy.next,

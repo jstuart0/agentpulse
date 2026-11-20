@@ -26,6 +26,9 @@ const { initializeDatabase } = await import("../db/client.js");
 const { health, markDbReady, _resetDbReadyForTest } = await import("./health.js");
 const { app } = await import("../app.js");
 const { createApiKey } = await import("../auth/api-key.js");
+const { seedKey, seedLocalUser, setStoredMode, clearInstanceSettings } = await import(
+	"../test-utils/team-fixtures.js"
+);
 const { createUpdateChecker, setUpdateCheckerForTests } = await import(
 	"../services/update-check.js"
 );
@@ -305,5 +308,82 @@ describe("GET /capabilities", () => {
 		await c.checkNow();
 		const text = JSON.stringify((await (await get()).json()).update);
 		expect(text).not.toMatch(/https?:|docker|git |\/Users\//);
+	});
+});
+
+describe("localApply is for an admin only", () => {
+	const APPLY = {
+		auto: true,
+		lastOutcome: "supervisor_busy" as const,
+		lastTarget: "0.12.0",
+		at: "2026-11-19T10:00:00.000Z",
+		waitingSince: "2026-11-19T04:00:00.000Z",
+	};
+	const localChecker = async () => {
+		const { c, source } = checker(undefined, {
+			install: () => ({ kind: "local", track: "release" }),
+			localApply: () => APPLY,
+		});
+		source.push(envelopeFor(testPayload()));
+		await c.checkNow();
+	};
+	const read = async (key: string) =>
+		(
+			await (
+				await app.request("/api/v1/capabilities", { headers: { Authorization: `Bearer ${key}` } })
+			).json()
+		).update as Record<string, unknown>;
+	afterEach(async () => {
+		await clearInstanceSettings();
+	});
+
+	test("solo: an ownerless manage key is an admin and reads it; an observe key gets the six public fields", async () => {
+		await localChecker();
+		expect((await read(manageKey)).localApply).toEqual(APPLY);
+		const observe = await read(observeKey);
+		expect("localApply" in observe).toBe(false);
+		expect(Object.keys(observe)).toHaveLength(6);
+	});
+
+	test("team mode: a member's manage key reads the operator fields but has no localApply key at all", async () => {
+		await localChecker();
+		await setStoredMode("team");
+		const member = await seedLocalUser("la-member");
+		const memberKey = await seedKey("la-member-manage", ["manage"], member.id);
+		const body = await read(memberKey.key);
+		expect("localApply" in body).toBe(false);
+		expect(body.installKind).toBe("local");
+		expect(JSON.stringify(body)).not.toContain("supervisor_busy");
+		// control: an admin's key, same server state, same request, gets it
+		const admin = await seedLocalUser("la-admin", "admin");
+		const adminKey = await seedKey("la-admin-manage", ["manage"], admin.id);
+		expect((await read(adminKey.key)).localApply).toEqual(APPLY);
+	});
+
+	test("team mode: an ownerless manage key that isn't a kept admin service key doesn't see it", async () => {
+		await localChecker();
+		await setStoredMode("team");
+		const loose = await seedKey("la-loose-manage", ["manage"], null);
+		expect("localApply" in (await read(loose.key))).toBe(false);
+	});
+
+	test("/health never carries it, to anyone", async () => {
+		await localChecker();
+		const body = await (await healthApp.request("/api/v1/health?manifest=1")).json();
+		expect(JSON.stringify(body)).not.toContain("localApply");
+		expect(JSON.stringify(body)).not.toContain("supervisor_busy");
+	});
+
+	test("the check-now route answers admins only, so its body is never a member's", async () => {
+		await localChecker();
+		await setStoredMode("team");
+		const member = await seedLocalUser("la-member2");
+		const memberKey = await seedKey("la-member2-manage", ["manage"], member.id);
+		const res = await app.request("/api/v1/update/check", {
+			method: "POST",
+			headers: { Authorization: `Bearer ${memberKey.key}` },
+		});
+		expect(res.status).toBe(403);
+		expect(JSON.stringify(await res.json())).not.toContain("localApply");
 	});
 });

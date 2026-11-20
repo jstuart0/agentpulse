@@ -40,6 +40,7 @@ import {
 	verifyManifest,
 } from "../../shared/release-manifest.js";
 import {
+	type LocalApplyStatus,
 	UPDATE_CHECK_RESULTS,
 	type UpdateCheckResult,
 	type UpdateStatus,
@@ -48,6 +49,7 @@ import { resolveHomeDir } from "../../supervisor/config.js";
 import { getDb } from "../db/client.js";
 import { settings } from "../db/schema/index.js";
 import { installProbeOverride } from "./install-probe.js";
+import { readLocalApplyCached } from "./local-apply.js";
 import { upsertSetting } from "./settings-service.js";
 
 /** The one place a manifest is fetched from. Never taken from a response, an env var or a setting. */
@@ -217,6 +219,8 @@ export interface UpdateCheckDeps {
 	/** What kind of install this is, asked lazily and only once it is needed. */
 	install: () => { kind: InstallKind; track: "release" | "ref" | null };
 	enabled: () => boolean;
+	/** What this machine's own updater last did (a local install only); absent reads as nothing known. */
+	localApply?: (kind: InstallKind) => LocalApplyStatus | null;
 	now: () => number;
 	random: () => number;
 	/** Runs `fn` after `ms` and returns a cancel function. */
@@ -438,7 +442,7 @@ export function createUpdateChecker(deps: UpdateCheckDeps): UpdateChecker {
 			manifestIssuedAt: derived.state === "disabled" ? null : (manifest?.issuedAt ?? null),
 			installKind: install.kind,
 			track: install.kind === "local" ? install.track : null,
-			localApply: null,
+			localApply: deps.localApply?.(install.kind) ?? null,
 		};
 	}
 
@@ -503,6 +507,7 @@ function defaultChecker(): UpdateChecker {
 		currentVersion: pkg.version,
 		install: detectInstall,
 		enabled: () => updateCheckEnabled(process.env),
+		localApply: (kind) => readLocalApplyCached(resolveHomeDir(), kind, Date.now()),
 		now: Date.now,
 		random: Math.random,
 		schedule: (fn, ms) => {
