@@ -2981,6 +2981,7 @@ describe("install.json and ~/.agentpulse/bin/agentpulse", () => {
 			serverUrl: "http://localhost:3000",
 			serverTransport: "loopback",
 			port: 3000,
+			host: "0.0.0.0",
 			bunBin: join(env.BUN_INSTALL, "bin", "bun"),
 		});
 		expect(readFileSync(file, "utf-8").endsWith("}\n")).toBe(true);
@@ -3140,46 +3141,62 @@ describe("the installer follows releases, never moves a checkout backwards, and 
 	const recordOf = (home: string) =>
 		JSON.parse(readFileSync(join(home, ".agentpulse", "install.json"), "utf-8"));
 	const TAGS = [
-		"aaa\trefs/tags/v0.9.0",
-		"aaa\trefs/tags/v0.9.0^{}",
-		"bbb\trefs/tags/v0.10.0",
-		"bbb\trefs/tags/v0.10.0^{}",
-		"ccc\trefs/tags/v0.11.0-rc.1",
-		"ddd\trefs/tags/v0.10.0-beta",
+		"aaa\trefs/tags/v1.9.0",
+		"aaa\trefs/tags/v1.9.0^{}",
+		"bbb\trefs/tags/v1.10.0",
+		"bbb\trefs/tags/v1.10.0^{}",
+		"ccc\trefs/tags/v2.0.0-rc.1",
+		"ddd\trefs/tags/v1.10.0-beta",
 		"eee\trefs/tags/vNEXT",
-		"fff\trefs/tags/v0.2.0",
+		"fff\trefs/tags/v0.12.0",
+		"ggg\trefs/tags/v0.11.0",
 		"",
 	].join("\\n");
 
 	each(
-		"the default is the highest stable release tag, numerically (0.10.0 beats 0.9.0; pre-releases and ^{} lines are ignored)",
+		"the default is the highest stable release tag, numerically (1.10.0 beats 1.9.0; pre-releases, ^{} lines and anything before 0.12.0 are ignored)",
 		(bash) => {
 			const r = go(bash, [...PLAIN, "--skip-supervisor"], {
 				path: mkPath(),
 				env: { ...bunEnv(), AP_LS_REMOTE: TAGS },
 			});
 			expect(r.code).toBe(0);
-			expect(r.log).toContain("git clone --branch v0.10.0 --single-branch --");
-			expect(r.stdout).toContain("✓ Latest release: v0.10.0");
-			expect(recordOf(r.home)).toMatchObject({ track: "release", ref: "v0.10.0" });
+			expect(r.log).toContain("git clone --branch v1.10.0 --single-branch --");
+			expect(r.stdout).toContain("✓ Latest release: v1.10.0");
+			expect(recordOf(r.home)).toMatchObject({ track: "release", ref: "v1.10.0" });
 		},
 	);
 
-	once("no tags, or a failing ls-remote, is fatal and clones nothing", (bash) => {
-		for (const env of [
-			{ AP_LS_REMOTE: "ccc\trefs/tags/v0.11.0-rc.1\\n" },
-			{ AP_LS_REMOTE_FAIL: "1" },
-		]) {
-			const r = go(bash, [...PLAIN, "--skip-supervisor"], {
-				path: mkPath(),
-				env: { ...bunEnv(), ...env },
-			});
-			expect(r.code).toBe(1);
-			expect(r.stderr).toContain("couldn't find a release of AgentPulse");
-			expect(r.log).not.toContain("git clone");
-			expect(existsSync(join(r.home, ".agentpulse", "install.json"))).toBe(false);
-		}
+	once("a failing ls-remote is fatal and clones nothing", (bash) => {
+		const r = go(bash, [...PLAIN, "--skip-supervisor"], {
+			path: mkPath(),
+			env: { ...bunEnv(), AP_LS_REMOTE_FAIL: "1" },
+		});
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("couldn't read the releases of AgentPulse");
+		expect(r.log).not.toContain("git clone");
+		expect(existsSync(join(r.home, ".agentpulse", "install.json"))).toBe(false);
 	});
+
+	each(
+		"with no release that carries a version and an updater (nothing from 0.12.0 on), it follows main and the record says so",
+		(bash) => {
+			for (const tags of [
+				"ccc\trefs/tags/v0.11.0-rc.1\\n",
+				"aaa\trefs/tags/v0.11.0\\nbbb\trefs/tags/v0.9.0\\n",
+			]) {
+				const r = go(bash, [...PLAIN, "--skip-supervisor"], {
+					path: mkPath(),
+					env: { ...bunEnv(), AP_LS_REMOTE: tags },
+				});
+				expect(r.code).toBe(0);
+				expect(r.log).toContain("git clone --branch main --single-branch --");
+				expect(r.stdout).toContain("this install follows main");
+				// the record is truthful: a branch checkout, not v0.11.0
+				expect(recordOf(r.home)).toMatchObject({ track: "ref", ref: "main" });
+			}
+		},
+	);
 
 	once("--ref follows that ref: no tag lookup, and the record says so", (bash) => {
 		const r = go(bash, [...PLAIN, "--skip-supervisor", "--ref", "main"], {
@@ -3216,6 +3233,9 @@ describe("the installer follows releases, never moves a checkout backwards, and 
 			expect(r.code).toBe(0);
 			expect(r.stdout).toContain("so it stays where it is");
 			expect(r.log).not.toContain("checkout v0.12.0");
+			// what is really checked out is recorded, and a ref install isn't updated for you
+			expect(recordOf(r.home)).toMatchObject({ track: "ref" });
+			expect(recordOf(r.home).ref).not.toBe("v0.12.0");
 			expect(r.log).toContain("install --frozen-lockfile");
 		},
 	);
@@ -3265,8 +3285,14 @@ describe("the installer follows releases, never moves a checkout backwards, and 
 	describe("--supervisor-only", () => {
 		const TOKEN = "tok-3f9a-SECRETSECRET";
 		const base = ["--service", "systemd", "--supervisor-only", "--server-url"];
-		const pythonLog = `echo "python3 $*" >> "$AP_STUB_LOG"; exec ${real("python3")} "$@"`;
-		const supPath = () => mkPath({ python3: false, stubs: { python3: pythonLog } });
+		const pythonLog = `echo "python3 $*" >> "$AP_STUB_LOG"; echo "ENV[$AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN][$AGENTPULSE_API_KEY]" >> "$AP_STUB_LOG"; exec ${real("python3")} "$@"`;
+		// The supervisor "registers" when systemctl restarts it: its credential lands in supervisor.json, as the real one does.
+		const registers = loggingStub(
+			"systemctl",
+			`case "$*" in "--user restart agentpulse-supervisor") f="$HOME/.agentpulse/supervisor.json"; if [ -f "$f" ]; then sed 's/"enrollmentToken"/"supervisorCredential": "x", "enrollmentToken"/' "$f" > "$f.n"; cat "$f.n" > "$f"; rm -f "$f.n"; fi ;; esac`,
+		);
+		const supPath = () =>
+			mkPath({ python3: false, stubs: { python3: pythonLog, systemctl: registers } });
 
 		once(
 			"installs the checkout, the supervisor unit, the shim and a supervisor-only record, and no server",
@@ -3402,5 +3428,71 @@ describe("the installer follows releases, never moves a checkout backwards, and 
 				expect(r.stdout).toContain("Restarted the supervisor so it reports this install");
 			},
 		);
+
+		once(
+			"a supervisor that hasn't saved its credential is not restarted (its enrollment token is single use)",
+			(bash) => {
+				const r = go(bash, [...base, "https://agentpulse.example.invalid"], {
+					path: mkPath({ python3: false, stubs: { python3: pythonLog } }),
+					env: {
+						...bunEnv(),
+						AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN: TOKEN,
+						AP_REGISTER_WAIT_SECONDS: "1",
+					},
+				});
+				expect(r.code).toBe(0);
+				const restarts = r.log
+					.split("\n")
+					.filter((l) => l.includes("restart agentpulse-supervisor"));
+				expect(restarts).toHaveLength(1);
+				expect(r.stdout).toContain("hasn't registered yet");
+			},
+		);
+
+		once("the token and API key are out of the environment of every child", (bash) => {
+			const r = go(bash, [...base, "https://agentpulse.example.invalid"], {
+				path: supPath(),
+				env: {
+					...bunEnv(),
+					AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN: TOKEN,
+					AGENTPULSE_API_KEY: "apkey-SECRET",
+				},
+			});
+			expect(r.code).toBe(0);
+			expect(r.log).toContain("ENV[][]");
+			expect(r.log).not.toContain("apkey-SECRET");
+		});
+
+		once("it refuses a machine whose install.json already lists the server", (bash) => {
+			const home = fresh("home");
+			mkdirSync(join(home, ".agentpulse"), { recursive: true });
+			writeFileSync(
+				join(home, ".agentpulse", "install.json"),
+				'{"components": ["server", "supervisor"]}\n',
+			);
+			const r = go(bash, [...base, "https://agentpulse.example.invalid"], {
+				path: supPath(),
+				home,
+				env: { ...bunEnv(), AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN: TOKEN },
+			});
+			expect(r.code).toBe(1);
+			expect(r.stderr).toContain("already runs the AgentPulse server");
+			expect(r.stderr).toContain("agentpulse update");
+			expect(r.log).toBe("");
+		});
+
+		once("a symlinked supervisor.json is never read through", (bash) => {
+			const home = fresh("home");
+			mkdirSync(join(home, ".agentpulse"), { recursive: true });
+			writeFileSync(join(home, "elsewhere.json"), '{"hostName":"x"}\n');
+			symlinkSync(join(home, "elsewhere.json"), join(home, ".agentpulse", "supervisor.json"));
+			const r = go(bash, [...base, "https://agentpulse.example.invalid"], {
+				path: supPath(),
+				home,
+				env: { ...bunEnv(), AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN: TOKEN },
+			});
+			expect(r.code).not.toBe(0);
+			expect(readFileSync(join(home, "elsewhere.json"), "utf-8")).toBe('{"hostName":"x"}\n');
+		});
 	});
 });

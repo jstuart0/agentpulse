@@ -179,6 +179,10 @@ export const OUTCOME_COPY: Record<UpdateOutcomeCode, OutcomeCopy> = {
 		sentence: "The update failed and restoring the previous version failed too.",
 		next: "Services are stopped. Follow the recovery steps the updater printed.",
 	},
+	downgrade_schema: {
+		sentence: "The database is newer than that version understands.",
+		next: "The downgrade flag can't make this safe. Use update rollback, or restore a backup.",
+	},
 	nothing_to_roll_back: {
 		sentence: "There is no earlier copy to go back to.",
 		next: "Nothing was changed.",
@@ -233,7 +237,9 @@ export const UPDATE_HOST_COPY = {
 	runAfter: " on ",
 	end: ".",
 	reinstallBefore:
-		"This host wasn't installed with install-local.sh, so it can't update itself. Re-install it with ",
+		"This host wasn't installed with install-local.sh, so it can't update itself. If it runs only a supervisor, on macOS or Linux re-install it with ",
+	reinstallWindows:
+		"This host wasn't installed with install-local.sh, so it can't update itself. On Windows, update it by running install-local.ps1 again on that machine.",
 	copy: (hostName: string) => `Copy the update command for ${hostName}`,
 	copied: "Command copied",
 	copyFailed: "Couldn't copy. Select the command and copy it.",

@@ -29,6 +29,8 @@ export interface InstallRecord {
 	serverTransport: "https" | "loopback" | "http";
 	/** The port the local server listens on (the updater probes `127.0.0.1:<port>`); null for a supervisor-only install. */
 	port: number | null;
+	/** The address the local server binds (`0.0.0.0` for every interface); null for a supervisor-only install or an older record. */
+	host: string | null;
 	bunBin: string;
 }
 
@@ -103,6 +105,9 @@ function parseRecord(raw: unknown): InstallRecord | null {
 	) {
 		return null;
 	}
+	const host = r.host === undefined || r.host === null ? null : r.host;
+	if (host !== null && (typeof host !== "string" || !/^[A-Za-z0-9.:_[\]-]{1,255}$/.test(host)))
+		return null;
 	const serverTransport = serverTransportOf(r.serverUrl);
 	if (!serverTransport) return null;
 	const port = r.port === undefined || r.port === null ? null : r.port;
@@ -127,6 +132,7 @@ function parseRecord(raw: unknown): InstallRecord | null {
 		serverUrl: r.serverUrl,
 		serverTransport,
 		port,
+		host,
 		bunBin: r.bunBin,
 	};
 }

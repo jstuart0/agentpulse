@@ -28,6 +28,7 @@ import {
 	hostActionConfirm,
 	serverUpdateOf,
 	supervisorOnlyInstallCommand,
+	supervisorOnlyInstallUnavailableNote,
 } from "./hosts-view-state.js";
 
 /**
@@ -318,6 +319,9 @@ export function HostsPage() {
 											</code>
 										</div>
 									) : null}
+									{supervisorOnlyInstallUnavailableNote(window.location.origin) ? (
+										<div>{supervisorOnlyInstallUnavailableNote(window.location.origin)}</div>
+									) : null}
 									{createdToken.mode === "rotate" && (
 										<div>
 											This token re-enrolls the existing host and replaces its scoped credential.
@@ -418,7 +422,9 @@ export function HostsPage() {
 										{supervisorOnlyInstallCommand(window.location.origin, null)}
 									</code>
 								</>
-							) : null}
+							) : (
+								<> {supervisorOnlyInstallUnavailableNote(window.location.origin)}</>
+							)}
 						</div>
 					</div>
 				) : (

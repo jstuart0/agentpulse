@@ -11,6 +11,9 @@
  * started again. After a stop the unit must be gone from the manager, its recorded pid gone from the process
  * table (read, never signalled) and its port closed. Only the units that were active before a run are started
  * again, and a unit that wasn't active is left alone.
+ *
+ * `installTimer` and `removeTimer` are not called by anything yet (phase 5's `update auto on|off` will). The scheduled job
+ * itself must never call them: replacing the unit that is running it would end it mid-update.
  */
 import { existsSync, unlinkSync } from "node:fs";
 import { createConnection } from "node:net";
@@ -25,6 +28,8 @@ export interface GoneQuery {
 	/** `ps -o lstart=` recorded with the pid; a pid whose start time differs is another process. */
 	startedAt: number | string | null;
 	port: number | null;
+	/** The address the port is checked on; null is loopback. */
+	host?: string | null;
 }
 
 export interface TimerSpec {
@@ -58,6 +63,7 @@ export const SYSTEMD_UNITS: Record<UnitName, string> = {
 };
 export const SYSTEMD_UPDATER_UNIT = "agentpulse-updater";
 export const UPDATER_INTERVAL_SECONDS = 21_600;
+const BOOTSTRAP_TRIES = 5;
 export const REAL_SERVICES_ENV = "AGENTPULSE_UPDATER_REAL_SERVICES";
 
 // ---- renderers (pure) ----
@@ -180,7 +186,10 @@ interface AdapterDeps {
 	exists: (path: string) => boolean;
 	env: Record<string, string | undefined>;
 	identityOf: (pid: number) => string | null;
-	portOpen: (port: number) => Promise<boolean>;
+	sleep: (ms: number) => Promise<void>;
+	/** One line per command that answered non-zero (the command and the code, never output). */
+	log: (line: string) => void;
+	portOpen: (port: number, host?: string) => Promise<boolean>;
 	writeFile: (path: string, text: string) => void;
 	removeFile: (path: string) => void;
 }
@@ -192,7 +201,8 @@ async function processAndPortGone(deps: AdapterDeps, query: GoneQuery): Promise<
 			identity !== null && (query.startedAt === null || identity === String(query.startedAt));
 		if (same) return false;
 	}
-	if (query.port !== null && (await deps.portOpen(query.port))) return false;
+	if (query.port !== null && (await deps.portOpen(query.port, query.host ?? undefined)))
+		return false;
 	return true;
 }
 
@@ -218,10 +228,29 @@ function createLaunchd(deps: AdapterDeps): ServiceManager {
 			return active;
 		},
 		async stop(unit) {
-			await deps.run(["launchctl", "bootout", `${domain}/${LAUNCHD_LABELS[unit]}`]);
+			const result = await deps.run(["launchctl", "bootout", `${domain}/${LAUNCHD_LABELS[unit]}`]);
+			// 3 and 113: the job wasn't loaded, which is what a stop wants.
+			if (![0, 3, 113].includes(result.code)) {
+				deps.log(`launchctl bootout ${LAUNCHD_LABELS[unit]} answered ${result.code}`);
+				throw new Error("launchctl bootout failed");
+			}
 		},
 		async start(unit) {
-			await deps.run(["launchctl", "bootstrap", domain, launchdPlist(deps.home, unit)]);
+			const label = LAUNCHD_LABELS[unit];
+			// A job a person disabled would never load; enable is harmless for one that isn't.
+			const enabled = await deps.run(["launchctl", "enable", `${domain}/${label}`]);
+			if (enabled.code !== 0) deps.log(`launchctl enable ${label} answered ${enabled.code}`);
+			let code = 0;
+			for (let attempt = 0; attempt < BOOTSTRAP_TRIES; attempt++) {
+				code = (await deps.run(["launchctl", "bootstrap", domain, launchdPlist(deps.home, unit)]))
+					.code;
+				if (code === 0) return;
+				deps.log(`launchctl bootstrap ${label} answered ${code}`);
+				// 5 (I/O error) and 37 (already bootstrapping) are what a bootout still settling answers.
+				if (code !== 5 && code !== 37) break;
+				await deps.sleep(500 * (attempt + 1));
+			}
+			throw new Error("launchctl bootstrap failed");
 		},
 		async isGone(unit, query) {
 			if (await loaded(LAUNCHD_LABELS[unit])) return false;
@@ -248,7 +277,8 @@ function systemdUnitFile(home: string, name: string): string {
 function createSystemd(deps: AdapterDeps): ServiceManager {
 	const active = async (name: string) => {
 		const result = await deps.run(["systemctl", "--user", "is-active", name]);
-		return result.stdout.trim() === "active";
+		// Anything but inactive or failed (activating, deactivating, reloading...) is still the old process.
+		return !["inactive", "failed", ""].includes(result.stdout.trim());
 	};
 	return {
 		kind: "systemd",
@@ -266,10 +296,19 @@ function createSystemd(deps: AdapterDeps): ServiceManager {
 			return out;
 		},
 		async stop(unit) {
-			await deps.run(["systemctl", "--user", "stop", SYSTEMD_UNITS[unit]]);
+			// `stop` returns when systemd is done (up to TimeoutStopSec, 90 s by default).
+			const result = await deps.run(["systemctl", "--user", "stop", SYSTEMD_UNITS[unit]]);
+			if (result.code !== 0) {
+				deps.log(`systemctl stop ${SYSTEMD_UNITS[unit]} answered ${result.code}`);
+				throw new Error("systemctl stop failed");
+			}
 		},
 		async start(unit) {
-			await deps.run(["systemctl", "--user", "start", SYSTEMD_UNITS[unit]]);
+			const result = await deps.run(["systemctl", "--user", "start", SYSTEMD_UNITS[unit]]);
+			if (result.code !== 0) {
+				deps.log(`systemctl start ${SYSTEMD_UNITS[unit]} answered ${result.code}`);
+				throw new Error("systemctl start failed");
+			}
 		},
 		async isGone(unit, query) {
 			if (await active(SYSTEMD_UNITS[unit])) return false;
@@ -332,7 +371,9 @@ function adapterDeps(
 		exists: existsSync,
 		env: options.env,
 		identityOf: processIdentity,
-		portOpen: (port) => portIsOpen(port),
+		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+		log: (line) => console.error(`[updater] ${line}`),
+		portOpen: (port, host) => portIsOpen(port, host),
 		writeFile: (path, text) => writePrivateFileAtomicNoFollow(path, text),
 		removeFile: (path) => {
 			try {

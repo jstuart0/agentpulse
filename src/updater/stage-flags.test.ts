@@ -36,8 +36,8 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-const env = { PATH: process.env.PATH, HOME: tmpdir() };
-const deps = () => ({ run: defaultRun, env, home: tmpdir() });
+// Each test's own scratch directory is its HOME, so nothing here can reach the real one.
+const deps = () => ({ run: defaultRun, env: { PATH: process.env.PATH, HOME: root }, home: root });
 const sentinel = () => existsSync(join(root, "node_modules", "sentinel"));
 
 async function makeLockfile() {

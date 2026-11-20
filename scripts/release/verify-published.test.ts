@@ -266,3 +266,12 @@ describe("auditFindings", () => {
 		});
 	}
 });
+
+test("the script's feed URL is the one the clients fetch (src/shared/release-feed.ts)", async () => {
+	const { MANIFEST_URL: fromScript } = await import("./verify-published.ts");
+	const { MANIFEST_URL: fromShared } = await import("../../src/shared/release-feed.ts");
+	expect(fromScript).toBe(fromShared);
+	expect(readFileSync(join(import.meta.dir, "verify-published.ts"), "utf-8")).not.toMatch(
+		/"https:\/\/[^"]*manifest\.json"/,
+	);
+});

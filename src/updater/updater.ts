@@ -43,7 +43,8 @@ import {
 } from "../shared/update-files.js";
 import type { UpdateOutcomeCode } from "../shared/update-status.js";
 import { parseReleaseVersion } from "../shared/version.js";
-import type { RunFn } from "./exec.js";
+import { type LocalEndpoint, isLoopbackProbeHost, localEndpoint } from "./endpoint.js";
+import { type RunFn, gitEnv } from "./exec.js";
 import { type FetchText, type HealthInfo, probeHealth } from "./health.js";
 import {
 	type Journal,
@@ -71,6 +72,7 @@ import {
 	executeSwap,
 	flipCurrent,
 	installBundle,
+	irregularEnvEntries,
 	isOlderThan,
 	listSiblings,
 	planSwap,
@@ -102,7 +104,8 @@ export const DEFAULT_TIMING: UpdaterTiming = {
 	idleWaitManualMs: 10 * 60_000,
 	idleWaitLongMs: 2 * 3_600_000,
 	drainMs: 2 * 60_000,
-	stopMs: 30_000,
+	// systemd's TimeoutStopSec defaults to 90 s: a stop may legitimately take that long.
+	stopMs: 120_000,
 	serverHealthMs: 90_000,
 	supervisorHealthMs: 60_000,
 	statusFreshMs: 45_000,
@@ -183,6 +186,18 @@ function readVersionOf(app: string): string | null {
 }
 
 /** The last migration tag of a dialect's journal in `app`, or null when unreadable. */
+/** Every migration tag in a dialect's journal under `app`; empty when unreadable. */
+function migrationTags(app: string, dialect: "sqlite" | "postgres"): string[] {
+	try {
+		const raw = JSON.parse(
+			readFileSync(join(app, "drizzle", dialect, "meta", "_journal.json"), "utf-8"),
+		) as { entries?: { tag?: unknown }[] };
+		return (raw.entries ?? []).flatMap((e) => (typeof e.tag === "string" ? [e.tag] : []));
+	} catch {
+		return [];
+	}
+}
+
 function lastMigration(app: string, dialect: "sqlite" | "postgres"): string | null {
 	try {
 		const raw = JSON.parse(
@@ -258,6 +273,7 @@ interface Ctx {
 	components: readonly InstallComponent[];
 	serverBase: string | null;
 	serverFetchLoose: boolean;
+	endpoint: LocalEndpoint;
 	journal: Journal | null;
 }
 
@@ -285,15 +301,21 @@ async function pollUntil(
 	}
 }
 
-function serverUrls(record: InstallRecord): { base: string | null; loose: boolean } {
+function serverUrls(
+	record: InstallRecord,
+	app: string,
+): { base: string | null; loose: boolean; endpoint: LocalEndpoint } {
+	const endpoint = localEndpoint(record, app);
 	if (record.components.includes("server")) {
+		// The local server is probed where it listens, never at a public server URL over plain http.
 		return {
-			base: record.port ? `http://127.0.0.1:${record.port}` : record.serverUrl,
-			loose: false,
+			base: endpoint.port === null ? null : `http://${endpoint.host}:${endpoint.port}`,
+			loose: !isLoopbackProbeHost(endpoint.host),
+			endpoint,
 		};
 	}
 	// A supervisor-only install reads its server over the link it was enrolled with; plain http only when the record says so (U7).
-	return { base: record.serverUrl, loose: record.serverTransport === "http" };
+	return { base: record.serverUrl, loose: record.serverTransport === "http", endpoint };
 }
 
 async function healthOf(ctx: Ctx, manifest = false): Promise<HealthInfo | null> {
@@ -347,17 +369,27 @@ function removeDrain(ctx: Ctx): void {
 async function stopUnits(
 	ctx: Ctx,
 	units: UnitName[],
-	ports: { server: number | null; supervisor: StatusId },
+	ports: { server: number | null; host: string | null; supervisor: StatusId },
 ): Promise<boolean> {
 	const { deps } = ctx;
 	// The supervisor first, then the server.
 	for (const unit of ["supervisor", "server"] as const) {
 		if (!units.includes(unit)) continue;
-		await deps.serviceManager.stop(unit);
+		try {
+			await deps.serviceManager.stop(unit);
+		} catch {
+			deps.log.line("stop_error", { unit });
+			return false;
+		}
 		const query =
 			unit === "server"
-				? { pid: null, startedAt: null, port: ports.server }
-				: { pid: ports.supervisor.pid, startedAt: ports.supervisor.startedAt, port: null };
+				? { pid: null, startedAt: null, port: ports.server, host: ports.host }
+				: {
+						pid: ports.supervisor.pid,
+						startedAt: ports.supervisor.startedAt,
+						port: null,
+						host: null,
+					};
 		const gone = await pollUntil(deps, deps.timing.stopMs, () =>
 			deps.serviceManager.isGone(unit, query),
 		);
@@ -377,7 +409,13 @@ async function startAndVerify(
 	const startedAt = deps.now();
 	// The server first, then the supervisor.
 	for (const unit of ["server", "supervisor"] as const) {
-		if (units.includes(unit)) await deps.serviceManager.start(unit);
+		if (!units.includes(unit)) continue;
+		try {
+			await deps.serviceManager.start(unit);
+		} catch {
+			deps.log.line("start_error", { unit });
+			return unit === "server" ? "health_failed" : "supervisor_failed";
+		}
 	}
 	if (units.includes("server")) {
 		const ok = await pollUntil(deps, deps.timing.serverHealthMs, async () => {
@@ -418,7 +456,8 @@ async function rollbackFromJournal(ctx: Ctx, restartVersion: string): Promise<Up
 	const running = await deps.serviceManager.activeUnits();
 	if (
 		!(await stopUnits(ctx, running, {
-			server: ctx.record.port,
+			server: ctx.endpoint.port,
+			host: ctx.endpoint.host,
 			supervisor: { pid: status?.pid ?? null, startedAt: status?.processStartedAt ?? null },
 		}))
 	) {
@@ -537,11 +576,46 @@ function rewriteShimIfBunGone(ctx: Ctx): void {
 
 // ------------------------------------------------------------------ recovery
 
+/**
+ * A journal is read back from a file only this account can write, but recovery renames and deletes what it names,
+ * so it is judged first: versions must parse, every rename must be between the checkout's own sibling names,
+ * and the snapshot and staged bundle must sit under the updater's own directories. Anything else is refused,
+ * with nothing renamed or removed.
+ */
+function journalIsSafe(ctx: Ctx, journal: Journal): boolean {
+	if (!parseReleaseVersion(journal.to) || !parseReleaseVersion(journal.from)) return false;
+	if (journal.app !== ctx.app) return false;
+	const allowed = new Set([
+		ctx.app,
+		ctx.sib.previous,
+		ctx.sib.staging(journal.to),
+		ctx.sib.failed(journal.to),
+		ctx.sib.failed(journal.from),
+	]);
+	const retired = new RegExp(`^${escapeRegExp(`${ctx.app}.retired-`)}\\d{1,20}$`);
+	const ok = (path: string) => allowed.has(path) || retired.test(path);
+	if (!journal.ops.every((op) => ok(op.src) && ok(op.dst))) return false;
+	const under = (path: string | null, root: string) =>
+		path === null || (path.startsWith(`${root}/`) && !path.includes(".."));
+	return (
+		under(journal.snapshot, ctx.paths.snapshots) &&
+		under(journal.stagedBundle, ctx.paths.updaterRoot)
+	);
+}
+
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function recover(ctx: Ctx, read: JournalRead): Promise<UpdateResult | null> {
 	if (read.kind === "unreadable") return fail("rollback_failed");
 	if (read.kind !== "ok") return null;
-	ctx.journal = read.journal;
 	const journal = read.journal;
+	if (!journalIsSafe(ctx, journal)) {
+		ctx.deps.log.line("journal_refused", { phase: journal.phase });
+		return fail("rollback_failed");
+	}
+	ctx.journal = journal;
 	ctx.deps.log.line("recover", { phase: journal.phase, step: journal.step, to: journal.to });
 	if (journal.phase === "preparing") {
 		removeDrain(ctx);
@@ -667,7 +741,7 @@ async function runUpdateInner(deps: UpdaterDeps, options: UpdateOptions): Promis
 	if (!release) return fail("locked");
 	let crashed = false;
 	try {
-		const urls = serverUrls(record);
+		const urls = serverUrls(record, app);
 		const ctx: Ctx = {
 			deps,
 			paths,
@@ -677,6 +751,7 @@ async function runUpdateInner(deps: UpdaterDeps, options: UpdateOptions): Promis
 			components: record.components,
 			serverBase: urls.base,
 			serverFetchLoose: urls.loose,
+			endpoint: urls.endpoint,
 			journal: null,
 		};
 		mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
@@ -772,6 +847,7 @@ async function updateLocked(ctx: Ctx, options: UpdateOptions): Promise<UpdateRes
 	}
 
 	// 7. Preflight.
+	if (irregularEnvEntries(app).length > 0) return fail("untracked_files", { from, to });
 	const clean = await checkTreeClean(stageDeps(deps), app, deps.canonicalRepoUrl);
 	if (!clean.ok) return fail(clean.code, { from, to });
 	if ((await deps.serviceManager.preflight()) !== "ok")
@@ -779,7 +855,8 @@ async function updateLocked(ctx: Ctx, options: UpdateOptions): Promise<UpdateRes
 	{
 		const dbBytes =
 			record.sqlitePath && existsSync(record.sqlitePath) ? statSync(record.sqlitePath).size : 0;
-		const need = 2 * dbBytes + 1.5 * deps.usageBytes(app);
+		// Two trees beside the running one (the staged copy, and the kept previous copy), the failed copy a rollback keeps, and the database twice (smoke copy, snapshot).
+		const need = 2 * dbBytes + 2.5 * deps.usageBytes(app);
 		const free = deps.freeBytes(dirname(app));
 		if (free !== null && free < need) return fail("disk_space", { from, to });
 	}
@@ -821,6 +898,14 @@ async function updateLocked(ctx: Ctx, options: UpdateOptions): Promise<UpdateRes
 		allowBackward: options.allowDowngrade === true,
 	});
 	if (!stage.ok) return abort(ctx, stage.code, { from, to }, to);
+	// A person's downgrade must not put older code on a database it doesn't understand: the installed copy's
+	// newest migration has to be one the target also has.
+	if (options.allowDowngrade === true && hasServer) {
+		const installedLast = lastMigration(app, "sqlite");
+		if (installedLast !== null && !migrationTags(staging, "sqlite").includes(installedLast)) {
+			return abort(ctx, "downgrade_schema", { from, to });
+		}
+	}
 	const built = await buildStaged(stageDeps(deps), { staging, bunBin: record.bunBin });
 	if (!built.ok)
 		return abort(ctx, built.code, { from, to }, built.code === "build_failed" ? to : undefined);
@@ -875,7 +960,11 @@ async function updateLocked(ctx: Ctx, options: UpdateOptions): Promise<UpdateRes
 	// 11. Stop.
 	journal.phase = "swapping";
 	save(ctx, "stopping");
-	const stopped = await stopUnits(ctx, units, { server: record.port, supervisor: supervisorId });
+	const stopped = await stopUnits(ctx, units, {
+		server: ctx.endpoint.port,
+		host: ctx.endpoint.host,
+		supervisor: supervisorId,
+	});
 	removeDrain(ctx);
 	if (!stopped) {
 		const undone = await rollbackFromJournal(ctx, from);
@@ -911,7 +1000,16 @@ async function updateLocked(ctx: Ctx, options: UpdateOptions): Promise<UpdateRes
 		});
 		save(ctx, "swap_planned");
 		executeSwap(journal, (step) => save(ctx, step));
-		carryEnvFiles(ctx.sib.previous, app);
+		const tracked = await deps.run(["git", "-C", app, "ls-files", "--", ".env*"], {
+			cwd: app,
+			env: gitEnv(deps.env, deps.home),
+			timeoutMs: 60_000,
+		});
+		carryEnvFiles(
+			ctx.sib.previous,
+			app,
+			new Set(tracked.stdout.split("\n").filter((n) => n !== "")),
+		);
 		journal.envCopied = true;
 		save(ctx, "env_copied");
 		if (journal.stagedBundle) {
@@ -992,7 +1090,7 @@ export async function runRecovery(deps: UpdaterDeps): Promise<UpdateResult | nul
 	if (!release) return fail("locked");
 	let crashed = false;
 	try {
-		const urls = serverUrls(record);
+		const urls = serverUrls(record, app);
 		const ctx: Ctx = {
 			deps,
 			paths,
@@ -1002,6 +1100,7 @@ export async function runRecovery(deps: UpdaterDeps): Promise<UpdateResult | nul
 			components: record.components,
 			serverBase: urls.base,
 			serverFetchLoose: urls.loose,
+			endpoint: urls.endpoint,
 			journal: null,
 		};
 		const read = readJournal(paths.dir);
@@ -1035,7 +1134,7 @@ export async function runRollback(deps: UpdaterDeps): Promise<UpdateResult> {
 	if (!release) return fail("locked");
 	let crashed = false;
 	try {
-		const urls = serverUrls(record);
+		const urls = serverUrls(record, app);
 		const ctx: Ctx = {
 			deps,
 			paths,
@@ -1045,6 +1144,7 @@ export async function runRollback(deps: UpdaterDeps): Promise<UpdateResult> {
 			components: record.components,
 			serverBase: urls.base,
 			serverFetchLoose: urls.loose,
+			endpoint: urls.endpoint,
 			journal: null,
 		};
 		const read = readJournal(paths.dir);
@@ -1097,7 +1197,13 @@ async function rollbackByHand(ctx: Ctx, priorRead: JournalRead): Promise<UpdateR
 	ctx.journal = journal;
 	save(ctx, "rollback_started");
 	const supervisorId = { pid: status?.pid ?? null, startedAt: status?.processStartedAt ?? null };
-	if (!(await stopUnits(ctx, units, { server: record.port, supervisor: supervisorId }))) {
+	if (
+		!(await stopUnits(ctx, units, {
+			server: ctx.endpoint.port,
+			host: ctx.endpoint.host,
+			supervisor: supervisorId,
+		}))
+	) {
 		const undone = await rollbackFromJournal(ctx, current);
 		return undone ?? fail("stop_failed", { from: current, to: previous });
 	}

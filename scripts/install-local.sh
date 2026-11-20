@@ -665,6 +665,9 @@ ap_local_validate_args() {
     if [[ -z "${SERVER_URL}" ]]; then
       ap_local_arg_bad --supervisor-only "needs --server-url, the server this host reports to"
     fi
+    if grep -Eq '"components"[^]]*"server"' "${AGENTPULSE_DIR}/install.json" 2>/dev/null; then
+      ap_local_arg_bad --supervisor-only "isn't for a machine that already runs the AgentPulse server (${AGENTPULSE_DIR}/install.json lists it); that would be a second install. Update it with: ~/.agentpulse/bin/agentpulse update"
+    fi
     if [[ "$(id -u)" == "0" ]]; then
       ap_local_arg_bad --supervisor-only "isn't run as root: the supervisor runs agents as you, so install it as your own user"
     fi
@@ -1193,6 +1196,11 @@ SHIM
 # <<< agentpulse-shim
 
 # $1 as a JSON string, double quotes included. A control character is refused (no path holds one).
+# Credentials that arrive in the environment are taken now and removed from it, so no child process (git, Bun,
+# python, a service manager) inherits them.
+AP_ENROLL_TOKEN_ENV="${AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN-}"
+unset AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN AGENTPULSE_API_KEY AGENTPULSE_INITIAL_API_KEY
+
 ap_json_string() {
   case "$1" in
     *[[:cntrl:]]*) return 1 ;;
@@ -1226,11 +1234,11 @@ ap_server_transport() {
 # the server, the supervisor and the CLI (src/shared/install-record.ts). Written 0600 without following a link.
 # A supervisor-only install has no database and no server of its own, so those fields are null.
 ap_write_install_record() {
-  local real_dir comps sqlite_path data_dir_json sqlite_json dialect_json port_json
+  local real_dir comps sqlite_path data_dir_json sqlite_json dialect_json port_json host_json
   real_dir="$(cd -P "${INSTALL_DIR}" && pwd -P)" || return 1
   if [[ "${SUPERVISOR_ONLY}" == "true" ]]; then
     comps='"supervisor"'
-    data_dir_json="null"; sqlite_json="null"; dialect_json="null"; port_json="null"
+    data_dir_json="null"; sqlite_json="null"; dialect_json="null"; port_json="null"; host_json="null"
   else
     comps='"server"'
     if [[ "${SUPERVISOR_INSTALLED}" == "true" ]]; then
@@ -1241,6 +1249,7 @@ ap_write_install_record() {
     sqlite_json="$(ap_json_string "${sqlite_path}")" || return 1
     dialect_json='"sqlite"'
     port_json="${PORT}"
+    host_json="$(ap_json_string "${HOST}")" || return 1
   fi
   local content v
   for v in "${REPO_URL}" "${REPO_REF}" "${real_dir}" "${DATA_DIR}" "${PUBLIC_URL}" "${BUN_BIN}"; do
@@ -1264,6 +1273,7 @@ ap_write_install_record() {
   \"serverUrl\": $(ap_json_string "${PUBLIC_URL}"),
   \"serverTransport\": \"$(ap_server_transport "${PUBLIC_URL}")\",
   \"port\": ${port_json},
+  \"host\": ${host_json},
   \"bunBin\": $(ap_json_string "${BUN_BIN}")
 }"$'\n'
   ap_write_private_no_follow "${AGENTPULSE_DIR}/install.json" "${content}" || return 1
@@ -1301,6 +1311,9 @@ ap_write_shim() {
   return 0
 }
 
+# The first release that carries its own version and the updater (0.12.0), as the padded key the tags are compared by.
+AP_FIRST_RELEASE_KEY="000000001200000"
+
 # The highest stable release tag (vMAJOR.MINOR.PATCH, nothing after) of the repository $1, or nothing.
 # Pre-releases and the peeled `^{}` lines of annotated tags are dropped, and the order is numeric (no
 # `sort -V`, which older systems lack): each part is padded to the same width, then compared as text.
@@ -1313,12 +1326,14 @@ ap_latest_release_tag() {
     tag="${ref#refs/tags/}"
     [[ "$tag" =~ ^v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$ ]] || continue
     key="$(printf '%05d%05d%05d' "$((10#${BASH_REMATCH[1]}))" "$((10#${BASH_REMATCH[2]}))" "$((10#${BASH_REMATCH[3]}))")"
+    # Releases before the first versioned one (0.12.0) have no updater and no real version: never selected.
+    if [[ "$key" < "$AP_FIRST_RELEASE_KEY" ]]; then continue; fi
     if [[ -z "$best_key" || "$key" > "$best_key" ]]; then
       best_key="$key"
       best="$tag"
     fi
   done <<< "$out"
-  [[ -n "$best" ]] || return 1
+  [[ -n "$best" ]] || return 3
   printf '%s' "$best"
   return 0
 }
@@ -1365,8 +1380,8 @@ ap_install_updater() {
 # prompt on the terminal. Never the command line. The variable is removed from the environment at once, so no
 # child process (git, Bun, python) inherits it.
 ap_read_enrollment_token() {
-  local tok="${AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN-}" saved=""
-  unset AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN
+  local tok="${AP_ENROLL_TOKEN_ENV}" saved=""
+  AP_ENROLL_TOKEN_ENV=""
   if [[ -z "$tok" ]]; then
     if [[ ! -r /dev/tty ]] || ! { : >/dev/tty; } 2>/dev/null; then
       echo "  ✗ --supervisor-only needs the enrollment token. Set AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN for this command (the Hosts page shows it that way)." >&2
@@ -1498,11 +1513,20 @@ ap_local_mkdir_p "$(dirname "${INSTALL_DIR}")"
 # The latest release, from the repository's tags: reads only (no file is written for it). A branch is never the default.
 if [[ "${INSTALL_TRACK}" == "release" ]]; then
   echo "  Finding the latest release..."
-  if ! REPO_REF="$(ap_latest_release_tag "${REPO_URL}")" || [[ -z "${REPO_REF}" ]]; then
-    printf "  ✗ couldn't find a release of AgentPulse at %s. Nothing was installed.\n    To follow a branch or a tag instead, pass --ref <name>.\n" "${REPO_URL}" >&2
+  AP_TAG_STATUS=0
+  REPO_REF="$(ap_latest_release_tag "${REPO_URL}")" || AP_TAG_STATUS=$?
+  if [[ "${AP_TAG_STATUS}" == 3 ]]; then
+    # No release carries a version and the updater yet: follow main, and say so truthfully in the record.
+    REPO_REF="main"
+    INSTALL_TRACK="ref"
+    echo "  ! No release of AgentPulse with an updater exists yet, so this install follows main."
+    echo "    It isn't updated by 'agentpulse update'; re-run this installer to move it."
+  elif [[ "${AP_TAG_STATUS}" != 0 || -z "${REPO_REF}" ]]; then
+    printf "  ✗ couldn't read the releases of AgentPulse at %s. Nothing was installed.\n    To follow a branch or a tag instead, pass --ref <name>.\n" "${REPO_URL}" >&2
     exit 1
+  else
+    echo "  ✓ Latest release: ${REPO_REF}"
   fi
-  echo "  ✓ Latest release: ${REPO_REF}"
 fi
 
 if [[ -d "${INSTALL_DIR}/.git" || -f "${INSTALL_DIR}/.git" ]]; then
@@ -1521,6 +1545,10 @@ if [[ -d "${INSTALL_DIR}/.git" || -f "${INSTALL_DIR}/.git" ]]; then
     AP_HEAD="$(ap_local_with_umask git -C "${INSTALL_DIR}" rev-parse HEAD </dev/null)"
     if ! ap_local_with_umask git -C "${INSTALL_DIR}" merge-base --is-ancestor "${AP_HEAD}" "refs/tags/${REPO_REF}" </dev/null; then
       AP_STAY="true"
+      # The record says what is really checked out: a checkout that isn't on the release isn't updated for you.
+      INSTALL_TRACK="ref"
+      REPO_REF="$(git -C "${INSTALL_DIR}" rev-parse --abbrev-ref HEAD </dev/null 2>/dev/null || true)"
+      if [[ -z "${REPO_REF}" || "${REPO_REF}" == "HEAD" || ! "${REPO_REF}" =~ ^[A-Za-z0-9._/-]+$ ]]; then REPO_REF="${AP_HEAD}"; fi
       echo "  ! This checkout has commits that aren't part of ${REPO_REF}, so it stays where it is."
       echo "    Nothing was checked out. To follow a release again, move or reset it yourself."
     fi
@@ -1589,8 +1617,13 @@ configure_supervisor() {
 import json, os, socket, sys
 path, server_url, trusted_root = sys.argv[1:]
 data = {}
-if os.path.exists(path):
-    with open(path) as f:
+try:
+    # No link is followed: supervisor.json holds the credential, and a link here could point anywhere.
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+except FileNotFoundError:
+    pass
+else:
+    with os.fdopen(fd) as f:
         data = json.load(f)
 data["serverUrl"] = server_url
 data["hostName"] = data.get("hostName") or socket.gethostname()
@@ -1786,7 +1819,20 @@ EOF
 # written after the supervisor (it says what was set up), so a supervisor under a service manager is
 # restarted once the record exists. Without a service manager nothing here can restart it.
 ap_restart_supervisor_for_record() {
-  local plist="${HOME}/Library/LaunchAgents/dev.agentpulse.supervisor.plist"
+  local plist="${HOME}/Library/LaunchAgents/dev.agentpulse.supervisor.plist" waited=0 limit="${AP_REGISTER_WAIT_SECONDS:-30}"
+  # An enrollment token is single use: restarting before the supervisor has saved the credential the server
+  # answered with would leave it holding a spent token. Wait (bounded) until the credential is on disk.
+  if grep -q '"enrollmentToken"' "${SUPERVISOR_CONFIG_FILE}" 2>/dev/null; then
+    while ! grep -q '"supervisorCredential"' "${SUPERVISOR_CONFIG_FILE}" 2>/dev/null; do
+      if (( waited >= limit )); then
+        echo "  ! The supervisor hasn't registered yet, so it wasn't restarted (that could spend its enrollment token twice)."
+        echo "    It reports this install the next time it restarts."
+        return 0
+      fi
+      sleep 1
+      waited=$((waited + 1))
+    done
+  fi
   case "${SERVICE_MODE}" in
     systemd)
       systemctl --user restart "${SERVICE_NAME}-supervisor" </dev/null

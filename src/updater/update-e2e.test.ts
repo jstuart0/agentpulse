@@ -20,15 +20,35 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { readUpdateState } from "../shared/update-files.js";
-import { type Fixture, createFixture } from "./test-utils/fixture.js";
+import { type Fixture, createFixture, expectUntouched } from "./test-utils/fixture.js";
 import { DEFAULT_TIMING } from "./updater.js";
 
 /** Long fake waits (a busy host) poll coarsely, so they cost milliseconds of real time. */
 const SLOW_POLL = { timing: { ...DEFAULT_TIMING, pollMs: 20_000 } };
-import { runRollback, runUpdate } from "./updater.js";
+import {
+	type UpdateOptions,
+	type UpdaterDeps,
+	runRecovery,
+	runRollback,
+	runUpdate as runUpdateRaw,
+} from "./updater.js";
 
 const TIMEOUT = 90_000;
 let fx: Fixture | null = null;
+
+/**
+ * Every run in this file goes through here: a run that ended in a refusal must have left the machine exactly as
+ * it was (`expectUntouched`); one that changed it on purpose (an update, a rollback) moves the baseline.
+ * `stop_failed` is exempt (it stopped a service on purpose and put it back) and so is `locked` (the lock is a rival's).
+ */
+async function runUpdate(deps: UpdaterDeps, options: UpdateOptions) {
+	const result = await runUpdateRaw(deps, options);
+	if (fx) {
+		if (result.code === "updated" || result.code === "rolled_back") fx.rebaseline();
+		else if (result.code !== "stop_failed" && result.code !== "locked") expectUntouched(fx);
+	}
+	return result;
+}
 afterEach(async () => {
 	await fx?.cleanup();
 	fx = null;
@@ -852,6 +872,102 @@ describe("leftovers", () => {
 			chmodSync(shim, 0o700);
 			expect((await runUpdate(f.deps(), { mode: "manual" })).code).toBe("updated");
 			expect(readFileSync(shim, "utf-8")).toBe(fine);
+		},
+		TIMEOUT,
+	);
+	test(
+		"a tracked .env.example is the release's own: it isn't replaced by the old copy, so the next update isn't dirty",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			f.addRelease("0.12.0");
+			f.addRelease("0.12.5");
+			f.publish({ latest: "0.12.0", only: ["0.11.0", "0.12.0"] });
+			expect((await runUpdate(f.deps(), { mode: "manual" })).code).toBe("updated");
+			expect(readFileSync(join(f.app, ".env.example"), "utf-8")).toBe("EXAMPLE=0.12.0\n");
+			expect(readFileSync(join(f.app, ".env.local"), "utf-8")).toContain(f.secret);
+			f.publish();
+			const second = await runUpdate(f.deps(), { mode: "manual" });
+			expect(second.code).toBe("updated");
+			expect(readFileSync(join(f.app, ".env.example"), "utf-8")).toBe("EXAMPLE=0.12.5\n");
+		},
+		TIMEOUT * 2,
+	);
+
+	test(
+		"an .env* entry that is a link is refused before anything is stopped",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			f.addRelease("0.12.0");
+			f.publish();
+			writeFileSync(join(f.root, "elsewhere"), "x");
+			symlinkSync(join(f.root, "elsewhere"), join(f.app, ".env.extra"));
+			expect((await runUpdate(f.deps(), { mode: "manual" })).code).toBe("untracked_files");
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"--allow-downgrade is refused when the database has a migration the older version doesn't know",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			f.addRelease("0.13.0", { migration: "0001_b" });
+			f.publish();
+			expect((await runUpdate(f.deps(), { mode: "manual" })).code).toBe("updated");
+			const result = await runUpdate(f.deps(), {
+				mode: "manual",
+				to: "0.11.0",
+				allowDowngrade: true,
+			});
+			expect(result.code).toBe("downgrade_schema");
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"a journal that names paths outside the install's own is refused: nothing is renamed or removed",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			const { writePrivateFileAtomicNoFollow } = await import("../shared/private-file.js");
+			const base = {
+				schema: 1,
+				phase: "swapping",
+				step: "x",
+				from: "0.11.0",
+				to: "0.12.0",
+				bundle: null,
+				units: ["server"],
+				snapshot: null,
+				ops: [] as { src: string; dst: string }[],
+				done: 0,
+				intent: -1,
+				stagedBundle: null,
+				bundleInstalled: false,
+				envCopied: false,
+				fingerprint: null,
+				app: f.app,
+				startedAt: 0,
+			};
+			const evil = join(f.root, "evil");
+			for (const over of [
+				{ ops: [{ src: f.app, dst: evil }], done: 1 },
+				{ to: "../../x" },
+				{ snapshot: "/etc/passwd" },
+				{ app: join(f.root, "other") },
+			]) {
+				writePrivateFileAtomicNoFollow(
+					join(f.dir, "update-journal.json"),
+					`${JSON.stringify({ ...base, ...over })}\n`,
+				);
+				const result = await runRecovery(f.deps());
+				expect(result?.code).toBe("rollback_failed");
+				expect(existsSync(f.app)).toBe(true);
+				expect(existsSync(evil)).toBe(false);
+				expect(f.fake.calls.filter((c) => /^(stop|start):/.test(c))).toEqual([]);
+			}
 		},
 		TIMEOUT,
 	);

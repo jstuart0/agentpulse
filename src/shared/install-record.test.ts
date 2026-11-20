@@ -81,6 +81,15 @@ describe("readInstallRecord", () => {
 		}
 	});
 
+	test("the bind host is a plain address or name, null when absent, and anything else makes the record unreadable", () => {
+		expect(readInstallRecord(home(record({ host: "0.0.0.0" })))?.host).toBe("0.0.0.0");
+		expect(readInstallRecord(home(record({ host: "[::1]" })))?.host).toBe("[::1]");
+		expect(readInstallRecord(home(record()))?.host).toBeNull();
+		for (const host of ["a b", "x;y", "", 7, {}]) {
+			expect(readInstallRecord(home(record({ host })))).toBeNull();
+		}
+	});
+
 	test("serverTransport is recomputed from serverUrl, never read from the file", () => {
 		const cases: Array<[string, "https" | "loopback" | "http"]> = [
 			["https://agentpulse.example.invalid", "https"],

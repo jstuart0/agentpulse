@@ -6,11 +6,15 @@
  * temp directory; the real ~/.agentpulse, launchd and systemd are never reached. Test-only.
  */
 import { Database } from "bun:sqlite";
+import { expect } from "bun:test";
+import { createHash } from "node:crypto";
 import {
 	chmodSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	readdirSync,
 	realpathSync,
 	rmSync,
 	writeFileSync,
@@ -181,7 +185,16 @@ export interface Fixture {
 	deps(overrides?: Partial<UpdaterDeps>): UpdaterDeps;
 	writeInstallRecord(overrides?: Record<string, unknown>): void;
 	serverChild(): ReturnType<typeof Bun.spawn> | null;
+	/** What a refused or aborted run must leave exactly as it was; `rebaseline` after a run that changed the machine on purpose. */
+	baseline: MachineBaseline;
+	rebaseline(): void;
 	cleanup(): Promise<void>;
+}
+
+export interface MachineBaseline {
+	appVersion: string;
+	dbHash: string;
+	serviceCalls: number;
 }
 
 export interface ReleaseOptions {
@@ -290,7 +303,8 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
 				git(work, "rm", "-rf", "-q", "--ignore-unmatch", ".");
 			}
 			const files: Record<string, string> = {
-				".gitignore": "node_modules/\ndist/\n.env*\n.DS_Store\n",
+				".gitignore": "node_modules/\ndist/\n.env\n.env.local\n.DS_Store\n",
+				".env.example": `EXAMPLE=${version}\n`,
 				"package.json": `${JSON.stringify({ name: "fixture", version, scripts: { build: "bun run scripts/build.ts" } })}\n`,
 				"server.ts": SERVER_TS,
 				"scripts/build.ts": BUILD_TS,
@@ -427,6 +441,14 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
 			writePrivateFileAtomicNoFollow(join(dir, "install.json"), `${JSON.stringify(record)}\n`);
 		},
 		serverChild: () => serverChild,
+		baseline: { appVersion: "", dbHash: "", serviceCalls: 0 },
+		rebaseline() {
+			fx.baseline = {
+				appVersion: JSON.parse(readFileSync(join(app, "package.json"), "utf-8")).version as string,
+				dbHash: dbDigest(dbPath),
+				serviceCalls: fx.fake.calls.filter((c) => /^(stop|start):/.test(c)).length,
+			};
+		},
 		async cleanup() {
 			await fx.sim?.stop();
 			serverChild?.kill();
@@ -475,8 +497,12 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
 			serverChild?.kill();
 			await serverChild?.exited;
 			serverChild = null;
-			for (let i = 0; i < 100 && (await portIsOpen(fx.port)); i++)
+			for (
+				const deadline = Date.now() + 10_000;
+				Date.now() < deadline && (await portIsOpen(fx.port));
+			) {
 				await new Promise((r) => setTimeout(r, 20));
+			}
 		} else {
 			await fx.sim?.stop();
 		}
@@ -487,7 +513,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
 	git(root, "clone", "-q", "--branch", "v0.11.0", remote, app);
 	writeFileSync(join(app, ".env.local"), `SECRET_TOKEN=${secret}\n`, { mode: 0o600 });
 	chmodSync(join(app, ".env.local"), 0o600);
-	writeFileSync(join(app, ".env"), "PORT=3000\n", { mode: 0o640 });
+	writeFileSync(join(app, ".env"), "APP_MODE=test\n", { mode: 0o640 });
 	fx.writeInstallRecord();
 	// The server that is "running" before the update, with its database.
 	if (units.includes("server") || options.remoteServerVersion !== undefined) await startServer();
@@ -504,9 +530,14 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
 		fx.sim.tick();
 	}
 	if (units.includes("server") || options.remoteServerVersion !== undefined) {
-		for (let i = 0; i < 200 && !(await portIsOpen(fx.port)); i++)
+		for (
+			const deadline = Date.now() + 15_000;
+			Date.now() < deadline && !(await portIsOpen(fx.port));
+		) {
 			await new Promise((r) => setTimeout(r, 25));
+		}
 	}
+	fx.rebaseline();
 	return fx;
 }
 
@@ -523,4 +554,46 @@ export async function makeLockStale(fx: Fixture): Promise<void> {
 		`${JSON.stringify({ pid: child.pid, processStartedAt: identity, takenAt: fx.clock.t })}\n`,
 		{ mode: 0o600 },
 	);
+}
+
+/**
+ * After a refusal (or an abort before anything was stopped): no service was stopped or started, the checkout is the
+ * version it was, nothing is left staged, the journal says nothing is in progress, the lock is released and the
+ * database is byte for byte what it was.
+ */
+export function expectUntouched(f: Fixture): void {
+	expect(f.fake.calls.filter((c) => /^(stop|start):/.test(c))).toHaveLength(
+		f.baseline.serviceCalls,
+	);
+	expect(JSON.parse(readFileSync(join(f.app, "package.json"), "utf-8")).version).toBe(
+		f.baseline.appVersion,
+	);
+	expect(readdirSync(f.dir).filter((n) => n.startsWith("app.staging"))).toEqual([]);
+	const journal = join(f.dir, "update-journal.json");
+	if (existsSync(journal)) {
+		expect(["done", "rolled_back"]).toContain(JSON.parse(readFileSync(journal, "utf-8")).phase);
+	}
+	expect(existsSync(join(f.dir, "update.lock"))).toBe(false);
+	expect(dbDigest(f.dbPath)).toBe(f.baseline.dbHash);
+}
+
+/**
+ * What the database holds, not its bytes: a live WAL database's main file changes when it checkpoints, which
+ * says nothing about whether an update touched it. Every table's name and every row, in a fixed order.
+ */
+function dbDigest(path: string): string {
+	const db = new Database(path, { readwrite: true });
+	// The fixture server may be mid-write: wait for it rather than fail on a busy database.
+	db.run("PRAGMA busy_timeout = 15000");
+	try {
+		const tables = (
+			db.query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as {
+				name: string;
+			}[]
+		).map((t) => t.name);
+		const rows = tables.map((t) => [t, db.query(`SELECT * FROM "${t}" ORDER BY 1`).all()]);
+		return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+	} finally {
+		db.close();
+	}
 }

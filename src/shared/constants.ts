@@ -17,8 +17,14 @@ export const CODEX_FOLLOW_UP_PROMPTS = "codex_follow_up_prompts";
  * the old behaviour (an old host calling the Codex stop for a Claude session) is never queued.
  */
 export const CLAUDE_STOP = "claude_stop";
-/** Host feature: this supervisor was installed by install-local.sh, so `agentpulse update` exists on its machine. */
+/**
+ * Host feature: `agentpulse update` can run on this supervisor's machine: install-local.sh installed it (with the
+ * server or with --supervisor-only) under launchd or systemd, and its install record says so. A host without it
+ * was started some other way, or runs without a service manager, where the updater refuses every swap.
+ */
 export const LOCAL_UPDATER = "local_updater";
+/** Host feature: this machine also runs the AgentPulse server (install.json lists the server component). */
+export const LOCAL_SERVER = "local_server";
 
 /**
  * A supervisor feature: a Claude prompt holds the session's control lock for the whole turn. The host reports

@@ -35,6 +35,7 @@ import {
 	deriveHostAccess,
 	serverUpdateOf,
 	supervisorOnlyInstallCommand,
+	supervisorOnlyInstallUnavailableNote,
 } from "./hosts-view-state.js";
 import { panelAnchorId } from "./settings-panels.js";
 import {
@@ -253,7 +254,9 @@ export function SettingsPage() {
 										{supervisorOnlyInstallCommand(window.location.origin, null)}
 									</code>
 								</>
-							) : null}
+							) : (
+								<> {supervisorOnlyInstallUnavailableNote(window.location.origin)}</>
+							)}
 						</div>
 					) : (
 						<div className="space-y-3">

@@ -19,20 +19,20 @@ const REPO = join(import.meta.dir, "..", "..");
 let scratch: string;
 let tree: string;
 
-const GIT_ENV = {
+const gitEnv = () => ({
 	PATH: process.env.PATH ?? "",
-	HOME: tmpdir(),
+	HOME: scratch,
 	GIT_CONFIG_GLOBAL: "/dev/null",
 	GIT_CONFIG_NOSYSTEM: "1",
 	GIT_AUTHOR_NAME: "t",
 	GIT_AUTHOR_EMAIL: "t@example.invalid",
 	GIT_COMMITTER_NAME: "t",
 	GIT_COMMITTER_EMAIL: "t@example.invalid",
-};
+});
 const git = (...args: string[]) => {
 	const proc = Bun.spawnSync(["git", ...args], {
 		cwd: tree,
-		env: GIT_ENV,
+		env: gitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -51,7 +51,7 @@ beforeAll(() => {
 	git("add", "-Af");
 	git("commit", "-q", "-m", "fresh");
 	symlinkSync(join(REPO, "node_modules"), join(tree, "node_modules"));
-});
+}, 120_000);
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 describe("a fresh tree stays clean through a build and a boot", () => {
@@ -62,7 +62,7 @@ describe("a fresh tree stays clean through a build and a boot", () => {
 
 		const build = await defaultRun([process.execPath, "run", "build"], {
 			cwd: tree,
-			env: { PATH: process.env.PATH ?? "", HOME: tmpdir(), NODE_ENV: "production" },
+			env: { PATH: process.env.PATH ?? "", HOME: scratch, NODE_ENV: "production" },
 			timeoutMs: 300_000,
 		});
 		expect(build.code).toBe(0);

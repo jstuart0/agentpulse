@@ -254,10 +254,11 @@ describe("wiring (source scan)", () => {
 	const index = readFileSync(join(root, "index.ts"), "utf-8");
 	const drainSource = readFileSync(join(import.meta.dir, "update-drain.ts"), "utf-8");
 
-	test("both claim loops route what they claim through routeClaimed", () => {
-		expect(index.match(/routeClaimed\(\{/g)?.length).toBe(2);
-		expect(index).toContain('kind: "launch"');
-		expect(index).toContain("kind: action.actionType");
+	test("both claim loops route what they claim through routeClaimed, and the supervisor schedules both", () => {
+		const loops = readFileSync(join(import.meta.dir, "claim-loops.ts"), "utf-8");
+		expect(loops.match(/routeClaimed\(\{/g)?.length).toBe(2);
+		expect(index).toContain("claimLoops.claimLaunch()");
+		expect(index).toContain("claimLoops.claimControlAction()");
 	});
 	test("routeClaimed asks shouldClaimNormally and refuseUnderDrain", () => {
 		const body = drainSource.slice(drainSource.indexOf("export async function routeClaimed"));

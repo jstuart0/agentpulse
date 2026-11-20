@@ -247,3 +247,96 @@ describe("systemd adapter (over a stub systemctl)", () => {
 		for (const call of s.calls) expect(call[0]).toBe("systemctl");
 	});
 });
+
+describe("hardened service handling (stub runners)", () => {
+	const launchd = (handler: (cmd: string[]) => CommandResult, logs: string[] = []) => {
+		const s = stub(handler);
+		const m = createServiceManagerForTests(
+			{ service: "launchd", components: ["server"], home: "/h", env: {} },
+			{ run: s.run, uid: 501, sleep: async () => {}, log: (l) => void logs.push(l) },
+		);
+		return { m, calls: s.calls, logs };
+	};
+
+	test("launchd start enables the job first, then bootstraps", async () => {
+		const { m, calls } = launchd(() => ({ code: 0, stdout: "" }));
+		await m.start("server");
+		expect(calls.map((c) => c[1])).toEqual(["enable", "bootstrap"]);
+		expect(calls[0]).toEqual(["launchctl", "enable", "gui/501/dev.agentpulse.local"]);
+	});
+
+	test("bootstrap is retried on 5 and 37, logged, and gives up after a few tries", async () => {
+		let n = 0;
+		const ok = launchd((cmd) => ({ code: cmd[1] === "bootstrap" && ++n < 3 ? 5 : 0, stdout: "" }));
+		await ok.m.start("server");
+		expect(ok.calls.filter((c) => c[1] === "bootstrap")).toHaveLength(3);
+		expect(ok.logs.some((l) => l.includes("answered 5"))).toBe(true);
+		const bad = launchd((cmd) => ({ code: cmd[1] === "bootstrap" ? 37 : 0, stdout: "" }));
+		await expect(bad.m.start("server")).rejects.toThrow("bootstrap failed");
+		expect(bad.calls.filter((c) => c[1] === "bootstrap")).toHaveLength(5);
+		// another code is not retried
+		const once = launchd((cmd) => ({ code: cmd[1] === "bootstrap" ? 1 : 0, stdout: "" }));
+		await expect(once.m.start("server")).rejects.toThrow();
+		expect(once.calls.filter((c) => c[1] === "bootstrap")).toHaveLength(1);
+	});
+
+	test("bootout: not-loaded is fine, any other failure is an error and is logged", async () => {
+		await launchd(() => ({ code: 113, stdout: "" })).m.stop("server");
+		const bad = launchd(() => ({ code: 1, stdout: "" }));
+		await expect(bad.m.stop("server")).rejects.toThrow("bootout failed");
+		expect(bad.logs[0]).toContain("answered 1");
+	});
+
+	test("systemd: activating, deactivating and reloading all still count as active; inactive and failed don't", async () => {
+		for (const [state, active] of [
+			["activating", true],
+			["deactivating", true],
+			["reloading", true],
+			["active", true],
+			["inactive", false],
+			["failed", false],
+		] as const) {
+			const s = stub(() => ({ code: 0, stdout: `${state}\n` }));
+			const m = createServiceManagerForTests(
+				{ service: "systemd", components: ["server"], home: "/h", env: { XDG_RUNTIME_DIR: "/r" } },
+				{ run: s.run },
+			);
+			expect(await m.activeUnits(), state).toEqual(active ? ["server"] : []);
+		}
+	});
+
+	test("systemd stop and start fail loudly on a non-zero exit", async () => {
+		const logs: string[] = [];
+		const s = stub(() => ({ code: 1, stdout: "" }));
+		const m = createServiceManagerForTests(
+			{ service: "systemd", components: ["server"], home: "/h", env: {} },
+			{ run: s.run, log: (l) => void logs.push(l) },
+		);
+		await expect(m.stop("server")).rejects.toThrow("stop failed");
+		await expect(m.start("server")).rejects.toThrow("start failed");
+		expect(logs).toHaveLength(2);
+	});
+
+	test("the stop wait allows systemd's default 90 s TimeoutStopSec", async () => {
+		const { DEFAULT_TIMING } = await import("./updater.js");
+		expect(DEFAULT_TIMING.stopMs).toBeGreaterThanOrEqual(100_000);
+	});
+
+	test("the port-closed check is made on the address the server binds", async () => {
+		const seen: (string | undefined)[] = [];
+		const m = createServiceManagerForTests(
+			{ service: "launchd", components: ["server"], home: "/h", env: {} },
+			{
+				run: async () => ({ code: 113, stdout: "" }),
+				uid: 501,
+				portOpen: async (_p, host) => {
+					seen.push(host);
+					return false;
+				},
+			},
+		);
+		await m.isGone("server", { pid: null, startedAt: null, port: 3000, host: "192.0.2.7" });
+		await m.isGone("server", { pid: null, startedAt: null, port: 3000 });
+		expect(seen).toEqual(["192.0.2.7", undefined]);
+	});
+});

@@ -83,11 +83,28 @@ export function undoSwap(journal: Journal, save: (step: string) => void): void {
 	journal.intent = -1;
 }
 
-/** Copies every `.env*` regular file at the root of `from` into `to`, with its mode. Returns how many. */
-export function carryEnvFiles(from: string, to: string): number {
+/** `.env*` entries at the root of `dir` that aren't plain files (a link would copy what it points at, or nothing). */
+export function irregularEnvEntries(dir: string): string[] {
+	const out: string[] = [];
+	for (const name of readdirSync(dir)) {
+		if (name.startsWith(".env") && !lstatSync(join(dir, name)).isFile()) out.push(name);
+	}
+	return out;
+}
+
+/**
+ * Copies every `.env*` regular file at the root of `from` into `to`, with its mode, except names the new tree
+ * tracks (`.env.example` is part of the release: the old copy must not replace it, or the next update finds a
+ * modified tracked file). Returns how many were copied.
+ */
+export function carryEnvFiles(
+	from: string,
+	to: string,
+	trackedInNew: ReadonlySet<string> = new Set(),
+): number {
 	let count = 0;
 	for (const name of readdirSync(from)) {
-		if (!name.startsWith(".env")) continue;
+		if (!name.startsWith(".env") || trackedInNew.has(name)) continue;
 		const source = join(from, name);
 		const info = lstatSync(source);
 		if (!info.isFile()) continue;

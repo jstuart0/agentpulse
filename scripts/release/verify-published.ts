@@ -12,7 +12,9 @@ import { fetchCapped } from "../../src/shared/capped-fetch.ts";
 import { RELEASE_KEYS, type ReleaseKey } from "../../src/shared/release-keys.ts";
 import { verifyManifest } from "../../src/shared/release-manifest.ts";
 
-export const MANIFEST_URL = "https://jstuart0.github.io/agentpulse/releases/manifest.json";
+// One constant for the clients, the server check and this script, so the feed moves in one place.
+import { MANIFEST_URL } from "../../src/shared/release-feed.js";
+export { MANIFEST_URL };
 const MAX_MANIFEST_BYTES = 32 * 1024;
 
 export async function verifyPublished(options: {

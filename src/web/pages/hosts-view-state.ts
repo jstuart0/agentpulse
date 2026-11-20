@@ -1,4 +1,4 @@
-import { LOCAL_UPDATER } from "../../shared/constants.js";
+import { LOCAL_SERVER, LOCAL_UPDATER } from "../../shared/constants.js";
 import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type { SupervisorRecord } from "../../shared/types.js";
 import type { UpdateStatusWire } from "../../shared/update-status.js";
@@ -199,7 +199,8 @@ export function supervisorOnlyInstallCommand(origin: string, token: string | nul
 	} catch {
 		return null;
 	}
-	if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+	// Only https: the command pipes what it downloads into a shell, so it is never offered over an unencrypted link.
+	if (url.protocol !== "https:") return null;
 	if (
 		url.username !== "" ||
 		url.password !== "" ||
@@ -212,7 +213,18 @@ export function supervisorOnlyInstallCommand(origin: string, token: string | nul
 	const base = url.origin;
 	if (!/^[A-Za-z0-9.:/\[\]_-]+$/.test(base)) return null;
 	const word = token !== null && SHELL_SAFE_TOKEN.test(token) ? token : TOKEN_PLACEHOLDER;
-	return `curl -fsSL ${base}/install-local.sh | AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=${word} bash -s -- --supervisor-only --server-url ${base}`;
+	return `curl --proto '=https' -fsSL ${base}/install-local.sh | AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=${word} bash -s -- --supervisor-only --server-url ${base}`;
+}
+
+/** What to say instead of the command when the page was opened over plain http (null for https, where the command is shown). */
+export function supervisorOnlyInstallUnavailableNote(origin: string): string | null {
+	try {
+		return new URL(origin).protocol === "http:"
+			? "This page is open over plain http, so a one-line install isn't shown: it would run a script downloaded over an unencrypted link. Serve AgentPulse over https, or copy install-local.sh to the other machine and run it with --supervisor-only there."
+			: null;
+	} catch {
+		return null;
+	}
 }
 
 /** Server states that mean the server itself has a newer release to move to. */
@@ -263,6 +275,15 @@ export function deriveHostUpdateNotice(
 				{ kind: "host", text: supervisor.hostName },
 				{ kind: "text", text: UPDATE_HOST_COPY.end },
 			],
+		};
+	}
+	// A machine that also runs the server updates with the server (its own banner says how): never "reinstall" it as a
+	// supervisor-only host, which would be a second, conflicting install.
+	if (supervisor.capabilities?.features?.includes(LOCAL_SERVER)) return null;
+	if (supervisor.capabilities?.os === "windows") {
+		return {
+			kind: "reinstall",
+			parts: [versions, { kind: "text", text: UPDATE_HOST_COPY.reinstallWindows }],
 		};
 	}
 	return {

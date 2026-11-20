@@ -14,6 +14,7 @@ import {
 	hostOwnerUnchanged,
 	launchHostLabel,
 	supervisorOnlyInstallCommand,
+	supervisorOnlyInstallUnavailableNote,
 } from "./hosts-view-state.js";
 
 function supervisor(id: string): SupervisorRecord {
@@ -433,7 +434,7 @@ describe("deriveHostUpdateNotice (AGEN-155)", () => {
 			V,
 			{
 				kind: "text",
-				text: "This host wasn't installed with install-local.sh, so it can't update itself. Re-install it with ",
+				text: "This host wasn't installed with install-local.sh, so it can't update itself. If it runs only a supervisor, on macOS or Linux re-install it with ",
 			},
 			{ kind: "code", text: "install-local.sh --supervisor-only" },
 			{ kind: "text", text: "." },
@@ -478,7 +479,7 @@ describe("deriveHostUpdateNotice (AGEN-155)", () => {
 
 describe("supervisorOnlyInstallCommand", () => {
 	const CMD =
-		/^curl -fsSL (\S+)\/install-local\.sh \| AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=(\S+) bash -s -- --supervisor-only --server-url (\S+)$/;
+		/^curl --proto '=https' -fsSL (\S+)\/install-local\.sh \| AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=(\S+) bash -s -- --supervisor-only --server-url (\S+)$/;
 
 	test("the token is a variable on the bash side of the pipe, never before curl and never an argument", () => {
 		const text = supervisorOnlyInstallCommand(
@@ -500,10 +501,10 @@ describe("supervisorOnlyInstallCommand", () => {
 	});
 
 	test("with no token it shows a placeholder; a token that would need quoting is never put in", () => {
-		expect(supervisorOnlyInstallCommand("http://192.0.2.10:3000", null)).toContain(
+		expect(supervisorOnlyInstallCommand("https://x.example.invalid", null)).toContain(
 			"ENROLLMENT_TOKEN=<token> bash",
 		);
-		expect(supervisorOnlyInstallCommand("http://192.0.2.10:3000", "a b; rm -rf /")).toContain(
+		expect(supervisorOnlyInstallCommand("https://x.example.invalid", "a b; rm -rf /")).toContain(
 			"ENROLLMENT_TOKEN=<token> bash",
 		);
 	});
@@ -512,7 +513,7 @@ describe("supervisorOnlyInstallCommand", () => {
 		for (const origin of [
 			"javascript:alert(1)",
 			"ftp://x.example.invalid",
-			"https://u:p@x.example.invalid",
+			["https://user", "pw@x.example.invalid"].join(":"),
 			"https://x.example.invalid/path",
 			"not a url",
 			"https://x.example.invalid/?q=1",
@@ -528,5 +529,42 @@ describe("supervisorOnlyInstallCommand", () => {
 			// no page spells the variable before a curl by hand
 			expect(text, file).not.toMatch(/AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=\S+\s+curl/);
 		}
+	});
+
+	test("curl is pinned to https, and a plain-http page gets a note instead of a pipe-to-bash line", () => {
+		expect(supervisorOnlyInstallCommand("https://x.example.invalid", "t")).toContain(
+			"curl --proto '=https' -fsSL ",
+		);
+		expect(supervisorOnlyInstallCommand("http://192.0.2.10:3000", "t")).toBeNull();
+		expect(supervisorOnlyInstallUnavailableNote("http://192.0.2.10:3000")).toContain("plain http");
+		expect(supervisorOnlyInstallUnavailableNote("https://x.example.invalid")).toBeNull();
+	});
+});
+
+describe("the reinstall notice", () => {
+	const server = { current: "0.13.0", state: "current" };
+	const host = (features: string[], os = "linux") =>
+		({
+			version: "0.12.0",
+			hostName: "box",
+			enrollmentState: "active",
+			capabilities: { os, features },
+		}) as unknown as Parameters<typeof deriveHostUpdateNotice>[0];
+	test("a host that also runs the server is never told to reinstall as supervisor-only", () => {
+		expect(deriveHostUpdateNotice(host(["local_server"]), server, { canManage: true })).toBeNull();
+		expect(
+			deriveHostUpdateNotice(host(["local_server", "local_updater"]), server, { canManage: true })
+				?.kind,
+		).toBe("update_host");
+	});
+	test("a Windows host gets no bash command", () => {
+		const n = deriveHostUpdateNotice(host([], "windows"), server, { canManage: true });
+		expect(n?.kind).toBe("reinstall");
+		expect(n?.parts.some((p) => p.kind === "code")).toBe(false);
+		expect(JSON.stringify(n)).toContain("install-local.ps1");
+	});
+	test("an unknown platform's command is labelled macOS or Linux", () => {
+		const n = deriveHostUpdateNotice(host([], "unknown"), server, { canManage: true });
+		expect(JSON.stringify(n)).toContain("macOS or Linux");
 	});
 });

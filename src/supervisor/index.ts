@@ -1,7 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DELIVERY_ID_HEADER, REPLAY_HEADER } from "../shared/hook-headers.js";
-import { HOST_UPDATING_MESSAGE } from "../shared/managed-messages.js";
 import type { ControlAction, LaunchRequest, ManagedSession } from "../shared/types.js";
 import {
 	ensureSupervisorConfigPrivate,
@@ -38,6 +37,7 @@ import {
 } from "./providers/codex-managed.js";
 import { warmCodexProtocolVerdict } from "./providers/codex-protocol.js";
 import { createBridgeSpoolDrain } from "./services/bridge-spool.js";
+import { createClaimLoops } from "./services/claim-loops.js";
 import { createClaudeForkRecord } from "./services/claude-fork-record.js";
 import { createClaudeTakeover } from "./services/claude-takeover.js";
 import { executeCleanupWorkArea } from "./services/cleanup-workarea.js";
@@ -80,7 +80,7 @@ import {
 	resolveNeutralCwd,
 } from "./services/session-resume.js";
 import { assertTrustedRootsExcludeAgentpulseDir } from "./services/spawn-cwd.js";
-import { createUpdateDrain, routeClaimed } from "./services/update-drain.js";
+import { createUpdateDrain } from "./services/update-drain.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 /** How often the exclude rules are re-read for a changed symlink, the stamp is refreshed and sessions a new rule covers are closed. */
@@ -424,39 +424,27 @@ async function main() {
 		finalReport,
 	});
 
-	// A launch claimed during a drain fails with a fixed sentence; while exclude rules exist the generic refusal
-	// goes instead, so a refusal never says anything about the rules.
-	async function refuseLaunchForUpdate(launchId: string) {
-		if (gate.rulesState() !== "none") {
-			await gate.refuseLaunch(launchId);
-		} else {
-			await gate.reportLaunchStatus(launchId, { status: "failed", error: HOST_UPDATING_MESSAGE });
-		}
-	}
+	const claimLoops = createClaimLoops({
+		claimLaunchRequest: () =>
+			request(`/supervisors/${registration.supervisor.id}/launches/claim`, {
+				method: "POST",
+			}) as Promise<{ launchRequest: LaunchRequest | null }>,
+		claimActionRequest: () =>
+			request(`/supervisors/${registration.supervisor.id}/control-actions/claim`, {
+				method: "POST",
+			}) as Promise<{ action: ControlAction | null }>,
+		drain: updateDrain,
+		gate,
+		dispatchLaunch,
+		handleControlAction,
+	});
 
 	void gate.scan();
 	setInterval(() => {
 		gate.scan().catch((error) => console.error("[supervisor] exclude scan failed", error));
 	}, EXCLUDE_SCAN_MS).unref();
 
-	setInterval(async () => {
-		try {
-			const result = (await request(`/supervisors/${registration.supervisor.id}/launches/claim`, {
-				method: "POST",
-			})) as { launchRequest: LaunchRequest | null };
-			if (result.launchRequest) {
-				const launch = result.launchRequest;
-				await routeClaimed({
-					drain: updateDrain,
-					kind: "launch",
-					handle: () => dispatchLaunch(launch),
-					refuse: () => refuseLaunchForUpdate(launch.id),
-				});
-			}
-		} catch (error) {
-			console.error("[supervisor] claim failed", error);
-		}
-	}, 3_000);
+	setInterval(() => void claimLoops.claimLaunch(), 3_000);
 
 	let heartbeatInFlight = false;
 	async function sendHeartbeat() {
@@ -515,30 +503,7 @@ async function main() {
 		}
 	}, 3_000);
 
-	setInterval(async () => {
-		try {
-			const result = (await request(
-				`/supervisors/${registration.supervisor.id}/control-actions/claim`,
-				{ method: "POST" },
-			)) as { action: ControlAction | null };
-			const action = result.action;
-			if (action) {
-				await routeClaimed({
-					drain: updateDrain,
-					kind: action.actionType,
-					handle: () => handleControlAction(action),
-					refuse: async () => {
-						await gate.reportControlStatus(action.id, action.sessionId ?? null, {
-							status: "failed",
-							error: HOST_UPDATING_MESSAGE,
-						});
-					},
-				});
-			}
-		} catch (error) {
-			console.error("[supervisor] control action failed", error);
-		}
-	}, 2_000);
+	setInterval(() => void claimLoops.claimControlAction(), 2_000);
 }
 
 main().catch((error) => {

@@ -9,6 +9,7 @@ import {
 	CLAUDE_STOP,
 	CLAUDE_TURN_CONTROL,
 	CODEX_FOLLOW_UP_PROMPTS,
+	LOCAL_SERVER,
 	LOCAL_UPDATER,
 } from "../shared/constants.js";
 import { readInstallRecord } from "../shared/install-record.js";
@@ -76,9 +77,11 @@ function currentOs() {
  */
 function localUpdaterFeature(): string[] {
 	const record = readInstallRecord(resolveHomeDir());
-	return record?.components.includes("supervisor") && record.service !== "none"
-		? [LOCAL_UPDATER]
-		: [];
+	if (!record?.components.includes("supervisor")) return [];
+	return [
+		...(record.service !== "none" ? [LOCAL_UPDATER] : []),
+		...(record.components.includes("server") ? [LOCAL_SERVER] : []),
+	];
 }
 
 export function buildDefaultConfig(): SupervisorConfig {

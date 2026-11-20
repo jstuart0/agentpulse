@@ -7,12 +7,23 @@ import { Database } from "bun:sqlite";
  * with a second crash in the middle of the recovery itself.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { type Fixture, createFixture, makeLockStale } from "./test-utils/fixture.js";
 import { UpdaterCrash, runRecovery, runUpdate } from "./updater.js";
 
 const TIMEOUT = 120_000;
+/** The full matrix (every step, then every recovery step) is `bun run test:slow`, which CI runs; the default suite keeps a representative subset. */
+const FULL = process.env.AGENTPULSE_SLOW_TESTS === "1";
+const REPRESENTATIVE = new Set([
+	"started",
+	"stopped",
+	"snapshot",
+	"rename_done_1",
+	"started_services",
+	"verified",
+	"current_flipped",
+]);
 let fx: Fixture | null = null;
 afterEach(async () => {
 	await fx?.cleanup();
@@ -52,7 +63,9 @@ async function version(f: Fixture): Promise<string> {
 }
 
 async function healthVersion(f: Fixture): Promise<string | null> {
-	for (let i = 0; i < 40; i++) {
+	// Polled against a deadline, not a fixed number of tries: a loaded machine gets the same 15 s as an idle one.
+	const deadline = Date.now() + 15_000;
+	while (Date.now() < deadline) {
 		try {
 			const res = await fetch(`http://127.0.0.1:${f.port}/api/v1/health`);
 			return ((await res.json()) as { version: string }).version;
@@ -126,7 +139,7 @@ describe("a crash after every journaled step", () => {
 				expect(steps).toContain(name);
 			}
 
-			for (const step of steps) {
+			for (const step of steps.filter((s) => FULL || REPRESENTATIVE.has(s))) {
 				fx = await setup();
 				const f = fx;
 				let crashed = false;
@@ -166,8 +179,10 @@ describe("a crash after every journaled step", () => {
 			expect(recoverySteps).toContain("snapshot_restored");
 
 			let crashedTwice = 0;
-			for (const first of ["stopped", "rename_done_1", "started_services"]) {
-				for (const second of recoverySteps) {
+			for (const first of FULL
+				? ["stopped", "rename_done_1", "started_services"]
+				: ["started_services"]) {
+				for (const second of FULL ? recoverySteps : ["rollback_begin", "snapshot_restored"]) {
 					fx = await setup({ priorUpdate: false });
 					const f = fx;
 					await expect(
@@ -188,7 +203,7 @@ describe("a crash after every journaled step", () => {
 				}
 			}
 			// not vacuous: most combinations really did crash in the middle of recovery
-			expect(crashedTwice).toBeGreaterThanOrEqual(8);
+			expect(crashedTwice).toBeGreaterThanOrEqual(FULL ? 8 : 2);
 		},
 		TIMEOUT * 4,
 	);
@@ -206,6 +221,33 @@ describe("a crash after every journaled step", () => {
 			const result = await runUpdate(f.deps(), { mode: "manual" });
 			expect(result.code).toBe("updated");
 			await assertWorking(f, "0.13.0");
+		},
+		TIMEOUT,
+	);
+	test(
+		"a crash after a rename happened but before the journal said so recovers to a working install",
+		async () => {
+			fx = await setup({ priorUpdate: false });
+			const f = fx;
+			// The journal says "about to rename staging into app" (intent written, not done); the rename then happens
+			// and the process dies before it can write `done`: the filesystem is ahead of the journal.
+			const hook = (step: string) => {
+				if (step !== "rename_intent_1") return;
+				const journal = JSON.parse(readFileSync(join(f.dir, "update-journal.json"), "utf-8"));
+				const op = journal.ops[journal.intent];
+				renameSync(op.src, op.dst);
+				throw new UpdaterCrash(step);
+			};
+			await expect(
+				runUpdate(f.deps({ afterStep: hook }), { mode: "manual" }),
+			).rejects.toBeInstanceOf(UpdaterCrash);
+			const journal = JSON.parse(readFileSync(join(f.dir, "update-journal.json"), "utf-8"));
+			expect(journal.done).toBe(1);
+			expect(journal.intent).toBe(1);
+			expect(JSON.parse(readFileSync(join(f.app, "package.json"), "utf-8")).version).toBe("0.13.0");
+			await makeLockStale(f);
+			expect(await runRecovery(f.deps())).toBeNull();
+			await assertWorking(f, "0.11.0");
 		},
 		TIMEOUT,
 	);

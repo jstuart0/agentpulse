@@ -87,6 +87,7 @@ export const UPDATE_OUTCOME_CODES = [
 	"rolled_back",
 	"rollback_failed",
 	"nothing_to_roll_back",
+	"downgrade_schema",
 	"updated",
 ] as const;
 /**

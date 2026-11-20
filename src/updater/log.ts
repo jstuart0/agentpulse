@@ -3,7 +3,7 @@
  * No artifact content, no command output, no path of a secret, no URL from a response. The lines can reach
  * a terminal and `logs/updater.log`; the writer refuses to follow a link and keeps the file private.
  */
-import { appendFileSync, chmodSync, lstatSync, mkdirSync } from "node:fs";
+import { appendFileSync, chmodSync, lstatSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 
 const SAFE = /[^0-9A-Za-z._:+\- ]/g;
@@ -15,6 +15,17 @@ export function logText(value: unknown): string {
 
 export interface UpdaterLog {
 	line(event: string, fields?: Record<string, string | number | boolean | null | undefined>): void;
+}
+
+/** The log is kept to about 1 MiB plus one older copy (`<log>.1`): past the cap it moves aside, replacing that copy. */
+export const LOG_MAX_BYTES = 1024 * 1024;
+
+function rotateIfLarge(path: string): void {
+	try {
+		if (statSync(path).size >= LOG_MAX_BYTES) renameSync(path, `${path}.1`);
+	} catch {
+		// no file yet
+	}
 }
 
 export function createFileLog(path: string, now: () => number): UpdaterLog {
@@ -33,6 +44,7 @@ export function createFileLog(path: string, now: () => number): UpdaterLog {
 				} catch {
 					// no file yet
 				}
+				rotateIfLarge(path);
 				appendFileSync(path, text, { mode: 0o600 });
 				chmodSync(path, 0o600);
 			} catch {

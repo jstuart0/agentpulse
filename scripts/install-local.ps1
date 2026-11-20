@@ -4313,6 +4313,8 @@ function Get-ApLatestReleaseTag {
     $tag = $ref -replace '^refs/tags/', ''
     if ($tag -notmatch '^v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$') { continue }
     $key = ('{0:D5}{1:D5}{2:D5}' -f [int]$Matches[1], [int]$Matches[2], [int]$Matches[3])
+    # Releases before 0.12.0 have no real version and no updater: never selected.
+    if ([string]::CompareOrdinal($key, "000000001200000") -lt 0) { continue }
     if ($null -eq $bestKey -or [string]::CompareOrdinal($key, $bestKey) -gt 0) {
       $bestKey = $key
       $best = $tag
@@ -4354,9 +4356,13 @@ if ($TrackRelease) {
   Write-Step "Finding the latest release..."
   $Ref = Get-ApLatestReleaseTag -GitExe $git -RepoUrl $Repo
   if (-not $Ref) {
-    throw "Couldn't find a release of AgentPulse at $Repo. Nothing was installed. To follow a branch or a tag instead, pass -Ref <name>."
+    # No release with a real version exists yet: follow main (the truthful fallback), as the shell installer does.
+    $Ref = "main"
+    $TrackRelease = $false
+    Write-Step "! No release of AgentPulse with a version exists yet, so this install follows main."
+  } else {
+    Write-Step "✓ Latest release: $Ref"
   }
-  Write-Step "✓ Latest release: $Ref"
 }
 
 if (Test-Path (Join-Path $Dir ".git")) {

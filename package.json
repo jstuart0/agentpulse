@@ -32,6 +32,7 @@
 		"typecheck": "tsc --noEmit && tsc -p tsconfig.bin.json --noEmit && tsc -p packages/agentpulse-mcp/tsconfig.json --noEmit",
 		"test": "bun test",
 		"test:watch": "bun test --watch",
+		"test:slow": "AGENTPULSE_SLOW_TESTS=1 bun test src/updater/crash-recovery.test.ts",
 		"check:no-raw-fetch": "bash scripts/check-no-raw-fetch.sh",
 		"check:no-sync-transcript-io": "bash scripts/check-no-sync-transcript-io.sh",
 		"check:bundled-installers": "bun scripts/check-bundled-installers.ts",

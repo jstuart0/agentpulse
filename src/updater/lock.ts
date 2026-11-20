@@ -7,9 +7,11 @@
 import {
 	constants,
 	closeSync,
+	linkSync,
 	openSync,
 	readFileSync,
 	renameSync,
+	statSync,
 	unlinkSync,
 	writeSync,
 } from "node:fs";
@@ -24,7 +26,14 @@ export interface LockDeps {
 	identityOf: (pid: number) => string | null;
 	/** When the machine booted, or null when unknown. */
 	bootTimeMs: () => number | null;
+	/** Wall clock for file ages (default `Date.now`); `now` may be a test's fake clock. */
+	wallNow?: () => number;
+	/** Test only: runs between judging a lock stale and moving it aside, where a rival can act. */
+	afterJudgedStale?: () => void;
 }
+
+/** A lock file that is empty or unreadable is a torn write only once nobody has touched it for this long. */
+const TORN_LOCK_GRACE_MS = 5_000;
 
 interface LockBody {
 	pid: number;
@@ -67,7 +76,17 @@ function readLock(path: string): LockBody | "unreadable" | null {
 export function lockIsStale(path: string, deps: LockDeps): boolean {
 	const body = readLock(path);
 	if (body === null) return false;
-	if (body === "unreadable") return true;
+	if (body === "unreadable") {
+		try {
+			return (deps.wallNow ?? Date.now)() - statSync(path).mtimeMs >= TORN_LOCK_GRACE_MS;
+		} catch {
+			return false;
+		}
+	}
+	return holderGone(body, deps);
+}
+
+function holderGone(body: LockBody, deps: LockDeps): boolean {
 	const boot = deps.bootTimeMs();
 	if (boot !== null && body.takenAt < boot) return true;
 	const identity = deps.identityOf(body.pid);
@@ -102,21 +121,45 @@ function tryCreate(path: string, deps: LockDeps): boolean {
 
 /** Takes the lock, or returns null when a live process holds it. The caller releases with the returned function. */
 export function acquireLock(path: string, deps: LockDeps): (() => void) | null {
-	for (let attempt = 0; attempt < 3; attempt++) {
-		if (tryCreate(path, deps)) {
-			return () => {
-				try {
-					unlinkSync(path);
-				} catch {
-					// already gone
-				}
-			};
-		}
-		if (!lockIsStale(path, deps)) return null;
+	const release = () => {
 		try {
-			renameSync(path, `${path}.stale-${deps.now()}-${attempt}`);
+			unlinkSync(path);
 		} catch {
-			// a rival moved it first; try again
+			// already gone
+		}
+	};
+	for (let attempt = 0; attempt < 3; attempt++) {
+		if (tryCreate(path, deps)) return release;
+		if (!lockIsStale(path, deps)) return null;
+		deps.afterJudgedStale?.();
+		// Move it aside under a name only this taker uses, then judge what was actually moved: between the
+		// judgement and the rename a rival may have replaced the stale lock with a live one.
+		const aside = `${path}.stale-${deps.now()}-${deps.pid}-${attempt}`;
+		try {
+			renameSync(path, aside);
+		} catch {
+			continue;
+		}
+		const moved = readLock(aside);
+		const live = moved !== null && moved !== "unreadable" && !holderGone(moved, deps);
+		if (live) {
+			try {
+				// Put it back only if nobody has taken the path since; link fails rather than overwrite.
+				linkSync(aside, path);
+			} catch {
+				// someone else already holds the lock
+			}
+			try {
+				unlinkSync(aside);
+			} catch {
+				// already gone
+			}
+			return null;
+		}
+		try {
+			unlinkSync(aside);
+		} catch {
+			// left behind: harmless
 		}
 	}
 	return null;
