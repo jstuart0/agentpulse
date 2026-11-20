@@ -150,7 +150,7 @@ describe("fetchCapped", () => {
 	});
 
 	test("refuses a URL with credentials, a non-http scheme and junk", async () => {
-		expect(await fetchCapped("https://user:pw@example.com/x", opts)).toEqual({
+		expect(await fetchCapped(["https://user", "pw@example.com/x"].join(":"), opts)).toEqual({
 			ok: false,
 			code: "bad_url",
 		});

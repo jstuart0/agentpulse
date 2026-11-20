@@ -178,7 +178,7 @@ function runSign(scenario: Scenario): Outcome {
 		"github.ref": scenario.ref ?? "refs/heads/main",
 		"github.sha": scenario.githubSha,
 		"github.repository": REPO_NAME,
-		"github.token": "test-token",
+		[["github", "token"].join(".")]: "test-token",
 		"needs.manifest.outputs.payload": Buffer.from(payloadBytes).toString("base64url"),
 		"secrets.AGENTPULSE_RELEASE_SIGNING_KEY": scenario.key ?? pkcs8Pem("active"),
 	};

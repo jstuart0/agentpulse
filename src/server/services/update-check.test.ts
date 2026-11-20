@@ -692,6 +692,8 @@ describe("the https adapter", () => {
 	const source = (path?: string, deadlineMs?: number) =>
 		createHttpsManifestSourceForTests({ url: url(path), ca: cert, deadlineMs });
 
+	// The suite's setup shells out to openssl: under a loaded full run the default 5 s hook limit expired, the TLS
+	// server never started, and every test below failed on "network". An EC key is quick, and the limit is generous.
 	beforeAll(async () => {
 		const key = join(dir, "key.pem");
 		const crt = join(dir, "cert.pem");
@@ -700,7 +702,9 @@ describe("the https adapter", () => {
 			"req",
 			"-x509",
 			"-newkey",
-			"rsa:2048",
+			"ec",
+			"-pkeyopt",
+			"ec_paramgen_curve:prime256v1",
 			"-nodes",
 			"-keyout",
 			key,
@@ -763,7 +767,7 @@ describe("the https adapter", () => {
 				return new Response("nope", { status: 404 });
 			},
 		});
-	});
+	}, 120_000);
 	afterAll(() => {
 		tlsServer.stop(true);
 		plainServer.stop(true);

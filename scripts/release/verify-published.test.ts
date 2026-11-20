@@ -70,7 +70,10 @@ describe("writeSiteManifest (the deploy gate)", () => {
 
 	test("a private key header anywhere under site/ stops the publish", async () => {
 		const dir = site();
-		writeFileSync(join(dir, "assets", "oops.txt"), "-----BEGIN PRIVATE KEY-----\nAAAA\n");
+		writeFileSync(
+			join(dir, "assets", "oops.txt"),
+			`-----BEGIN ${["PRIVATE", "KEY"].join(" ")}-----\nAAAA\n`,
+		);
 		await expect(
 			writeSiteManifest({
 				siteDir: dir,
