@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs, runCli } from "./cli.js";
 import { type Fixture, createFixture } from "./test-utils/fixture.js";
@@ -31,7 +31,14 @@ describe("parseArgs", () => {
 		expect(parseArgs(["update", "--auto"])).toEqual({ kind: "update", options: { mode: "auto" } });
 		expect(parseArgs(["update", "rollback"])).toEqual({ kind: "rollback" });
 		expect(parseArgs(["update", "status"])).toEqual({ kind: "status" });
-		expect(parseArgs(["update", "auto", "on"])).toEqual({ kind: "auto_consent" });
+		expect(parseArgs(["update", "auto", "on"])).toEqual({
+			kind: "auto_on",
+			request: { allowMigrations: false, window: null },
+		});
+		expect(
+			parseArgs(["update", "auto", "on", "--allow-migrations", "--window", "02:00-04:30"]),
+		).toEqual({ kind: "auto_on", request: { allowMigrations: true, window: "02:00-04:30" } });
+		expect(parseArgs(["update", "auto", "off"])).toEqual({ kind: "auto_off" });
 	});
 	test("a flag that isn't there, a missing or malformed version are usage errors", () => {
 		for (const argv of [
@@ -40,6 +47,15 @@ describe("parseArgs", () => {
 			["update", "--to", "main"],
 			["update", "--to", "v1.2.3;rm"],
 			["update", "status", "x"],
+			["update", "auto"],
+			["update", "auto", "maybe"],
+			["update", "auto", "on", "--window"],
+			["update", "auto", "on", "--allow-migration"],
+			["update", "auto", "off", "--window", "01:00-02:00"],
+			// the scheduled job takes no option that names a version or loosens a check
+			["update", "--auto", "--to", "v0.12.0"],
+			["update", "--auto", "--allow-downgrade"],
+			["update", "--auto", "--wait"],
 		]) {
 			expect(parseArgs(argv).kind).toBe("usage");
 		}
@@ -62,11 +78,22 @@ describe("runCli", () => {
 		expect(await runCli(["update", "--bogus"], i)).toBe(2);
 		expect(err.join("\n")).toContain("Usage: agentpulse update");
 	});
-	test("update auto isn't available in this build", async () => {
+	test("auto on without a terminal is refused and nothing is written", async () => {
+		fx = await createFixture();
 		const { io: i, err } = io();
-		expect(await runCli(["update", "auto", "on"], i)).toBe(2);
-		expect(err.join("\n")).toContain("aren't available");
-	});
+		expect(await runCli(["update", "auto", "on"], i, fx.deps())).toBe(1);
+		expect(err.join("\n")).toContain("in a terminal");
+		expect(existsSync(join(fx.dir, "update-consent.json"))).toBe(false);
+		expect(fx.fake.timerInstalled).toBeNull();
+	}, 60_000);
+	test("a scheduled run exits 0 for a not-yet and non-zero for a failure", async () => {
+		fx = await createFixture();
+		const f = fx;
+		const a = io();
+		// no consent: nothing to do, not a failure
+		expect(await runCli(["update", "--auto"], a.io, f.deps())).toBe(0);
+		expect(a.out.join("\n")).toContain("Automatic updates are off");
+	}, 60_000);
 	test("an outcome prints its sentence and next step; up to date exits 0, a refusal exits 1", async () => {
 		fx = await createFixture();
 		const f = fx;

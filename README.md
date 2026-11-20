@@ -434,6 +434,14 @@ Create the enrollment token on the Hosts page. The token goes on the `bash` side
 - What it does not do: it doesn't manage the relay, the statusline or the exclude check (a relay may lag behind the server until phase 6's refresh); it identifies the server's stop by the service label and the loopback port only; it doesn't check `loginctl enable-linger`. Re-running `install-local.sh` on an existing install follows the newest release tag read from the git remote without the signed release list, so on an existing install prefer `agentpulse update`. The real `launchctl` and `systemctl` calls are covered by stub runners in tests, not exercised against live services.
 - On Windows there is no updater: re-run `install-local.ps1` (it follows releases too, and never moves a checkout that has commits the release doesn't).
 
+#### Automatic updates (opt-in, off by default)
+
+`~/.agentpulse/bin/agentpulse update auto on [--allow-migrations] [--window HH:MM-HH:MM]` lets this machine update itself. Run it in your own terminal: it asks you to type `enable` (`allow migrations` with `--allow-migrations`), refuses without a terminal, and refuses when run from inside an agent session (`CLAUDECODE`, `AI_AGENT` and the like). The choice is a file on this machine (`~/.agentpulse/update-consent.json`); no server setting, web control, API key or MCP tool can turn it on, so a server can't update a machine whose own operator never agreed. An agent that can drive a terminal with a scrubbed environment, or write that file as you, still can: same-user code is outside what this guards. `agentpulse update auto off` removes it.
+
+- It installs a timer through launchd (`dev.agentpulse.updater`) or `systemd --user` (`agentpulse-updater.timer`) that runs `agentpulse update --auto` every six hours. On a server, `loginctl enable-linger <user>` keeps a systemd user timer running when nobody is logged in.
+- A scheduled run applies a release only if it is signed and fresh, stable (never a pre-release), newer than what is installed, not withdrawn, not one that failed here before, and at least 24 hours old (a security fix skips the wait). It runs only inside the window, and it won't cross a database migration unless you allowed migrations (a Postgres migration is never crossed). It waits up to 30 minutes for the supervisor to be idle and otherwise tries again on the next run; that, a closed window and the 24-hour wait are "not yet", not failures.
+- A failure holds the next scheduled run back 1 hour, then 6 hours, then 24 hours; `agentpulse update` by hand is never held back. `agentpulse update status` shows the last outcome, and an admin sees it on the Updates card in Settings.
+
 ### 2. Local Docker container
 
 Best if you already use Docker locally.

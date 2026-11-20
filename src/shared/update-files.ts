@@ -6,7 +6,7 @@
  * the server imports this module and has no way to start or change an update through it.
  */
 import { join } from "node:path";
-import { readPrivateFileNoFollow } from "./private-read.js";
+import { type PrivateFileRead, readPrivateFileNoFollow } from "./private-read.js";
 import type { LastSeen } from "./release-manifest.js";
 import { UPDATE_OUTCOME_CODES, type UpdateOutcomeCode } from "./update-status.js";
 
@@ -15,7 +15,7 @@ export const UPDATE_STATE_FILE = "update-state.json";
 export const SUPERVISOR_STATUS_FILE = "supervisor-status.json";
 export const UPDATE_DRAIN_FILE = "update-drain.json";
 const MAX_FILE_BYTES = 32 * 1024;
-const WINDOW_PATTERN = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
+export const UPDATE_WINDOW_PATTERN = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
 const VERSION_KEY = /^[0-9A-Za-z.+-]{1,48}$/;
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
 
@@ -23,8 +23,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readJson(home: string, name: string): Record<string, unknown> | null {
-	const file = readPrivateFileNoFollow(join(home, ".agentpulse", name), MAX_FILE_BYTES);
+export type FileReader = (path: string, maxBytes: number) => PrivateFileRead;
+
+function parseJsonRecord(file: PrivateFileRead): Record<string, unknown> | null {
 	if (file.kind !== "ok") return null;
 	try {
 		const parsed: unknown = JSON.parse(file.text);
@@ -34,6 +35,14 @@ function readJson(home: string, name: string): Record<string, unknown> | null {
 	}
 }
 
+function readJson(
+	home: string,
+	name: string,
+	read: FileReader = readPrivateFileNoFollow,
+): Record<string, unknown> | null {
+	return parseJsonRecord(read(join(home, ".agentpulse", name), MAX_FILE_BYTES));
+}
+
 export interface AppConsent {
 	on: boolean;
 	allowMigrations: boolean;
@@ -41,16 +50,33 @@ export interface AppConsent {
 	window: string | null;
 }
 
-/** The app's consent to apply updates by itself. Anything but a well-formed `app.on === true` is off. */
-export function readConsent(home: string): AppConsent {
+function consentFrom(raw: Record<string, unknown> | null): AppConsent {
 	const off: AppConsent = { on: false, allowMigrations: false, window: null };
-	const raw = readJson(home, UPDATE_CONSENT_FILE);
 	if (!raw || raw.schema !== 1 || !isRecord(raw.app)) return off;
 	const app = raw.app;
 	if (app.on !== true) return off;
 	const window =
-		typeof app.window === "string" && WINDOW_PATTERN.test(app.window) ? app.window : null;
+		typeof app.window === "string" && UPDATE_WINDOW_PATTERN.test(app.window) ? app.window : null;
 	return { on: true, allowMigrations: app.allowMigrations === true, window };
+}
+
+/** The app's consent to apply updates by itself. Anything but a well-formed `app.on === true` is off. */
+export function readConsent(home: string): AppConsent {
+	return consentFrom(readJson(home, UPDATE_CONSENT_FILE));
+}
+
+/** `readConsent` over another file reader, so a test can judge the file as somebody else's. */
+export function readConsentWith(home: string, read: FileReader): AppConsent {
+	return consentFrom(readJson(home, UPDATE_CONSENT_FILE, read));
+}
+
+/**
+ * The consent file as written, for a writer that has to keep the parts it doesn't own (the relay's `clients`
+ * section). Null when the file is missing, not trusted or not a schema-1 object.
+ */
+export function readConsentDocument(home: string): Record<string, unknown> | null {
+	const raw = readJson(home, UPDATE_CONSENT_FILE);
+	return raw && raw.schema === 1 ? raw : null;
 }
 
 export interface UpdaterState {
@@ -62,6 +88,8 @@ export interface UpdaterState {
 	lastTarget?: string;
 	at?: string;
 	waitingSince?: string;
+	/** Automatic runs only: how many failures in a row, and not before when to try again. */
+	backoff?: { failures: number; notBefore: string };
 }
 
 const OUTCOME_SET: ReadonlySet<string> = new Set(UPDATE_OUTCOME_CODES);
@@ -89,11 +117,24 @@ function outcomeOrUndefined(value: unknown): UpdateOutcomeCode | undefined {
 		: undefined;
 }
 
-/** The updater's own state; an unreadable file is the empty state (the fresh-install case). */
-export function readUpdateState(home: string): UpdaterState {
-	const empty: UpdaterState = { last: null, revoked: [], refused: {} };
-	const raw = readJson(home, UPDATE_STATE_FILE);
-	if (!raw || raw.schema !== 1) return empty;
+function parseBackoff(value: unknown): UpdaterState["backoff"] {
+	if (!isRecord(value)) return undefined;
+	const { failures, notBefore } = value;
+	if (
+		typeof failures !== "number" ||
+		!Number.isSafeInteger(failures) ||
+		failures < 1 ||
+		failures > 1000 ||
+		typeof notBefore !== "string" ||
+		!ISO_TIME.test(notBefore)
+	) {
+		return undefined;
+	}
+	return { failures, notBefore };
+}
+
+function stateFrom(raw: Record<string, unknown>): UpdaterState | null {
+	if (raw.schema !== 1) return null;
 	const revoked = Array.isArray(raw.revoked)
 		? raw.revoked.filter(
 				(id): id is string => typeof id === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(id),
@@ -116,6 +157,7 @@ export function readUpdateState(home: string): UpdaterState {
 			? raw.waitingSince
 			: undefined;
 	const lastOutcome = outcomeOrUndefined(raw.lastOutcome);
+	const backoff = parseBackoff(raw.backoff);
 	return {
 		last: parseLast(raw.last),
 		revoked,
@@ -124,7 +166,32 @@ export function readUpdateState(home: string): UpdaterState {
 		...(target ? { lastTarget: target } : {}),
 		...(at ? { at } : {}),
 		...(waitingSince ? { waitingSince } : {}),
+		...(backoff ? { backoff } : {}),
 	};
+}
+
+/** The updater's own state; an unreadable file is the empty state (the fresh-install case). */
+export function readUpdateState(home: string): UpdaterState {
+	const raw = readJson(home, UPDATE_STATE_FILE);
+	return (raw ? stateFrom(raw) : null) ?? { last: null, revoked: [], refused: {} };
+}
+
+/**
+ * The state file told apart from "nothing there": `absent` (the updater never ran), `invalid` (a file is
+ * there and can't be believed: untrusted, unparseable or not schema 1) or its state. The server shows
+ * nothing about a machine whose state file is invalid, rather than a guess.
+ */
+export function readUpdateStateChecked(
+	home: string,
+): { kind: "absent" } | { kind: "invalid" } | { kind: "ok"; state: UpdaterState } {
+	const file = readPrivateFileNoFollow(
+		join(home, ".agentpulse", UPDATE_STATE_FILE),
+		MAX_FILE_BYTES,
+	);
+	if (file.kind === "absent") return { kind: "absent" };
+	const raw = parseJsonRecord(file);
+	const state = raw ? stateFrom(raw) : null;
+	return state ? { kind: "ok", state } : { kind: "invalid" };
 }
 
 export interface SupervisorStatus {

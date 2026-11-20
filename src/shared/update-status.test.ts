@@ -8,6 +8,7 @@ import {
 	isKnownUpdateState,
 	publicUpdateStatus,
 	releaseNotesUrl,
+	updateStatusFor,
 } from "./update-status.js";
 
 /** Compiles only while the list names every `UpdateStateName`: a state added to the union fails here. */
@@ -37,9 +38,10 @@ describe("the state and outcome name lists", () => {
 
 	test("the outcome codes are the plan's closed set, once each", () => {
 		expect(new Set(UPDATE_OUTCOME_CODES).size).toBe(UPDATE_OUTCOME_CODES.length);
-		expect(UPDATE_OUTCOME_CODES.length).toBe(40);
+		expect(UPDATE_OUTCOME_CODES.length).toBe(41);
 		for (const code of [
 			"no_consent",
+			"backoff",
 			"dirty_tree",
 			"symlinked_install",
 			"updated",
@@ -186,5 +188,36 @@ describe("publicUpdateStatus", () => {
 	test("a field added to UpdateStatus later is private until someone lists it", () => {
 		const out = publicUpdateStatus({ ...full, somethingNew: "x" } as never);
 		expect("somethingNew" in out).toBe(false);
+	});
+});
+
+describe("updateStatusFor", () => {
+	const status = {
+		current: "0.11.0",
+		latest: "0.12.0",
+		state: "available" as const,
+		stale: false,
+		severity: "normal" as const,
+		checkedAt: "2026-11-19T12:00:00.000Z",
+		lastResult: "ok" as const,
+		manifestIssuedAt: "2026-11-19T11:00:00.000Z",
+		installKind: "local" as const,
+		track: "release" as const,
+		localApply: { auto: true, lastOutcome: "rolled_back" as const },
+	};
+
+	test("an admin gets everything; an operator who isn't an admin gets everything but localApply; anyone else the public six", () => {
+		expect(updateStatusFor(status, { operator: true, admin: true })).toEqual(status);
+		const member = updateStatusFor(status, { operator: true, admin: false });
+		expect("localApply" in member).toBe(false);
+		expect((member as { installKind?: string }).installKind).toBe("local");
+		const reader = updateStatusFor(status, { operator: false, admin: false });
+		expect(Object.keys(reader).sort()).toEqual(
+			["checkedAt", "current", "latest", "severity", "stale", "state"].sort(),
+		);
+	});
+
+	test("an admin can't be read as less than an operator: admin alone still gets everything", () => {
+		expect(updateStatusFor(status, { operator: false, admin: true })).toEqual(status);
 	});
 });

@@ -33,6 +33,15 @@ export function recordVerified(home: string, next: LastSeen, revoked: string[]):
 	return merged;
 }
 
+/** Sets or clears the automatic runs' backoff, leaving everything else in the state as it is. */
+export function saveBackoff(home: string, backoff: UpdaterState["backoff"] | null): void {
+	const state = loadState(home);
+	const next: UpdaterState = { ...state };
+	if (backoff) next.backoff = backoff;
+	else next.backoff = undefined;
+	saveState(home, next);
+}
+
 export function recordOutcome(
 	home: string,
 	input: {

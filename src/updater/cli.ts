@@ -7,11 +7,22 @@ import { parseReleaseVersion } from "../shared/version.js";
  *   update [--to vX.Y.Z] [--allow-downgrade] [--wait]   move to the latest (or a named) release
  *   update rollback                                      go back to the previous copy
  *   update status                                        what this machine knows about updates
+ *   update auto on [--allow-migrations] [--window HH:MM-HH:MM]   let this machine update itself (asks you to type a word)
+ *   update auto off                                      stop doing that
  *
- * `--auto` is what the scheduled job passes; it applies the consent and window checks. A person can't
- * start an update from the server, the web or MCP: this file is the only way in (a guard test holds that).
+ * `--auto` is what the scheduled job passes; it applies the consent, window and backoff checks and takes no
+ * other flag. A person can't start an update from the server, the web or MCP: this file is the only way in
+ * (a guard test holds that).
  */
 import { OUTCOME_COPY } from "../web/lib/update-outcome-copy.js";
+import { isAutoFailure } from "./auto-apply.js";
+import {
+	type AutoOnRequest,
+	CONSENT_REFUSAL_COPY,
+	type ConsentOnlyRefusal,
+	disableAuto,
+	enableAuto,
+} from "./consent.js";
 import { buildRealDeps } from "./real-deps.js";
 import {
 	type UpdateOptions,
@@ -31,14 +42,38 @@ const USAGE = [
 	"Usage: agentpulse update [--to vX.Y.Z] [--allow-downgrade] [--wait]",
 	"       agentpulse update rollback",
 	"       agentpulse update status",
+	"       agentpulse update auto on [--allow-migrations] [--window HH:MM-HH:MM]",
+	"       agentpulse update auto off",
 ];
 
 export type ParsedArgs =
 	| { kind: "update"; options: UpdateOptions }
 	| { kind: "rollback" }
 	| { kind: "status" }
-	| { kind: "auto_consent" }
+	| { kind: "auto_on"; request: AutoOnRequest }
+	| { kind: "auto_off" }
 	| { kind: "usage"; message: string };
+
+function parseAutoConsent(args: string[]): ParsedArgs {
+	const [action, ...flags] = args;
+	if (action === "off")
+		return flags.length === 0
+			? { kind: "auto_off" }
+			: { kind: "usage", message: "auto off takes no arguments" };
+	if (action !== "on") return { kind: "usage", message: "auto needs on or off" };
+	const request: AutoOnRequest = { allowMigrations: false, window: null };
+	for (let i = 0; i < flags.length; i++) {
+		const flag = flags[i] as string;
+		if (flag === "--allow-migrations") request.allowMigrations = true;
+		else if (flag === "--window") {
+			const value = flags[++i];
+			if (value === undefined) return { kind: "usage", message: "--window needs HH:MM-HH:MM" };
+			request.window = value;
+		} else
+			return { kind: "usage", message: `unknown argument ${JSON.stringify(flag.slice(0, 40))}` };
+	}
+	return { kind: "auto_on", request };
+}
 
 export function parseArgs(argv: string[]): ParsedArgs {
 	const args = argv[0] === "update" ? argv.slice(1) : argv;
@@ -51,7 +86,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 		return args.length === 1
 			? { kind: "status" }
 			: { kind: "usage", message: "status takes no arguments" };
-	if (first === "auto") return { kind: "auto_consent" };
+	if (first === "auto") return parseAutoConsent(args.slice(1));
 	const options: UpdateOptions = { mode: "manual" };
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i] as string;
@@ -68,6 +103,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
 		} else {
 			return { kind: "usage", message: `unknown argument ${JSON.stringify(arg.slice(0, 40))}` };
 		}
+	}
+	if (options.mode === "auto" && (options.to || options.allowDowngrade || options.wait)) {
+		return { kind: "usage", message: "--auto takes no other option" };
 	}
 	return { kind: "update", options };
 }
@@ -112,10 +150,6 @@ export async function runCli(argv: string[], io: CliIo, deps?: UpdaterDeps): Pro
 		for (const line of USAGE) io.err(line);
 		return 2;
 	}
-	if (parsed.kind === "auto_consent") {
-		io.err("Automatic updates aren't available in this build yet.");
-		return 2;
-	}
 	let real: UpdaterDeps;
 	try {
 		real = deps ?? buildRealDeps(process.env);
@@ -124,6 +158,26 @@ export async function runCli(argv: string[], io: CliIo, deps?: UpdaterDeps): Pro
 			"Run this through ~/.agentpulse/bin/agentpulse so the updater can reach your service manager.",
 		);
 		return 2;
+	}
+	if (parsed.kind === "auto_on" || parsed.kind === "auto_off") {
+		const outcome =
+			parsed.kind === "auto_on"
+				? await enableAuto(real, parsed.request, io.out)
+				: await disableAuto(real);
+		if (outcome.ok) {
+			io.out(
+				parsed.kind === "auto_on"
+					? "Automatic updates are on for this machine. `agentpulse update auto off` turns them off."
+					: "Automatic updates are off.",
+			);
+			return 0;
+		}
+		const words =
+			CONSENT_REFUSAL_COPY[outcome.code as ConsentOnlyRefusal] ??
+			OUTCOME_COPY[outcome.code as UpdateOutcomeCode]?.sentence ??
+			"That wasn't possible.";
+		io.err(words);
+		return 1;
 	}
 	if (parsed.kind === "status") {
 		const status = updaterStatus(real);
@@ -152,8 +206,14 @@ export async function runCli(argv: string[], io: CliIo, deps?: UpdaterDeps): Pro
 	const result =
 		parsed.kind === "rollback" ? await runRollback(real) : await runUpdate(real, parsed.options);
 	printResult(result, io, parsed.kind === "rollback");
+	// A scheduled run ends non-zero only for a failure: "not yet" and "nothing to do" are not one.
+	const scheduled = parsed.kind === "update" && parsed.options.mode === "auto";
 	const ok =
-		parsed.kind === "rollback" ? result.code === "rolled_back" : SUCCESS.includes(result.code);
+		parsed.kind === "rollback"
+			? result.code === "rolled_back"
+			: scheduled
+				? !isAutoFailure(result.code)
+				: SUCCESS.includes(result.code);
 	return ok ? 0 : 1;
 }
 

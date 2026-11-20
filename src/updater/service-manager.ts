@@ -12,8 +12,8 @@
  * table (read, never signalled) and its port closed. Only the units that were active before a run are started
  * again, and a unit that wasn't active is left alone.
  *
- * `installTimer` and `removeTimer` are not called by anything yet (phase 5's `update auto on|off` will). The scheduled job
- * itself must never call them: replacing the unit that is running it would end it mid-update.
+ * `installTimer` and `removeTimer` are called only by `update auto on|off` (consent.ts), run by a person. The scheduled
+ * job itself must never call them: replacing the unit that is running it would end it mid-update.
  */
 import { existsSync, unlinkSync } from "node:fs";
 import { createConnection } from "node:net";

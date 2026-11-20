@@ -132,6 +132,11 @@ export const OUTCOME_COPY: Record<UpdateOutcomeCode, OutcomeCopy> = {
 		sentence: "Another update is already running.",
 		next: "Wait for it to finish, then try again.",
 	},
+	backoff: {
+		sentence:
+			"An earlier automatic update failed, so this machine is waiting before it tries again.",
+		next: "Run agentpulse update to try now, or wait.",
+	},
 	// staging
 	install_failed: {
 		sentence: "Installing the new version's dependencies failed.",
@@ -209,6 +214,11 @@ export const UPDATE_PANEL_COPY = {
 	title: "Updates",
 	latest: "Latest release",
 	lastChecked: "Last checked",
+	automatic: "Automatic updates",
+	automaticOn: "On, on this machine",
+	automaticOff: "Off",
+	lastRun: "Last automatic run",
+	waitingSince: "Waiting since",
 	checkNow: "Check now",
 	checking: "Checking…",
 	copy: "Copy command",

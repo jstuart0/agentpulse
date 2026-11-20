@@ -72,6 +72,7 @@ export const UPDATE_OUTCOME_CODES = [
 	"db_path_mismatch",
 	"outside_window",
 	"locked",
+	"backoff",
 	// staging
 	"install_failed",
 	"build_failed",
@@ -167,6 +168,22 @@ export type PublicUpdateStatus = Pick<
 export function publicUpdateStatus(status: UpdateStatus): PublicUpdateStatus {
 	const { current, latest, state, stale, severity, checkedAt } = status;
 	return { current, latest, state, stale, severity, checkedAt };
+}
+
+/**
+ * The status as one caller may read it. `operator` is a manage key or an admin (the install kind, track and last
+ * result); `admin` is an effective admin, the only reader of `localApply`: what this machine's updater did last is
+ * about the machine, so a member in team mode, and a manage key that belongs to a member, don't see it (a key's
+ * role is its owner's). Everyone else gets the six public fields.
+ */
+export function updateStatusFor(
+	status: UpdateStatus,
+	reader: { operator: boolean; admin: boolean },
+): UpdateStatus | Omit<UpdateStatus, "localApply"> | PublicUpdateStatus {
+	if (!reader.operator && !reader.admin) return publicUpdateStatus(status);
+	if (reader.admin) return status;
+	const { localApply: _hidden, ...withoutLocalApply } = status;
+	return withoutLocalApply;
 }
 
 export function isKnownUpdateState(state: string): state is UpdateStateName {

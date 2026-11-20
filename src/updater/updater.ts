@@ -43,6 +43,7 @@ import {
 } from "../shared/update-files.js";
 import type { UpdateOutcomeCode } from "../shared/update-status.js";
 import { parseReleaseVersion } from "../shared/version.js";
+import { backoffActive, isWaiting, nextBackoff } from "./auto-apply.js";
 import { type LocalEndpoint, isLoopbackProbeHost, localEndpoint } from "./endpoint.js";
 import { type RunFn, gitEnv } from "./exec.js";
 import { type FetchText, type HealthInfo, probeHealth } from "./health.js";
@@ -66,7 +67,7 @@ import {
 	checkTreeClean,
 	fetchTarget,
 } from "./stage.js";
-import { loadState, recordOutcome, recordVerified } from "./state.js";
+import { loadState, recordOutcome, recordVerified, saveBackoff } from "./state.js";
 import {
 	carryEnvFiles,
 	executeSwap,
@@ -693,18 +694,38 @@ async function loadManifest(
 
 export async function runUpdate(deps: UpdaterDeps, options: UpdateOptions): Promise<UpdateResult> {
 	const started = deps.now();
-	const result = await runUpdateInner(deps, options);
+	// A scheduled run only ever takes the latest release forward: the flags that name a version, allow a
+	// downgrade or lengthen the wait are a person's, whatever the caller passed.
+	const effective: UpdateOptions = options.mode === "auto" ? { mode: "auto" } : options;
+	const result = await runUpdateInner(deps, effective);
 	deps.log.line("update", {
 		code: result.code,
 		from: result.from,
 		to: result.to,
 		reason: result.reason,
-		mode: options.mode,
+		mode: effective.mode,
 		ms: deps.now() - started,
 	});
-	if (!["locked", "container", "kubernetes"].includes(result.code)) {
+	// A run skipped by the backoff changed nothing, so it records nothing: the failure that caused it stays the last outcome.
+	if (!["locked", "container", "kubernetes", "backoff"].includes(result.code)) {
 		try {
-			recordOutcome(deps.home, { code: result.code, target: result.to, at: deps.now() });
+			const before = loadState(deps.home);
+			const waiting = effective.mode === "auto" && isWaiting(result.code);
+			recordOutcome(deps.home, {
+				code: result.code,
+				target: result.to,
+				at: deps.now(),
+				...(effective.mode === "auto"
+					? {
+							waitingSince: waiting
+								? (before.waitingSince ?? new Date(deps.now()).toISOString())
+								: null,
+						}
+					: {}),
+			});
+			if (effective.mode === "auto") {
+				saveBackoff(deps.home, nextBackoff(before.backoff, result.code, deps.now()));
+			}
 		} catch {
 			// the state file is best effort
 		}
@@ -785,6 +806,7 @@ async function updateLocked(ctx: Ctx, options: UpdateOptions): Promise<UpdateRes
 	if (options.mode === "auto") {
 		if (!consent.on) return fail("no_consent");
 		if (!inWindow(consent.window, deps.now())) return fail("outside_window");
+		if (backoffActive(loadState(deps.home), deps.now())) return fail("backoff");
 	}
 
 	const from = readVersionOf(app);
