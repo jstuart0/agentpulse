@@ -4018,13 +4018,13 @@ async function commitPlan(
 	const undo = async () => {
 		let relayBack = !relaySwapped;
 		if (relaySwapped && relayItem) {
-			relayBack = await rename(`${relayItem.target}.prev`, relayItem.target).then(
+			relayBack = await deps.rename(`${relayItem.target}.prev`, relayItem.target).then(
 				() => true,
 				() => false,
 			);
 		}
 		for (const item of renamedSmall) {
-			const restored = await rename(`${item.target}.prev`, item.target).then(
+			const restored = await deps.rename(`${item.target}.prev`, item.target).then(
 				() => true,
 				() => false,
 			);

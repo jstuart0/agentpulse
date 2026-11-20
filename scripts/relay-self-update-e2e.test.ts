@@ -1064,6 +1064,29 @@ describe("the commit never leaves a swapped relay without its rollback guard (B1
 			expect(readState(w).refused).toEqual({ "0.12.0": "write_failed" });
 		});
 	}
+
+	test("when the relay can't be put back either, pending and .prev stay so the launcher can finish the rollback", async () => {
+		const ref = {} as { w: World };
+		const w = await world({
+			selfUpdate: {
+				// every rename that would land on relay.ts fails: the commit's second rename and the undo's
+				rename: async (from, to) => {
+					if (to === ref.w.relayPath) throw new Error("injected rename failure");
+					await renameFile(from, to);
+				},
+			},
+		});
+		ref.w = w;
+		expect(await w.tick()).toBe("write_failed");
+		// relay.ts is absent, the old one is beside it and pending is still there: exactly what the launcher repairs
+		expect(existsSync(w.relayPath)).toBe(false);
+		expect(text(`${w.relayPath}.prev`)).toBe(REAL_RELAY);
+		expect(JSON.parse(text(pendingFile(w)))).toEqual({ version: "0.12.0", attempts: 0 });
+		// the small files were put back all the same
+		expect(text(w.statuslinePath)).toBe(REAL_STATUSLINE);
+		expect(text(w.excludeCheckPath)).toBe(OLD_EXCLUDE_CHECK);
+		expect(w.exits).toEqual([]);
+	});
 });
 
 describe("the files a rollback needs are kept beside a swapped relay (B3)", () => {
@@ -1133,6 +1156,32 @@ async function oldDigests(): Promise<ClientDigests> {
 		excludeCheck: OLD_EXCLUDE_CHECK,
 	});
 }
+
+describe("a digest mismatch is counted per version (B7)", () => {
+	test("two mismatches for one version and then one for another don't add up: nothing is refused", async () => {
+		const served = await serve();
+		let reported = "0.12.0";
+		const wrong = { relay: hex64("a"), statusline: hex64("b"), excludeCheck: hex64("c") };
+		const w = await world({
+			served,
+			healthBody: (body) => JSON.stringify({ ...body, version: reported }),
+			payload: {
+				latest: "0.13.0",
+				releases: [
+					testRelease("0.13.0", { clients: wrong }),
+					testRelease("0.12.0", { clients: wrong }),
+					testRelease("0.11.0", { clients: await oldDigests() }),
+				],
+			},
+		});
+		expect(await w.tick()).toBe("digest_mismatch");
+		expect(await w.tick()).toBe("digest_mismatch");
+		reported = "0.13.0";
+		expect(await w.tick()).toBe("digest_mismatch");
+		expect(readState(w).refused).toEqual({});
+		expectUntouched(w);
+	});
+});
 
 describe("a newer security release in the signed manifest outranks the server's own version (B4)", () => {
 	async function worldWithNewer(newer: ReturnType<typeof testRelease>, latest: string) {
@@ -1279,7 +1328,11 @@ describe("the written bytes are exactly the hashed ones (B6)", () => {
 	test("a read-back that differs only in trailing white space is refused (the digest alone would pass it)", async () => {
 		const w = await world({
 			selfUpdate: {
-				readBack: async (path) => `${readFileSync(path, "utf-8")}\n\n`,
+				// only the two files whose digest is over the trimmed text: for them the digest alone can't see it
+				readBack: async (path) =>
+					path.endsWith("exclude-check.sh.new")
+						? readFileSync(path, "utf-8")
+						: `${readFileSync(path, "utf-8")}\n\n`,
 			},
 		});
 		expect(await w.tick()).toBe("write_failed");
@@ -1391,6 +1444,13 @@ describe("the statusline's self-check (T3)", () => {
 		expectUntouched(w);
 	});
 
+	test("a syntax error after an early exit is caught by the parse check alone (the fixture run never reaches it)", async () => {
+		const served = await serve({ statusline: "#!/bin/bash\nexit 0\nif then fi ((\n" });
+		const w = await world({ served });
+		expect(await w.tick()).toBe("self_check_failed");
+		expectUntouched(w);
+	});
+
 	test(jqPresent
 		? "with jq present, a statusline that exits non-zero on the fixture input is refused"
 		: "without jq the fixture run is skipped and only syntax is judged (stated)", async () => {
@@ -1430,6 +1490,17 @@ describe("the exclude-check fixture run refuses a check that sends when it shoul
 		],
 		["excludes everything", "#!/bin/sh\nexit 1\n"],
 		["sends on an invalid rules file", without("'*'*)")],
+		["ignores a valid rule (but fails closed on an invalid file)", without('"$line" = "$here"')],
+		[
+			"excludes every directory as soon as any rules file exists",
+			[
+				"#!/bin/sh",
+				'case "${AGENTPULSE_SKIP:-}" in 1) exit 1;; esac',
+				'[ -e "$HOME/.agentpulse/exclude" ] && exit 1',
+				"exit 42",
+				"",
+			].join("\n"),
+		],
 	];
 
 	function stagedCheck(body: string): string {
