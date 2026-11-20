@@ -412,11 +412,13 @@ describe("localApply from the real wiring, with a temporary HOME", () => {
 	const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = require("node:fs");
 	const { tmpdir } = require("node:os");
 	const { join } = require("node:path");
-	const { setInstallProbeForTests } = require("../services/install-probe.js");
+	const { setInstallProbeForTests, installProbeOverride } = require("../services/install-probe.js");
+	// the preload's fixed probe, put back afterwards: other files in this process rely on it
+	const preloaded = installProbeOverride();
 	let home: string;
 	let savedHome: string | undefined;
 	afterEach(() => {
-		setInstallProbeForTests(null);
+		setInstallProbeForTests(preloaded);
 		if (savedHome === undefined) {
 			process.env.HOME = undefined as never;
 			// biome-ignore lint/performance/noDelete: an env var must be removed, not set to the string "undefined"
