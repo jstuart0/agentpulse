@@ -285,7 +285,8 @@ describe("auto gates", () => {
 			expect(state.backoff).toBeUndefined();
 			// the next tick isn't held back: it runs, and (the host idle now) updates
 			if (f.sim) f.sim.busyUntil = 0;
-			expect((await runUpdate(f.deps(slow), { mode: "auto" })).code).toBe("updated");
+			// (the coarse polling was for the long wait; starting the new copy needs the normal one)
+			expect((await runUpdate(f.deps(), { mode: "auto" })).code).toBe("updated");
 		},
 		TIMEOUT,
 	);
