@@ -675,6 +675,10 @@ async function loadManifest(
 	const state = loadState(deps.home);
 	const candidates: string[] = [];
 	const fromServer = await healthOf(ctx, true);
+	// The operator turned the version check off on a server that answered: no request to the release feed and
+	// no update, scheduled or by hand. Only an unreachable server falls back to the feed. A reachable one that
+	// is on but holds no envelope yet (or an older one that reports no state) still falls through to it.
+	if (fromServer?.updateState === "disabled") return { ok: false, code: "update_check_off" };
 	if (fromServer?.releaseManifest) candidates.push(fromServer.releaseManifest);
 	const pages = await deps.fetchText(deps.manifestUrl, {
 		deadlineMs: PAGES_DEADLINE_MS,

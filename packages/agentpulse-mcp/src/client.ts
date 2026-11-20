@@ -400,6 +400,7 @@ export const UPDATE_OUTCOME_CODE_NAMES: readonly string[] = [
 	"no_install_record",
 	"symlinked_install",
 	"unverified",
+	"update_check_off",
 	"stale",
 	"pulled",
 	"downgrade",

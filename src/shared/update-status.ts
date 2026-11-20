@@ -53,6 +53,7 @@ export const UPDATE_OUTCOME_CODES = [
 	"symlinked_install",
 	// manifest and target
 	"unverified",
+	"update_check_off",
 	"stale",
 	"pulled",
 	"downgrade",

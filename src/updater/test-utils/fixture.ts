@@ -81,6 +81,23 @@ Bun.serve({
 });
 `;
 
+const FIXTURE_LOCKFILE = `{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "fixture",
+      "dependencies": {
+        "dep": "file:./vendor/dep",
+      },
+    },
+  },
+  "packages": {
+    "dep": ["dep@file:vendor/dep", {}],
+  }
+}
+`;
+
 const BUILD_TS = `import { mkdirSync, writeFileSync } from "node:fs";
 mkdirSync("dist", { recursive: true });
 writeFileSync("dist/built", "ok");
@@ -307,7 +324,11 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
 			const files: Record<string, string> = {
 				".gitignore": "node_modules/\ndist/\n.env\n.env.local\n.DS_Store\n",
 				".env.example": `EXAMPLE=${version}\n`,
-				"package.json": `${JSON.stringify({ name: "fixture", version, scripts: { build: "bun run scripts/build.ts" } })}\n`,
+				// A frozen install needs a lockfile (the updater refuses a tree without one), and Bun writes none for a
+				// package with no dependencies, so the fixture carries one local `file:` dependency and its lock.
+				"package.json": `${JSON.stringify({ name: "fixture", version, dependencies: { dep: "file:./vendor/dep" }, scripts: { build: "bun run scripts/build.ts" } })}\n`,
+				"vendor/dep/package.json": `${JSON.stringify({ name: "dep", version: "1.0.0" })}\n`,
+				"bun.lock": FIXTURE_LOCKFILE,
 				"server.ts": SERVER_TS,
 				"scripts/build.ts": BUILD_TS,
 				"src/updater/cli.ts": UPDATER_CLI_TS,

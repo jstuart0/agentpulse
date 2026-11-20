@@ -712,6 +712,85 @@ describe("automatic runs", () => {
 	);
 });
 
+describe("the server's update check and the release feed", () => {
+	const PAGES = "pages.invalid";
+	/** The fixture server reports no `update` block, so a test says what the server's check is doing. */
+	function serverSays(
+		f: Fixture,
+		update: { state: string } | null,
+		options: { unreachable?: boolean; noEnvelope?: boolean } = {},
+	): UpdaterDeps {
+		const deps = f.deps();
+		const base = deps.fetchText;
+		deps.fetchText = async (url, o) => {
+			if (!url.includes("/api/v1/health?manifest=1")) return base(url, o);
+			f.fetched.push(url);
+			if (options.unreachable) return { ok: false, code: "network" };
+			const result = await base(url, o);
+			if (!result.ok) return result;
+			const body = JSON.parse(result.body) as Record<string, unknown>;
+			if (update) body.update = update;
+			if (options.noEnvelope) body.releaseManifest = null;
+			return { ...result, body: JSON.stringify(body) };
+		};
+		return deps;
+	}
+	const pagesFetches = (f: Fixture) => f.fetched.filter((u) => u.includes(PAGES));
+	const publishAged = (f: Fixture) => {
+		f.addRelease("0.12.0", { publishedAt: "2026-11-01T00:00:00.000Z" });
+		f.publish();
+		writeConsent(f, { on: true, allowMigrations: false, window: null });
+	};
+
+	test(
+		"a server that answered with its check off: no request to the feed and no update, scheduled or by hand",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			publishAged(f);
+			const auto = await runUpdate(serverSays(f, { state: "disabled" }), { mode: "auto" });
+			expect(auto.code).toBe("update_check_off");
+			const manual = await runUpdate(serverSays(f, { state: "disabled" }), { mode: "manual" });
+			expect(manual.code).toBe("update_check_off");
+			expect(pagesFetches(f)).toEqual([]);
+			expect(f.fake.calls.some((c) => c.startsWith("stop:"))).toBe(false);
+			expect(version(f.app)).toBe("0.11.0");
+			// not a failure: no backoff is armed, so turning the check back on isn't held back
+			expect(readUpdateState(f.home).backoff ?? null).toBeNull();
+			expect(readUpdateState(f.home).lastOutcome).toBe("update_check_off");
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"a server that can't be reached: the feed is the fallback",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			publishAged(f);
+			const result = await runUpdate(serverSays(f, null, { unreachable: true }), { mode: "auto" });
+			expect(pagesFetches(f).length).toBeGreaterThan(0);
+			expect(result.code).toBe("updated");
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"a server whose check is on but holds no envelope yet: the feed is asked, as before",
+		async () => {
+			fx = await createFixture();
+			const f = fx;
+			publishAged(f);
+			const result = await runUpdate(serverSays(f, { state: "unverified" }, { noEnvelope: true }), {
+				mode: "auto",
+			});
+			expect(pagesFetches(f).length).toBeGreaterThan(0);
+			expect(result.code).toBe("updated");
+		},
+		TIMEOUT,
+	);
+});
+
 describe("supervisor-only installs", () => {
 	const supervisorOnly = (f: Fixture, serverUrl: string, extra: Record<string, unknown> = {}) =>
 		f.writeInstallRecord({

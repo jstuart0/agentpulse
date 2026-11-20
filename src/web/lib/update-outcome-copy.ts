@@ -62,6 +62,11 @@ export const OUTCOME_COPY: Record<UpdateOutcomeCode, OutcomeCopy> = {
 		sentence: "The release information couldn't be verified.",
 		next: "Update by hand.",
 	},
+	update_check_off: {
+		sentence:
+			"The version check is turned off on this server (AGENTPULSE_UPDATE_CHECK), so nothing was fetched.",
+		next: "Turn the check back on to update with agentpulse update, or update by hand.",
+	},
 	stale: {
 		sentence: "The release information is out of date.",
 		next: "Try again later, or update by hand.",

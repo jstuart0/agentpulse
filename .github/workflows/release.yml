@@ -47,6 +47,10 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           bun scripts/release/preflight.ts
+      - name: Require the lockfile
+        # A frozen install succeeds with no bun.lock at all (it just resolves), so a release without one would
+        # install unconstrained. The updater refuses the same tree on the machine it stages on.
+        run: test -f bun.lock && test ! -L bun.lock
       - name: Install dependencies
         run: bun install --frozen-lockfile --ignore-scripts
       - name: Lint

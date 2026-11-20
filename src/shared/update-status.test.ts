@@ -38,9 +38,10 @@ describe("the state and outcome name lists", () => {
 
 	test("the outcome codes are the plan's closed set, once each", () => {
 		expect(new Set(UPDATE_OUTCOME_CODES).size).toBe(UPDATE_OUTCOME_CODES.length);
-		expect(UPDATE_OUTCOME_CODES.length).toBe(41);
+		expect(UPDATE_OUTCOME_CODES.length).toBe(42);
 		for (const code of [
 			"no_consent",
+			"update_check_off",
 			"backoff",
 			"dirty_tree",
 			"symlinked_install",

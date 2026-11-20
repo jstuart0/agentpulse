@@ -265,6 +265,15 @@ describe("release.yml", () => {
 		});
 	});
 
+	test("preflight refuses a checkout with no bun.lock before it installs (a frozen install passes without one)", () => {
+		const steps = stepsOf(release.jobs.preflight);
+		const guard = steps.findIndex((s) => /test -f bun\.lock/.test(s.run ?? ""));
+		const install = steps.findIndex((s) => s.run?.includes("bun install --frozen-lockfile"));
+		expect(guard).toBeGreaterThan(-1);
+		expect(install).toBeGreaterThan(guard);
+		expect(steps[guard]?.run).toContain("test ! -L bun.lock");
+	});
+
 	test("one release at a time, never cancelled midway", () => {
 		expect(release.concurrency).toEqual({ group: "release", "cancel-in-progress": false });
 	});

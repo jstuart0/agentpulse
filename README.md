@@ -421,7 +421,7 @@ Create the enrollment token on the Hosts page. The token goes on the `bash` side
 
 `~/.agentpulse/bin/agentpulse update`, run on the machine that runs the server (or, for `--supervisor-only`, on that host), moves a release-tracking local install to the latest release:
 
-- It checks the signed release list, refuses anything it can't verify, and never moves to a withdrawn, older or previously failed version (`--to vX.Y.Z` names one; `--allow-downgrade` is the explicit flag for going older).
+- It checks the signed release list (taken from the server's stored copy, or from the project's release site when the server can't be reached; not at all when the server reports `AGENTPULSE_UPDATE_CHECK=off`, see [Version check](#version-check)), refuses anything it can't verify, and never moves to a withdrawn, older or previously failed version (`--to vX.Y.Z` names one; `--allow-downgrade` is the explicit flag for going older).
 - It stages the release beside the running copy (`bun install --frozen-lockfile --ignore-scripts`, then the build), starts that copy once on a throwaway copy of the database, and only then waits for the supervisor to be idle, stops the services, swaps the directories and starts the new ones. The previous copy stays as `~/.agentpulse/app.previous`.
 - It refuses a checkout with changes (`dirty_tree`) or stray files (`untracked_files`). Build output, `node_modules`, `.env*` files, `.DS_Store`, `__pycache__` and `.claude/` are tolerated; the `.env*` files are copied to the new copy unchanged.
 - The supervisor must be idle (no session running, no open approval, no terminal) for a minute. The update waits up to 10 minutes (`--wait`: 2 hours), then drains for at most 2 minutes, during which a new launch or prompt on that host is refused with "This host is updating AgentPulse" and Stop keeps working.
@@ -823,7 +823,7 @@ The manifest is signed with a key whose public half ships in the code. A server 
 Nothing updates itself. The check only tells you.
 
 - In a container or Kubernetes pod the Updates card shows the commands for your install kind and nothing runs by itself; see [Docker image tags and updates](#docker-image-tags-and-updates).
-- Turn it off with `AGENTPULSE_UPDATE_CHECK=off`. `DO_NOT_TRACK=1` doesn't turn it off, because this request identifies nothing.
+- Turn it off with `AGENTPULSE_UPDATE_CHECK=off`. `DO_NOT_TRACK=1` doesn't turn it off, because this request identifies nothing. Off covers this machine's updater too: when the server answers and says its check is off, `agentpulse update` (by hand or scheduled) doesn't fetch the release list and doesn't update, and ends with `update_check_off`; turn the check back on, or update by hand (`install-local.sh`). If the server can't be reached, the updater reads the release list from the same fixed address as the server would, and a server whose check is on but that holds no verified list yet is treated the same way.
 - `GET /api/v1/health` carries `update` and `GET /api/v1/capabilities` carries the full status (`state` may be a name a newer server adds; treat anything you don't know as unknown). `GET /api/v1/health?manifest=1` also returns the verified envelope.
 - The MCP tool `get_update_status` reads the same status.
 

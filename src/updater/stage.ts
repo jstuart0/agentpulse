@@ -9,7 +9,7 @@
  * package's lifecycle scripts never run. Every git call ignores the person's git config, runs no hook and no
  * fsmonitor, never prompts, and allows only the protocol the remote uses.
  */
-import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { UpdateOutcomeCode } from "../shared/update-status.js";
 import { type RunFn, SAFE_GIT_FLAGS, baseEnv, gitEnv, gitProtocolArgs } from "./exec.js";
@@ -193,11 +193,24 @@ export async function fetchTarget(deps: StageDeps, input: StageInput): Promise<S
 	return { ok: true, hasUpdaterSource: existsSync(join(staging, "src", "updater", "cli.ts")) };
 }
 
-/** `bun install --frozen-lockfile --ignore-scripts`, then `bun run build`, in the staged tree. */
+function hasPlainLockfile(staging: string): boolean {
+	try {
+		return lstatSync(join(staging, "bun.lock")).isFile();
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * `bun install --frozen-lockfile --ignore-scripts`, then `bun run build`, in the staged tree. Bun's frozen
+ * install succeeds with no lockfile at all (it just resolves), so the lockfile has to be there, a plain file,
+ * before it runs: a release that shipped without one would otherwise install unconstrained.
+ */
 export async function buildStaged(
 	deps: StageDeps,
 	input: { staging: string; bunBin: string },
 ): Promise<{ ok: true } | { ok: false; code: "install_failed" | "build_failed" }> {
+	if (!hasPlainLockfile(input.staging)) return { ok: false, code: "install_failed" };
 	const env = { ...baseEnv(deps.env, deps.home) };
 	const install = await deps.run(
 		[input.bunBin, "install", "--frozen-lockfile", "--ignore-scripts"],
