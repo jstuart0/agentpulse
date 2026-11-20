@@ -411,6 +411,8 @@ describe("check-no-test-seam-leaks CLI exit code", () => {
 	test("the real relay declares the consent seam the guard is there for", () => {
 		const real = readFileSync(join(import.meta.dir, "relay.ts"), "utf-8");
 		expect(extractTestSeamExports(real)).toContain("setRelayConsentIoForTests");
+		// and the self-check deadlines' seam (AGEN-155 phase 6 gate fixes)
+		expect(extractTestSeamExports(real)).toContain("setSelfCheckLimitsForTests");
 	});
 
 	test("a production caller exits 1 and names the file, line and seam", () => {

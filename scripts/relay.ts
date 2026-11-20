@@ -36,6 +36,7 @@ import {
 import {
 	constants,
 	chmod,
+	copyFile,
 	lstat,
 	mkdir,
 	mkdtemp,
@@ -2539,7 +2540,15 @@ export function createRelayState() {
 		},
 		relayHash: "",
 		/** Self-refresh (AGEN-155): how the last pass ended, and the release/manifest pair that had nothing to apply. */
-		selfUpdate: { lastCode: null as string | null, settledFor: null as string | null },
+		selfUpdate: {
+			lastCode: null as string | null,
+			settledFor: null as string | null,
+			/** Consecutive passes the served files disagreed with the manifest for one version. */
+			mismatch: { version: null as string | null, count: 0 },
+			notLauncherLogged: false,
+			/** The version a "server is behind the manifest's latest" line was last written for. */
+			behindLogged: null as string | null,
+		},
 		codexPull: new Map<string, PullEntryState>(),
 		pullStateLoaded: false,
 		listFieldsUnsupported: false,
@@ -3236,10 +3245,12 @@ const RELAY_UPDATE_STATE_FILE = "relay-update-state.json";
 const RELAY_PENDING_FILE = "relay-pending.json";
 const RELAY_REFUSED_FILE = "relay-update-refused.json";
 const RELAY_LAUNCHER_ENV = "AGENTPULSE_RELAY_LAUNCHER";
-const RELAY_PENDING_CLEAR_WITHIN_MS = 30_000;
+export const RELAY_PENDING_CLEAR_WITHIN_MS = 30_000;
 const RELAY_PENDING_POLL_MS = 500;
 const SELF_CHECK_RELAY_MS = 5_000;
 const SELF_CHECK_SHELL_MS = 2_000;
+/** A version whose served files disagree with the signed digests this many passes in a row is refused for good. */
+const DIGEST_MISMATCH_REFUSE_AFTER = 3;
 const SELF_CHECK_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin";
 /** What exclude-check.sh exits with to say "send"; held equal to `EXCLUDE_SCRIPT_SEND_STATUS` in src/shared/hook-headers.ts by a test. */
 export const EXCLUDE_CHECK_SEND_STATUS = 42;
@@ -3270,6 +3281,7 @@ export type SelfUpdateCode =
 	| "unsafe_path"
 	| "self_check_failed"
 	| "write_failed"
+	| "behind_security"
 	| "applied";
 
 export type SelfUpdateDeps = {
@@ -3283,6 +3295,12 @@ export type SelfUpdateDeps = {
 	fetchText: typeof fetchCapped;
 	/** The account's uid, for owner checks; undefined where the platform has none. */
 	uid: () => number | undefined;
+	/** Writes `<final>.new` and returns its path (null: not ours to use). A test replaces it to prove the read-back. */
+	writeNew: (finalPath: string, bytes: Buffer, uid: number | undefined) => Promise<string | null>;
+	/** Reads a staged file back for comparison. A test replaces it to alter what comes back. */
+	readBack: (path: string, uid: number | undefined) => Promise<string | null>;
+	/** The commit's renames. A test replaces it to fail one. */
+	rename: typeof rename;
 };
 
 function defaultSelfUpdateDeps(): SelfUpdateDeps {
@@ -3293,6 +3311,12 @@ function defaultSelfUpdateDeps(): SelfUpdateDeps {
 		selfCheck: (kind, path) => runSelfCheck(kind, path, process.execPath),
 		fetchText: fetchCapped,
 		uid: () => process.getuid?.(),
+		writeNew: writeNewFile,
+		readBack: async (path, uid) => {
+			const back = await readTrustedFile(path, SELF_UPDATE_INSTALLER_MAX_BYTES, uid);
+			return back.kind === "ok" ? back.text : null;
+		},
+		rename,
 	};
 }
 
@@ -3465,6 +3489,9 @@ async function absorbLauncherRefusal(
 			if (typeof version === "string" && parseReleaseVersion(version)) {
 				next = { ...state, refused: { ...state.refused, [version]: "rolled_back" } };
 				await saveUpdateState(ctx, next);
+				ctx.log(
+					`[relay] self-update: the launcher rolled back ${version}; it will not be tried again`,
+				);
 			}
 		} catch {
 			// a file that isn't ours or isn't JSON is removed below without being believed
@@ -3495,7 +3522,7 @@ type Staged = {
 };
 
 /** Removes a stale file of ours at `path`; false when something else (a link, a foreign file) is there. */
-async function clearOwnStale(path: string, uid: number | undefined): Promise<boolean> {
+export async function clearOwnStale(path: string, uid: number | undefined): Promise<boolean> {
 	let st: Awaited<ReturnType<typeof lstat>>;
 	try {
 		st = await lstat(path);
@@ -3530,6 +3557,15 @@ async function writeNewFile(
 }
 
 type ChildResult = { code: number | null };
+
+let selfCheckLimits = { relayMs: SELF_CHECK_RELAY_MS, shellMs: SELF_CHECK_SHELL_MS };
+
+/** Test only: shortens the self-check deadlines so a hanging staged file is judged quickly (null restores 5 s and 2 s). */
+export function setSelfCheckLimitsForTests(
+	next: { relayMs: number; shellMs: number } | null,
+): void {
+	selfCheckLimits = next ?? { relayMs: SELF_CHECK_RELAY_MS, shellMs: SELF_CHECK_SHELL_MS };
+}
 
 /** Runs a child with a scrubbed environment and a deadline; only this child is ever signalled. */
 function runChild(
@@ -3568,7 +3604,7 @@ function runChild(
  * check must still exclude what the old one did). The relay checks itself by running its own embedded evaluator
  * on a small fixture set; the two shell files are parsed and run against the same cases the shell parity suite uses.
  */
-async function runSelfCheck(
+export async function runSelfCheck(
 	kind: ClientComponent,
 	path: string,
 	execPath: string,
@@ -3579,8 +3615,14 @@ async function runSelfCheck(
 		const env = { PATH: SELF_CHECK_PATH, HOME: sandbox, TMPDIR: sandbox, LANG: "C" };
 		if (kind === "relay") {
 			return (
-				(await runChild(execPath, [path, "--self-check"], { env, timeoutMs: SELF_CHECK_RELAY_MS }))
-					.code === 0
+				(
+					await runChild(execPath, [path, "--self-check"], {
+						// The sandbox, never the relay's own directory: a staged file that is not what it claims to be starts nowhere near the real state.
+						cwd: sandbox,
+						env,
+						timeoutMs: selfCheckLimits.relayMs,
+					})
+				).code === 0
 			);
 		}
 		if (kind === "statusline") return await selfCheckStatusline(path, sandbox, env);
@@ -3597,18 +3639,18 @@ async function selfCheckStatusline(
 	sandbox: string,
 	env: Record<string, string>,
 ): Promise<boolean> {
-	if ((await runChild("bash", ["-n", path], { env, timeoutMs: SELF_CHECK_SHELL_MS })).code !== 0)
-		return false;
+	const cwd = sandbox;
+	const timeoutMs = selfCheckLimits.shellMs;
+	if ((await runChild("bash", ["-n", path], { cwd, env, timeoutMs })).code !== 0) return false;
 	// The fixture run needs jq, as the statusline itself does; a machine without it is checked for syntax only.
-	const hasJq =
-		(await runChild("jq", ["--version"], { env, timeoutMs: SELF_CHECK_SHELL_MS })).code === 0;
+	const hasJq = (await runChild("jq", ["--version"], { cwd, env, timeoutMs })).code === 0;
 	if (!hasJq) return true;
 	const run = await runChild("bash", [path], {
 		cwd: sandbox,
 		// Port 1 on loopback: nothing listens, so the connection is refused at once and no request leaves the machine.
 		env: { ...env, AGENTPULSE_PORT: "1", AGENTPULSE_DIR: join(sandbox, ".agentpulse") },
 		input: '{"session_id":"selfcheck","model":{"display_name":"m"}}',
-		timeoutMs: SELF_CHECK_SHELL_MS,
+		timeoutMs,
 	});
 	return run.code === 0;
 }
@@ -3618,7 +3660,10 @@ async function selfCheckExcludeCheck(
 	sandbox: string,
 	env: Record<string, string>,
 ): Promise<boolean> {
-	if ((await runChild("sh", ["-n", path], { env, timeoutMs: SELF_CHECK_SHELL_MS })).code !== 0)
+	if (
+		(await runChild("sh", ["-n", path], { cwd: sandbox, env, timeoutMs: selfCheckLimits.shellMs }))
+			.code !== 0
+	)
 		return false;
 	const dir = join(sandbox, ".agentpulse");
 	const work = join(sandbox, "work");
@@ -3632,7 +3677,7 @@ async function selfCheckExcludeCheck(
 			await runChild("sh", [path], {
 				cwd,
 				env: { ...env, ...extra },
-				timeoutMs: SELF_CHECK_SHELL_MS,
+				timeoutMs: selfCheckLimits.shellMs,
 			})
 		).code;
 	if ((await exits(work)) !== EXCLUDE_CHECK_SEND_STATUS) return false;
@@ -3719,8 +3764,20 @@ async function readInstalledClient(path: string, uid: number | undefined): Promi
  */
 export async function relaySelfUpdate(ctx: RelayContext): Promise<SelfUpdateCode> {
 	const deps: SelfUpdateDeps = { ...defaultSelfUpdateDeps(), ...ctx.selfUpdate };
-	if (deps.env[RELAY_LAUNCHER_ENV] !== "1") return "not_launcher";
 	const uid = deps.uid();
+	if (deps.env[RELAY_LAUNCHER_ENV] !== "1") {
+		// Consent is on but nothing started this relay through its launcher, so it will never refresh: say so once.
+		if (
+			!ctx.state.selfUpdate.notLauncherLogged &&
+			(await readClientConsent(ctx.paths.home, uid)).size > 0
+		) {
+			ctx.state.selfUpdate.notLauncherLogged = true;
+			ctx.log(
+				"[relay] self-update: automatic refresh is on, but this relay wasn't started by its launcher, so it won't refresh itself; re-run the relay installer to start it through relay-launch.sh",
+			);
+		}
+		return "not_launcher";
+	}
 	let state = await loadUpdateState(ctx, uid);
 	state = await absorbLauncherRefusal(ctx, state, uid);
 	const consented = await readClientConsent(ctx.paths.home, uid);
@@ -3775,6 +3832,25 @@ export async function relaySelfUpdate(ctx: RelayContext): Promise<SelfUpdateCode
 	if (!running || compareReleaseVersions(w, running) <= 0) return "up_to_date";
 	const minimum = parseReleaseVersion(manifest.minSupported);
 	if (!minimum || compareReleaseVersions(w, minimum) < 0) return "below_minimum";
+	// W is the server's own, unauthenticated word. When the signed manifest holds a newer security release, W is
+	// not where this machine should land; not recorded as a refusal, since the server may catch up.
+	const securityAhead = manifest.releases.some((candidate) => {
+		const parsed = parseReleaseVersion(candidate.version);
+		return (
+			parsed !== null &&
+			parsed.pre.length === 0 &&
+			!candidate.pulled &&
+			candidate.severity === "security" &&
+			compareReleaseVersions(parsed, w) > 0
+		);
+	});
+	if (securityAhead) return "behind_security";
+	if (version !== manifest.latest && ctx.state.selfUpdate.behindLogged !== version) {
+		ctx.state.selfUpdate.behindLogged = version;
+		ctx.log(
+			`[relay] self-update: the server reports ${version}, behind the latest signed release ${manifest.latest}; refreshing to ${version}`,
+		);
+	}
 	if (state.refused[version]) return "refused_before";
 	const settledKey = `${version}:${verified.fingerprint}`;
 	if (ctx.state.selfUpdate.settledFor === settledKey) return "nothing_to_apply";
@@ -3799,28 +3875,48 @@ export async function relaySelfUpdate(ctx: RelayContext): Promise<SelfUpdateCode
 		served.statusline !== release.clients.statusline ||
 		served.excludeCheck !== release.clients.excludeCheck
 	) {
-		await refuseVersion(ctx, state, version, "digest_mismatch");
+		// A server caught mid-upgrade serves one release's files under another's version: retried on later passes,
+		// and refused for good only when it keeps happening.
+		const seen = ctx.state.selfUpdate.mismatch;
+		seen.count = seen.version === version ? seen.count + 1 : 1;
+		seen.version = version;
+		if (seen.count >= DIGEST_MISMATCH_REFUSE_AFTER) {
+			await refuseVersion(ctx, state, version, "digest_mismatch");
+		}
 		return "digest_mismatch";
 	}
+	ctx.state.selfUpdate.mismatch = { version: null, count: 0 };
 
 	const relayPath = ctx.paths.relayScriptFile;
 	const statuslinePath = ctx.paths.installedStatuslineFile;
 	const excludeCheckPath = join(ctx.paths.home, ".agentpulse", "exclude-check.sh");
 	const plan: Staged[] = [];
-	// A relay that already is the served file has nothing to replace: this is also what ends a loop with a
-	// server whose own version constant lags the relay it serves.
-	const installedRelay = consented.has("relay") ? await readInstalledClient(relayPath, uid) : null;
-	const relayIsServed =
-		installedRelay !== null && (await sha256Of(installedRelay.trimEnd())) === served.relay;
-	if (consented.has("relay") && !relayIsServed) {
-		plan.push({
-			kind: "relay",
-			target: relayPath,
-			temp: "",
-			mode: 0o600,
-			digest: served.relay,
-			bytes: Buffer.from(parts.relay, "utf-8"),
-		});
+	const skipped: string[] = [];
+	// The relay is replaced only when it is a plain file of this account whose content an older release shipped:
+	// a link (a development checkout), someone else's file or a locally edited one is left alone. A relay that
+	// already is the served file has nothing to replace: this is also what ends a loop with a server whose own
+	// version constant lags the relay it serves.
+	if (consented.has("relay")) {
+		const installedRelay = await readInstalledClient(relayPath, uid);
+		if (installedRelay === null) {
+			skipped.push("relay:not_plain_own_file");
+		} else {
+			const digest = await sha256Of(installedRelay.trimEnd());
+			if (digest !== served.relay) {
+				if (olderDigests(manifest, w, "relay").has(digest)) {
+					plan.push({
+						kind: "relay",
+						target: relayPath,
+						temp: "",
+						mode: 0o600,
+						digest: served.relay,
+						bytes: clientBytes(parts.relay),
+					});
+				} else {
+					skipped.push("relay:not_an_older_release");
+				}
+			}
+		}
 	}
 	if (consented.has("statusline")) {
 		const installed = await readInstalledClient(statuslinePath, uid);
@@ -3834,7 +3930,7 @@ export async function relaySelfUpdate(ctx: RelayContext): Promise<SelfUpdateCode
 					temp: "",
 					mode: 0o700,
 					digest: served.statusline,
-					bytes: Buffer.from(parts.statusline, "utf-8"),
+					bytes: clientBytes(parts.statusline),
 				});
 			}
 		}
@@ -3850,95 +3946,152 @@ export async function relaySelfUpdate(ctx: RelayContext): Promise<SelfUpdateCode
 					temp: "",
 					mode: 0o500,
 					digest: served.excludeCheck,
+					// The digest covers the whole text, so the file is exactly that text.
 					bytes: Buffer.from(excludeCheckText, "utf-8"),
 				});
 			}
 		}
 	}
+	if (skipped.length > 0) {
+		ctx.log(`[relay] self-update: left alone (${skipped.join(", ")})`);
+	}
 	if (plan.length === 0) {
 		ctx.state.selfUpdate.settledFor = settledKey;
 		return "nothing_to_apply";
 	}
+	return await commitPlan(ctx, deps, { plan, state, version, uid, relayPath });
+}
+
+/** The bytes a file is written with when its digest is over `trimEnd()`: that text and one line end. */
+function clientBytes(text: string): Buffer {
+	return Buffer.from(`${text.trimEnd()}\n`, "utf-8");
+}
+
+/** The text a digest was taken over: trimmed for the relay and the statusline, whole for the exclude check. */
+async function digestOfStaged(item: Staged, text: string): Promise<string> {
+	return await sha256Of(item.kind === "excludeCheck" ? text : text.trimEnd());
+}
+
+/**
+ * Stages, checks and swaps in the planned files. Order, and why:
+ *  1. every `.new` is written, read back byte for byte and self-checked, before anything is replaced;
+ *  2. with the relay in the plan, `relay-pending.json` is written BEFORE the first rename, so a swapped relay is
+ *     never without the launcher's rollback guard (the launcher tolerates pending beside a working relay.ts);
+ *  3. the small files are renamed first, the relay last: it is the one that ends the process.
+ * Anything failing after step 2 is undone: the old relay and small files are put back and pending is removed.
+ */
+async function commitPlan(
+	ctx: RelayContext,
+	deps: SelfUpdateDeps,
+	run: {
+		plan: Staged[];
+		state: RelayUpdateState;
+		version: string;
+		uid: number | undefined;
+		relayPath: string;
+	},
+): Promise<SelfUpdateCode> {
+	const { plan, state, version, uid, relayPath } = run;
+	const hasRelay = plan.some((item) => item.kind === "relay");
+	const small = plan.filter((item) => item.kind !== "relay");
+	const relayItem = plan.find((item) => item.kind === "relay");
+	const pendingPath = join(relayDirOf(ctx), RELAY_PENDING_FILE);
+	// The `.prev` copies of the small files exist only beside a swapped relay, and always belong to this update.
+	const smallPrevPaths = [
+		`${ctx.paths.installedStatuslineFile}.prev`,
+		`${join(ctx.paths.home, ".agentpulse", "exclude-check.sh")}.prev`,
+	];
+	const copiedPrevs: string[] = [];
+	const renamedSmall: Staged[] = [];
+	let relaySwapped = false;
 
 	const cleanup = async () => {
 		for (const item of plan) if (item.temp) await unlink(item.temp).catch(() => {});
+		for (const prev of copiedPrevs) await unlink(prev).catch(() => {});
 	};
-	try {
-		// Everything is judged before anything is replaced. A `.prev` that isn't ours to overwrite stops it here.
-		if (
-			plan.some((item) => item.kind === "relay") &&
-			!(await clearOwnStale(`${relayPath}.prev`, uid))
-		) {
-			await cleanup();
-			await refuseVersion(ctx, state, version, "unsafe_path");
-			return "unsafe_path";
-		}
-		for (const item of plan) {
-			const temp = await writeNewFile(item.target, item.bytes, uid);
-			if (temp === null) {
-				await cleanup();
-				await refuseVersion(ctx, state, version, "unsafe_path");
-				return "unsafe_path";
-			}
-			item.temp = temp;
-			// The bytes on disk are the bytes the digest covers: read them back and hash them again.
-			const back = await readTrustedFile(temp, SELF_UPDATE_INSTALLER_MAX_BYTES, uid);
-			const text = back.kind === "ok" ? back.text : null;
-			const backDigest =
-				text === null ? null : await sha256Of(item.kind === "excludeCheck" ? text : text.trimEnd());
-			if (backDigest !== item.digest) {
-				await cleanup();
-				await refuseVersion(ctx, state, version, "write_failed");
-				return "write_failed";
-			}
-		}
-		for (const item of plan) {
-			if (!(await deps.selfCheck(item.kind, item.temp))) {
-				await cleanup();
-				await refuseVersion(ctx, state, version, "self_check_failed");
-				return "self_check_failed";
-			}
-		}
-	} catch {
+	const fail = async (code: "write_failed" | "unsafe_path" | "self_check_failed") => {
 		await cleanup();
-		await refuseVersion(ctx, state, version, "write_failed");
-		return "write_failed";
-	}
-
-	// Commit: the small files first, the relay last (it ends the process).
-	const ordered = [...plan].sort((a, b) => Number(a.kind === "relay") - Number(b.kind === "relay"));
-	try {
-		for (const item of ordered) {
-			await chmod(item.temp, item.mode);
-			if (item.kind === "relay") {
-				await rename(item.target, `${item.target}.prev`);
-				try {
-					await rename(item.temp, item.target);
-				} catch (err) {
-					// Never leave the relay's own path empty: put the running relay back before giving up.
-					await rename(`${item.target}.prev`, item.target).catch(() => {});
-					throw err;
-				}
-			} else {
-				await rename(item.temp, item.target);
-			}
-			item.temp = "";
-		}
-		if (plan.some((item) => item.kind === "relay")) {
-			await replacePrivateFile(
-				join(relayDirOf(ctx), RELAY_PENDING_FILE),
-				`${JSON.stringify({ version, attempts: 0 })}\n`,
+		await refuseVersion(ctx, state, version, code);
+		return code;
+	};
+	/** Puts back what the commit replaced; pending goes only once the relay is back (else the launcher's guard stays). */
+	const undo = async () => {
+		let relayBack = !relaySwapped;
+		if (relaySwapped && relayItem) {
+			relayBack = await rename(`${relayItem.target}.prev`, relayItem.target).then(
+				() => true,
+				() => false,
 			);
 		}
-	} catch {
+		for (const item of renamedSmall) {
+			const restored = await rename(`${item.target}.prev`, item.target).then(
+				() => true,
+				() => false,
+			);
+			const at = copiedPrevs.indexOf(`${item.target}.prev`);
+			if (restored && at >= 0) copiedPrevs.splice(at, 1);
+		}
+		if (relayBack) await unlink(pendingPath).catch(() => {});
 		await cleanup();
+	};
+
+	try {
+		// Everything is judged before anything is replaced. A path that isn't ours to overwrite stops it here.
+		if (hasRelay) {
+			for (const stale of [`${relayPath}.prev`, ...smallPrevPaths]) {
+				if (!(await clearOwnStale(stale, uid))) return await fail("unsafe_path");
+			}
+		}
+		for (const item of plan) {
+			const temp = await deps.writeNew(item.target, item.bytes, uid);
+			if (temp === null) return await fail("unsafe_path");
+			item.temp = temp;
+			// The bytes on disk are exactly the bytes written, and they hash to the digest.
+			const back = await deps.readBack(temp, uid);
+			if (back === null || back !== item.bytes.toString("utf-8")) return await fail("write_failed");
+			if ((await digestOfStaged(item, back)) !== item.digest) return await fail("write_failed");
+		}
+		for (const item of plan) {
+			if (!(await deps.selfCheck(item.kind, item.temp))) return await fail("self_check_failed");
+		}
+		for (const item of plan) await chmod(item.temp, item.mode);
+	} catch {
+		return await fail("write_failed");
+	}
+
+	try {
+		if (hasRelay) {
+			// What the launcher puts back beside the relay: the small files this update replaces.
+			for (const item of small) {
+				const prev = `${item.target}.prev`;
+				const mode = (await lstat(item.target)).mode & 0o777;
+				await copyFile(item.target, prev, constants.COPYFILE_EXCL);
+				copiedPrevs.push(prev);
+				await chmod(prev, mode);
+			}
+			// Before the first rename: from here on a swapped relay always has its rollback guard.
+			await replacePrivateFile(pendingPath, `${JSON.stringify({ version, attempts: 0 })}\n`);
+		}
+		for (const item of small) {
+			await deps.rename(item.temp, item.target);
+			item.temp = "";
+			renamedSmall.push(item);
+		}
+		if (relayItem) {
+			await deps.rename(relayItem.target, `${relayItem.target}.prev`);
+			relaySwapped = true;
+			await deps.rename(relayItem.temp, relayItem.target);
+			relayItem.temp = "";
+		}
+	} catch {
+		await undo();
 		await refuseVersion(ctx, state, version, "write_failed");
 		return "write_failed";
 	}
 	ctx.log(
-		`[relay] self-update: ${ordered.map((item) => item.kind).join(", ")} refreshed to ${version}`,
+		`[relay] self-update: ${[...small, ...(relayItem ? [relayItem] : [])].map((item) => item.kind).join(", ")} refreshed to ${version}`,
 	);
-	if (plan.some((item) => item.kind === "relay")) deps.exit(0);
+	if (hasRelay) deps.exit(0);
 	return "applied";
 }
 
@@ -3995,6 +4148,25 @@ export async function confirmPendingStart(
 		await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? RELAY_PENDING_POLL_MS));
 	}
 	return "unhealthy";
+}
+
+/**
+ * confirmPendingStart, and an exit when the answer is "unhealthy": the launcher counts a start that left its
+ * pending file behind, so a relay that is up but not serving must end rather than linger and never be rolled back.
+ */
+export async function confirmPendingOrExit(
+	ctx: RelayContext,
+	exit: (code: number) => void,
+	options: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<"none" | "cleared" | "unhealthy"> {
+	const outcome = await confirmPendingStart(ctx, options);
+	if (outcome === "unhealthy") {
+		ctx.log(
+			"[relay] self-update: this relay did not answer on its own port in time; exiting so the launcher counts the start",
+		);
+		exit(1);
+	}
+	return outcome;
 }
 
 // ── `relay.ts update auto on|off|status`: the machine's own consent (U5) ──────
@@ -6351,7 +6523,7 @@ async function main(argv: string[]) {
 	mainApiKey = parsed.config.apiKey;
 	const syncMs = parseSyncMs(process.env.AGENTPULSE_RELAY_SYNC_MS);
 	const relay = await startRelay(parsed.config, { syncMs });
-	void confirmPendingStart(relay.ctx).catch(() => {});
+	void confirmPendingOrExit(relay.ctx, (code) => process.exit(code)).catch(() => {});
 	const { config } = relay.ctx;
 	const seconds = `${Math.round(syncMs / 100) / 10}s`;
 

@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
 	existsSync,
+	linkSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -294,6 +296,64 @@ describe("auto on", () => {
 		});
 		expect(await disableAuto(f.deps())).toEqual({ ok: true });
 		expect(readJson(f)).toEqual({ schema: 1, app: OFF, clients });
+	}, 60_000);
+
+	test("a consent file that isn't a plain file of this account is never replaced: the relay's clients section can't be lost (B11)", async () => {
+		fx = await createFixture();
+		const f = fx;
+		const clients = { on: true, components: ["relay", "statusline"] };
+		const doc = `${JSON.stringify({ schema: 1, clients })}\n`;
+		const plants: [string, () => void][] = [
+			[
+				"a symlink",
+				() => {
+					const real = join(f.dir, "real-consent.json");
+					writeFileSync(real, doc, { mode: 0o600 });
+					symlinkSync(real, consentPath(f));
+				},
+			],
+			[
+				"a second hard link",
+				() => {
+					writeFileSync(consentPath(f), doc, { mode: 0o600 });
+					linkSync(consentPath(f), join(f.dir, "other-name.json"));
+				},
+			],
+			[
+				"an owned file that isn't a schema-1 document",
+				() => writeFileSync(consentPath(f), "{not json", { mode: 0o600 }),
+			],
+		];
+		for (const [label, plant] of plants) {
+			rmSync(consentPath(f), { force: true });
+			plant();
+			const before = lstatSync(consentPath(f));
+			setConsentIoForTests(ttyIo("correct"));
+			expect(
+				await enableAuto(f.deps(), { allowMigrations: false, window: null }, say),
+				label,
+			).toEqual({
+				ok: false,
+				code: "consent_unwritable",
+			});
+			expect(await disableAuto(f.deps()), label).toEqual({ ok: false, code: "consent_unwritable" });
+			const after = lstatSync(consentPath(f));
+			expect(after.ino, label).toBe(before.ino);
+			expect(after.isSymbolicLink(), label).toBe(before.isSymbolicLink());
+			if (label === "a symlink") {
+				expect(readFileSync(join(f.dir, "real-consent.json"), "utf-8")).toBe(doc);
+			} else if (label === "a second hard link") {
+				expect(readFileSync(consentPath(f), "utf-8")).toBe(doc);
+			}
+			expect(f.fake.timerInstalled, label).toBeNull();
+		}
+		// control: with no file at all the same call writes a fresh one
+		rmSync(consentPath(f), { force: true });
+		rmSync(join(f.dir, "other-name.json"), { force: true });
+		setConsentIoForTests(ttyIo("correct"));
+		expect(await enableAuto(f.deps(), { allowMigrations: false, window: null }, say)).toEqual({
+			ok: true,
+		});
 	}, 60_000);
 
 	test("when the timer can't be installed the consent file is byte for byte what it was", async () => {

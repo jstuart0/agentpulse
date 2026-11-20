@@ -386,8 +386,14 @@ describe("a re-install and the relay's self-refresh files", () => {
 				"relay.ts.new",
 				"relay.ts.prev",
 				"relay-update-refused.json",
+				"exclude-check.sh.new",
+				"exclude-check.sh.prev",
 			];
 			for (const name of stale) await writeFile(join(relayDir, name), "stale\n");
+			// the statusline's staging and rollback copies live beside the statusline, not in the relay directory
+			const claudeStale = ["statusline-agentpulse.sh.new", "statusline-agentpulse.sh.prev"];
+			await mkdir(join(home, ".claude"), { recursive: true });
+			for (const name of claudeStale) await writeFile(join(home, ".claude", name), "stale\n");
 			// consent and state are the person's and the relay's: a re-install leaves them alone
 			await writeFile(join(relayDir, "update-consent.json"), '{"schema":1}\n');
 			await writeFile(join(relayDir, "relay-update-state.json"), '{"schema":1}\n');
@@ -399,12 +405,19 @@ describe("a re-install and the relay's self-refresh files", () => {
 			);
 			expect(res.code).toBe(0);
 			for (const name of stale) await expect(stat(join(relayDir, name)), name).rejects.toThrow();
+			for (const name of claudeStale) {
+				await expect(stat(join(home, ".claude", name)), name).rejects.toThrow();
+			}
 			expect(await readFile(join(relayDir, "update-consent.json"), "utf-8")).toBe('{"schema":1}\n');
 			expect(await readFile(join(relayDir, "relay-update-state.json"), "utf-8")).toBe(
 				'{"schema":1}\n',
 			);
 			expect(res.out).toContain('relay.ts" update auto on');
 			expect(res.out).toContain("relay-launch.sh");
+			// the launcher knows where the statusline's .prev copy is, so a rollback can put it back
+			expect(await readFile(join(relayDir, "relay-launch.sh"), "utf-8")).toContain(
+				`AP_CLAUDE_DIR='${home}/.claude'`,
+			);
 		},
 		RUN_TIMEOUT,
 	);

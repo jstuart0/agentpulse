@@ -9,6 +9,7 @@ import {
 	chmodSync,
 	existsSync,
 	linkSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -19,8 +20,9 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
+import { rename as renameFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { INSTALLER_SOURCES, buildRelayInstaller } from "../src/server/installers.ts";
 import {
 	NOW,
@@ -39,12 +41,17 @@ import {
 } from "../src/shared/relay-installer-parts.ts";
 import {
 	EXCLUDE_CHECK_SEND_STATUS,
+	RELAY_PENDING_CLEAR_WITHIN_MS,
 	type RelayConfig,
 	type SelfUpdateDeps,
+	clearOwnStale,
+	confirmPendingOrExit,
 	confirmPendingStart,
 	createRelayContext,
 	relaySelfUpdate,
 	runRelaySelfCheck,
+	runSelfCheck,
+	setSelfCheckLimitsForTests,
 	startRelay,
 } from "./relay.ts?module";
 
@@ -62,6 +69,7 @@ beforeAll(() => {
 });
 const cleanups: (() => void)[] = [];
 afterEach(() => {
+	setSelfCheckLimitsForTests(null);
 	for (const fn of cleanups.splice(0)) fn();
 });
 afterAll(() => {
@@ -174,6 +182,8 @@ interface WorldOptions {
 	installedExcludeCheck?: string;
 	uid?: () => number | undefined;
 	now?: number;
+	/** More self-update dependencies: the writer, the read-back and the commit's rename. */
+	selfUpdate?: Partial<SelfUpdateDeps>;
 }
 
 async function world(opts: WorldOptions = {}): Promise<World> {
@@ -254,6 +264,7 @@ async function world(opts: WorldOptions = {}): Promise<World> {
 			exit: (code) => exits.push(code),
 			...(opts.selfCheck ? { selfCheck: opts.selfCheck } : {}),
 			...(opts.uid ? { uid: opts.uid } : {}),
+			...opts.selfUpdate,
 		},
 	});
 	return {
@@ -650,11 +661,20 @@ describe("where bytes may come from", () => {
 		expect(reached).toEqual(["/api/v1/health?manifest=1", "/setup-relay.sh"]);
 	});
 
-	test("a digest that disagrees with the manifest refuses the version, writes nothing and is not retried", async () => {
+	test("a digest that disagrees with the manifest writes nothing; it is retried on later passes and refused for good only after three in a row (B7)", async () => {
 		const w = await world({ newClients: { relay: "f".repeat(64) } });
+		const installerFetches = () =>
+			w.server.requests.filter((r) => r.path === "/setup-relay.sh").length;
+		for (const pass of [1, 2]) {
+			expect(await w.tick(), `pass ${pass}`).toBe("digest_mismatch");
+			expectUntouched(w);
+			// a server caught mid-upgrade must not cost the machine this release for good
+			expect(readState(w).refused, `pass ${pass}`).toEqual({});
+			expect(installerFetches(), `pass ${pass}`).toBe(pass);
+		}
 		expect(await w.tick()).toBe("digest_mismatch");
-		expectUntouched(w);
 		expect(readState(w).refused).toEqual({ "0.12.0": "digest_mismatch" });
+		expectUntouched(w);
 		const requests = w.server.requests.length;
 		expect(await w.tick()).toBe("refused_before");
 		// the health is read again; the installer is not
@@ -812,8 +832,7 @@ describe("a staged file is judged before it replaces anything", () => {
 		expectUntouched(w);
 	});
 
-	test("the written bytes are exactly the hashed ones: a write that doesn't read back to the digest is refused", async () => {
-		// A server that serves a relay with a character the text path would alter is caught at the digest, never written.
+	test("a served part that disagrees with its digest is refused before anything is staged", async () => {
 		const served = await serve();
 		const w = await world({ served, newClients: { relay: served.digests.statusline } });
 		expect(await w.tick()).toBe("digest_mismatch");
@@ -940,5 +959,821 @@ describe("what the launcher leaves behind is folded into the state", () => {
 		await w.tick();
 		expect(existsSync(stateFile(w)) ? readState(w).refused : {}).toEqual({});
 		expect(existsSync(join(w.relayDir, "relay-update-refused.json"))).toBe(false);
+	});
+});
+
+// ====================================================================================================
+// Phase 6 gate fixes (AGEN-155): the commit order and its undo, the launcher-visible state, the manifest rules
+// a server's own word can't override, and the checks that were missing a test.
+// ====================================================================================================
+
+/** Nothing an update stages or keeps for a rollback is left in the relay directory or the statusline directory. */
+function expectNoLeftovers(w: World, allow: string[] = []): void {
+	for (const dir of [w.relayDir, dirname(w.statuslinePath)]) {
+		for (const name of readdirSync(dir)) {
+			if (allow.includes(name)) continue;
+			expect(name, `a leftover in ${dir}`).not.toMatch(/\.new$|\.prev$/);
+		}
+	}
+}
+
+const pendingFile = (w: World) => join(w.relayDir, "relay-pending.json");
+const statuslinePrev = (w: World) => `${w.statuslinePath}.prev`;
+const excludePrev = (w: World) => `${w.excludeCheckPath}.prev`;
+
+/** The three installed files are as the world made them (their modes too). */
+function expectInstalledAsFound(w: World): void {
+	expect(text(w.relayPath)).toBe(REAL_RELAY);
+	expect(text(w.statuslinePath)).toBe(REAL_STATUSLINE);
+	expect(text(w.excludeCheckPath)).toBe(OLD_EXCLUDE_CHECK);
+	expect(mode(w.statuslinePath)).toBe(0o755);
+	expect(mode(w.excludeCheckPath)).toBe(0o500);
+}
+
+describe("the commit never leaves a swapped relay without its rollback guard (B1)", () => {
+	test("pending is written before the first rename; the small files go first and the relay last", async () => {
+		const calls: string[] = [];
+		let pendingAtFirstRename: string | null = null;
+		const ref = {} as { w: World };
+		const w = await world({
+			selfUpdate: {
+				rename: async (from, to) => {
+					if (calls.length === 0) {
+						pendingAtFirstRename = existsSync(pendingFile(ref.w))
+							? text(pendingFile(ref.w))
+							: "absent";
+					}
+					calls.push(`${basename(from)}>${basename(to)}`);
+					await renameFile(from, to);
+				},
+			},
+		});
+		ref.w = w;
+		expect(await w.tick()).toBe("applied");
+		expect(calls).toEqual([
+			"statusline-agentpulse.sh.new>statusline-agentpulse.sh",
+			"exclude-check.sh.new>exclude-check.sh",
+			"relay.ts>relay.ts.prev",
+			"relay.ts.new>relay.ts",
+		]);
+		expect(JSON.parse(pendingAtFirstRename ?? "null")).toEqual({ version: "0.12.0", attempts: 0 });
+	});
+
+	test("a pending file that can't be written stops the update before anything is replaced", async () => {
+		const w = await world();
+		mkdirSync(pendingFile(w));
+		expect(await w.tick()).toBe("write_failed");
+		expectInstalledAsFound(w);
+		expectNoLeftovers(w);
+		expect(w.exits).toEqual([]);
+		expect(readState(w).refused).toEqual({ "0.12.0": "write_failed" });
+	});
+
+	const failures: [string, (w: World, from: string, to: string) => boolean][] = [
+		["the statusline's rename", (w, _from, to) => to === w.statuslinePath],
+		[
+			"the exclude check's rename (the statusline was already replaced)",
+			(w, _from, to) => to === w.excludeCheckPath,
+		],
+		[
+			"the relay's first rename (relay.ts to relay.ts.prev)",
+			(w, from, to) => from === w.relayPath && to === `${w.relayPath}.prev`,
+		],
+		[
+			"the relay's second rename (relay.ts.new to relay.ts, with the old relay already moved aside)",
+			(w, from, to) => from === `${w.relayPath}.new` && to === w.relayPath,
+		],
+	];
+	for (const [label, shouldFail] of failures) {
+		test(`${label} failing puts everything back: old files, no pending, no leftovers, the version refused`, async () => {
+			const ref = {} as { w: World };
+			const w = await world({
+				selfUpdate: {
+					rename: async (from, to) => {
+						if (shouldFail(ref.w, from, to)) throw new Error("injected rename failure");
+						await renameFile(from, to);
+					},
+				},
+			});
+			ref.w = w;
+			expect(await w.tick()).toBe("write_failed");
+			expectInstalledAsFound(w);
+			expect(existsSync(pendingFile(w))).toBe(false);
+			expectNoLeftovers(w);
+			expect(w.exits).toEqual([]);
+			expect(readState(w).refused).toEqual({ "0.12.0": "write_failed" });
+		});
+	}
+});
+
+describe("the files a rollback needs are kept beside a swapped relay (B3)", () => {
+	test("the replaced statusline and exclude check are kept as .prev with their old content and modes", async () => {
+		const w = await world();
+		expect(await w.tick()).toBe("applied");
+		expect(text(statuslinePrev(w))).toBe(REAL_STATUSLINE);
+		expect(mode(statuslinePrev(w))).toBe(0o755);
+		expect(text(excludePrev(w))).toBe(OLD_EXCLUDE_CHECK);
+		expect(mode(excludePrev(w))).toBe(0o500);
+		expect(text(`${w.relayPath}.prev`)).toBe(REAL_RELAY);
+	});
+
+	test("a relay-only update clears a stale small .prev: a rollback must never put an older release's file back", async () => {
+		const w = await world({
+			consent: { schema: 1, clients: { on: true, components: ["relay"] } },
+		});
+		writeFileSync(statuslinePrev(w), "# stale from an earlier update\n", { mode: 0o700 });
+		writeFileSync(excludePrev(w), "# stale\n", { mode: 0o500 });
+		expect(await w.tick()).toBe("applied");
+		expect(existsSync(statuslinePrev(w))).toBe(false);
+		expect(existsSync(excludePrev(w))).toBe(false);
+		expect(text(w.statuslinePath)).toBe(REAL_STATUSLINE);
+	});
+
+	test("with no relay in the plan no .prev copies are made and no pending file is written", async () => {
+		const w = await world({
+			consent: { schema: 1, clients: { on: true, components: ["statusline", "excludeCheck"] } },
+		});
+		expect(await w.tick()).toBe("applied");
+		expect(existsSync(statuslinePrev(w))).toBe(false);
+		expect(existsSync(excludePrev(w))).toBe(false);
+		expect(existsSync(pendingFile(w))).toBe(false);
+		expect(w.exits).toEqual([]);
+	});
+
+	test("a .prev that is someone else's or a link is not overwritten: the update is refused as unsafe_path", async () => {
+		for (const plant of [
+			(w: World, target: string) => symlinkSync(target, statuslinePrev(w)),
+			(w: World, target: string) => symlinkSync(target, excludePrev(w)),
+		]) {
+			const w = await world();
+			const target = join(w.home, "precious.txt");
+			writeFileSync(target, "precious\n", { mode: 0o600 });
+			plant(w, target);
+			expect(await w.tick()).toBe("unsafe_path");
+			expect(text(target)).toBe("precious\n");
+			expect(text(w.relayPath)).toBe(REAL_RELAY);
+			expect(w.exits).toEqual([]);
+		}
+	});
+});
+
+// ---- the manifest rules a server's own word can't override ----
+
+const hex64 = (c: string) => c.repeat(64);
+const manifestRelease = (version: string, overrides: Parameters<typeof testRelease>[1] = {}) =>
+	testRelease(version, {
+		clients: { relay: hex64("7"), statusline: hex64("8"), excludeCheck: hex64("9") },
+		...overrides,
+	});
+
+async function oldDigests(): Promise<ClientDigests> {
+	return await clientDigests({
+		relay: REAL_RELAY,
+		statusline: REAL_STATUSLINE,
+		excludeCheck: OLD_EXCLUDE_CHECK,
+	});
+}
+
+describe("a newer security release in the signed manifest outranks the server's own version (B4)", () => {
+	async function worldWithNewer(newer: ReturnType<typeof testRelease>, latest: string) {
+		const served = await serve();
+		return await world({
+			served,
+			payload: {
+				latest,
+				releases: [
+					newer,
+					testRelease("0.12.0", { clients: served.digests }),
+					testRelease("0.11.0", { clients: await oldDigests() }),
+				],
+			},
+		});
+	}
+
+	test("W is refused as behind_security, nothing is written or recorded, and the installer isn't fetched", async () => {
+		const w = await worldWithNewer(manifestRelease("0.13.0", { severity: "security" }), "0.13.0");
+		expect(await w.tick()).toBe("behind_security");
+		expectUntouched(w);
+		expect(readState(w).refused).toEqual({});
+		expect(w.server.requests.map((r) => r.path)).toEqual(["/api/v1/health?manifest=1"]);
+		// not permanent: the same answer on the next pass
+		expect(await w.tick()).toBe("behind_security");
+	});
+
+	test("anything that is not a newer, non-pulled, stable security release lets W proceed", async () => {
+		const cases: [string, ReturnType<typeof testRelease>, string][] = [
+			["a newer release that is only normal", manifestRelease("0.13.0"), "0.13.0"],
+			[
+				"a newer security release that was pulled",
+				manifestRelease("0.13.0", { severity: "security", pulled: true }),
+				"0.12.0",
+			],
+			[
+				"a newer security pre-release",
+				manifestRelease("0.13.0-rc.1", { severity: "security" }),
+				"0.12.0",
+			],
+			[
+				"a security release OLDER than W",
+				manifestRelease("0.11.5", { severity: "security" }),
+				"0.12.0",
+			],
+		];
+		for (const [label, newer, latest] of cases) {
+			const w = await worldWithNewer(newer, latest);
+			expect(await w.tick(), label).toBe("applied");
+		}
+	});
+
+	test("W behind the manifest's latest (for a normal release) proceeds and says so once", async () => {
+		const w = await worldWithNewer(manifestRelease("0.13.0"), "0.13.0");
+		expect(await w.tick()).toBe("applied");
+		await w.tick();
+		const lines = w.logs.filter((line) => line.includes("behind the latest signed release 0.13.0"));
+		expect(lines).toHaveLength(1);
+		// and when W is the latest there is no such line
+		const plain = await world();
+		await plain.tick();
+		expect(plain.logs.join("\n")).not.toContain("behind the latest");
+	});
+});
+
+describe("the relay is replaced only when it is a plain file of ours that an older release shipped (B5)", () => {
+	test("a symlinked relay.ts (a development checkout) is left alone, its target untouched, with the skip logged", async () => {
+		const w = await world();
+		const target = join(w.home, "checkout-relay.ts");
+		writeFileSync(target, REAL_RELAY, { mode: 0o644 });
+		rmSync(w.relayPath);
+		symlinkSync(target, w.relayPath);
+		expect(await w.tick()).toBe("applied");
+		expect(lstatSync(w.relayPath).isSymbolicLink()).toBe(true);
+		expect(text(target)).toBe(REAL_RELAY);
+		expect(existsSync(`${w.relayPath}.prev`)).toBe(false);
+		expect(existsSync(pendingFile(w))).toBe(false);
+		expect(w.exits).toEqual([]);
+		expect(w.logs.join("\n")).toContain("relay:not_plain_own_file");
+		// the other two files are still refreshed
+		expect(text(w.statuslinePath)).toBe(w.served.statusline);
+	});
+
+	test("a hard-linked relay.ts is left alone", async () => {
+		const w = await world();
+		linkSync(w.relayPath, join(w.home, "second-name.ts"));
+		expect(await w.tick()).toBe("applied");
+		expect(text(w.relayPath)).toBe(REAL_RELAY);
+		expect(w.exits).toEqual([]);
+		expect(w.logs.join("\n")).toContain("relay:not_plain_own_file");
+	});
+
+	test("a locally modified relay is left alone, with the skip logged", async () => {
+		const w = await world({ installedRelay: `${REAL_RELAY}\n// my own edit\n` });
+		expect(await w.tick()).toBe("applied");
+		expect(text(w.relayPath)).toBe(`${REAL_RELAY}\n// my own edit\n`);
+		expect(existsSync(`${w.relayPath}.prev`)).toBe(false);
+		expect(w.exits).toEqual([]);
+		expect(w.logs.join("\n")).toContain("relay:not_an_older_release");
+	});
+
+	test("a relay equal to a release NEWER than the one being applied is left alone too", async () => {
+		const newerRelay = `${REAL_RELAY}\n// a newer release\n`;
+		const served = await serve();
+		const w = await world({
+			served,
+			installedRelay: newerRelay,
+			payload: {
+				latest: "0.13.0",
+				releases: [
+					manifestRelease("0.13.0", {
+						clients: {
+							...(await clientDigests({
+								relay: newerRelay,
+								statusline: "# s\n",
+								excludeCheck: "# e\n",
+							})),
+						},
+					}),
+					testRelease("0.12.0", { clients: served.digests }),
+					testRelease("0.11.0", { clients: await oldDigests() }),
+				],
+			},
+		});
+		await w.tick();
+		expect(text(w.relayPath)).toBe(newerRelay);
+		expect(w.exits).toEqual([]);
+	});
+});
+
+describe("the written bytes are exactly the hashed ones (B6)", () => {
+	test("a relay served with trailing white space is written as its trimmed text and one line end", async () => {
+		const served = await serve({ relay: `${REAL_RELAY}\n// refreshed relay   \n\n\n` });
+		// the installer carries trailing spaces on the last line; the digest does not cover them
+		expect(served.relay).not.toBe(`${served.relay.trimEnd()}\n`);
+		const w = await world({ served });
+		expect(await w.tick()).toBe("applied");
+		expect(readFileSync(w.relayPath)).toEqual(Buffer.from(`${served.relay.trimEnd()}\n`));
+		expect(readFileSync(w.statuslinePath)).toEqual(Buffer.from(`${served.statusline.trimEnd()}\n`));
+		// the exclude check's digest covers the whole text, so it is written whole
+		expect(readFileSync(w.excludeCheckPath)).toEqual(Buffer.from(served.excludeCheck));
+	});
+
+	test("a read-back that differs only in trailing white space is refused (the digest alone would pass it)", async () => {
+		const w = await world({
+			selfUpdate: {
+				readBack: async (path) => `${readFileSync(path, "utf-8")}\n\n`,
+			},
+		});
+		expect(await w.tick()).toBe("write_failed");
+		expectUntouched(w);
+		expect(readState(w).refused).toEqual({ "0.12.0": "write_failed" });
+	});
+
+	test("a writer that writes other bytes than it was given is refused at the read-back", async () => {
+		const w = await world({
+			selfUpdate: {
+				writeNew: async (finalPath, bytes) => {
+					const temp = `${finalPath}.new`;
+					writeFileSync(temp, Buffer.concat([bytes, Buffer.from("// tampered\n")]), {
+						mode: 0o600,
+					});
+					return temp;
+				},
+			},
+		});
+		expect(await w.tick()).toBe("write_failed");
+		expectUntouched(w);
+	});
+
+	test("a read-back that can't read the file is refused", async () => {
+		const w = await world({ selfUpdate: { readBack: async () => null } });
+		expect(await w.tick()).toBe("write_failed");
+		expectUntouched(w);
+	});
+});
+
+// ---- self-check runner (T2, T3, T4, B8) ----
+
+describe("the self-check runner scrubs the environment and keeps the child inside its sandbox (T2, B8)", () => {
+	function stagedDir(): string {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "ap-staged-")));
+		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+		return dir;
+	}
+
+	test("a staged relay sees no parent secret and no AGENTPULSE_ variable, HOME is its sandbox and so is its working directory", async () => {
+		const dir = stagedDir();
+		const out = join(dir, "seen.json");
+		const staged = join(dir, "relay.ts.new");
+		writeFileSync(
+			staged,
+			`import { writeFileSync } from "node:fs";\nif (process.argv.includes("--self-check")) {\n\twriteFileSync(${JSON.stringify(out)}, JSON.stringify({ env: process.env, cwd: process.cwd() }));\n\tprocess.exit(0);\n}\nprocess.exit(1);\n`,
+		);
+		const secret = "RELAY_PARENT_SECRET_FOR_TEST";
+		process.env[secret] = "must-not-leak";
+		process.env.AGENTPULSE_SELFCHECK_PROBE = "must-not-leak";
+		try {
+			expect(await runSelfCheck("relay", staged, process.execPath)).toBe(true);
+		} finally {
+			Reflect.deleteProperty(process.env, secret);
+			Reflect.deleteProperty(process.env, "AGENTPULSE_SELFCHECK_PROBE");
+		}
+		const seen = JSON.parse(readFileSync(out, "utf-8")) as {
+			env: Record<string, string>;
+			cwd: string;
+		};
+		expect(
+			Object.keys(seen.env).filter((k) => k === secret || k.startsWith("AGENTPULSE_")),
+		).toEqual([]);
+		expect(JSON.stringify(seen.env)).not.toContain("must-not-leak");
+		expect(Object.keys(seen.env).sort()).toEqual(["HOME", "LANG", "PATH", "TMPDIR"]);
+		expect(seen.env.HOME).toBe(seen.cwd);
+		expect(seen.cwd).not.toBe(dir);
+		expect(seen.cwd).not.toBe(realpathSync(process.cwd()));
+		expect(seen.cwd.startsWith(realpathSync(tmpdir()))).toBe(true);
+	});
+
+	test("a staged relay that hangs is judged within the deadline: false, and only that child was signalled", async () => {
+		const dir = stagedDir();
+		const staged = join(dir, "relay.ts.new");
+		writeFileSync(staged, "setInterval(() => {}, 1000);\nawait new Promise(() => {});\n");
+		setSelfCheckLimitsForTests({ relayMs: 400, shellMs: 400 });
+		const started = Date.now();
+		expect(await runSelfCheck("relay", staged, process.execPath)).toBe(false);
+		expect(Date.now() - started).toBeLessThan(4000);
+	});
+
+	test("end to end: a served relay that hangs on --self-check is refused for good and nothing is replaced", async () => {
+		const lines = REAL_RELAY.split("\n");
+		const hang =
+			'if (process.argv.includes("--self-check")) { setInterval(() => {}, 1000); await new Promise(() => {}); }';
+		const withHang = [lines[0], hang, ...lines.slice(1)].join("\n");
+		const served = await serve({ relay: withHang });
+		const w = await world({ served });
+		setSelfCheckLimitsForTests({ relayMs: 600, shellMs: 600 });
+		expect(await w.tick()).toBe("self_check_failed");
+		expectUntouched(w);
+		expect(readState(w).refused).toEqual({ "0.12.0": "self_check_failed" });
+	});
+});
+
+describe("the statusline's self-check (T3)", () => {
+	const jqPresent =
+		Bun.spawnSync([
+			"/usr/bin/env",
+			"PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+			"jq",
+			"--version",
+		]).exitCode === 0;
+
+	test("a served statusline with a syntax error is refused", async () => {
+		const served = await serve({ statusline: `${REAL_STATUSLINE}\nif then fi ((\n` });
+		const w = await world({ served });
+		expect(await w.tick()).toBe("self_check_failed");
+		expectUntouched(w);
+	});
+
+	test(jqPresent
+		? "with jq present, a statusline that exits non-zero on the fixture input is refused"
+		: "without jq the fixture run is skipped and only syntax is judged (stated)", async () => {
+		const served = await serve({ statusline: "#!/bin/bash\nexit 3\n" });
+		const w = await world({ served });
+		if (jqPresent) {
+			expect(await w.tick()).toBe("self_check_failed");
+			expectUntouched(w);
+		} else {
+			expect(await w.tick()).toBe("applied");
+		}
+	});
+});
+
+describe("the exclude-check fixture run refuses a check that sends when it should not (T4)", () => {
+	// A tiny implementation of the rules that the self-check's cases accept, and one variant per way to get it wrong.
+	const reference = [
+		"#!/bin/sh",
+		'case "${AGENTPULSE_SKIP:-}" in 1) exit 1;; esac',
+		'f="$HOME/.agentpulse/exclude"',
+		'if [ -e "$f" ]; then',
+		"  here=$(pwd -P)",
+		"  while IFS= read -r line; do",
+		"    case \"$line\" in '*'*) exit 1;; esac",
+		'    [ "$line" = "$here" ] && exit 1',
+		'  done < "$f"',
+		"fi",
+		"exit 42",
+		"",
+	];
+	const without = (needle: string) => reference.filter((line) => !line.includes(needle)).join("\n");
+	const variants: [string, string][] = [
+		["ignores the skip variable", without("AGENTPULSE_SKIP")],
+		[
+			"ignores the rules file",
+			["#!/bin/sh", 'case "${AGENTPULSE_SKIP:-}" in 1) exit 1;; esac', "exit 42", ""].join("\n"),
+		],
+		["excludes everything", "#!/bin/sh\nexit 1\n"],
+		["sends on an invalid rules file", without("'*'*)")],
+	];
+
+	function stagedCheck(body: string): string {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "ap-excl-")));
+		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+		const path = join(dir, "exclude-check.sh.new");
+		writeFileSync(path, body, { mode: 0o500 });
+		return path;
+	}
+
+	test("the reference passes (the positive control: this harness can say yes)", async () => {
+		expect(
+			await runSelfCheck("excludeCheck", stagedCheck(reference.join("\n")), process.execPath),
+		).toBe(true);
+	});
+
+	for (const [label, body] of variants) {
+		test(`a check that ${label} is refused`, async () => {
+			expect(body).not.toBe(reference.join("\n"));
+			expect(await runSelfCheck("excludeCheck", stagedCheck(body), process.execPath)).toBe(false);
+		});
+	}
+});
+
+// ---- the older-release rule for the small files (T1) ----
+
+describe("a small file is replaced only when it equals an OLDER release's, never a newer one's (T1)", () => {
+	const S10 = "# statusline of 0.10\n";
+	const S13 = "# statusline of 0.13\n";
+	const E10 = "#!/bin/sh\n# exclude check of 0.10\nexit 42\n";
+	const E13 = "#!/bin/sh\n# exclude check of 0.13\nexit 42\n";
+
+	async function threeReleases(over: {
+		installedStatusline: string;
+		installedExcludeCheck: string;
+	}) {
+		const served = await serve();
+		const d10 = await clientDigests({ relay: "// r10\n", statusline: S10, excludeCheck: E10 });
+		const d13 = await clientDigests({ relay: "// r13\n", statusline: S13, excludeCheck: E13 });
+		return await world({
+			served,
+			...over,
+			consent: { schema: 1, clients: { on: true, components: ["statusline", "excludeCheck"] } },
+			payload: {
+				latest: "0.13.0",
+				minSupported: "0.10.0",
+				releases: [
+					testRelease("0.13.0", { clients: d13 }),
+					testRelease("0.12.0", { clients: served.digests }),
+					testRelease("0.11.0", { clients: await oldDigests() }),
+					testRelease("0.10.0", { clients: d10 }),
+				],
+			},
+		});
+	}
+
+	test("a statusline equal to a release newer than the one applied is left alone while the exclude check, two releases back, is replaced", async () => {
+		const w = await threeReleases({ installedStatusline: S13, installedExcludeCheck: E10 });
+		expect(await w.tick()).toBe("applied");
+		expect(text(w.statuslinePath)).toBe(S13);
+		expect(text(w.excludeCheckPath)).toBe(w.served.excludeCheck);
+	});
+
+	test("the other way round: a statusline two releases back is replaced and an exclude check from a newer release is left alone", async () => {
+		const w = await threeReleases({ installedStatusline: S10, installedExcludeCheck: E13 });
+		expect(await w.tick()).toBe("applied");
+		expect(text(w.statuslinePath)).toBe(w.served.statusline);
+		expect(text(w.excludeCheckPath)).toBe(E13);
+	});
+});
+
+// ---- the consent reader's refusals (T6) ----
+
+describe("consent that is off, of another schema or writable by others gives no refresh (T6)", () => {
+	const components = ["relay", "statusline", "excludeCheck"];
+	const cases: [string, (w: World) => void][] = [
+		[
+			"on:false with components listed",
+			(w) =>
+				writeFileSync(
+					join(w.relayDir, "update-consent.json"),
+					`${JSON.stringify({ schema: 1, clients: { on: false, components } })}\n`,
+					{ mode: 0o600 },
+				),
+		],
+		[
+			"schema 2",
+			(w) =>
+				writeFileSync(
+					join(w.relayDir, "update-consent.json"),
+					`${JSON.stringify({ schema: 2, clients: { on: true, components } })}\n`,
+					{ mode: 0o600 },
+				),
+		],
+		[
+			"a file writable by everyone (mode 0666)",
+			(w) => chmodSync(join(w.relayDir, "update-consent.json"), 0o666),
+		],
+	];
+	for (const [label, change] of cases) {
+		test(`${label}: no request, nothing written`, async () => {
+			const w = await world({ version: "0.12.0" });
+			change(w);
+			expect(await w.tick()).toBe("no_consent");
+			expect(w.server.requests).toEqual([]);
+			expectUntouched(w);
+		});
+	}
+
+	test("clearOwnStale removes a plain file of the given owner and refuses a link, a second hard link and a file of another owner", async () => {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "ap-stale-")));
+		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+		const mine = process.getuid?.();
+		const plain = join(dir, "a.new");
+		writeFileSync(plain, "x");
+		expect(await clearOwnStale(plain, mine)).toBe(true);
+		expect(existsSync(plain)).toBe(false);
+		expect(await clearOwnStale(plain, mine)).toBe(true); // nothing there is fine
+
+		// a file the account does not own (the uid seam stands in for a foreign owner: chown needs root)
+		const foreign = join(dir, "b.prev");
+		writeFileSync(foreign, "x");
+		expect(await clearOwnStale(foreign, (mine ?? 0) + 1)).toBe(false);
+		expect(existsSync(foreign)).toBe(true);
+
+		const target = join(dir, "t");
+		writeFileSync(target, "t");
+		const link = join(dir, "c.new");
+		symlinkSync(target, link);
+		expect(await clearOwnStale(link, mine)).toBe(false);
+		const hard = join(dir, "d.new");
+		linkSync(target, hard);
+		expect(await clearOwnStale(hard, mine)).toBe(false);
+		expect(text(target)).toBe("t");
+	});
+});
+
+// ---- startup confirmation (T5, B9) ----
+
+describe("a swapped-in relay confirms itself only from its own, well-formed health answer (T5, B9)", () => {
+	function ctxFor(port: number, dir: string, log: (line: string) => void = () => {}) {
+		return createRelayContext(
+			{
+				remoteUrl: "http://127.0.0.1:1",
+				apiKey: "",
+				port,
+				codexNamePolicy: "codex",
+				stateDir: dir,
+				configPath: null,
+			},
+			{ env: { HOME: dir }, scriptPath: join(dir, "relay.ts"), accountHome: () => undefined, log },
+		);
+	}
+	function pendingDir(): string {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "ap-confirm-")));
+		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+		writeFileSync(join(dir, "relay-pending.json"), '{"version":"0.12.0","attempts":1}\n', {
+			mode: 0o600,
+		});
+		return dir;
+	}
+
+	test("the confirm window is 30 seconds", () => {
+		expect(RELAY_PENDING_CLEAR_WITHIN_MS).toBe(30000);
+	});
+
+	test("200 with status ok but no relay:true, and a 200 that isn't JSON, are unhealthy and keep the pending file", async () => {
+		for (const body of [
+			'{"status":"ok"}',
+			'{"status":"ok","relay":false}',
+			"<html>ok</html>",
+			'{"relay":true}',
+		]) {
+			const server = startServer(
+				() => new Response(body, { headers: { "content-type": "application/json" } }),
+			);
+			const dir = pendingDir();
+			const ctx = ctxFor(Number(new URL(server.url).port), dir);
+			expect(await confirmPendingStart(ctx, { timeoutMs: 500, pollMs: 50 }), body).toBe(
+				"unhealthy",
+			);
+			expect(existsSync(join(dir, "relay-pending.json")), body).toBe(true);
+		}
+	});
+
+	test("positive control: status ok with relay:true clears it", async () => {
+		const server = startServer(
+			() =>
+				new Response('{"status":"ok","relay":true}', {
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		const dir = pendingDir();
+		expect(
+			await confirmPendingStart(ctxFor(Number(new URL(server.url).port), dir), {
+				timeoutMs: 2000,
+				pollMs: 50,
+			}),
+		).toBe("cleared");
+		expect(existsSync(join(dir, "relay-pending.json"))).toBe(false);
+	});
+
+	test("an unhealthy start logs and exits 1 (so the launcher counts it); a healthy one doesn't exit", async () => {
+		const dir = pendingDir();
+		const logs: string[] = [];
+		const exits: number[] = [];
+		const bad = startServer(() => new Response("nope"));
+		const outcome = await confirmPendingOrExit(
+			ctxFor(Number(new URL(bad.url).port), dir, (line) => logs.push(line)),
+			(code) => exits.push(code),
+			{ timeoutMs: 400, pollMs: 50 },
+		);
+		expect(outcome).toBe("unhealthy");
+		expect(exits).toEqual([1]);
+		expect(logs.join("\n")).toContain("exiting so the launcher counts the start");
+
+		const dir2 = pendingDir();
+		const good = startServer(() => new Response('{"status":"ok","relay":true}'));
+		const exits2: number[] = [];
+		expect(
+			await confirmPendingOrExit(
+				ctxFor(Number(new URL(good.url).port), dir2),
+				(c) => exits2.push(c),
+				{ timeoutMs: 2000, pollMs: 50 },
+			),
+		).toBe("cleared");
+		expect(exits2).toEqual([]);
+	});
+
+	test("main() starts the confirmation through the exiting form with process.exit", () => {
+		const mainText = REAL_RELAY.slice(REAL_RELAY.indexOf("async function main("));
+		expect(mainText).toContain("confirmPendingOrExit(relay.ctx, (code) => process.exit(code))");
+		expect(mainText).not.toContain("confirmPendingStart(");
+	});
+});
+
+// ---- operator-visible lines (B9, B10) and the test-only seam (B12) ----
+
+describe("the relay says what it is doing and what it is not (B9, B10, B12)", () => {
+	test("consent on but not started by the launcher: one line saying to re-run the installer, and none without consent", async () => {
+		const w = await world({ launcher: false });
+		expect(await w.tick()).toBe("not_launcher");
+		expect(await w.tick()).toBe("not_launcher");
+		const lines = w.logs.filter((line) => line.includes("wasn't started by its launcher"));
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("re-run the relay installer");
+		expect(w.server.requests).toEqual([]);
+
+		const quiet = await world({
+			launcher: false,
+			consent: { schema: 1, clients: { on: false, components: [] } },
+		});
+		expect(await quiet.tick()).toBe("not_launcher");
+		expect(quiet.logs.join("\n")).not.toContain("launcher");
+	});
+
+	test("the relay logs when it absorbs a refusal the launcher recorded", async () => {
+		const w = await world({ version: "0.11.0" });
+		writeFileSync(join(w.relayDir, "relay-update-refused.json"), '{"version":"0.12.0"}\n', {
+			mode: 0o600,
+		});
+		await w.tick();
+		expect(w.logs.join("\n")).toContain("the launcher rolled back 0.12.0");
+	});
+
+	test("the selfUpdate option is passed only by tests: the plumbing is the four known places and main() never names it", () => {
+		const optionLines = REAL_RELAY.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => /\bselfUpdate\??:/.test(line));
+		expect(optionLines).toEqual([
+			"selfUpdate: {",
+			"selfUpdate?: Partial<SelfUpdateDeps>;",
+			"selfUpdate?: Partial<SelfUpdateDeps>;",
+			"...(opts.selfUpdate ? { selfUpdate: opts.selfUpdate } : {}),",
+		]);
+		const mainText = REAL_RELAY.slice(REAL_RELAY.indexOf("async function main("));
+		expect(mainText).not.toContain("selfUpdate");
+	});
+});
+
+// ---- where bytes may come from: the loopback grammar (T9) ----
+
+describe("which hosts count as loopback (T9)", () => {
+	test("[::1] and any 127.x.y.z over http pass the transport rule; lookalikes and other addresses don't", async () => {
+		for (const [url, expected] of [
+			["http://[::1]:1", "health_failed"],
+			["http://127.0.0.2:1", "health_failed"],
+			["http://127.200.7.9:1", "health_failed"],
+			["http://localhost:1", "health_failed"],
+			["http://128.0.0.1:1", "insecure"],
+			["http://[::2]:1", "insecure"],
+			["http://126.0.0.1:1", "insecure"],
+			["http://127.0.0.1.example.invalid:1", "insecure"],
+			["http://localhost.example.invalid:1", "insecure"],
+		] as const) {
+			const w = await world({ remoteUrl: () => url });
+			expect(await w.tick(), url).toBe(expected);
+			expectUntouched(w);
+		}
+	}, 60_000);
+});
+
+// ---- the launcher and the relay together ----
+
+describe("a rollback by the launcher is learned by the relay and never retried", () => {
+	test("launcher restores the old relay at attempts 2, the next tick folds the refusal into its state, and the one after answers refused_before", async () => {
+		const setupRelay = readFileSync(join(import.meta.dir, "setup-relay.sh"), "utf-8");
+		const lines = setupRelay.split("\n");
+		const open = lines.findIndex((line) => line.includes("<<'AP_RELAY_LAUNCHER_EOF'"));
+		const end = lines.indexOf("AP_RELAY_LAUNCHER_EOF", open + 1);
+		const template = `${lines.slice(open + 1, end).join("\n")}\n`;
+
+		const w = await world();
+		// the state an update that failed twice leaves: the new relay in place, the old one beside it, pending at 2
+		writeFileSync(w.relayPath, "// the new relay that never served\n", { mode: 0o600 });
+		writeFileSync(`${w.relayPath}.prev`, REAL_RELAY, { mode: 0o600 });
+		writeFileSync(pendingFile(w), '{"version":"0.12.0","attempts":2}\n', { mode: 0o600 });
+		const fakeBun = join(w.home, "fake-bun");
+		writeFileSync(fakeBun, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+		const launcher = join(w.home, "relay-launch.sh");
+		writeFileSync(
+			launcher,
+			template
+				.replaceAll("@@AP_RELAY_DIR@@", w.relayDir)
+				.replaceAll("@@AP_BUN@@", fakeBun)
+				.replaceAll("@@AP_CONFIG@@", join(w.relayDir, "config.json"))
+				.replaceAll("@@AP_CLAUDE_DIR@@", join(w.home, ".claude")),
+			{ mode: 0o700 },
+		);
+		const proc = Bun.spawnSync(["/bin/sh", launcher], {
+			env: { PATH: "/usr/bin:/bin" },
+			stderr: "pipe",
+		});
+		expect(proc.exitCode).toBe(0);
+		expect(text(w.relayPath)).toBe(REAL_RELAY);
+		expect(existsSync(pendingFile(w))).toBe(false);
+
+		// the relay that is running again learns it, and 0.12.0 is not tried again
+		expect(await w.tick()).toBe("refused_before");
+		expect(readState(w).refused).toEqual({ "0.12.0": "rolled_back" });
+		expect(existsSync(join(w.relayDir, "relay-update-refused.json"))).toBe(false);
+		expect(w.server.requests.filter((r) => r.path === "/setup-relay.sh")).toHaveLength(0);
+		expect(await w.tick()).toBe("refused_before");
+		expect(w.exits).toEqual([]);
+		expect(text(w.relayPath)).toBe(REAL_RELAY);
 	});
 });

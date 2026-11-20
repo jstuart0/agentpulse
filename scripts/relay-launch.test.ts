@@ -45,8 +45,14 @@ interface Rig {
 	refused: string;
 	launcher: string;
 	bunLog: string;
+	/** The statusline's directory and the exclude check, whose `.prev` copies the launcher puts back with the relay. */
+	claudeDir: string;
+	statusline: string;
+	statuslinePrev: string;
+	exclude: string;
+	excludePrev: string;
 	/** Runs the launcher once and returns what the fake Bun was started with. */
-	run(): { status: number | null; started: string[]; launcherEnv: string };
+	run(): { status: number | null; started: string[]; launcherEnv: string; stderr: string };
 }
 
 function rig(prevText = "// previous relay\n"): Rig {
@@ -64,6 +70,8 @@ function rig(prevText = "// previous relay\n"): Rig {
 	writeFileSync(relay, "// new relay\n");
 	const prev = join(dir, "relay.ts.prev");
 	writeFileSync(prev, prevText);
+	const claudeDir = join(dir, "claude");
+	mkdirSync(claudeDir);
 	const config = join(dir, "config.json");
 	const launcher = join(dir, "relay-launch.sh");
 	writeFileSync(
@@ -71,10 +79,16 @@ function rig(prevText = "// previous relay\n"): Rig {
 		launcherTemplate()
 			.replaceAll("@@AP_RELAY_DIR@@", dir)
 			.replaceAll("@@AP_BUN@@", bun)
-			.replaceAll("@@AP_CONFIG@@", config),
+			.replaceAll("@@AP_CONFIG@@", config)
+			.replaceAll("@@AP_CLAUDE_DIR@@", claudeDir),
 		{ mode: 0o700 },
 	);
 	return {
+		claudeDir,
+		statusline: join(claudeDir, "statusline-agentpulse.sh"),
+		statuslinePrev: join(claudeDir, "statusline-agentpulse.sh.prev"),
+		exclude: join(dir, "exclude-check.sh"),
+		excludePrev: join(dir, "exclude-check.sh.prev"),
 		dir,
 		pending: join(dir, "relay-pending.json"),
 		prev,
@@ -90,7 +104,12 @@ function rig(prevText = "// previous relay\n"): Rig {
 				stderr: "pipe",
 			});
 			const started = readFileSync(bunLog, "utf-8").split("\n").filter(Boolean);
-			return { status: proc.exitCode, started, launcherEnv: started[0]?.split("|")[1] ?? "" };
+			return {
+				status: proc.exitCode,
+				started,
+				launcherEnv: started[0]?.split("|")[1] ?? "",
+				stderr: proc.stderr.toString(),
+			};
 		},
 	};
 }
@@ -165,6 +184,180 @@ describe("two failed starts put the previous relay back", () => {
 		expect(readFileSync(r.relay, "utf-8")).toBe("// new relay\n");
 		expect(readFileSync(target, "utf-8")).toBe("// somebody else's file\n");
 	});
+});
+
+describe("a crash between the two renames leaves no relay.ts: the launcher puts the previous one back (B2)", () => {
+	test("relay.ts absent, .prev there, pending at attempts 0: restored, the version recorded, pending gone, started once", () => {
+		const r = rig();
+		rmSync(r.relay);
+		writeFileSync(r.pending, pendingText(0), { mode: 0o600 });
+		const out = r.run();
+		expect(out.started).toHaveLength(1);
+		expect(readFileSync(r.relay, "utf-8")).toBe("// previous relay\n");
+		expect(existsSync(r.prev)).toBe(false);
+		expect(existsSync(r.pending)).toBe(false);
+		expect(JSON.parse(readFileSync(r.refused, "utf-8"))).toEqual({ version: "0.12.0" });
+		expect(out.stderr).toContain("relay-launch: rolled back 0.12.0");
+	});
+
+	test("with no readable pending file it is still restored, and no version is recorded", () => {
+		const r = rig();
+		rmSync(r.relay);
+		const out = r.run();
+		expect(readFileSync(r.relay, "utf-8")).toBe("// previous relay\n");
+		expect(existsSync(r.refused)).toBe(false);
+		expect(out.stderr).toContain("rolled back");
+	});
+
+	test("a relay.ts that is a link (even a dangling one: a development checkout) is present, so .prev is not moved over it", () => {
+		const r = rig();
+		rmSync(r.relay);
+		symlinkSync(join(r.dir, "nowhere.ts"), r.relay);
+		r.run();
+		expect(readFileSync(r.prev, "utf-8")).toBe("// previous relay\n");
+		expect(existsSync(r.refused)).toBe(false);
+	});
+
+	test("a .prev that is a link is not moved into place, and the launcher says the relay is missing", () => {
+		const r = rig();
+		rmSync(r.relay);
+		rmSync(r.prev);
+		const target = join(r.dir, "elsewhere");
+		writeFileSync(target, "// somebody else's file\n");
+		symlinkSync(target, r.prev);
+		const out = r.run();
+		expect(existsSync(r.relay)).toBe(false);
+		expect(readFileSync(target, "utf-8")).toBe("// somebody else's file\n");
+		expect(out.stderr).toContain("relay.ts is missing");
+	});
+
+	test("relay.ts and .prev both absent: it says so on stderr instead of failing silently", () => {
+		const r = rig();
+		rmSync(r.relay);
+		rmSync(r.prev);
+		expect(r.run().stderr).toContain("relay.ts is missing and there is no previous relay");
+	});
+});
+
+describe("a rollback puts the statusline and exclude check back with the relay (B3)", () => {
+	const plantNew = (r: Rig) => {
+		writeFileSync(r.statusline, "# new statusline\n", { mode: 0o700 });
+		writeFileSync(r.statuslinePrev, "# old statusline\n", { mode: 0o700 });
+		writeFileSync(r.exclude, "# new exclude\n", { mode: 0o500 });
+		writeFileSync(r.excludePrev, "# old exclude\n", { mode: 0o500 });
+	};
+
+	test("at attempts 2 all three are restored", () => {
+		const r = rig();
+		plantNew(r);
+		writeFileSync(r.pending, pendingText(2), { mode: 0o600 });
+		r.run();
+		expect(readFileSync(r.relay, "utf-8")).toBe("// previous relay\n");
+		expect(readFileSync(r.statusline, "utf-8")).toBe("# old statusline\n");
+		expect(readFileSync(r.exclude, "utf-8")).toBe("# old exclude\n");
+		expect(existsSync(r.statuslinePrev)).toBe(false);
+		expect(existsSync(r.excludePrev)).toBe(false);
+	});
+
+	test("on the missing-relay path all three are restored too", () => {
+		const r = rig();
+		plantNew(r);
+		rmSync(r.relay);
+		writeFileSync(r.pending, pendingText(0), { mode: 0o600 });
+		r.run();
+		expect(readFileSync(r.statusline, "utf-8")).toBe("# old statusline\n");
+		expect(readFileSync(r.exclude, "utf-8")).toBe("# old exclude\n");
+	});
+
+	test("a small .prev that is a link is not moved into place; the others still are", () => {
+		const r = rig();
+		plantNew(r);
+		rmSync(r.excludePrev);
+		const target = join(r.dir, "elsewhere");
+		writeFileSync(target, "# somebody else's\n");
+		symlinkSync(target, r.excludePrev);
+		writeFileSync(r.pending, pendingText(2), { mode: 0o600 });
+		r.run();
+		expect(readFileSync(r.statusline, "utf-8")).toBe("# old statusline\n");
+		expect(readFileSync(r.exclude, "utf-8")).toBe("# new exclude\n");
+		expect(readFileSync(target, "utf-8")).toBe("# somebody else's\n");
+	});
+
+	test("nothing is restored before a give-up: at attempts 0 and 1 the small files stay as they are", () => {
+		const r = rig();
+		plantNew(r);
+		writeFileSync(r.pending, pendingText(0), { mode: 0o600 });
+		r.run();
+		r.run();
+		expect(readFileSync(r.statusline, "utf-8")).toBe("# new statusline\n");
+		expect(readFileSync(r.exclude, "utf-8")).toBe("# new exclude\n");
+	});
+});
+
+describe("the launcher says what it did (B9)", () => {
+	test("a rollback names the version on stderr", () => {
+		const r = rig();
+		writeFileSync(r.pending, pendingText(2, "0.13.1"), { mode: 0o600 });
+		expect(r.run().stderr).toContain("relay-launch: rolled back 0.13.1");
+	});
+
+	test("a give-up with no previous relay says so loudly, still records the version and starts the relay that is there", () => {
+		const r = rig();
+		rmSync(r.prev);
+		writeFileSync(r.pending, pendingText(2, "0.13.1"), { mode: 0o600 });
+		const out = r.run();
+		expect(out.stderr).toContain("0.13.1 never started and there is no previous relay");
+		expect(JSON.parse(readFileSync(r.refused, "utf-8"))).toEqual({ version: "0.13.1" });
+		expect(out.started).toHaveLength(1);
+	});
+
+	test("an ordinary start prints nothing", () => {
+		const r = rig();
+		expect(r.run().stderr).toBe("");
+	});
+});
+
+describe("the launcher's boundaries (T9)", () => {
+	// `find -size -4k` is "under 4 KiB" on BSD find and "at most 3072 bytes" on GNU find (it rounds up to whole
+	// KiB), so the two disagree for 3073 to 4095 bytes. The real file is about 40 bytes; what is pinned here is
+	// what both agree on: 3072 is believed, 4096 and above is not.
+	const padded = (bytes: number) => {
+		const base = pendingText(2).trimEnd();
+		return `${base}${" ".repeat(bytes - base.length - 1)}\n`;
+	};
+
+	test("a pending file of 3072 bytes is believed; one of 4096 bytes is not", () => {
+		const believed = rig();
+		writeFileSync(believed.pending, padded(3072), { mode: 0o600 });
+		expect(readFileSync(believed.pending).length).toBe(3072);
+		believed.run();
+		expect(readFileSync(believed.relay, "utf-8")).toBe("// previous relay\n");
+
+		const ignored = rig();
+		writeFileSync(ignored.pending, padded(4096), { mode: 0o600 });
+		expect(readFileSync(ignored.pending).length).toBe(4096);
+		ignored.run();
+		expect(readFileSync(ignored.relay, "utf-8")).toBe("// new relay\n");
+		expect(existsSync(ignored.refused)).toBe(false);
+	});
+
+	test("a version of 48 characters is believed, one of 49 is not", () => {
+		const v48 = `1.2.3-${"a".repeat(42)}`;
+		expect(v48).toHaveLength(48);
+		const believed = rig();
+		writeFileSync(believed.pending, pendingText(2, v48), { mode: 0o600 });
+		believed.run();
+		expect(JSON.parse(readFileSync(believed.refused, "utf-8"))).toEqual({ version: v48 });
+
+		const ignored = rig();
+		writeFileSync(ignored.pending, pendingText(2, `${v48}a`), { mode: 0o600 });
+		ignored.run();
+		expect(readFileSync(ignored.relay, "utf-8")).toBe("// new relay\n");
+		expect(existsSync(ignored.refused)).toBe(false);
+	});
+
+	// A pending file owned by another account can't be tested without chown (root): the launcher's
+	// `find -user "$AP_UID"` is the check, and a symlink (which find -type f also rejects) stands in for it above.
 });
 
 describe("a pending file that can't be believed is no pending file", () => {
@@ -259,7 +452,8 @@ async function realRig(port: number, relaySource: string) {
 		launcherTemplate()
 			.replaceAll("@@AP_RELAY_DIR@@", dir)
 			.replaceAll("@@AP_BUN@@", process.execPath)
-			.replaceAll("@@AP_CONFIG@@", join(dir, "config.json")),
+			.replaceAll("@@AP_CONFIG@@", join(dir, "config.json"))
+			.replaceAll("@@AP_CLAUDE_DIR@@", join(home, ".claude")),
 		{ mode: 0o700 },
 	);
 	return { dir, home, relay, launcher, pending: join(dir, "relay-pending.json") };

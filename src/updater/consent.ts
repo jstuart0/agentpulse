@@ -31,7 +31,7 @@
  * (`setConsentIoForTests`); no environment variable can stand in for a terminal.
  */
 import { randomBytes } from "node:crypto";
-import { constants, accessSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { constants, accessSync, lstatSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 import { readInstallRecord } from "../shared/install-record.js";
@@ -165,6 +165,16 @@ async function installRefusal(deps: UpdaterDeps): Promise<UpdateOutcomeCode | nu
 	return null;
 }
 
+/** Whether anything at all is at `path` (a link counts, whatever it points at). */
+function consentFileExists(path: string): boolean {
+	try {
+		lstatSync(path);
+		return true;
+	} catch (err) {
+		return (err as { code?: string }).code !== "ENOENT";
+	}
+}
+
 function writeConsent(
 	deps: UpdaterDeps,
 	app: { on: boolean; allowMigrations: boolean; window: string | null },
@@ -173,6 +183,9 @@ function writeConsent(
 	try {
 		mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
 		const existing = readConsentDocument(deps.home);
+		// A file that is there but isn't one this account can trust (a link, someone else's, linked twice) or isn't
+		// a schema-1 document may hold the relay's section; writing a fresh file would drop it, so nothing is written.
+		if (!existing && consentFileExists(paths.consent)) return false;
 		// The relay's section is another writer's: kept exactly as found.
 		const clients = existing && "clients" in existing ? { clients: existing.clients } : {};
 		writePrivateFileAtomicNoFollow(

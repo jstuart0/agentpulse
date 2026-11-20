@@ -1865,16 +1865,32 @@ ap_relay_launcher_text() {
 AP_DIR='@@AP_RELAY_DIR@@'
 AP_BUN='@@AP_BUN@@'
 AP_CONFIG='@@AP_CONFIG@@'
+AP_CLAUDE_DIR='@@AP_CLAUDE_DIR@@'
 AP_PENDING="$AP_DIR/relay-pending.json"
 AP_UID="$(id -u)"
 
-# True when $1 is a plain file in AP_DIR that I own (never a link), optionally smaller than $2 KiB.
-ap_mine() {
-  if [ -n "$2" ]; then
-    [ -n "$(find -H "$AP_DIR" -maxdepth 1 -name "$1" -type f -user "$AP_UID" -size -"$2"k 2>/dev/null)" ]
+# True when $2 is a plain file in directory $1 that I own (never a link), optionally smaller than $3 KiB blocks.
+ap_mine_in() {
+  if [ -n "$3" ]; then
+    [ -n "$(find -H "$1" -maxdepth 1 -name "$2" -type f -user "$AP_UID" -size -"$3"k 2>/dev/null)" ]
   else
-    [ -n "$(find -H "$AP_DIR" -maxdepth 1 -name "$1" -type f -user "$AP_UID" 2>/dev/null)" ]
+    [ -n "$(find -H "$1" -maxdepth 1 -name "$2" -type f -user "$AP_UID" 2>/dev/null)" ]
   fi
+}
+ap_mine() { ap_mine_in "$AP_DIR" "$1" "$2"; }
+
+# Puts back the files the update that is being given up on replaced: the relay, and the exclude check and the
+# statusline when that update replaced them too (the relay keeps a .prev copy of each, so a rollback never leaves
+# the three at different releases). Each only when it is a plain file of mine.
+ap_restore_one() {
+  if ap_mine_in "$1" "$2"; then
+    mv -f "$1/$2" "$3" 2>/dev/null
+  fi
+}
+ap_restore() {
+  ap_restore_one "$AP_DIR" relay.ts.prev "$AP_DIR/relay.ts"
+  ap_restore_one "$AP_DIR" exclude-check.sh.prev "$AP_DIR/exclude-check.sh"
+  ap_restore_one "$AP_CLAUDE_DIR" statusline-agentpulse.sh.prev "$AP_CLAUDE_DIR/statusline-agentpulse.sh"
 }
 
 # A private file written in one step, never through a link already there.
@@ -1894,18 +1910,34 @@ if ap_mine relay-pending.json 4; then
   ap_attempts="$(printf '%s' "$ap_text" | sed -n 's/.*"attempts":\([0-9]\{1,6\}\)[^0-9].*/\1/p' | head -n 1)"
 fi
 
-if [ -n "$ap_version" ] && [ -n "$ap_attempts" ]; then
-  if [ "$ap_attempts" -ge 2 ]; then
-    # Two starts in a row never got to serve: put the previous relay back, say which version was given up on
-    # (the relay reads it and never tries that version again), and drop the pending file.
-    if ap_mine relay.ts.prev; then
-      mv -f "$AP_DIR/relay.ts.prev" "$AP_DIR/relay.ts" 2>/dev/null
-    fi
-    ap_put "$AP_DIR/relay-update-refused.json" "{\"version\":\"$ap_version\"}"
-    rm -f "$AP_PENDING" 2>/dev/null
+ap_giveup=""
+if [ -n "$ap_version" ] && [ -n "$ap_attempts" ] && [ "$ap_attempts" -ge 2 ]; then
+  # Two starts in a row never got to serve.
+  ap_giveup=1
+elif [ ! -e "$AP_DIR/relay.ts" ] && [ ! -L "$AP_DIR/relay.ts" ]; then
+  # A crash between the two renames of an update leaves no relay.ts at all.
+  if ap_mine relay.ts.prev; then
+    ap_giveup=1
   else
-    ap_put "$AP_PENDING" "{\"version\":\"$ap_version\",\"attempts\":$((ap_attempts + 1))}"
+    echo "relay-launch: relay.ts is missing and there is no previous relay to put back; re-run the relay installer" >&2
   fi
+fi
+
+if [ -n "$ap_giveup" ]; then
+  # Put the previous relay back, say which version was given up on (the relay reads it and never tries that
+  # version again), and drop the pending file.
+  if ap_mine relay.ts.prev; then
+    ap_restore
+    echo "relay-launch: rolled back ${ap_version:-an update that never started}; the previous relay is back" >&2
+  else
+    echo "relay-launch: ${ap_version:-an update} never started and there is no previous relay to put back; the relay that is there is started again" >&2
+  fi
+  if [ -n "$ap_version" ]; then
+    ap_put "$AP_DIR/relay-update-refused.json" "{\"version\":\"$ap_version\"}"
+  fi
+  rm -f "$AP_PENDING" 2>/dev/null
+elif [ -n "$ap_version" ] && [ -n "$ap_attempts" ]; then
+  ap_put "$AP_PENDING" "{\"version\":\"$ap_version\",\"attempts\":$((ap_attempts + 1))}"
 fi
 
 AGENTPULSE_RELAY_LAUNCHER=1
@@ -1915,6 +1947,7 @@ AP_RELAY_LAUNCHER_EOF
 	ap_launcher_text=${ap_launcher_text//@@AP_RELAY_DIR@@/$RELAY_DIR}
 	ap_launcher_text=${ap_launcher_text//@@AP_BUN@@/$BUN_PATH}
 	ap_launcher_text=${ap_launcher_text//@@AP_CONFIG@@/$CONFIG_FILE}
+	ap_launcher_text=${ap_launcher_text//@@AP_CLAUDE_DIR@@/$HOME/.claude}
 }
 
 # ── Install the relay ──
@@ -1925,7 +1958,9 @@ cp "$SRC_DIR/relay.ts" "$RELAY_DIR/relay.ts"
 
 # A re-install starts from a clean slate: a pending marker (and the files of an update in flight) left by an
 # earlier run would otherwise be counted against the relay just installed.
-rm -f "$RELAY_DIR/relay-pending.json" "$RELAY_DIR/relay.ts.new" "$RELAY_DIR/relay.ts.prev" "$RELAY_DIR/relay-update-refused.json"
+rm -f "$RELAY_DIR/relay-pending.json" "$RELAY_DIR/relay.ts.new" "$RELAY_DIR/relay.ts.prev" "$RELAY_DIR/relay-update-refused.json" \
+  "$RELAY_DIR/exclude-check.sh.new" "$RELAY_DIR/exclude-check.sh.prev" \
+  "$HOME/.claude/statusline-agentpulse.sh.new" "$HOME/.claude/statusline-agentpulse.sh.prev"
 LAUNCHER_FILE="$RELAY_DIR/relay-launch.sh"
 ap_relay_launcher_text
 ap_write_private_no_follow "$LAUNCHER_FILE" "$ap_launcher_text" || fail "couldn't write $(printf %q "$LAUNCHER_FILE")"
