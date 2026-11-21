@@ -7,6 +7,63 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **0.12.0 is the first release that can verify a signed release manifest (AGEN-155).** Installs on 0.11.0 or older never
+  check for updates and need one manual update (`install-local.sh`, `docker pull`, or your usual tooling) to gain the notice
+  and the updater. The minimum supported version in the manifest is 0.11.0, so older installs show a persistent banner once
+  they are on a server new enough to read it.
+- **`install-local.sh` and `install-local.ps1` now follow release tags, not the default branch.** An existing install moves to
+  the newest release tag on its next installer run. `--ref <branch-or-tag>` (`-Ref` on Windows) keeps following that ref
+  (`--ref main` for the development branch); such an install gets the update notice but is never updated by
+  `agentpulse update`. Run `agentpulse update` instead of re-running the installer on a release-tracking install.
+- **Container images are tagged by release.** `ghcr.io/jstuart0/agentpulse:X.Y.Z`, `X.Y`, `X` and `latest` (the last three
+  only for the highest stable release), plus the existing `sha-` tags; the `agentpulse-backup` image carries the same tags.
+  Both images carry a build-provenance attestation. A container never updates itself.
+- Postgres installs are never updated across a migration by `agentpulse update`: back up and re-run `install-local.sh`.
+
+### Added
+
+- **Update notice on every client (AGEN-155).** The server reads a signed release manifest from the project's GitHub Pages
+  site once a day (one plain HTTPS GET; no cookie, query, header or installation id). `GET /api/v1/health` carries `update`
+  and `GET /api/v1/capabilities` carries the full status; `GET /api/v1/health?manifest=1` also returns the verified envelope.
+  The dashboard shows an "Update available" badge to admins and a red banner for a security release, a withdrawn version or
+  an unsupported one; **Settings > Updates** shows the running and latest versions, the update commands for the install kind
+  and a **Check now** button (`POST /api/v1/update/check`, admin, once a minute). The MCP server gains the observe-scoped
+  tool `get_update_status`. `AGENTPULSE_UPDATE_CHECK=off` turns the check off; `DO_NOT_TRACK` and `AGENTPULSE_TELEMETRY`
+  don't. A server that can't verify the manifest shows a quiet "Can't verify updates" and never changes `/health`'s `status`.
+- **Signed release pipeline.** `docs/RELEASING.md`; `release.yml` (on a `vX.Y.Z` tag) builds and attests both images and
+  creates the GitHub release; `pages.yml` builds the manifest from git objects and signs it with an Ed25519 key held in a
+  repository secret. `releases/release-data.json` pins which commit is each release. `.github/CODEOWNERS` covers the
+  release files.
+- **`agentpulse update` for local installs.** `~/.agentpulse/bin/agentpulse update [--to vX.Y.Z] [--allow-downgrade]
+  [--wait]`, `update rollback` and `update status`. It stages the release beside the running copy, smoke-boots it on a copy
+  of the database, waits for the supervisor to be idle, drains it, swaps, health-checks and rolls back on failure. A SQLite
+  update that adds a migration snapshots the database first. A release with no `bun.lock` is refused. `install-local.sh
+  --supervisor-only --server-url <url>` installs a supervisor for a remote server.
+- **Opt-in scheduled auto-update, off by default.** `agentpulse update auto on [--allow-migrations] [--window HH:MM-HH:MM]`
+  (terminal only, typed phrase, no server, web or MCP path can turn it on) installs a launchd or `systemd --user` timer that
+  runs every six hours. Failures hold the next run back 1 h, 6 h, then 24 h; a version that failed after the install was
+  touched is never retried.
+- **Relay, statusline and exclude-check self-refresh, opt-in.** `bun ~/.agentpulse/relay.ts update auto on` lets the relay
+  replace only `relay.ts`, the installed statusline and `exclude-check.sh`, after verifying the signed manifest and the files'
+  digests, trying each in a throwaway home first. Agent config files are never touched. The installer now writes
+  `~/.agentpulse/relay-launch.sh`.
+- **Supervisor drain.** While an update runs, a new launch or prompt on that host is refused ("This host is updating
+  AgentPulse") and Stop keeps working. New host features `local_updater` and `local_server`; the Hosts page shows a host
+  update notice (not on the machine that runs the server itself).
+- **Docker and Kubernetes update docs.** README "Docker image tags and updates" (pinned tags, Compose, Watchtower, Diun,
+  Podman), `docker-compose.image.yml`, and notice-only guidance in `deploy/k8s/README.md`.
+- New update outcome codes in `/capabilities` `update` (open-valued: clients treat an unknown one as unknown), including
+  `update_check_off`. iOS follow-up: AGEN-156.
+
+### Changed
+
+- `AGENTPULSE_UPDATE_CHECK=off` also stops this machine's updater: when the server answers and reports its check as off,
+  `agentpulse update` (by hand or scheduled) fetches nothing, updates nothing and ends with `update_check_off`.
+- The supervisor reports its real version (it reported `0.1.0` before), and the relay and statusline carry versions that
+  `scripts/release/version-parity.ts` keeps equal to `package.json`.
+
 ## [0.11.0] — 2026-11-10
 
 ### Upgrade notes
