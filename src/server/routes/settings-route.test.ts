@@ -60,6 +60,33 @@ async function readSetting(key: string) {
 	return row;
 }
 
+describe("update.* settings (AGEN-155)", () => {
+	const keys = ["update.envelope", "update.state"];
+
+	test("PUT refuses every update.* key with 403 key_not_user_settable and writes nothing", async () => {
+		for (const key of [...keys, "update.auto", "update.anything"]) {
+			const res = await putSetting({ key, value: "x" });
+			expect({ key, status: res.status }).toEqual({ key, status: 403 });
+			expect((await res.json()).error).toBe("key_not_user_settable");
+			expect(await readSetting(key)).toBeUndefined();
+		}
+	});
+
+	test("GET /settings never returns them, and still returns an ordinary key", async () => {
+		const now = new Date().toISOString();
+		await getDb()
+			.insert(settings)
+			.values([
+				{ key: "update.envelope", value: "{}", updatedAt: now },
+				{ key: "update.state", value: { last: null }, updatedAt: now },
+				{ key: "theme", value: "dark", updatedAt: now },
+			]);
+		const body = (await (await app.request("/api/v1/settings")).json()) as Record<string, unknown>;
+		expect(Object.keys(body).filter((k) => k.startsWith("update."))).toEqual([]);
+		expect(body.theme).toBe("dark");
+	});
+});
+
 describe("PUT /api/v1/settings", () => {
 	test("writes a non-protected key", async () => {
 		// `theme` is in USER_SETTABLE_KEYS (settings-service.ts:11); previously

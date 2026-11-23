@@ -97,7 +97,7 @@ When it finishes, open [http://localhost:3000](http://localhost:3000) and start 
 If you prefer Docker, this starts the container, waits for health, and configures hooks:
 
 ```bash
-docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -fsSL http://localhost:3000/setup.sh | bash
+docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse:0.12 && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -fsSL http://localhost:3000/setup.sh | bash
 ```
 
 > **Security note:** `-p 127.0.0.1:3000:3000` binds the host port to localhost only. The older `-p 3000:3000` form would publish on all host interfaces, exposing the auth-disabled server to your LAN. Use the `127.0.0.1:` prefix whenever `DISABLE_AUTH=true`.
@@ -109,7 +109,7 @@ docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUT
 
 > **Why localhost?** Claude Code and Codex block HTTP hooks to remote/private IPs as a security measure. Only `localhost` / `127.0.0.1` is allowed. This keeps things simple -- one Docker container on your machine, no networking to configure. If port 3000 is taken, use any free port:
 > ```bash
-> docker run -d -p 127.0.0.1:4000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e PUBLIC_URL=http://localhost:4000 --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
+> docker run -d -p 127.0.0.1:4000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e PUBLIC_URL=http://localhost:4000 --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse:0.12
 > curl -fsSL http://localhost:4000/setup.sh | bash
 > ```
 
@@ -340,8 +340,8 @@ What it does:
 
 - checks its prerequisites up front and names anything missing, with the package-manager command to install it, before it installs or writes any file (it may first remove group and other write permission from its own `~/.agentpulse` directories, which a umask of 002 leaves group-writable): `curl`, `git`, `python3` (when the supervisor or the agent hooks will be set up, so not with `--skip-supervisor --skip-hooks`, nor with `--disable-auth false` and no `--api-key`, which skips both), and, only when it has to install Bun, `unzip` and `shasum` or `sha256sum`
 - uses a Bun 1.3.12 or newer that's already there (`~/.bun`, or on your `PATH`), as long as it is owned by you or root, isn't writable by anyone else (Homebrew's, in macOS group `admin`, is fine) and sits on a path of letters, digits and `/ . _ + - @`. If it's a symbolic link, the directory of each link and of the target, and every directory above each, must meet the same rule. Otherwise it installs the pinned Bun 1.3.12 release, checked against its SHA-256, into `~/.agentpulse/bun`, or into `$BUN_INSTALL/bin` if you set `BUN_INSTALL`. It doesn't edit your shell rc files, so `bun` isn't added to your interactive `PATH`; the services are given the path of the Bun that was chosen. To pick the location, run `curl -fsSL … | BUN_INSTALL=/opt/bun bash` (supply it again on a re-run; any `BUN_INSTALL` other than `~/.bun` that holds an unusable Bun is refused)
-- clones AgentPulse to `~/.agentpulse/app`
-- builds the app
+- clones AgentPulse to `~/.agentpulse/app` at the latest release tag (not a branch), installs with a frozen lockfile, and builds the app. `--ref <branch-or-tag>` follows that ref instead (`--ref main` for the development branch); such an install is never updated by `agentpulse update`
+- writes `~/.agentpulse/bin/agentpulse`, a small script that runs AgentPulse's own commands with the Bun the installer chose. It never edits your shell rc files; add `export PATH="$HOME/.agentpulse/bin:$PATH"` yourself to type `agentpulse` from any shell. It refuses to run as root
 - stores SQLite data in `~/.agentpulse/data`
 - starts AgentPulse as a local service
   - macOS: `launchd`
@@ -409,16 +409,143 @@ That observability-only mode still gives you:
 - notes and instruction-file editing
 - remote viewing if you later use the relay path
 
+Installing only a supervisor, for a server that runs elsewhere (Linux or macOS):
+
+```bash
+curl -fsSL https://agentpulse.example.invalid/install-local.sh | AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=<token> bash -s -- --supervisor-only --server-url https://agentpulse.example.invalid
+```
+
+Create the enrollment token on the Hosts page. The token goes on the `bash` side of the pipe, as a variable: the installer never takes it from the command line, and without the variable it asks for it at a hidden prompt. This installs the checkout, the supervisor service, the shim and the updater, and no server and no database. A plain `http://` server URL works on a trusted network, with a line saying the link isn't encrypted: anyone on that network can read what this host and the server say to each other, and could hold the host back from an update or move it early to a newer signed release, but can't supply code (code always comes from GitHub, pinned by commit).
+
+### Updating a local install
+
+`~/.agentpulse/bin/agentpulse update`, run on the machine that runs the server (or, for `--supervisor-only`, on that host), moves a release-tracking local install to the latest release:
+
+- It checks the signed release list (taken from the server's stored copy, or from the project's release site when the server can't be reached; not at all when the server reports `AGENTPULSE_UPDATE_CHECK=off`, see [Version check](#version-check)), refuses anything it can't verify, and never moves to a withdrawn, older or previously failed version (`--to vX.Y.Z` names one; `--allow-downgrade` is the explicit flag for going older).
+- It stages the release beside the running copy (`bun install --frozen-lockfile --ignore-scripts`, then the build; a release with no `bun.lock`, or one that isn't a plain file, is refused as `install_failed` before anything is installed, because Bun's frozen install succeeds without a lockfile), starts that copy once on a throwaway copy of the database, and only then waits for the supervisor to be idle, stops the services, swaps the directories and starts the new ones. The previous copy stays as `~/.agentpulse/app.previous`.
+- It refuses a checkout with changes (`dirty_tree`) or stray files (`untracked_files`). Build output, `node_modules`, `.env*` files, `.DS_Store`, `__pycache__` and `.claude/` are tolerated; the `.env*` files are copied to the new copy unchanged.
+- The supervisor must be idle (no session running, no open approval, no terminal) for a minute. The update waits up to 10 minutes (`--wait`: 2 hours), then drains for at most 2 minutes, during which a new launch or prompt on that host is refused with "This host is updating AgentPulse" and Stop keeps working.
+- If the new copy doesn't answer its health check (or its database identity changed), it puts the previous copy back, restarts what was running and never tries that version again. Events the server was sent while it was down are not recorded.
+- A SQLite update that adds a migration first takes a snapshot of the database in `~/.agentpulse/update-snapshots/` (the newest two are kept; they hold deleted-session data until replaced). `agentpulse update rollback` then restores it and goes back to the previous copy, losing what was written since. **A Postgres install is never updated across a migration:** back up the database, then re-run `install-local.sh` yourself.
+- `agentpulse update status` says what this machine knows. A run that was cut short (a crash, a power cut) is finished or undone first by the next `agentpulse update`.
+- It needs a service manager (launchd or `systemd --user`; with `loginctl enable-linger` on a server) and refuses in a container or a Kubernetes pod. The git it runs ignores your own git config, so set `HTTPS_PROXY` in the environment if you need a proxy.
+- Disk: besides the running copy it keeps `app.previous`, stages a second tree while it works, keeps a failed copy after a rollback until the next update, and (SQLite, when a migration is crossed) up to two database snapshots, so plan for about three copies of the checkout plus two databases. The updater's log (`~/.agentpulse/logs/updater.log`) rotates at about 1 MiB and keeps one older file.
+- It finds where the server listens from `PORT` and `HOST` in the checkout's `.env.local` (then `.env`), falling back to what the installer recorded; it never probes a public server URL over plain http.
+- What it does not do: it doesn't manage the relay, the statusline or the exclude check (a relay can refresh its own files if you let it: see [Letting the relay refresh itself](#letting-the-relay-refresh-itself-opt-in)); it identifies the server's stop by the service label and the loopback port only; it doesn't check `loginctl enable-linger`. Re-running `install-local.sh` on an existing install follows the newest release tag read from the git remote without the signed release list, so on an existing install prefer `agentpulse update`. The real `launchctl` and `systemctl` calls are covered by stub runners in tests, not exercised against live services.
+- On Windows there is no updater: re-run `install-local.ps1` (it follows releases too, and never moves a checkout that has commits the release doesn't).
+
+#### Automatic updates (opt-in, off by default)
+
+`~/.agentpulse/bin/agentpulse update auto on [--allow-migrations] [--window HH:MM-HH:MM]` lets this machine update itself. Run it in your own terminal. It asks you to type a phrase with a random part that changes every run (`enable 3fa9c1`, or `allow migrations 3fa9c1` with `--allow-migrations`), refuses without a terminal, and refuses, naming the variable, when it sees one an agent session sets (Claude Code, Codex, OpenCode, Copilot, or any `AGENTPULSE_*` variable but the one the shim sets). The choice is a file on this machine (`~/.agentpulse/update-consent.json`); no server setting, web control, API key or MCP tool can turn it on, so a server can't update a machine whose own operator never agreed. `agentpulse update auto off` removes it.
+
+What that guards, and what it doesn't. Any agent that runs commands as your account (Claude Code, Codex, Copilot CLI, OpenCode, a script) can do what you can, so this is a tripwire, not a boundary: an agent that scrubs its environment, or runs the command through a login shell that resets it, passes the variable check; one that drives a terminal reads the random phrase off the prompt as you would; and one with your file permissions can write `update-consent.json` and install the timer itself. A parent-process walk was considered and left out because the process table is as reshapable by the agent as its environment.
+
+- It installs a timer through launchd (`dev.agentpulse.updater`) or `systemd --user` (`agentpulse-updater.timer`) that runs `agentpulse update --auto` every six hours, with a PATH of fixed system directories plus the directories of the Bun and the git it found (not your whole PATH). On a server, `loginctl enable-linger <user>` keeps a systemd user timer running when nobody is logged in.
+- A scheduled run applies a release only if it is signed and fresh, stable (never a pre-release), newer than what is installed, not withdrawn, not one that failed here before, and at least 24 hours old (a security fix skips the wait). It runs only inside the window, and it won't cross a database migration unless you allowed migrations (a Postgres migration is never crossed). It waits up to 30 minutes for the supervisor to be idle and otherwise tries again on the next run; that, a closed window and the 24-hour wait are "not yet", not failures.
+- A failure holds the next scheduled run back 1 hour, then 6 hours, then 24 hours (the hold is written before the services are stopped, so a crash can't turn into a loop); `agentpulse update` by hand is never held back, and a successful one ends the hold. A version that failed after the install was touched (a rollback, a service that wouldn't stop, a snapshot that failed, or an update cut short) is never tried again. `agentpulse update status` shows the last outcome and when the hold ends, and an admin sees both on the Updates card in Settings. If the release list can't be fetched or verified (a blocked feed), that counts as a failure, so a security release can reach this machine up to 24 hours late in that case; update by hand if you know one is out.
+
 ### 2. Local Docker container
 
 Best if you already use Docker locally.
 
 ```bash
-docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
+docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse:0.12
 curl -fsSL http://localhost:3000/setup.sh | bash
 ```
 
 > **Security note:** `-p 127.0.0.1:3000:3000` binds the host port to localhost only when `DISABLE_AUTH=true`. Use this form for local-only Docker; the older `-p 3000:3000` shorthand publishes on all host interfaces.
+
+#### Docker image tags and updates
+
+The examples use `:0.12`, a release line. Replace it with the version you want. A container never updates itself: AgentPulse tells you a newer release exists (see [Version check](#version-check)), and you move the tag.
+
+| Tag | Moves? | Notes |
+|---|---|---|
+| `X.Y.Z` (for example `0.12.3`) | Never | The exact release. Recommended for production. |
+| `X.Y` (for example `0.12`) | Yes, to the newest `0.12.z` | Recommended if you want patch fixes without a manual edit. |
+| `X` | Yes, to the newest `0.y.z` | Takes new minor releases, which can include database migrations. |
+| `latest` | Yes | Always the highest stable release. Don't use it for anything you rely on. |
+| `sha-<12 hex>` | Never | One build of one commit. |
+
+`X.Y`, `X` and `latest` move only for the highest stable release, so a backport to an older line never takes `latest`. A pre-release (`X.Y.Z-rc.1`) gets only its own tag and a `sha-` tag. The `agentpulse-backup` image used by the Kubernetes manifests carries the same tags.
+
+**Back up the volume first.** Stop the container, then copy the data volume:
+
+```bash
+docker stop agentpulse
+docker run --rm -v agentpulse-data:/data -v "$PWD":/backup alpine tar czf /backup/agentpulse-data-$(date +%F).tgz -C /data .
+```
+
+After a release that adds a database migration, an older image can refuse to start on the migrated database. Rolling back an image is therefore not a guaranteed undo: the rollback is to restore that backup (into the volume, with the container stopped) and start the older tag.
+
+**Updating by hand:**
+
+```bash
+docker pull ghcr.io/jstuart0/agentpulse:0.12.3
+docker stop agentpulse && docker rm agentpulse
+# run again with the same options, the new tag, and the same -v agentpulse-data:/app/data
+```
+
+**With the compose files.** `docker-compose.yml` builds from your checkout. To run the published image, add the override file, which sets only the image (and a Watchtower label) and needs `AGENTPULSE_TAG`:
+
+```bash
+AGENTPULSE_TAG=0.12.3 docker compose -f docker-compose.yml -f docker-compose.image.yml pull
+AGENTPULSE_TAG=0.12.3 docker compose -f docker-compose.yml -f docker-compose.image.yml up -d
+```
+
+(The override needs Docker Compose 2.24 or later; it unsets the base file's `build`.) The `agentpulse-data` volume stays in place.
+
+**Checking the image.** The signed release list that drives the update notice doesn't cover container images. Both images carry a build-provenance attestation; verify one with the GitHub CLI before you run it:
+
+```bash
+gh attestation verify oci://ghcr.io/jstuart0/agentpulse:0.12.3 --repo jstuart0/agentpulse
+```
+
+**Limits.** Images are `linux/amd64` only (on Apple silicon Docker runs them under emulation, or use the Bun install). The image has no `HEALTHCHECK`, so `docker ps` shows no health state and an orchestrator that restarts unhealthy containers needs its own probe of `GET /api/v1/health` (by IP or `localhost`: see [Opening an auth-off server by name](#opening-an-auth-off-server-by-name)). Migrations run at start, so a container can be briefly unhealthy while an update applies.
+
+##### Getting told about a new image
+
+Pick one. All of them only notice or pull; none can back up your volume or undo a migration, so the first three suit a pinned `X.Y.Z`/`X.Y` that you move on purpose.
+
+1. **Diun (recommended): notifies, never changes a container.** It watches the registry for new tags and messages you. Run it next to your containers and label AgentPulse:
+
+   ```yaml
+   services:
+     diun:
+       image: crazymax/diun:latest
+       command: serve
+       volumes:
+         - diun-data:/data
+         - /var/run/docker.sock:/var/run/docker.sock:ro
+       environment:
+         - DIUN_WATCH_SCHEDULE=0 */6 * * *
+         - DIUN_PROVIDERS_DOCKER=true
+         # Add a notifier, for example DIUN_NOTIF_TELEGRAM_TOKEN / DIUN_NOTIF_TELEGRAM_CHATIDS.
+     agentpulse:
+       image: ghcr.io/jstuart0/agentpulse:0.12.3
+       labels:
+         - diun.enable=true
+         - diun.watch_mode=all
+         - diun.include_tags=^\d+\.\d+\.\d+$$
+   volumes:
+     diun-data:
+   ```
+
+   `watch_mode=all` watches every tag in the repository and the regex keeps only plain `X.Y.Z` tags (no pre-releases, no `sha-` tags). The `$$` is how compose writes a literal `$`; in a plain Diun file write `$`. For Kubernetes, Diun's Kubernetes provider works the same way with `diun.enable` annotations on the deployment.
+2. **Compose on a timer.** A cron job or systemd timer that runs the two `docker compose ... pull` and `up -d` commands above with the tag you've decided on. Nothing moves until you change `AGENTPULSE_TAG`.
+3. **Podman.** Add `--label io.containers.autoupdate=registry` to the container (or `AutoUpdate=registry` in a Quadlet unit) and enable `podman-auto-update.timer`. With a pinned `X.Y.Z` tag it never moves; with `X.Y` it takes patch releases. Podman restarts the container on the new image and rolls back if the new one fails to start under systemd.
+4. **Watchtower (automatic pulls, use with care).** `containrrr/watchtower` is archived; its maintained successor is `nickfedor/watchtower`. Scope it to AgentPulse with its label so it touches nothing else, and use an `X.Y` tag so it can only take patch releases:
+
+   ```bash
+   AGENTPULSE_TAG=0.12 docker compose -f docker-compose.yml -f docker-compose.image.yml up -d
+   docker run -d --name watchtower --restart unless-stopped \
+     -v /var/run/docker.sock:/var/run/docker.sock \
+     -e WATCHTOWER_LABEL_ENABLE=true -e WATCHTOWER_CLEANUP=true \
+     -e WATCHTOWER_POLL_INTERVAL=21600 \
+     nickfedor/watchtower
+   ```
+
+   **Mounting the Docker socket gives the container root on the host.** Anyone who can run code in Watchtower, or who can make it run something, owns the machine. Watchtower takes no backup, so a patch release that migrates your database is applied with no restore point. Prefer Diun.
 
 ### 3. Remote dashboard + local hooks
 
@@ -460,7 +587,7 @@ docker run -d -p 0.0.0.0:3000:3000 -v agentpulse-data:/app/data \
   -e HOST=0.0.0.0 \
   -e AGENTPULSE_LOCAL_ADMIN_USERNAME=admin \
   -e AGENTPULSE_LOCAL_ADMIN_PASSWORD=<strong-password> \
-  --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
+  --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse:0.12
 ( ap_key=$(if [ -t 0 ]; then s=$(stty -g 2>/dev/null) && stty -echo 2>/dev/null || { echo "Can't hide the key while you type it, so it won't be asked for here. Use the scripted form in the docs instead." >&2; exit 1; }; trap 'echo >&2; exit 130' INT TERM HUP; trap 'stty "$s" 2>/dev/null' EXIT; fi; printf 'AgentPulse API key: ' >&2; IFS= read -r k; if [ -t 0 ]; then echo >&2; fi; printf %s "$k") && case "$ap_key" in '') echo "No API key entered; nothing was installed." >&2; false;; *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*) echo "The API key can only contain letters, digits, '.', '_' and '-'; nothing was installed." >&2; false;; *) export AGENTPULSE_KEY="$ap_key"; curl -fsSL http://localhost:3000/setup.sh | bash;; esac )
 # Dashboard: http://localhost:3000 (local) or http://your-ip:3000 (LAN)
 ```
@@ -528,6 +655,17 @@ Both:
   Config:  cat ~/.agentpulse/config.json
 ```
 
+#### Letting the relay refresh itself (opt-in)
+
+Off by default. `bun ~/.agentpulse/relay.ts update auto on` (use the Bun path the installer printed if `bun` isn't on your PATH) lets this relay replace its own files, only these three: `relay.ts`, `~/.claude/statusline-agentpulse.sh` and `~/.agentpulse/exclude-check.sh`. Agent config files (hooks in `~/.claude`, `~/.codex`, ...) are never touched; re-run the installer for those. Run it in your own terminal: it asks you to type a phrase with a random part that changes every run, refuses without a terminal, and refuses when it sees an agent-session variable (the same tripwire, and the same limits, as the app's `update auto on` above). `update auto off` and `update auto status` do what they say. The choice is the `clients` part of `~/.agentpulse/update-consent.json` on this machine; the `app` part, if you set it, is left exactly as it is.
+
+- **One-time re-install.** A relay installed before this can't do it. Re-run the relay installer once: it installs `~/.agentpulse/relay-launch.sh` and points the launchd or systemd unit at it. The relay refreshes itself only when the launcher started it (`AGENTPULSE_RELAY_LAUNCHER=1`); one you start by hand never does.
+- **What it needs to hold.** Every hour, with nothing sent but two plain GETs to your own server (no key, cookie or custom header; no redirect is followed; https, or a loopback address, only): the server's `/api/v1/health?manifest=1` and `/setup-relay.sh`. The signed release manifest must verify against the key built into the relay and not be stale or older than one the relay already accepted; your server's version must be a newer, signed, stable release that isn't withdrawn and isn't below the manifest's minimum; and every file your server serves must hash to that release's digest. Anything else writes nothing.
+- **Which files change.** The relay, the statusline and the exclude check are each replaced only if the copy on disk is a plain file of yours that is byte for byte a copy an earlier release shipped; a link (a development checkout), a file you edited, or a newer one is left alone, and the relay log says which. The server's own version is only a hint: if the signed manifest lists a newer security release, nothing is applied until your server has caught up. Each new file is written beside the old one (`.new`), tried in a throwaway home with a scrubbed environment (the relay checks it excludes what it should; the shell files must parse and behave), and only then renamed into place. If any check fails, nothing is replaced, the version is remembered as refused (`relay-update-state.json`) and not tried again.
+- **If the new relay doesn't start.** The old relay is kept as `relay.ts.prev` (and the statusline and exclude check it replaced as `statusline-agentpulse.sh.prev` and `exclude-check.sh.prev`, so a rollback never leaves the three at different releases) and the relay exits so the launcher starts the new one. A crash halfway through the swap, which leaves no `relay.ts`, is repaired the same way at the next start. The new relay removes `relay-pending.json` once it is listening on `127.0.0.1` and its own `/health` answers within 30 seconds, whatever your remote server is doing. If it hasn't done that after two starts, the launcher puts `relay.ts.prev` back and that version isn't tried again.
+- **Limits.** A healthy update can be rolled back for good if two unrelated restarts land inside the 30-second confirm window; that version is skipped until the next release. A relay that hangs before it binds its port isn't counted as a failed start. `relay-launch.sh` is never updated by the relay, so a launcher fix needs a re-run of the installer.
+- **Where it doesn't help.** A statusline or exclude check from a release that has left the manifest's list of 30 is left alone; a machine with no relay never refreshes those two; hooks written into agent configs are yours to re-install when a release changes them. Nothing here has been run against a real launchd or systemd service in this repo's tests (the units are stubbed); `exit(0)` being restarted by `KeepAlive` / `Restart=always` is the documented behaviour and is checked by hand on a real machine before relying on it.
+
 **Reset or uninstall the relay.** Everything the relay keeps lives in `~/.agentpulse/`:
 
 | Path | What it is |
@@ -535,6 +673,8 @@ Both:
 | `config.json` | Server URL, API key, port, `codex_name_policy` |
 | `installed.json` | When the installer last wrote the agent hooks |
 | `relay.ts`, `logs/` | The relay and its logs |
+| `relay-launch.sh` | What the service unit runs: starts the relay and puts the previous one back if a refreshed one fails to start twice |
+| `relay.ts.prev`, `exclude-check.sh.prev`, `~/.claude/statusline-agentpulse.sh.prev`, `relay-pending.json`, `relay-update-state.json`, `relay-update-refused.json`, `update-consent.json` | Self-refresh: the previous relay, a refresh waiting to be confirmed, what the relay has accepted or refused, and your consent |
 | `bun/` | The pinned Bun 1.3.12 that the relay and the local install use when no usable Bun (1.3.12+, owned by you or root, not writable by others) was found |
 | `status` | The one-line hint the statusline shows (absent when all is well) |
 | `local-sessions.json` | Sessions this relay forwarded hooks for (the only ones it syncs CLAUDE.md for) |
@@ -646,6 +786,7 @@ AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). T
 | `DO_NOT_TRACK` | | Set `1` to disable telemetry (standard) |
 | `AGENTPULSE_TELEMETRY_MODE` | inferred | Telemetry install class override: `self_hosted_real`, `production`, `dev`, `test`, or `ci` |
 | `AGENTPULSE_TELEMETRY_TEST` | | Set `1` to force this install to report as `test` |
+| `AGENTPULSE_UPDATE_CHECK` | `on` | Set `off` (or `false`, `0`) to stop the daily check for a newer release. Separate from telemetry: `DO_NOT_TRACK` and `AGENTPULSE_TELEMETRY` don't turn it off. See [Version check](#version-check). |
 | `AGENTPULSE_AI_ENABLED` | `false` | Compile the AI Labs layer in at boot. Off = zero AI services, routes, or UI (non-AI install footprint is identical to pre-AI). |
 | `AGENTPULSE_SECRETS_KEY` | | Required when `AGENTPULSE_AI_ENABLED=true`, and for mobile push (it encrypts each phone's relay send token; without it phones can't register). 32+ random chars; encrypts credentials at rest (AES-256-GCM). |
 | `AGENTPULSE_PUSH_RELAY_URL` | | The push relay for the companion app, e.g. `https://relay.example.com`. https only (plain http only for loopback outside production). Push is off unless this and `AGENTPULSE_SECRETS_KEY` are both set. |
@@ -672,6 +813,19 @@ Telemetry classification defaults:
 - prerelease/dev builds report as `dev`
 - stable production builds report as `self_hosted_real`
 - set `AGENTPULSE_TELEMETRY_MODE=test` or `AGENTPULSE_TELEMETRY_TEST=1` for local/test deployments so they do not pollute real-world usage counts
+
+## Version check
+
+The server looks for a newer release once a day. It makes one `GET` of a signed release manifest from a fixed HTTPS address (the project's GitHub Pages site). The request carries no cookie, no query string, no custom header, no installation id and no server address, so it says nothing about you beyond what any web request does. A response over 32 KiB, a redirect or a non-HTTPS address is refused. A failed check is silent: it backs off (1 hour, 6 hours, then 24 hours), writes at most one short log line a day, and never changes `/api/v1/health`'s `status`. An airgapped server shows no banner and no error.
+
+The manifest is signed with a key whose public half ships in the code. A server that can't verify it (including every install until the first signed release) shows a quiet "Can't verify updates. Update by hand." and nothing red. When it verifies, an admin sees an "Update available" badge in the top bar, or a red banner for a security release, a withdrawn version or a version that is no longer supported; everyone else sees only the red ones. **Settings > Updates** shows the running and latest versions, how to update for how this server is installed, and a **Check now** button (admins, once a minute; with `DISABLE_AUTH=true` only from `localhost`).
+
+Nothing updates itself. The check only tells you.
+
+- In a container or Kubernetes pod the Updates card shows the commands for your install kind and nothing runs by itself; see [Docker image tags and updates](#docker-image-tags-and-updates).
+- Turn it off with `AGENTPULSE_UPDATE_CHECK=off`. `DO_NOT_TRACK=1` doesn't turn it off, because this request identifies nothing. Off covers this machine's updater too: when the server answers and says its check is off, `agentpulse update` (by hand or scheduled) doesn't fetch the release list and doesn't update, and ends with `update_check_off`; turn the check back on, or update by hand (`install-local.sh`). If the server can't be reached, the updater reads the release list from the same fixed address as the server would, and a server whose check is on but that holds no verified list yet is treated the same way.
+- `GET /api/v1/health` carries `update` and `GET /api/v1/capabilities` carries the full status (`state` may be a name a newer server adds; treat anything you don't know as unknown). `GET /api/v1/health?manifest=1` also returns the verified envelope.
+- The MCP tool `get_update_status` reads the same status.
 
 ## Teams
 

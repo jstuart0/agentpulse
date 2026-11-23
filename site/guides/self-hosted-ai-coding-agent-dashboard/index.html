@@ -57,10 +57,11 @@
 		<h2>Docker, on your own machine</h2>
 		<p>This starts the container bound to localhost, waits for it to be healthy and configures the agent hooks:</p>
 		<pre><code>docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true \
-  --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse \
+  --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse:0.12 \
   &amp;&amp; until curl -fsSL http://localhost:3000/api/v1/health &gt;/dev/null 2&gt;&amp;1; do sleep 1; done \
   &amp;&amp; curl -sSL http://localhost:3000/setup.sh | bash</code></pre>
 		<p>The <code>127.0.0.1:</code> prefix matters. <code>DISABLE_AUTH=true</code> turns off login, so the port must not be reachable from your network.</p>
+		<p><code>0.12</code> is a release line: use <code>X.Y.Z</code> or <code>X.Y</code>, never an untagged image. Back up the <code>agentpulse-data</code> volume before you move to a newer tag, because an older image may not start on a migrated database. The <a href="https://github.com/jstuart0/agentpulse#docker-image-tags-and-updates">README</a> has update recipes (Diun, Watchtower, compose, Podman) and how to verify the image.</p>
 
 		<h2>A server for several machines</h2>
 		<p>Run AgentPulse with authentication on (the default), then install the relay on each machine that runs agents. The relay listens on localhost, queues events on disk and forwards them to the server with an API key:</p>
@@ -82,7 +83,7 @@
 		<ul>
 			<li>Event retention is off by default. Set a retention period in Settings to delete old events automatically.</li>
 			<li>Each machine can list directories in <code>~/.agentpulse/exclude</code>. The relay and supervisor never send sessions from those directories, and the server never learns the list.</li>
-			<li>Anonymous usage telemetry is on by default. Turn it off with <code>AGENTPULSE_TELEMETRY=off</code> or <code>DO_NOT_TRACK=1</code>.</li>
+			<li>Anonymous usage telemetry is on by default. Turn it off with <code>AGENTPULSE_TELEMETRY=off</code> or <code>DO_NOT_TRACK=1</code>. The check for a newer release is separate and only tells you; turn it off with <code>AGENTPULSE_UPDATE_CHECK=off</code>.</li>
 		</ul>
 
 		<div class="related">

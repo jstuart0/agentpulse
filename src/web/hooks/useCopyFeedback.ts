@@ -8,13 +8,19 @@ import { toast } from "sonner";
  * All copy actions now surface in the same bottom-right toast region.
  */
 export function useCopyFeedback() {
-	const copy = async (text: string, label = "Copied") => {
+	/** Copies and says so in a toast; resolves true when the clipboard took it. */
+	const copyWithResult = async (text: string, label = "Copied", failureLabel = "Copy failed") => {
 		try {
 			await navigator.clipboard.writeText(text);
 			toast.success(label);
+			return true;
 		} catch {
-			toast.error("Copy failed");
+			toast.error(failureLabel);
+			return false;
 		}
 	};
-	return { copy };
+	const copy = async (text: string, label = "Copied", failureLabel = "Copy failed") => {
+		await copyWithResult(text, label, failureLabel);
+	};
+	return { copy, copyWithResult };
 }

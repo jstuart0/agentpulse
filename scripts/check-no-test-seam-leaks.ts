@@ -16,6 +16,7 @@
  * test-utils/ directory references one, if production code in the seam's own
  * file calls it, or if production code imports from test-utils/.
  */
+import { existsSync } from "node:fs";
 import { collectTestSeamViolations } from "./lib/test-seam-utils.js";
 
 const DEFAULT_ROOT = new URL("..", import.meta.url).pathname;
@@ -32,11 +33,22 @@ async function main() {
 	const root = repoRoot();
 	// `src` holds the seams; `bin` and the MCP package are shipped code that could import one. `scripts/` is
 	// left out on purpose: its dev tools legitimately load test fixtures.
-	const violations = await collectTestSeamViolations(root, [
-		`${root}src`,
-		`${root}bin`,
-		`${root}packages/agentpulse-mcp/src`,
-	]);
+	// `scripts/relay.ts` is one shipped, self-contained file with a seam of its own (the consent command's terminal
+	// check and prompt), so it is read as well: its seam counts, and the shipped trees may not reach it.
+	const relay = `${root}scripts/relay.ts`;
+	const hasRelay = existsSync(relay);
+	// A tree given with `--root` is a fixture and may have none; the real tree always does, and a guard that
+	// quietly stopped reading it would stop guarding its seam.
+	if (!hasRelay && process.argv.indexOf("--root") === -1) {
+		throw new Error(
+			"scripts/relay.ts is missing: the seam guard reads it for its consent-command seam",
+		);
+	}
+	const violations = await collectTestSeamViolations(
+		root,
+		[`${root}src`, `${root}bin`, `${root}packages/agentpulse-mcp/src`],
+		hasRelay ? [relay] : [],
+	);
 
 	if (violations.length > 0) {
 		console.error(

@@ -1,0 +1,155 @@
+/**
+ * Reads of what an AgentPulse process keeps privately on disk: a directory only this account can write
+ * into, and a plain file only this account can read or write, opened without following a symlink. The
+ * supervisor's private store re-exports these, and the update modules read the install record, the
+ * consent file and the status files through them. Imports only `exclude-rules` for the Windows ACL check.
+ */
+import { constants, closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { dirname } from "node:path";
+import { checkWindowsSecurityAt } from "./exclude-rules.js";
+
+const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+
+type DirectoryStat = { isDirectory(): boolean; uid: number; mode: number };
+type FileStat = { isFile(): boolean; nlink: number; size: number; uid: number; mode: number };
+
+/** A directory this account owns that nobody else can write into (POSIX; Windows is judged by its ACL instead). */
+export function isTrustedDirectoryStat(st: DirectoryStat, uid: number | undefined): boolean {
+	if (!st.isDirectory()) return false;
+	if (uid !== undefined && st.uid !== uid) return false;
+	return (st.mode & 0o022) === 0;
+}
+
+/** A plain file with one link, within `maxBytes`, that only this account can read or write (POSIX). */
+export function isTrustedStateFileStat(
+	st: FileStat,
+	uid: number | undefined,
+	maxBytes: number,
+): boolean {
+	return (
+		st.isFile() &&
+		st.nlink === 1 &&
+		st.size <= maxBytes &&
+		(uid === undefined || st.uid === uid) &&
+		(st.mode & 0o077) === 0
+	);
+}
+
+/** `dir` exists and is a directory only this account can write into (never a symlink). */
+function trustedDirectoryAs(dir: string, ownerUid: number | undefined): boolean {
+	try {
+		const st = lstatSync(dir);
+		if (process.platform === "win32")
+			return st.isDirectory() && checkWindowsSecurityAt(dir) === null;
+		return isTrustedDirectoryStat(st, ownerUid);
+	} catch {
+		return false;
+	}
+}
+
+export function trustedDirectory(dir: string): boolean {
+	return trustedDirectoryAs(dir, process.getuid?.());
+}
+
+/** Test only: the owner uid the directory must belong to, to simulate a wrong owner. */
+export function trustedDirectoryForTests(dir: string, ownerUid: number | undefined): boolean {
+	return trustedDirectoryAs(dir, ownerUid);
+}
+
+function isMissing(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/**
+ * Reads an open file as text, at most `maxBytes`, and no more than `size` (what the file was measured
+ * at, when known): it asks for one byte more and answers null if that byte arrives, so a file that grew
+ * after its size was checked is rejected rather than read whole, and a small file never costs a large buffer.
+ */
+export function readBoundedText(fd: number, maxBytes: number, size?: number): string | null {
+	// Never more than the file was measured at (or the bound): a small file costs a small buffer, and one
+	// that grew since it was measured is rejected like one that is too big.
+	const limit = size === undefined ? maxBytes : Math.min(maxBytes, size);
+	const buffer = Buffer.alloc(limit + 1);
+	let length = 0;
+	while (length < buffer.length) {
+		const got = readSync(fd, buffer, length, buffer.length - length, null);
+		if (got === 0) break;
+		length += got;
+	}
+	return length > limit ? null : buffer.toString("utf-8", 0, length);
+}
+
+export type PrivateFileRead =
+	| { kind: "absent" }
+	| { kind: "untrusted"; why: string }
+	| { kind: "ok"; text: string };
+
+/**
+ * Reads a private file: nothing there, a file this account owns privately (its text), or something not
+ * to be believed. The directory must be private, the path is opened without following a symlink, and the
+ * file must be a plain single-link file of at most `maxBytes` that only this account can read or write.
+ * A file in a directory others can write into is untrusted; no file there is simply absent.
+ */
+export function readPrivateFileNoFollow(path: string, maxBytes: number): PrivateFileRead {
+	return readPrivateFileAs(path, maxBytes, process.getuid?.());
+}
+
+/** Test only: the owner uid the file and directory must belong to, to simulate a wrong owner. */
+export function readPrivateFileNoFollowForTests(
+	path: string,
+	maxBytes: number,
+	ownerUid: number | undefined,
+): PrivateFileRead {
+	return readPrivateFileAs(path, maxBytes, ownerUid);
+}
+
+function readPrivateFileAs(
+	path: string,
+	maxBytes: number,
+	ownerUid: number | undefined,
+): PrivateFileRead {
+	const dir = dirname(path);
+	try {
+		lstatSync(dir);
+	} catch (error) {
+		return isMissing(error)
+			? { kind: "absent" }
+			: { kind: "untrusted", why: "its directory cannot be inspected" };
+	}
+	if (!trustedDirectoryAs(dir, ownerUid)) {
+		try {
+			lstatSync(path);
+		} catch (error) {
+			return isMissing(error)
+				? { kind: "absent" }
+				: { kind: "untrusted", why: "its directory is not private to this account" };
+		}
+		return { kind: "untrusted", why: "its directory is not private to this account" };
+	}
+	let fd: number;
+	try {
+		fd = openSync(path, constants.O_RDONLY | O_NOFOLLOW);
+	} catch (error) {
+		return isMissing(error)
+			? { kind: "absent" }
+			: { kind: "untrusted", why: "it cannot be opened as a plain file" };
+	}
+	try {
+		const st = fstatSync(fd);
+		const trusted =
+			process.platform === "win32"
+				? st.isFile() && st.nlink === 1 && st.size <= maxBytes
+				: isTrustedStateFileStat(st, ownerUid, maxBytes);
+		if (!trusted)
+			return { kind: "untrusted", why: "it is not a private plain file of this account" };
+		const text = readBoundedText(fd, maxBytes, st.size);
+		return text === null
+			? { kind: "untrusted", why: "it is larger than allowed" }
+			: { kind: "ok", text };
+	} catch {
+		return { kind: "untrusted", why: "it could not be read" };
+	} finally {
+		closeSync(fd);
+	}
+}

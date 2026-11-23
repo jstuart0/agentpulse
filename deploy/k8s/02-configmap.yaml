@@ -68,6 +68,8 @@ data:
   # other way. Team mode needs authentication and at least one way to sign in
   # as an admin (a local bootstrap admin or a subject listed below), or the
   # server refuses to start.
+  # Daily check for a newer release (notification only; nothing updates itself). "off" stops it.
+  # AGENTPULSE_UPDATE_CHECK: "on"
   # AGENTPULSE_MODE: "solo"
   #
   # Comma-separated identity-provider subjects (the stable uid, never a display

@@ -13,4 +13,10 @@
 # refuses every pid. The killer by process group allows only a group led by a live direct child of the test
 # process, or one whose leader has exited but was a direct child when groupReach was handed it (a grandchild
 # outliving it); pid 1, the parent and any invented pid are refused. It throws if the seams are missing.
-preload = ["./src/server/db/test-env-defaults.ts", "./src/supervisor/test-utils/refuse-foreign-signals.ts"]
+# Loaded third: src/server/test-utils/install-probe-preload.ts gives the update check a fixed install probe, so no test
+# reads a real home to detect the install kind.
+preload = [
+	"./src/server/db/test-env-defaults.ts",
+	"./src/supervisor/test-utils/refuse-foreign-signals.ts",
+	"./src/server/test-utils/install-probe-preload.ts",
+]

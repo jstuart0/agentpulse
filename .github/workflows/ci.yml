@@ -68,6 +68,9 @@ jobs:
           AGENTPULSE_TEST_BACKEND: sqlite
         run: bun test
 
+      - name: Updater crash matrix (every step, every recovery step)
+        run: bun run test:slow
+
       - name: Build frontend
         run: bunx vite build
 

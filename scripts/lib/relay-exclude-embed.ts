@@ -9,6 +9,14 @@
  * would generate differ. One implementation, mechanically embedded.
  */
 
+import {
+	type EmbedMarkers,
+	checkBlock,
+	extractBlock,
+	replaceBlock,
+	withoutImports,
+} from "./relay-embed.ts";
+
 export const RELAY_EXCLUDE_BLOCK_START =
 	"// >>> exclude-rules: generated from src/shared/exclude-rules.ts and src/shared/hook-headers.ts by `bun run embed:exclude-rules`; edit those, never this block";
 export const RELAY_EXCLUDE_BLOCK_END = "// <<< exclude-rules";
@@ -36,10 +44,6 @@ function headerConstant(headersSource: string, name: string): string {
 	return match[0];
 }
 
-function withoutImports(source: string): string {
-	return source.replace(/^import[\s\S]*?from "[^"]+";\n/gm, "");
-}
-
 /** The text that goes between the markers. */
 export function buildEmbeddedBlock({ exclusionSource, headersSource }: EmbedSources): string {
 	const constants = HEADER_CONSTANTS.map((name) => headerConstant(headersSource, name)).join("\n");
@@ -54,45 +58,24 @@ export function buildEmbeddedBlock({ exclusionSource, headersSource }: EmbedSour
 	return `${constants}\n\n${body}\n`;
 }
 
-function markerIndexes(relaySource: string): { start: number; end: number } | string {
-	const starts = relaySource.split(RELAY_EXCLUDE_BLOCK_START).length - 1;
-	const ends = relaySource.split(RELAY_EXCLUDE_BLOCK_END).length - 1;
-	if (starts !== 1 || ends !== 1) {
-		return `scripts/relay.ts must contain exactly one start marker and one end marker (found ${starts} and ${ends})`;
-	}
-	const start = relaySource.indexOf(RELAY_EXCLUDE_BLOCK_START) + RELAY_EXCLUDE_BLOCK_START.length;
-	const end = relaySource.indexOf(RELAY_EXCLUDE_BLOCK_END);
-	if (end < start) return "the end marker comes before the start marker in scripts/relay.ts";
-	return { start, end };
-}
+const MARKERS: EmbedMarkers = { start: RELAY_EXCLUDE_BLOCK_START, end: RELAY_EXCLUDE_BLOCK_END };
 
 /** What is between the markers now (without the newline after the start marker). */
 export function extractEmbeddedBlock(relaySource: string): string {
-	const found = markerIndexes(relaySource);
-	if (typeof found === "string") throw new Error(found);
-	return relaySource.slice(found.start + 1, found.end);
+	return extractBlock(relaySource, MARKERS);
 }
 
 export function replaceEmbeddedBlock(relaySource: string, block: string): string {
-	const found = markerIndexes(relaySource);
-	if (typeof found === "string") throw new Error(found);
-	const body = block.endsWith("\n") ? block : `${block}\n`;
-	return `${relaySource.slice(0, found.start)}\n${body}${relaySource.slice(found.end)}`;
+	return replaceBlock(relaySource, MARKERS, block);
 }
 
 /** Every reason the relay's block is not what the sources generate; empty when it is. */
 export function checkRelayEmbed(sources: EmbedSources & { relaySource: string }): string[] {
-	const fix = "run `bun run embed:exclude-rules` and commit scripts/relay.ts";
-	const found = markerIndexes(sources.relaySource);
-	if (typeof found === "string") return [`${found}; ${fix}`];
-	const expected = buildEmbeddedBlock(sources);
-	const actual = extractEmbeddedBlock(sources.relaySource);
-	if (actual === expected) return [];
-	const a = actual.split("\n");
-	const e = expected.split("\n");
-	let line = 0;
-	while (line < Math.min(a.length, e.length) && a[line] === e[line]) line++;
-	return [
-		`the exclude-rules block in scripts/relay.ts differs from the sources at its line ${line + 1} (expected ${JSON.stringify(e[line] ?? "<end>")}, found ${JSON.stringify(a[line] ?? "<end>")}); ${fix}`,
-	];
+	return checkBlock(
+		sources.relaySource,
+		MARKERS,
+		buildEmbeddedBlock(sources),
+		"exclude-rules",
+		"run `bun run embed:exclude-rules` and commit scripts/relay.ts",
+	);
 }

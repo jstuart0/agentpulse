@@ -6,12 +6,15 @@ import { ownershipUi } from "../lib/ownership-ui.js";
 import {
 	deriveHostAccess,
 	deriveHostExcludeNotice,
+	deriveHostUpdateNotice,
 	deriveHostsViewState,
 	enrollmentOwnershipNote,
 	hostActionConfirm,
 	hostOwnerDialogNote,
 	hostOwnerUnchanged,
 	launchHostLabel,
+	supervisorOnlyInstallCommand,
+	supervisorOnlyInstallUnavailableNote,
 } from "./hosts-view-state.js";
 
 function supervisor(id: string): SupervisorRecord {
@@ -372,5 +375,196 @@ describe("the owner dialogs", () => {
 	test("both pages offer a disabled current owner in the picker", () => {
 		expect(read("pages", "HostsPage.tsx")).toContain("withCurrentOwner(");
 		expect(read("pages", "SessionDetailPage.tsx")).toContain("withCurrentOwner(");
+	});
+});
+
+describe("deriveHostUpdateNotice (AGEN-155)", () => {
+	const host = (version: string, features: string[] = [], over: Partial<SupervisorRecord> = {}) =>
+		({
+			...supervisor("u1"),
+			version,
+			capabilities: { launchModes: [], agentTypes: [], features },
+			...over,
+		}) as SupervisorRecord;
+	const current = { current: "0.12.0", state: "current" };
+	const manager = { canManage: true };
+
+	test("a host at the server's version, or ahead of it, has no notice", () => {
+		expect(deriveHostUpdateNotice(host("0.12.0"), current, manager)).toBeNull();
+		expect(deriveHostUpdateNotice(host("0.13.0"), current, manager)).toBeNull();
+	});
+
+	test("a host behind the server's CURRENT version (not the latest release) gets the notice", () => {
+		const notice = deriveHostUpdateNotice(host("0.11.0", ["local_updater"]), current, manager);
+		expect(notice?.kind).toBe("update_host");
+	});
+
+	const V = { kind: "text", text: "This host runs 0.11.0; the server runs 0.12.0. " } as const;
+
+	test("with local_updater: run the command on that host, the host name as its own text part", () => {
+		const notice = deriveHostUpdateNotice(
+			host("0.11.0", ["local_updater"], { hostName: "build-01" }),
+			current,
+			manager,
+		);
+		expect(notice?.parts).toEqual([
+			V,
+			{ kind: "text", text: "Run " },
+			{ kind: "code", text: "~/.agentpulse/bin/agentpulse update" },
+			{ kind: "text", text: " on " },
+			{ kind: "host", text: "build-01" },
+			{ kind: "text", text: "." },
+		]);
+	});
+
+	test("a hostile host name stays a text part: it is never joined into the code part", () => {
+		const notice = deriveHostUpdateNotice(
+			host("0.11.0", ["local_updater"], { hostName: "x`; rm -rf /`" }),
+			current,
+			manager,
+		);
+		const code = notice?.parts.filter((p) => p.kind === "code").map((p) => p.text);
+		expect(code).toEqual(["~/.agentpulse/bin/agentpulse update"]);
+	});
+
+	test("without local_updater: it can't update itself; re-install with --supervisor-only", () => {
+		const notice = deriveHostUpdateNotice(host("0.11.0", []), current, manager);
+		expect(notice?.kind).toBe("reinstall");
+		expect(notice?.parts).toEqual([
+			V,
+			{
+				kind: "text",
+				text: "This host wasn't installed with install-local.sh, so it can't update itself. If it runs only a supervisor, on macOS or Linux re-install it with ",
+			},
+			{ kind: "code", text: "install-local.sh --supervisor-only" },
+			{ kind: "text", text: "." },
+		]);
+	});
+
+	test("when the server itself is behind, it says to update the server first, whatever the host can do", () => {
+		for (const state of ["available", "security", "below_minimum", "current_pulled"]) {
+			const notice = deriveHostUpdateNotice(
+				host("0.11.0", ["local_updater"]),
+				{ current: "0.12.0", state },
+				manager,
+			);
+			expect({ state, kind: notice?.kind }).toEqual({ state, kind: "update_server_first" });
+			expect(notice?.parts).toEqual([
+				V,
+				{ kind: "text", text: "A newer release is out. Update the server first, then this host." },
+			]);
+		}
+	});
+
+	test("only a host's owner or an admin (canManage) is told; nobody else, and not for a revoked host", () => {
+		expect(deriveHostUpdateNotice(host("0.11.0"), current, { canManage: false })).toBeNull();
+		expect(
+			deriveHostUpdateNotice(host("0.11.0", [], { enrollmentState: "revoked" }), current, manager),
+		).toBeNull();
+	});
+
+	test("an unreadable version on either side says nothing rather than guess", () => {
+		expect(deriveHostUpdateNotice(host("weird"), current, manager)).toBeNull();
+		expect(
+			deriveHostUpdateNotice(host("0.11.0"), { current: "dev", state: "current" }, manager),
+		).toBeNull();
+		expect(deriveHostUpdateNotice(host("0.11.0"), null, manager)).toBeNull();
+	});
+
+	test("the old 0.1.0 placeholder a supervisor used to report says nothing about the host", () => {
+		expect(deriveHostUpdateNotice(host("0.1.0"), current, manager)).toBeNull();
+		expect(deriveHostUpdateNotice(host("0.1.0", ["local_updater"]), current, manager)).toBeNull();
+	});
+});
+
+describe("supervisorOnlyInstallCommand", () => {
+	const CMD =
+		/^curl --proto '=https' -fsSL (\S+)\/install-local\.sh \| AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=(\S+) bash -s -- --supervisor-only --server-url (\S+)$/;
+
+	test("the token is a variable on the bash side of the pipe, never before curl and never an argument", () => {
+		const text = supervisorOnlyInstallCommand(
+			"https://agentpulse.example.invalid",
+			"aps_abc-123.XYZ",
+		) as string;
+		const m = CMD.exec(text);
+		expect(m).not.toBeNull();
+		const [, base, token, url] = m as RegExpExecArray;
+		expect(token).toBe("aps_abc-123.XYZ");
+		expect(base).toBe("https://agentpulse.example.invalid");
+		expect(url).toBe(base);
+		// after the `|`, not before `curl`
+		expect(text.indexOf("AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN")).toBeGreaterThan(
+			text.indexOf("|"),
+		);
+		expect(text.startsWith("curl ")).toBe(true);
+		expect(text.match(/aps_abc/g)).toHaveLength(1);
+	});
+
+	test("with no token it shows a placeholder; a token that would need quoting is never put in", () => {
+		expect(supervisorOnlyInstallCommand("https://x.example.invalid", null)).toContain(
+			"ENROLLMENT_TOKEN=<token> bash",
+		);
+		expect(supervisorOnlyInstallCommand("https://x.example.invalid", "a b; rm -rf /")).toContain(
+			"ENROLLMENT_TOKEN=<token> bash",
+		);
+	});
+
+	test("an origin that isn't a plain http(s) address gives no command", () => {
+		for (const origin of [
+			"javascript:alert(1)",
+			"ftp://x.example.invalid",
+			["https://user", "pw@x.example.invalid"].join(":"),
+			"https://x.example.invalid/path",
+			"not a url",
+			"https://x.example.invalid/?q=1",
+		]) {
+			expect(supervisorOnlyInstallCommand(origin, "t")).toBeNull();
+		}
+	});
+
+	test("the Hosts and Settings pages build it through the helper, with the token after the pipe", () => {
+		for (const file of ["HostsPage.tsx", "SettingsPage.tsx"]) {
+			const text = readFileSync(join(import.meta.dir, file), "utf-8");
+			expect(text, file).toContain("supervisorOnlyInstallCommand(");
+			// no page spells the variable before a curl by hand
+			expect(text, file).not.toMatch(/AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=\S+\s+curl/);
+		}
+	});
+
+	test("curl is pinned to https, and a plain-http page gets a note instead of a pipe-to-bash line", () => {
+		expect(supervisorOnlyInstallCommand("https://x.example.invalid", "t")).toContain(
+			"curl --proto '=https' -fsSL ",
+		);
+		expect(supervisorOnlyInstallCommand("http://192.0.2.10:3000", "t")).toBeNull();
+		expect(supervisorOnlyInstallUnavailableNote("http://192.0.2.10:3000")).toContain("plain http");
+		expect(supervisorOnlyInstallUnavailableNote("https://x.example.invalid")).toBeNull();
+	});
+});
+
+describe("the reinstall notice", () => {
+	const server = { current: "0.13.0", state: "current" };
+	const host = (features: string[], os = "linux") =>
+		({
+			version: "0.12.0",
+			hostName: "box",
+			enrollmentState: "active",
+			capabilities: { os, features },
+		}) as unknown as Parameters<typeof deriveHostUpdateNotice>[0];
+	test("a host that also runs the server is never told to reinstall as supervisor-only", () => {
+		expect(deriveHostUpdateNotice(host(["local_server"]), server, { canManage: true })).toBeNull();
+		expect(
+			deriveHostUpdateNotice(host(["local_server", "local_updater"]), server, { canManage: true })
+				?.kind,
+		).toBe("update_host");
+	});
+	test("a Windows host gets no bash command", () => {
+		const n = deriveHostUpdateNotice(host([], "windows"), server, { canManage: true });
+		expect(n?.kind).toBe("reinstall");
+		expect(n?.parts.some((p) => p.kind === "code")).toBe(false);
+		expect(JSON.stringify(n)).toContain("install-local.ps1");
+	});
+	test("an unknown platform's command is labelled macOS or Linux", () => {
+		const n = deriveHostUpdateNotice(host([], "unknown"), server, { canManage: true });
+		expect(JSON.stringify(n)).toContain("macOS or Linux");
 	});
 });

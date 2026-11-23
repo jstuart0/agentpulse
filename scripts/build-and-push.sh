@@ -7,6 +7,8 @@
 #
 # After pushing, update the image: field in deploy/k8s/04-deployment.yaml
 # (or the homelab deployment-patch.yaml) to the printed tag, then apply.
+# This script is SHA-only and is not how releases are made: release images (X.Y.Z, X.Y, X, latest) are
+# built by .github/workflows/release.yml (see docs/RELEASING.md).
 # See deploy/k8s/README.md for the full operator workflow.
 #
 # Environment variables:

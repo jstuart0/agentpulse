@@ -1235,3 +1235,66 @@ export interface ForkToolCallDto {
 
 /** The index view of a stored call: the same without `input` and `output` (the keys are absent). */
 export type ForkToolCallIndexEntry = Omit<ForkToolCallDto, "input" | "output">;
+
+// --- Update status (AGEN-155) ---------------------------------------------------------------
+// Vendored from src/shared/update-status.ts (this package can't import it); src/shared/update-status-mcp-parity.test.ts holds the two together.
+
+export type UpdateStateName =
+	| "disabled"
+	| "unverified"
+	| "current_pulled"
+	| "below_minimum"
+	| "security"
+	| "available"
+	| "current";
+
+/** The states that mean the server needs attention now. */
+export const RED_UPDATE_STATES = ["security", "current_pulled", "below_minimum"] as const;
+
+export type UpdateInstallKind = "local" | "kubernetes" | "container" | "source";
+
+/** How the last check ended; `older` and `replayed` mean "valid, but nothing newer than what the server holds". */
+export type UpdateCheckResult =
+	| "ok"
+	| "unreachable"
+	/** No signed release information exists yet (the feed answered 404, or this build ships no release keys). Quiet by design. */
+	| "not_published"
+	| "too_large"
+	| "bad_envelope"
+	| "unknown_key"
+	| "revoked_key"
+	| "bad_signature"
+	| "replayed"
+	| "older"
+	| "future"
+	| "bad_payload";
+
+export interface UpdateLocalApplyStatus {
+	auto: boolean;
+	lastOutcome?: string;
+	lastTarget?: string;
+	at?: string;
+	waitingSince?: string;
+	backoffUntil?: string;
+}
+
+export interface UpdateStatus {
+	current: string;
+	latest: string | null;
+	/** Open on the wire: a newer server may say a name this copy doesn't know. */
+	state: UpdateStateName;
+	stale: boolean;
+	severity: "normal" | "security" | null;
+	checkedAt: string | null;
+	/** The fields from here on go to a manage key or an admin only: a caller without that gets the six above and no more. */
+	lastResult?: UpdateCheckResult | null;
+	manifestIssuedAt?: string | null;
+	installKind?: UpdateInstallKind;
+	track?: "release" | "ref" | null;
+	localApply?: UpdateLocalApplyStatus | null;
+}
+
+/** What `get_update_status` answers on a server that predates the update check. */
+export interface UnknownUpdateStatus {
+	state: "unknown";
+}

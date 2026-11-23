@@ -268,7 +268,13 @@ export function collectViolationsFromFiles(files: SeamFile[]): string[] {
 export async function collectTestSeamViolations(
 	repoRoot: string,
 	roots: string[],
+	extraFiles: string[] = [],
 ): Promise<string[]> {
 	const files = await loadTsFiles(repoRoot, roots);
+	// Files outside the scanned trees that declare seams of their own (scripts/relay.ts): their seams count,
+	// and nothing in the scanned trees may reach one.
+	for (const filePath of extraFiles) {
+		files.push({ rel: relative(repoRoot, filePath), content: await readFile(filePath, "utf8") });
+	}
 	return collectViolationsFromFiles(files);
 }

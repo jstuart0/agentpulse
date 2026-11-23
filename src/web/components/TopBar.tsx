@@ -6,6 +6,7 @@ import { useSignOut } from "../hooks/useSignOut.js";
 import { formatProviderLabel } from "../lib/formatProviderLabel.js";
 import { machinesMenuItems, userMenuItems } from "../lib/nav-items.js";
 import { useUserStore } from "../stores/user-store.js";
+import { UpdateBadge } from "./UpdateBadge.js";
 import { WsStatusChip } from "./WsStatusChip.js";
 
 /**
@@ -28,6 +29,7 @@ export function TopBar() {
 			<span className="mr-auto">
 				<WsStatusChip />
 			</span>
+			<UpdateBadge surface="desktop" />
 			<AdminMenu />
 			<UserMenu user={user} signOutUrl={signOutUrl} disableAuth={disableAuth} />
 		</div>

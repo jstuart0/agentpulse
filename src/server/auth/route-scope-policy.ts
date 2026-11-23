@@ -301,6 +301,8 @@ export const ALWAYS_ADMIN_ROUTES: ReadonlyMap<string, { humanOnly: boolean }> = 
 	["PATCH /api-keys/:id", { humanOnly: false }],
 	["PATCH /admin/supervisors/:id", { humanOnly: false }],
 	["PATCH /sessions/:sessionId/owner", { humanOnly: false }],
+	// Only asks the server to read the public release feed now; it starts nothing anywhere (AGEN-155).
+	["POST /update/check", { humanOnly: false }],
 ]);
 
 /**

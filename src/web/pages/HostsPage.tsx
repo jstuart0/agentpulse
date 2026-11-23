@@ -4,6 +4,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog.js";
 import { HostExcludeNotice } from "../components/HostExcludeNotice.js";
 import { HostOutboxNotice } from "../components/HostOutboxNotice.js";
 import { HostOwnerDialog } from "../components/HostOwnerDialog.js";
+import { HostUpdateNotice } from "../components/HostUpdateNotice.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { useHostsClock } from "../hooks/useHostsClock.js";
 import { useNoteUnknownOwners } from "../hooks/useNoteUnknownOwners.js";
@@ -16,6 +17,7 @@ import { SECRET_LIFETIME_NOTE } from "../lib/one-time-secret.js";
 import { ownerLabel } from "../lib/owner-label.js";
 import { assignablePeople, withCurrentOwner } from "../lib/people.js";
 import { useDbFingerprintStore } from "../stores/db-fingerprint-store.js";
+import { useUpdateStore } from "../stores/update-store.js";
 import { useUserStore } from "../stores/user-store.js";
 import { useUsersStore } from "../stores/users-store.js";
 import { hostsRefreshNotice } from "./host-outbox-view-state.js";
@@ -24,6 +26,9 @@ import {
 	deriveHostsViewState,
 	enrollmentOwnershipNote,
 	hostActionConfirm,
+	serverUpdateOf,
+	supervisorOnlyInstallCommand,
+	supervisorOnlyInstallUnavailableNote,
 } from "./hosts-view-state.js";
 
 /**
@@ -50,6 +55,8 @@ export function HostsPage() {
 	const ui = useOwnershipUi();
 	const viewerUserId = useUserStore((s) => s.userId);
 	const isAdmin = useViewerIsAdmin();
+	const serverStatus = useUpdateStore((s) => s.status);
+	const serverUpdate = serverUpdateOf(serverStatus);
 	const directory = useUsersStore((s) => s.byId);
 	const [ownerDialogHost, setOwnerDialogHost] = useState<SupervisorRecord | null>(null);
 	const [enrollName, setEnrollName] = useState("");
@@ -304,6 +311,17 @@ export function HostsPage() {
 									<div>
 										Then run: <code className="text-foreground">bun run supervisor</code>
 									</div>
+									{supervisorOnlyInstallCommand(window.location.origin, createdToken.token) ? (
+										<div>
+											Or install just the supervisor on that machine:
+											<code className="mt-1 block break-all rounded-md bg-background px-2 py-1.5 text-foreground">
+												{supervisorOnlyInstallCommand(window.location.origin, createdToken.token)}
+											</code>
+										</div>
+									) : null}
+									{supervisorOnlyInstallUnavailableNote(window.location.origin) ? (
+										<div>{supervisorOnlyInstallUnavailableNote(window.location.origin)}</div>
+									) : null}
 									{createdToken.mode === "rotate" && (
 										<div>
 											This token re-enrolls the existing host and replaces its scoped credential.
@@ -396,6 +414,17 @@ export function HostsPage() {
 								AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=&lt;token&gt; bun run supervisor
 							</code>
 							to attach it here.
+							{supervisorOnlyInstallCommand(window.location.origin, null) ? (
+								<>
+									{" "}
+									On a machine that has no AgentPulse yet, this installs just the supervisor:
+									<code className="mt-1 block break-all rounded bg-background px-1.5 py-1 text-foreground">
+										{supervisorOnlyInstallCommand(window.location.origin, null)}
+									</code>
+								</>
+							) : (
+								<> {supervisorOnlyInstallUnavailableNote(window.location.origin)}</>
+							)}
 						</div>
 					</div>
 				) : (
@@ -438,6 +467,11 @@ export function HostsPage() {
 
 										<HostExcludeNotice supervisor={supervisor} now={now} />
 										<HostOutboxNotice supervisor={supervisor} now={now} />
+										<HostUpdateNotice
+											supervisor={supervisor}
+											server={serverUpdate}
+											canManage={access.canManage}
+										/>
 
 										<div className="mt-4 space-y-3 text-xs">
 											{access.ownerText !== null && (

@@ -3,7 +3,7 @@ kind: Kustomization
 namespace: agentpulse
 
 # OSS-clean base. Values in these manifests are placeholders:
-#   - image: ghcr.io/YOUR_ORG/agentpulse:latest
+#   - image: ghcr.io/YOUR_ORG/agentpulse:X.Y.Z
 #   - host: agentpulse.example.com
 #   - database: your-postgres-host
 #   - tls secretName: agentpulse-tls

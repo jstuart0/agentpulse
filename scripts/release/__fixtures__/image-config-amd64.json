@@ -1,0 +1,11 @@
+{
+	"architecture": "amd64",
+	"os": "linux",
+	"config": {
+		"Labels": {
+			"org.opencontainers.image.revision": "0123456789abcdef0123456789abcdef01234567",
+			"org.opencontainers.image.version": "0.12.0",
+			"org.opencontainers.image.source": "https://github.com/example/agentpulse"
+		}
+	}
+}

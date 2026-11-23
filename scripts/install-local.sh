@@ -13,7 +13,13 @@ set -euo pipefail
 while [[ "$HOME" == */ && "$HOME" != / ]]; do HOME="${HOME%/}"; done
 
 REPO_URL="https://github.com/jstuart0/agentpulse.git"
-REPO_REF="main"
+# Empty means "the latest release": resolved from the repository's v*.*.* tags before the clone. --ref names a
+# branch or tag to follow instead, and then the install follows that ref, not releases.
+REPO_REF=""
+INSTALL_TRACK="release"
+SUPERVISOR_ONLY="false"
+SERVER_URL=""
+AP_ENROLL_TOKEN=""
 AGENTPULSE_DIR="${HOME%/}/.agentpulse"
 LOG_DIR="${AGENTPULSE_DIR}/logs"
 INSTALL_DIR="${AGENTPULSE_DIR}/app"
@@ -29,6 +35,7 @@ AUTO_HOOKS="true"
 AUTO_SUPERVISOR="true"
 SERVICE_MODE="auto"
 SERVICE_NAME="agentpulse"
+SKIP_SUPERVISOR_GIVEN="false"
 
 # An option that takes a value but has none: it is last on the line, or the next
 # word is another option.
@@ -41,7 +48,7 @@ need_value() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --ref) need_value "$@"; REPO_REF="$2"; shift 2 ;;
+    --ref) need_value "$@"; REPO_REF="$2"; INSTALL_TRACK="ref"; shift 2 ;;
     --repo) need_value "$@"; REPO_URL="$2"; shift 2 ;;
     --dir) need_value "$@"; INSTALL_DIR="$2"; INSTALL_DIR_GIVEN="true"; shift 2 ;;
     --data-dir) need_value "$@"; DATA_DIR="$2"; DATA_DIR_GIVEN="true"; shift 2 ;;
@@ -51,7 +58,9 @@ while [[ $# -gt 0 ]]; do
     --disable-auth) need_value "$@"; DISABLE_AUTH="$2"; shift 2 ;;
     --api-key) need_value "$@"; API_KEY="$2"; shift 2 ;;
     --skip-hooks) AUTO_HOOKS="false"; shift 1 ;;
-    --skip-supervisor) AUTO_SUPERVISOR="false"; shift 1 ;;
+    --skip-supervisor) AUTO_SUPERVISOR="false"; SKIP_SUPERVISOR_GIVEN="true"; shift 1 ;;
+    --supervisor-only) SUPERVISOR_ONLY="true"; shift 1 ;;
+    --server-url) need_value "$@"; SERVER_URL="$2"; shift 2 ;;
     --service) need_value "$@"; SERVICE_MODE="$2"; shift 2 ;;
     -h|--help)
       cat <<EOF
@@ -61,7 +70,7 @@ Usage:
   curl -fsSL <script-url> | bash
 
 Options:
-  --ref <git-ref>          Git branch/tag to install (default: main)
+  --ref <git-ref>          Git branch or tag to follow instead of releases (default: latest release)
   --repo <git-url>         Git repo to install from
   --dir <path>             Install directory (default: ~/.agentpulse/app)
   --data-dir <path>        SQLite/data directory (default: ~/.agentpulse/data)
@@ -72,7 +81,12 @@ Options:
   --api-key <key>          Set AGENTPULSE_INITIAL_API_KEY
   --skip-hooks             Do not auto-run setup.sh after install
   --skip-supervisor        Do not auto-install the local supervisor
+  --supervisor-only        Install only the supervisor, for a server running elsewhere
+  --server-url <url>       The server a --supervisor-only host reports to (https, or http on a trusted network)
   --service <mode>         auto | none | systemd | launchd
+
+A --supervisor-only install reads its enrollment token from AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN, or asks for it
+without echoing it. The token is never taken from the command line.
 EOF
       exit 0
       ;;
@@ -638,10 +652,39 @@ ap_local_validate_args() {
       ap_local_arg_bad --api-key "can only contain letters, digits, '.', '_' and '-'" ;;
   esac
   ap_local_host_ok "$HOST" || ap_local_arg_bad --host "can only contain letters, digits, '.', ':', '_' and '-', or an IPv6 address in [brackets]"
-  case "$REPO_REF" in
-    -*|*..*|''|*[!A-Za-z0-9._/-]*)
-      ap_local_arg_bad --ref "can only contain letters, digits, '.', '_', '/' and '-', can't start with '-' and can't contain '..'" ;;
-  esac
+  if [[ "${INSTALL_TRACK}" == "ref" ]]; then
+    case "$REPO_REF" in
+      -*|*..*|''|*[!A-Za-z0-9._/-]*)
+        ap_local_arg_bad --ref "can only contain letters, digits, '.', '_', '/' and '-', can't start with '-' and can't contain '..'" ;;
+    esac
+  fi
+  if [[ "${SUPERVISOR_ONLY}" == "true" ]]; then
+    if [[ "${SKIP_SUPERVISOR_GIVEN}" == "true" ]]; then
+      ap_local_arg_bad --supervisor-only "can't be combined with --skip-supervisor"
+    fi
+    if [[ -z "${SERVER_URL}" ]]; then
+      ap_local_arg_bad --supervisor-only "needs --server-url, the server this host reports to"
+    fi
+    if grep -Eq '"components"[^]]*"server"' "${AGENTPULSE_DIR}/install.json" 2>/dev/null; then
+      ap_local_arg_bad --supervisor-only "isn't for a machine that already runs the AgentPulse server (${AGENTPULSE_DIR}/install.json lists it); that would be a second install. Update it with: ~/.agentpulse/bin/agentpulse update"
+    fi
+    if [[ "$(id -u)" == "0" ]]; then
+      ap_local_arg_bad --supervisor-only "isn't run as root: the supervisor runs agents as you, so install it as your own user"
+    fi
+  elif [[ -n "${SERVER_URL}" ]]; then
+    ap_local_arg_bad --server-url "is only used with --supervisor-only"
+  fi
+  if [[ -n "${SERVER_URL}" ]]; then
+    case "${SERVER_URL}" in
+      http://*|https://*) ;;
+      *) ap_local_arg_bad --server-url "must be an http:// or https:// URL without spaces, quotes, $, ; or <>" ;;
+    esac
+    AP_AUTH="${SERVER_URL#*://}"
+    AP_AUTH="${AP_AUTH%%[/?#]*}"
+    if [[ "${AP_AUTH}" == *@* ]] || [[ -n "$(printf '%s' "$SERVER_URL" | LC_ALL=C tr -d 'A-Za-z0-9._~:/?#\133\135@!&()*+,=%-')" ]]; then
+      ap_local_arg_bad --server-url "must be an http:// or https:// URL without a user name, spaces, quotes, $, ; or <>"
+    fi
+  fi
   # https://, ssh://[user@]host[:port]/path, user@host:path, or a local absolute path. A first
   # character other than a letter or digit, and every transport:: form, is refused by the patterns.
   repo_reason="must be an https:// URL (without spaces, quotes, $, ; or <>), an ssh:// URL, a user@host:path address or an absolute path of letters, digits and / . _ + - @"
@@ -763,10 +806,12 @@ ap_local_preflight_services() {
     return 1
   fi
   # The service files themselves, too: finding that out at the write would be after the clone and build.
-  case "${SERVICE_MODE}" in
-    systemd) files="${unit_dir}/${SERVICE_NAME}.service" ;;
-    launchd) files="${unit_dir}/dev.agentpulse.local.plist" ;;
-  esac
+  if [[ "${SUPERVISOR_ONLY}" != "true" ]]; then
+    case "${SERVICE_MODE}" in
+      systemd) files="${unit_dir}/${SERVICE_NAME}.service" ;;
+      launchd) files="${unit_dir}/dev.agentpulse.local.plist" ;;
+    esac
+  fi
   if [[ "${AUTO_SUPERVISOR}" == "true" ]]; then
     case "${SERVICE_MODE}" in
       systemd) files="${files} ${unit_dir}/${SERVICE_NAME}-supervisor.service" ;;
@@ -1098,9 +1143,272 @@ ap_xml_escape() {
   return 0
 }
 # <<< agentpulse-local-prereqs
+# >>> agentpulse-shim
+# The ~/.agentpulse/bin/agentpulse shim: one POSIX sh file that runs AgentPulse's own commands with the
+# Bun the installer chose, so the command works from any shell without Bun on PATH. scripts/lib/shim.sh
+# is the source; install-local.sh carries a byte-identical copy (scripts/shim.test.ts checks it), since
+# the installer is a single file that arrives through `curl | bash`.
+
+# $1 as a single-quoted sh word. A newline is refused (a path never holds one).
+ap_sh_quote() {
+  case "$1" in
+    *"
+"*) return 1 ;;
+  esac
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+  return 0
+}
+
+# The text of the shim for the Bun $1 and the checkout $2 (both absolute), ending in one newline.
+ap_render_shim() {
+  local bun_q dir_q
+  bun_q="$(ap_sh_quote "$1")" || return 1
+  dir_q="$(ap_sh_quote "$2")" || return 1
+  cat <<SHIM
+#!/bin/sh
+# Written by the AgentPulse installer and rewritten by it; edits here are lost.
+if [ "\$(id -u)" = 0 ]; then
+  echo "Don't run agentpulse as root." >&2
+  exit 1
+fi
+if [ -z "\${HOME-}" ]; then
+  echo "agentpulse: HOME is not set." >&2
+  exit 1
+fi
+BUN_BIN=${bun_q}
+INSTALL_DIR=${dir_q}
+if [ "\${1-}" = update ]; then
+  bundle="\$HOME/.agentpulse/updater/current/updater.js"
+  if [ ! -f "\$bundle" ]; then
+    echo "updates arrive with 0.12.0"
+    exit 2
+  fi
+  cd "\$HOME/.agentpulse" || exit 1
+  AGENTPULSE_UPDATER_REAL_SERVICES=1
+  export AGENTPULSE_UPDATER_REAL_SERVICES
+  exec "\$BUN_BIN" "\$bundle" "\$@"
+fi
+unset AGENTPULSE_UPDATER_REAL_SERVICES
+exec "\$BUN_BIN" "\$INSTALL_DIR/bin/cli.ts" "\$@"
+SHIM
+  return 0
+}
+# <<< agentpulse-shim
+
+# $1 as a JSON string, double quotes included. A control character is refused (no path holds one).
+# Credentials that arrive in the environment are taken now and removed from it, so no child process (git, Bun,
+# python, a service manager) inherits them.
+AP_ENROLL_TOKEN_ENV="${AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN-}"
+unset AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN AGENTPULSE_API_KEY AGENTPULSE_INITIAL_API_KEY
+
+ap_json_string() {
+  case "$1" in
+    *[[:cntrl:]]*) return 1 ;;
+  esac
+  printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+  return 0
+}
+
+# $1 as a JSON string, or null when it is empty.
+ap_json_string_or_null() {
+  if [[ -z "$1" ]]; then
+    printf 'null'
+    return 0
+  fi
+  ap_json_string "$1"
+}
+
+# How the supervisor reaches the server at URL $1: https, a loopback address, or plain http.
+ap_server_transport() {
+  case "$1" in
+    https://*) echo https ;;
+    "http://localhost"|"http://localhost:"*|"http://localhost/"*) echo loopback ;;
+    "http://127.0.0.1"|"http://127.0.0.1:"*|"http://127.0.0.1/"*) echo loopback ;;
+    "http://[::1]"|"http://[::1]:"*|"http://[::1]/"*) echo loopback ;;
+    *) echo http ;;
+  esac
+  return 0
+}
+
+# ~/.agentpulse/install.json: what this machine's AgentPulse was installed from and how it runs, read by
+# the server, the supervisor and the CLI (src/shared/install-record.ts). Written 0600 without following a link.
+# A supervisor-only install has no database and no server of its own, so those fields are null.
+ap_write_install_record() {
+  local real_dir comps sqlite_path data_dir_json sqlite_json dialect_json port_json host_json
+  real_dir="$(cd -P "${INSTALL_DIR}" && pwd -P)" || return 1
+  if [[ "${SUPERVISOR_ONLY}" == "true" ]]; then
+    comps='"supervisor"'
+    data_dir_json="null"; sqlite_json="null"; dialect_json="null"; port_json="null"; host_json="null"
+  else
+    comps='"server"'
+    if [[ "${SUPERVISOR_INSTALLED}" == "true" ]]; then
+      comps='"server", "supervisor"'
+    fi
+    sqlite_path="${DATA_DIR}/agentpulse.db"
+    data_dir_json="$(ap_json_string "${DATA_DIR}")" || return 1
+    sqlite_json="$(ap_json_string "${sqlite_path}")" || return 1
+    dialect_json='"sqlite"'
+    port_json="${PORT}"
+    host_json="$(ap_json_string "${HOST}")" || return 1
+  fi
+  local content v
+  for v in "${REPO_URL}" "${REPO_REF}" "${real_dir}" "${DATA_DIR}" "${PUBLIC_URL}" "${BUN_BIN}"; do
+    if ! ap_json_string "$v" >/dev/null; then
+      printf '  ✗ a value the install record holds has a control character in it; nothing more was written.\n' >&2
+      return 1
+    fi
+  done
+  content="{
+  \"schema\": 1,
+  \"kind\": \"local\",
+  \"components\": [${comps}],
+  \"repoUrl\": $(ap_json_string "${REPO_URL}"),
+  \"track\": \"${INSTALL_TRACK}\",
+  \"ref\": $(ap_json_string "${REPO_REF}"),
+  \"installDir\": $(ap_json_string "${real_dir}"),
+  \"dataDir\": ${data_dir_json},
+  \"sqlitePath\": ${sqlite_json},
+  \"dialect\": ${dialect_json},
+  \"service\": \"${SERVICE_MODE}\",
+  \"serverUrl\": $(ap_json_string "${PUBLIC_URL}"),
+  \"serverTransport\": \"$(ap_server_transport "${PUBLIC_URL}")\",
+  \"port\": ${port_json},
+  \"host\": ${host_json},
+  \"bunBin\": $(ap_json_string "${BUN_BIN}")
+}"$'\n'
+  ap_write_private_no_follow "${AGENTPULSE_DIR}/install.json" "${content}" || return 1
+  echo "  ✓ Wrote ${AGENTPULSE_DIR}/install.json"
+  return 0
+}
+
+# ~/.agentpulse/bin/agentpulse (0700), and how to put it on PATH. The installer never edits shell startup files.
+ap_write_shim() {
+  local real_dir bindir="${AGENTPULSE_DIR}/bin" shim="${AGENTPULSE_DIR}/bin/agentpulse" content tmp
+  real_dir="$(cd -P "${INSTALL_DIR}" && pwd -P)" || return 1
+  if [[ -L "${bindir}" ]]; then
+    echo "refusing to write into a symlinked directory: ${bindir}" >&2
+    return 1
+  fi
+  if [[ -L "${shim}" ]]; then
+    echo "refusing to write through a symlink: ${shim}" >&2
+    return 1
+  fi
+  ap_local_private_dir "${bindir}" default
+  content="$(ap_render_shim "${BUN_BIN}" "${real_dir}")"$'\n' || return 1
+  # An unguessable temp name, made 0700 before it holds anything and before it takes the final name.
+  tmp="$(mktemp "${bindir}/.agentpulse.XXXXXX")" || {
+    echo "refusing: could not create a private temp file in ${bindir}" >&2
+    return 1
+  }
+  if ! { chmod 700 "${tmp}" && ( set -C && printf '%s' "${content}" >| "${tmp}" ) && mv -f -- "${tmp}" "${shim}"; }; then
+    rm -f -- "${tmp}" 2>/dev/null || true
+    echo "refusing: could not write ${shim}" >&2
+    return 1
+  fi
+  echo "  ✓ Wrote ${shim}"
+  echo "    To run it from any shell, add this line to your shell profile:"
+  echo "      export PATH=\"\$HOME/.agentpulse/bin:\$PATH\""
+  return 0
+}
+
+# The first release that carries its own version and the updater (0.12.0), as the padded key the tags are compared by.
+AP_FIRST_RELEASE_KEY="000000001200000"
+
+# The highest stable release tag (vMAJOR.MINOR.PATCH, nothing after) of the repository $1, or nothing.
+# Pre-releases and the peeled `^{}` lines of annotated tags are dropped, and the order is numeric (no
+# `sort -V`, which older systems lack): each part is padded to the same width, then compared as text.
+ap_latest_release_tag() {
+  local out line ref tag best="" best_key="" key
+  out="$(ap_local_with_umask git ls-remote --tags "$1" 'v*' </dev/null)" || return 1
+  while IFS= read -r line; do
+    ref="${line#*$'\t'}"
+    case "$ref" in *'^{}') continue ;; esac
+    tag="${ref#refs/tags/}"
+    [[ "$tag" =~ ^v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$ ]] || continue
+    key="$(printf '%05d%05d%05d' "$((10#${BASH_REMATCH[1]}))" "$((10#${BASH_REMATCH[2]}))" "$((10#${BASH_REMATCH[3]}))")"
+    # Releases before the first versioned one (0.12.0) have no updater and no real version: never selected.
+    if [[ "$key" < "$AP_FIRST_RELEASE_KEY" ]]; then continue; fi
+    if [[ -z "$best_key" || "$key" > "$best_key" ]]; then
+      best_key="$key"
+      best="$tag"
+    fi
+  done <<< "$out"
+  [[ -n "$best" ]] || return 3
+  printf '%s' "$best"
+  return 0
+}
+
+# The version in the package.json of the checkout $1, when it is a release version.
+ap_checkout_version() {
+  local v
+  v="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1] + "/package.json"))["version"])' "$1" 2>/dev/null)" || return 1
+  [[ "$v" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]] || return 1
+  printf '%s' "$v"
+  return 0
+}
+
+# Bundles this checkout's updater into ~/.agentpulse/updater/<version>/updater.js (outside the checkout, which
+# an update renames) and points updater/current at it. A checkout from before the updater has nothing to bundle.
+ap_install_updater() {
+  local v root="${AGENTPULSE_DIR}/updater" dir
+  if [[ ! -f "${INSTALL_DIR}/src/updater/cli.ts" ]]; then
+    echo "  (This version has no updater: updates arrive with 0.12.0.)"
+    return 0
+  fi
+  v="$(ap_checkout_version "${INSTALL_DIR}")" || {
+    echo "  ! Couldn't read the version of this checkout, so the updater wasn't installed." >&2
+    return 0
+  }
+  if [[ -L "${root}" ]]; then
+    echo "  ! ${root} is a symbolic link, so the updater wasn't installed." >&2
+    return 0
+  fi
+  ap_local_private_dir "${root}" default
+  dir="${root}/${v}"
+  ap_local_private_dir "${dir}" default
+  if ! ( cd "${INSTALL_DIR}" && ap_local_with_umask "${BUN_BIN}" build --target=bun src/updater/cli.ts --outfile "${dir}/updater.js" </dev/null >/dev/null ) || [[ ! -f "${dir}/updater.js" ]]; then
+    echo "  ! Couldn't build the updater; the install goes on without it." >&2
+    return 0
+  fi
+  chmod 600 "${dir}/updater.js"
+  ln -sfn "${v}" "${root}/current"
+  echo "  ✓ Installed the updater (${v})"
+  return 0
+}
+
+# Where the supervisor-only enrollment token comes from: AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN, else a hidden
+# prompt on the terminal. Never the command line. The variable is removed from the environment at once, so no
+# child process (git, Bun, python) inherits it.
+ap_read_enrollment_token() {
+  local tok="${AP_ENROLL_TOKEN_ENV}" saved=""
+  AP_ENROLL_TOKEN_ENV=""
+  if [[ -z "$tok" ]]; then
+    if [[ ! -r /dev/tty ]] || ! { : >/dev/tty; } 2>/dev/null; then
+      echo "  ✗ --supervisor-only needs the enrollment token. Set AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN for this command (the Hosts page shows it that way)." >&2
+      return 1
+    fi
+    saved="$(stty -g </dev/tty 2>/dev/null)" || saved=""
+    printf '  Enrollment token (not shown): ' >/dev/tty
+    if [[ -n "$saved" ]]; then stty -echo </dev/tty 2>/dev/null || true; fi
+    IFS= read -r tok </dev/tty || tok=""
+    if [[ -n "$saved" ]]; then stty "$saved" </dev/tty 2>/dev/null || true; fi
+    printf '\n' >/dev/tty
+  fi
+  case "$tok" in
+    ''|*[!A-Za-z0-9._-]*)
+      echo "  ✗ the enrollment token can only contain letters, digits, '.', '_' and '-' (and can't be empty). Nothing was installed." >&2
+      return 1 ;;
+  esac
+  AP_ENROLL_TOKEN="$tok"
+  return 0
+}
 
 ap_local_validate_args
 
+if [[ "${SUPERVISOR_ONLY}" == "true" ]]; then
+  # The supervisor reports to this server; there is no server here.
+  PUBLIC_URL="${SERVER_URL}"
+fi
 if [[ -z "${PUBLIC_URL}" ]]; then
   PUBLIC_URL="http://localhost:${PORT}"
 fi
@@ -1108,10 +1416,19 @@ fi
 echo ""
 echo "  AgentPulse Local Install"
 echo "  ────────────────────────"
-echo "  Repo:       ${REPO_URL} (${REPO_REF})"
+echo "  Repo:       ${REPO_URL} (${REPO_REF:-latest release})"
 echo "  Install:    ${INSTALL_DIR}"
 echo "  Data:       ${DATA_DIR}"
-echo "  URL:        ${PUBLIC_URL}"
+if [[ "${SUPERVISOR_ONLY}" == "true" ]]; then
+  echo "  Server:     ${SERVER_URL} (supervisor only)"
+  if [[ "$(ap_server_transport "${SERVER_URL}")" == "http" ]]; then
+    echo "  ! This link to the server isn't encrypted. Only updates the server's own signed release list names"
+    echo "    are applied, and their code comes from GitHub, but anyone on this network can read what this host and"
+    echo "    the server say to each other. Use an https:// server URL if you can."
+  fi
+else
+  echo "  URL:        ${PUBLIC_URL}"
+fi
 echo "  Hooks:      ${AUTO_HOOKS}"
 echo "  Supervisor: ${AUTO_SUPERVISOR}"
 echo "  Service:    ${SERVICE_MODE}"
@@ -1137,6 +1454,12 @@ ap_local_choose_bun || exit 1
 ap_local_check_overlap || exit 1
 ap_local_check_install_dir || exit 1
 ap_local_check_prereqs || exit 1
+
+if [[ "${SUPERVISOR_ONLY}" == "true" ]]; then
+  # The server's own setup script (hooks) is run from that server; this host only gets a supervisor.
+  AUTO_HOOKS="false"
+  ap_read_enrollment_token || exit 1
+fi
 
 if [[ "${BUN_NEEDS_INSTALL}" == 1 ]]; then
   ap_check_bun_target "$BUN_BIN" || exit 1
@@ -1178,12 +1501,33 @@ fi
 
 ap_local_private_dir "${AGENTPULSE_DIR}" default
 ap_local_private_dir "${LOG_DIR}" default
-if [[ "${DATA_DIR_GIVEN}" == "true" ]]; then
+if [[ "${SUPERVISOR_ONLY}" == "true" ]]; then
+  :  # no database on this host
+elif [[ "${DATA_DIR_GIVEN}" == "true" ]]; then
   ap_local_private_dir "${DATA_DIR}" given
 else
   ap_local_private_dir "${DATA_DIR}" default
 fi
 ap_local_mkdir_p "$(dirname "${INSTALL_DIR}")"
+
+# The latest release, from the repository's tags: reads only (no file is written for it). A branch is never the default.
+if [[ "${INSTALL_TRACK}" == "release" ]]; then
+  echo "  Finding the latest release..."
+  AP_TAG_STATUS=0
+  REPO_REF="$(ap_latest_release_tag "${REPO_URL}")" || AP_TAG_STATUS=$?
+  if [[ "${AP_TAG_STATUS}" == 3 ]]; then
+    # No release carries a version and the updater yet: follow main, and say so truthfully in the record.
+    REPO_REF="main"
+    INSTALL_TRACK="ref"
+    echo "  ! No release of AgentPulse with an updater exists yet, so this install follows main."
+    echo "    It isn't updated by 'agentpulse update'; re-run this installer to move it."
+  elif [[ "${AP_TAG_STATUS}" != 0 || -z "${REPO_REF}" ]]; then
+    printf "  ✗ couldn't read the releases of AgentPulse at %s. Nothing was installed.\n    To follow a branch or a tag instead, pass --ref <name>.\n" "${REPO_URL}" >&2
+    exit 1
+  else
+    echo "  ✓ Latest release: ${REPO_REF}"
+  fi
+fi
 
 if [[ -d "${INSTALL_DIR}/.git" || -f "${INSTALL_DIR}/.git" ]]; then
   echo "  Updating existing checkout..."
@@ -1194,8 +1538,28 @@ if [[ -d "${INSTALL_DIR}/.git" || -f "${INSTALL_DIR}/.git" ]]; then
     ap_local_secure_checkout "${INSTALL_DIR}"
   fi
   ap_local_with_umask git -C "${INSTALL_DIR}" fetch --tags origin </dev/null
-  ap_local_with_umask git -C "${INSTALL_DIR}" checkout "${REPO_REF}" -- </dev/null
-  ap_local_with_umask git -C "${INSTALL_DIR}" pull --ff-only origin "${REPO_REF}" </dev/null || true
+  AP_STAY="false"
+  if [[ "${INSTALL_TRACK}" == "release" ]]; then
+    # Never move a checkout backwards: one that holds commits the release doesn't (local work, or a newer
+    # release) stays where it is.
+    AP_HEAD="$(ap_local_with_umask git -C "${INSTALL_DIR}" rev-parse HEAD </dev/null)"
+    if ! ap_local_with_umask git -C "${INSTALL_DIR}" merge-base --is-ancestor "${AP_HEAD}" "refs/tags/${REPO_REF}" </dev/null; then
+      AP_STAY="true"
+      # The record says what is really checked out: a checkout that isn't on the release isn't updated for you.
+      INSTALL_TRACK="ref"
+      REPO_REF="$(git -C "${INSTALL_DIR}" rev-parse --abbrev-ref HEAD </dev/null 2>/dev/null || true)"
+      if [[ -z "${REPO_REF}" || "${REPO_REF}" == "HEAD" || ! "${REPO_REF}" =~ ^[A-Za-z0-9._/-]+$ ]]; then REPO_REF="${AP_HEAD}"; fi
+      echo "  ! This checkout has commits that aren't part of ${REPO_REF}, so it stays where it is."
+      echo "    Nothing was checked out. To follow a release again, move or reset it yourself."
+    fi
+  fi
+  if [[ "${AP_STAY}" != "true" ]]; then
+    ap_local_with_umask git -C "${INSTALL_DIR}" checkout "${REPO_REF}" -- </dev/null
+    # A branch is brought up to date; a tag is exactly what it names. A failed pull stops the install.
+    if [[ "${INSTALL_TRACK}" == "ref" ]] && ! git -C "${INSTALL_DIR}" show-ref --verify --quiet "refs/tags/${REPO_REF}" </dev/null; then
+      ap_local_with_umask git -C "${INSTALL_DIR}" pull --ff-only origin "${REPO_REF}" </dev/null
+    fi
+  fi
 else
   echo "  Cloning repository..."
   # Checked again here: the earlier check ran before the Bun install, which can take a while.
@@ -1211,7 +1575,7 @@ fi
 cd "${INSTALL_DIR}"
 
 echo "  Installing dependencies..."
-ap_local_with_umask "${BUN_BIN}" install </dev/null
+ap_local_with_umask "${BUN_BIN}" install --frozen-lockfile </dev/null
 
 echo "  Building application..."
 ap_local_with_umask env NODE_ENV=production "${BUN_BIN}" run build </dev/null
@@ -1220,65 +1584,60 @@ ENV_FILE="${INSTALL_DIR}/.env.local"
 ENV_CONTENT="$(ap_local_env_content)"$'\n'
 ap_write_private_no_follow "${ENV_FILE}" "${ENV_CONTENT}" || exit 1
 echo "  ✓ Wrote ${ENV_FILE}"
+# The shim is a convenience: if it can't be written the install goes on (the units are still rewritten).
+ap_write_shim || echo "  ! Couldn't write the agentpulse shim; the install goes on without it." >&2
+ap_install_updater
 
 SUPERVISOR_CONFIG_FILE="${AGENTPULSE_DIR}/supervisor.json"
 SUPERVISOR_ENROLLMENT_TOKEN=""
+# True once the supervisor was actually configured and started; the install record says so.
+SUPERVISOR_INSTALLED="false"
 # The only two plist values that can hold XML-special characters (a URL may hold & and ').
 PUBLIC_URL_XML="$(ap_xml_escape "${PUBLIC_URL}")"
 HOST_XML="$(ap_xml_escape "${HOST}")"
 
-json_escape() {
-  python3 - "$1" <<'PY'
-import json, sys
-print(json.dumps(sys.argv[1]))
-PY
-}
-
+# The credentials reach the merge script through its environment, never its command line (a command line
+# is visible to every process list; an environment is not).
 configure_supervisor() {
   local trusted_root="${HOME}/dev"
   if [[ ! -d "${trusted_root}" ]]; then
     trusted_root="${HOME}"
   fi
 
-  local enrollment_json="null"
-  local api_key_json="null"
-  local claude_json="null"
-  local codex_json="null"
-
-  if [[ -n "${SUPERVISOR_ENROLLMENT_TOKEN}" ]]; then
-    enrollment_json="$(json_escape "${SUPERVISOR_ENROLLMENT_TOKEN}")"
-  fi
-  if [[ -n "${API_KEY}" ]]; then
-    api_key_json="$(json_escape "${API_KEY}")"
-  fi
+  local claude_path="" codex_path=""
   if command -v claude >/dev/null 2>&1; then
-    claude_json="$(json_escape "$(command -v claude)")"
+    claude_path="$(command -v claude)"
   fi
   if command -v codex >/dev/null 2>&1; then
-    codex_json="$(json_escape "$(command -v codex)")"
+    codex_path="$(command -v codex)"
   fi
 
   local merged_json
-  merged_json="$(python3 - "${SUPERVISOR_CONFIG_FILE}" "${PUBLIC_URL}" "${trusted_root}" "${enrollment_json}" "${api_key_json}" "${claude_json}" "${codex_json}" <<'PY'
+  merged_json="$(AP_SUP_ENROLL="${SUPERVISOR_ENROLLMENT_TOKEN}" AP_SUP_APIKEY="${API_KEY}" AP_SUP_CLAUDE="${claude_path}" AP_SUP_CODEX="${codex_path}" python3 - "${SUPERVISOR_CONFIG_FILE}" "${PUBLIC_URL}" "${trusted_root}" <<'PY'
 import json, os, socket, sys
-path, server_url, trusted_root, enrollment_json, api_key_json, claude_json, codex_json = sys.argv[1:]
+path, server_url, trusted_root = sys.argv[1:]
 data = {}
-if os.path.exists(path):
-    with open(path) as f:
+try:
+    # No link is followed: supervisor.json holds the credential, and a link here could point anywhere.
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+except FileNotFoundError:
+    pass
+else:
+    with os.fdopen(fd) as f:
         data = json.load(f)
 data["serverUrl"] = server_url
 data["hostName"] = data.get("hostName") or socket.gethostname()
 data["trustedRoots"] = data.get("trustedRoots") or [trusted_root]
-enrollment = json.loads(enrollment_json)
+enrollment = os.environ.get("AP_SUP_ENROLL", "")
 if enrollment:
     data["enrollmentToken"] = enrollment
-api_key = json.loads(api_key_json)
+api_key = os.environ.get("AP_SUP_APIKEY", "")
 if api_key:
     data["apiKey"] = api_key
-claude = json.loads(claude_json)
+claude = os.environ.get("AP_SUP_CLAUDE", "")
 if claude:
     data["claudeCommand"] = claude
-codex = json.loads(codex_json)
+codex = os.environ.get("AP_SUP_CODEX", "")
 if codex:
     data["codexCommand"] = codex
 json.dump(data, sys.stdout, indent=2)
@@ -1456,6 +1815,75 @@ EOF
   echo "    Logs: tail -f ${LOG_DIR}/supervisor.out.log"
 }
 
+# The supervisor reads install.json when it starts, to tell the server it can update itself. The record is
+# written after the supervisor (it says what was set up), so a supervisor under a service manager is
+# restarted once the record exists. Without a service manager nothing here can restart it.
+ap_restart_supervisor_for_record() {
+  local plist="${HOME}/Library/LaunchAgents/dev.agentpulse.supervisor.plist" waited=0 limit="${AP_REGISTER_WAIT_SECONDS:-30}"
+  # An enrollment token is single use: restarting before the supervisor has saved the credential the server
+  # answered with would leave it holding a spent token. Wait (bounded) until the credential is on disk.
+  if grep -q '"enrollmentToken"' "${SUPERVISOR_CONFIG_FILE}" 2>/dev/null; then
+    while ! grep -q '"supervisorCredential"' "${SUPERVISOR_CONFIG_FILE}" 2>/dev/null; do
+      if (( waited >= limit )); then
+        echo "  ! The supervisor hasn't registered yet, so it wasn't restarted (that could spend its enrollment token twice)."
+        echo "    It reports this install the next time it restarts."
+        return 0
+      fi
+      sleep 1
+      waited=$((waited + 1))
+    done
+  fi
+  case "${SERVICE_MODE}" in
+    systemd)
+      systemctl --user restart "${SERVICE_NAME}-supervisor" </dev/null
+      echo "  ✓ Restarted the supervisor so it reports this install"
+      ;;
+    launchd)
+      launchctl unload "${plist}" >/dev/null 2>&1 </dev/null || true
+      launchctl load "${plist}" </dev/null
+      echo "  ✓ Restarted the supervisor so it reports this install"
+      ;;
+  esac
+  return 0
+}
+
+# --supervisor-only: no server here. Configure the supervisor for the server at --server-url, start it, write
+# the record, and stop.
+ap_supervisor_only_tail() {
+  SUPERVISOR_ENROLLMENT_TOKEN="${AP_ENROLL_TOKEN}"
+  AP_ENROLL_TOKEN=""
+  echo "  Configuring local supervisor..."
+  configure_supervisor
+  case "${SERVICE_MODE}" in
+    systemd)
+      create_supervisor_systemd
+      ;;
+    launchd)
+      create_supervisor_launchd
+      ;;
+    none)
+      echo "  Starting AgentPulse supervisor in the background..."
+      HOME="${HOME}" PATH="${SERVICE_BUN_PATH}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+        ap_local_env_run "${ENV_FILE}" "${BUN_BIN}" run supervisor </dev/null > "${LOG_DIR}/supervisor.out.log" 2> "${LOG_DIR}/supervisor.err.log" &
+      echo $! > "${AGENTPULSE_DIR}/supervisor.pid"
+      echo "  ✓ Started background supervisor"
+      echo "    Logs: tail -f ${LOG_DIR}/supervisor.out.log"
+      ;;
+  esac
+  SUPERVISOR_INSTALLED="true"
+  ap_write_install_record || exit 1
+  ap_restart_supervisor_for_record
+  echo ""
+  echo "  Local control plane:"
+  echo "    supervisor installed, reporting to ${SERVER_URL}"
+  echo "  The host appears under Hosts once the server accepts the enrollment token."
+  echo "  Update it with: ~/.agentpulse/bin/agentpulse update"
+  exit 0
+}
+if [[ "${SUPERVISOR_ONLY}" == "true" ]]; then
+  ap_supervisor_only_tail
+fi
+
 case "${SERVICE_MODE}" in
   systemd)
     create_systemd
@@ -1482,15 +1910,20 @@ for _ in $(seq 1 30); do
       if [[ "${DISABLE_AUTH}" != "true" ]]; then
         if [[ -n "${API_KEY}" ]]; then
           echo "  Creating local supervisor enrollment token..."
-          SUPERVISOR_ENROLLMENT_TOKEN="$(
+          if SUPERVISOR_ENROLLMENT_TOKEN="$(
             curl -fsSL -X POST \
               -H "Authorization: Bearer ${API_KEY}" \
               -H "Content-Type: application/json" \
               "${PUBLIC_URL}/api/v1/supervisors/enroll" \
               -d '{"name":"local-supervisor"}' \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])'
-          )"
-          echo "  ✓ Enrollment token issued"
+          )"; then
+            echo "  ✓ Enrollment token issued"
+          else
+            SUPERVISOR_ENROLLMENT_TOKEN=""
+            echo "  ! Couldn't create a supervisor enrollment token, so the local supervisor wasn't installed."
+            echo "    Add one later from Hosts."
+          fi
         else
           echo "  ! Skipping supervisor auto-install because auth is enabled and no --api-key was provided."
           echo "    Add a supervisor later from Hosts, or rerun with --api-key."
@@ -1516,6 +1949,7 @@ for _ in $(seq 1 30); do
             echo "    Logs: tail -f ${LOG_DIR}/supervisor.out.log"
             ;;
         esac
+        SUPERVISOR_INSTALLED="true"
         echo ""
       fi
     fi
@@ -1541,8 +1975,13 @@ for _ in $(seq 1 30); do
       echo "    curl -fsSL ${PUBLIC_URL}/setup.sh | bash"
       echo ""
     fi
+    # Last, once the units, the health check and the supervisor are done, so it says what was set up.
+    ap_write_install_record || exit 1
+    if [[ "${SUPERVISOR_INSTALLED}" == "true" ]]; then
+      ap_restart_supervisor_for_record
+    fi
     echo "  Local control plane:"
-    if [[ "${AUTO_SUPERVISOR}" == "true" ]]; then
+    if [[ "${SUPERVISOR_INSTALLED}" == "true" ]]; then
       echo "    enabled"
     else
       echo "    skipped (--skip-supervisor)"
@@ -1554,6 +1993,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
+ap_write_install_record || true
 echo ""
 echo "  AgentPulse was installed but the health check did not pass in time."
 echo "  Try starting it manually:"

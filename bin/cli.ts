@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { userInfo } from "node:os";
 import { join, resolve } from "node:path";
+import pkg from "../package.json" with { type: "json" };
 import { installCodexHooksFile } from "../src/shared/codex-hooks-install.js";
 import { addExcludeRule } from "../src/shared/exclude-rules-write.js";
 import {
@@ -61,6 +62,7 @@ import {
 	writeConfigFileSyncNoFollow,
 	writePrivateFileSyncNoFollow,
 } from "../src/shared/private-file.js";
+import { buildVersionReport } from "../src/shared/version-report.js";
 
 const args = process.argv.slice(2);
 const command = args[0] || "start";
@@ -82,6 +84,7 @@ function printHelp() {
     npx agentpulse exclude check [dir]   Report whether [dir] (default: cwd) is excluded
     npx agentpulse exclude add <dir>     Add a directory to ~/.agentpulse/exclude
     npx agentpulse exclude list          List the current exclude rules
+    npx agentpulse version      Show the app, relay and statusline versions and how this machine was installed
     npx agentpulse --help       Show this help
 
   Not running from a checkout? The MCP server also ships as a standalone
@@ -1417,6 +1420,20 @@ async function exclude() {
 	}
 }
 
+// ─── Version ────────────────────────────────────────────────────────
+
+function version() {
+	const home = resolveHomeOrExit("version");
+	for (const line of buildVersionReport({
+		appVersion: pkg.version,
+		home,
+		checkoutDir: resolve(import.meta.dir, ".."),
+		env: process.env,
+	})) {
+		console.log(line);
+	}
+}
+
 // ─── Router ─────────────────────────────────────────────────────────
 
 switch (command) {
@@ -1431,6 +1448,9 @@ switch (command) {
 		break;
 	case "exclude":
 		await exclude();
+		break;
+	case "version":
+		version();
 		break;
 	case "--help":
 	case "-h":

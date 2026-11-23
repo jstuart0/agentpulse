@@ -15,6 +15,7 @@ thoughts/
 # for any other doc intended to ship publicly.
 docs/*
 !docs/MCP.md
+!docs/RELEASING.md
 
 # Private Kustomize overlays. The OSS-clean base lives at deploy/k8s/.
 # Environment-specific overlays (real image registry, cluster hostnames,

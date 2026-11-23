@@ -37,6 +37,7 @@ import {
 } from "./providers/codex-managed.js";
 import { warmCodexProtocolVerdict } from "./providers/codex-protocol.js";
 import { createBridgeSpoolDrain } from "./services/bridge-spool.js";
+import { createClaimLoops } from "./services/claim-loops.js";
 import { createClaudeForkRecord } from "./services/claude-fork-record.js";
 import { createClaudeTakeover } from "./services/claude-takeover.js";
 import { executeCleanupWorkArea } from "./services/cleanup-workarea.js";
@@ -79,6 +80,7 @@ import {
 	resolveNeutralCwd,
 } from "./services/session-resume.js";
 import { assertTrustedRootsExcludeAgentpulseDir } from "./services/spawn-cwd.js";
+import { createUpdateDrain } from "./services/update-drain.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 /** How often the exclude rules are re-read for a changed symlink, the stamp is refreshed and sessions a new rule covers are closed. */
@@ -301,6 +303,24 @@ async function main() {
 	});
 	setInterval(() => void bridgeSpool.drain(), BRIDGE_DRAIN_MS).unref();
 
+	// What an update needs to know: a status file saying when this host was last busy, and the drain request
+	// the updater may write once the host has been idle for a minute (see services/update-drain.ts).
+	const updateDrain = createUpdateDrain({
+		home,
+		version: config.version,
+		counts: async () => {
+			const codex = managedCodexRuntimeCount();
+			const headless = headlessRuntimeCount() + claudeStreamRuntimeCount();
+			const bridges =
+				codex > 0 || headless > 0
+					? 0
+					: await countBridgesBounded(() => bridgeSpool.liveBridgeCount(), BRIDGE_COUNT_TIMEOUT_MS);
+			return { codex, headless, bridges, approvals: approvalsWiring.approvals.pendingCount() };
+		},
+	});
+	updateDrain.markRegistered();
+	void updateDrain.tick();
+
 	// The watchdog: a heartbeat that has not succeeded for a while normally means the server is
 	// unreachable, which is no reason to stop the agents running here. It exits for the service manager to
 	// restart only when it holds nothing to look after (shouldExitOnStaleHeartbeat). Queued reports do not
@@ -310,6 +330,7 @@ async function main() {
 	let staleLogged = false;
 	const watchdogStaleMs = Math.max(registration.heartbeatIntervalMs * 3, 90_000);
 	setInterval(() => {
+		void updateDrain.tick();
 		void (async () => {
 			const { staleMs, resumedAfterMs } = staleClock.tick();
 			if (resumedAfterMs !== null) {
@@ -403,23 +424,27 @@ async function main() {
 		finalReport,
 	});
 
+	const claimLoops = createClaimLoops({
+		claimLaunchRequest: () =>
+			request(`/supervisors/${registration.supervisor.id}/launches/claim`, {
+				method: "POST",
+			}) as Promise<{ launchRequest: LaunchRequest | null }>,
+		claimActionRequest: () =>
+			request(`/supervisors/${registration.supervisor.id}/control-actions/claim`, {
+				method: "POST",
+			}) as Promise<{ action: ControlAction | null }>,
+		drain: updateDrain,
+		gate,
+		dispatchLaunch,
+		handleControlAction,
+	});
+
 	void gate.scan();
 	setInterval(() => {
 		gate.scan().catch((error) => console.error("[supervisor] exclude scan failed", error));
 	}, EXCLUDE_SCAN_MS).unref();
 
-	setInterval(async () => {
-		try {
-			const result = (await request(`/supervisors/${registration.supervisor.id}/launches/claim`, {
-				method: "POST",
-			})) as { launchRequest: LaunchRequest | null };
-			if (result.launchRequest) {
-				await dispatchLaunch(result.launchRequest);
-			}
-		} catch (error) {
-			console.error("[supervisor] claim failed", error);
-		}
-	}, 3_000);
+	setInterval(() => void claimLoops.claimLaunch(), 3_000);
 
 	let heartbeatInFlight = false;
 	async function sendHeartbeat() {
@@ -478,17 +503,7 @@ async function main() {
 		}
 	}, 3_000);
 
-	setInterval(async () => {
-		try {
-			const result = (await request(
-				`/supervisors/${registration.supervisor.id}/control-actions/claim`,
-				{ method: "POST" },
-			)) as { action: ControlAction | null };
-			if (result.action) await handleControlAction(result.action);
-		} catch (error) {
-			console.error("[supervisor] control action failed", error);
-		}
-	}, 2_000);
+	setInterval(() => void claimLoops.claimControlAction(), 2_000);
 }
 
 main().catch((error) => {

@@ -1,7 +1,11 @@
+import { LOCAL_SERVER, LOCAL_UPDATER } from "../../shared/constants.js";
 import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type { SupervisorRecord } from "../../shared/types.js";
+import type { UpdateStatusWire } from "../../shared/update-status.js";
+import { compareReleaseVersions, parseReleaseVersion } from "../../shared/version.js";
 import { type DirectoryEntry, hostLabel } from "../lib/owner-label.js";
 import type { OwnershipUi } from "../lib/ownership-ui.js";
+import { UPDATE_HOST_COPY } from "../lib/update-outcome-copy.js";
 
 /**
  * Pure derivation of what HostsPage should render. Splits the "no hosts
@@ -158,4 +162,146 @@ export function deriveHostExcludeNotice(
 	if (supervisor.status !== "connected") return null;
 	if (!leaseIsLive(supervisor.heartbeatLeaseExpiresAt, now)) return null;
 	return { text: HOST_EXCLUDE_INVALID_TEXT };
+}
+
+// ── A host that is behind the server (AGEN-155) ─────────────────────────────
+
+export interface HostUpdateNoticePart {
+	/** `host` is the host's name as plain text, never joined into the command. */
+	kind: "text" | "code" | "host";
+	text: string;
+}
+
+export interface HostUpdateNotice {
+	kind: "update_server_first" | "update_host" | "reinstall";
+	parts: HostUpdateNoticePart[];
+}
+
+/** What supervisors reported before they carried the real version. */
+const LEGACY_PLACEHOLDER_VERSION = "0.1.0";
+const LOCAL_UPDATE_COMMAND = "~/.agentpulse/bin/agentpulse update";
+const SUPERVISOR_ONLY_COMMAND = "install-local.sh --supervisor-only";
+/** The characters an enrollment token has, so it can sit in a shell command as a bare word. */
+const SHELL_SAFE_TOKEN = /^[A-Za-z0-9._-]+$/;
+const TOKEN_PLACEHOLDER = "<token>";
+
+/**
+ * The command that installs only a supervisor on another machine, for the server at `origin`. The token is a
+ * variable on the `bash` side of the pipe, never before `curl` (which would put it in curl's own environment
+ * and on a line some shells keep), and never an argument: the installer reads it from the environment or asks
+ * for it. A token that isn't made of plain characters, or an origin that isn't an http(s) address, gives a
+ * placeholder or no command at all rather than something that needs quoting.
+ */
+export function supervisorOnlyInstallCommand(origin: string, token: string | null): string | null {
+	let url: URL;
+	try {
+		url = new URL(origin);
+	} catch {
+		return null;
+	}
+	// Only https: the command pipes what it downloads into a shell, so it is never offered over an unencrypted link.
+	if (url.protocol !== "https:") return null;
+	if (
+		url.username !== "" ||
+		url.password !== "" ||
+		url.pathname !== "/" ||
+		url.search !== "" ||
+		url.hash !== ""
+	) {
+		return null;
+	}
+	const base = url.origin;
+	if (!/^[A-Za-z0-9.:/\[\]_-]+$/.test(base)) return null;
+	const word = token !== null && SHELL_SAFE_TOKEN.test(token) ? token : TOKEN_PLACEHOLDER;
+	return `curl --proto '=https' -fsSL ${base}/install-local.sh | AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=${word} bash -s -- --supervisor-only --server-url ${base}`;
+}
+
+/** What to say instead of the command when the page was opened over plain http (null for https, where the command is shown). */
+export function supervisorOnlyInstallUnavailableNote(origin: string): string | null {
+	try {
+		return new URL(origin).protocol === "http:"
+			? "This page is open over plain http, so a one-line install isn't shown: it would run a script downloaded over an unencrypted link. Serve AgentPulse over https, or copy install-local.sh to the other machine and run it with --supervisor-only there."
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+/** Server states that mean the server itself has a newer release to move to. */
+const SERVER_BEHIND_STATES: ReadonlySet<string> = new Set([
+	"available",
+	"security",
+	"below_minimum",
+	"current_pulled",
+]);
+
+/**
+ * What a host card says when its supervisor is older than the server it reports to. It compares against the
+ * server's CURRENT version, not the latest release: a host can't move ahead of its server, so when the server
+ * is itself behind, the first step is the server. Shown only to someone who may act on the host (its owner or
+ * an admin: `canManage` from `deriveHostAccess`), and never for a revoked host. A version that can't be read
+ * on either side says nothing rather than guess.
+ */
+export function deriveHostUpdateNotice(
+	supervisor: Pick<SupervisorRecord, "version" | "hostName" | "enrollmentState" | "capabilities">,
+	server: { current: string; state: string } | null,
+	access: { canManage: boolean },
+): HostUpdateNotice | null {
+	if (!access.canManage || !server || supervisor.enrollmentState === "revoked") return null;
+	// Supervisors before the real version reported a placeholder "0.1.0": that says nothing about the host.
+	if (supervisor.version === LEGACY_PLACEHOLDER_VERSION) return null;
+	const host = parseReleaseVersion(supervisor.version);
+	const running = parseReleaseVersion(server.current);
+	if (!host || !running || compareReleaseVersions(host, running) >= 0) return null;
+
+	const versions: HostUpdateNoticePart = {
+		kind: "text",
+		text: UPDATE_HOST_COPY.versions(supervisor.version, server.current),
+	};
+	if (SERVER_BEHIND_STATES.has(server.state)) {
+		return {
+			kind: "update_server_first",
+			parts: [versions, { kind: "text", text: UPDATE_HOST_COPY.serverFirst }],
+		};
+	}
+	if (supervisor.capabilities?.features?.includes(LOCAL_UPDATER)) {
+		return {
+			kind: "update_host",
+			parts: [
+				versions,
+				{ kind: "text", text: UPDATE_HOST_COPY.runBefore },
+				{ kind: "code", text: LOCAL_UPDATE_COMMAND },
+				{ kind: "text", text: UPDATE_HOST_COPY.runAfter },
+				{ kind: "host", text: supervisor.hostName },
+				{ kind: "text", text: UPDATE_HOST_COPY.end },
+			],
+		};
+	}
+	// A machine that also runs the server updates with the server (its own banner says how): never "reinstall" it as a
+	// supervisor-only host, which would be a second, conflicting install.
+	if (supervisor.capabilities?.features?.includes(LOCAL_SERVER)) return null;
+	if (supervisor.capabilities?.os === "windows") {
+		return {
+			kind: "reinstall",
+			parts: [versions, { kind: "text", text: UPDATE_HOST_COPY.reinstallWindows }],
+		};
+	}
+	return {
+		kind: "reinstall",
+		parts: [
+			versions,
+			{ kind: "text", text: UPDATE_HOST_COPY.reinstallBefore },
+			{ kind: "code", text: SUPERVISOR_ONLY_COMMAND },
+			{ kind: "text", text: UPDATE_HOST_COPY.end },
+		],
+	};
+}
+
+/** The server's own version and update state, for comparing a host against; null until it is known. */
+export function serverUpdateOf(
+	status: UpdateStatusWire | null,
+): { current: string; state: string } | null {
+	return status && typeof status.current === "string"
+		? { current: status.current, state: status.state }
+		: null;
 }

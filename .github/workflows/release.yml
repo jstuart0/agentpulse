@@ -1,0 +1,160 @@
+name: Release
+
+# Builds and publishes a release from a version tag. The tag only names a commit that
+# releases/release-data.json (CODEOWNERS-reviewed) already pins; preflight refuses
+# anything else. The signed manifest is a separate workflow (pages.yml), which publish
+# starts once the release exists. Never put the manifest signing secret in this file.
+#
+# The tag pattern needs a leading v and digits, so mcp-v* tags (the npm package) never match.
+on:
+  push:
+    tags:
+      - "v[0-9]*.[0-9]*.[0-9]*"
+
+permissions: {}
+
+# One release at a time; a release already building is never cancelled midway.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      version: ${{ steps.gate.outputs.version }}
+      commit: ${{ steps.gate.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.12"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: gate
+        name: Release gate
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          bun scripts/release/preflight.ts
+      - name: Require the lockfile
+        # A frozen install succeeds with no bun.lock at all (it just resolves), so a release without one would
+        # install unconstrained. The updater refuses the same tree on the machine it stages on.
+        run: test -f bun.lock && test ! -L bun.lock
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Lint
+        run: bun run check
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Architecture and installer guards
+        run: bun run check:architecture
+      - name: Release, exclude-rule and relay suites
+        run: >-
+          bun test scripts/release src/shared/release-manifest.test.ts src/shared/relay-installer-parts.test.ts
+          scripts/exclude-shim-parity.test.ts scripts/relay-exclude-fixtures.test.ts
+          scripts/relay-exclude.test.ts scripts/relay-exclude-e2e.test.ts
+
+  images:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      tags: ${{ steps.tags.outputs.tags }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.preflight.outputs.commit }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.12"
+      - id: tags
+        name: Recompute the floating tags against the remote's current tags
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          COMMIT: ${{ needs.preflight.outputs.commit }}
+          REPO: ${{ github.repository }}
+        run: |
+          bun scripts/release/image-tags.ts
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: app
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.preflight.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.preflight.outputs.commit }}
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ghcr.io/jstuart0/agentpulse
+          subject-digest: ${{ steps.app.outputs.digest }}
+          push-to-registry: true
+      - id: backup
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: deploy/k8s/Dockerfile.backup
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.backup_tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.preflight.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.preflight.outputs.commit }}
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ghcr.io/jstuart0/agentpulse-backup
+          subject-digest: ${{ steps.backup.outputs.digest }}
+          push-to-registry: true
+
+  publish:
+    needs: [preflight, images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Create the GitHub release and start the manifest workflow
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_TAGS: ${{ needs.images.outputs.tags }}
+        run: |
+          set -eu
+          flags=""
+          case "$TAG" in *-*) flags="--prerelease" ;; esac
+          case "$IMAGE_TAGS" in *:latest*) ;; *) flags="$flags --latest=false" ;; esac
+          # A re-run after the release exists skips creation, and still starts the manifest workflow.
+          if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
+            # shellcheck disable=SC2086
+            gh release create "$TAG" --repo "$REPO" --verify-tag --title "$TAG" --generate-notes $flags
+          fi
+          gh workflow run pages.yml --repo "$REPO" --ref main

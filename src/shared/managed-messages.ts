@@ -150,3 +150,7 @@ export const PEER_TURN_LABEL = "The last message found in the transcript:";
 /** The one-prompt path refuses when this host's record of the forks it started can't be read, because it can't tell a fork from a launched session. Fixed. */
 export const CLAUDE_FORK_RECORD_UNREADABLE_ERROR =
 	"This machine's record of continued sessions can't be read, so it can't tell whether this one is continued, and nothing was sent. Check the record under ~/.agentpulse, then try again.";
+
+/** What a launch, prompt, resume, retry or fork claimed during an update's short drain is failed with (AGEN-155). */
+export const HOST_UPDATING_MESSAGE =
+	"This host is updating AgentPulse. Try again in a few minutes.";

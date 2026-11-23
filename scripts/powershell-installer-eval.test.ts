@@ -8,6 +8,9 @@
  * edit to the builders could pass the parity test by accident.
  */
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { evalExpr, runPsBuilder } from "./powershell-installer-eval.ts";
 
 const run = (statement: string, scope: Record<string, string | boolean> = {}) =>
@@ -104,4 +107,96 @@ describe("the base-URL validation the evaluator skips is checked, not trusted (n
 			/outside the evaluator's subset/,
 		);
 	});
+});
+
+// ── install-local.ps1 follows release tags (AGEN-155, phase 4; read, never executed here) ──
+
+describe("install-local.ps1: release tags, a frozen lockfile, no swallowed pull, never backwards", () => {
+	const ps1 = readFileSync(join(import.meta.dir, "install-local.ps1"), "utf-8");
+
+	test("the default is no ref, which means the latest release", () => {
+		expect(ps1).not.toMatch(/\[string\]\$Ref = "main"/);
+		expect(ps1).toMatch(/\[string\]\$Ref = "",/);
+		expect(ps1).toContain("function Get-ApLatestReleaseTag");
+		expect(ps1).toContain("Get-ApLatestReleaseTag -GitExe $git -RepoUrl $Repo");
+	});
+
+	test("the tag resolver drops ^{} lines and pre-releases and compares numerically", () => {
+		const fn = ps1.slice(
+			ps1.indexOf("function Get-ApLatestReleaseTag"),
+			ps1.indexOf("# Phase 5: every function above"),
+		);
+		expect(fn).toContain('EndsWith("^{}")');
+		expect(fn).toContain("^v(0|[1-9][0-9]{0,3})");
+		expect(fn).toContain("{0:D5}{1:D5}{2:D5}");
+		// nothing before the first versioned release (0.12.0) is selected, and no release means main
+		expect(fn).toContain("000000001200000");
+		expect(ps1).toContain('$Ref = "main"');
+		expect(fn).toContain("[string]::CompareOrdinal");
+		// the strict pattern ends at the patch number: nothing may follow it (no -rc)
+		expect(fn).toMatch(/\{0,3\}\)\$'\)/);
+	});
+
+	test("the ancestor guard: HEAD must be an ancestor of the tag, else the checkout stays", () => {
+		expect(ps1).toContain("merge-base --is-ancestor $head");
+		expect(ps1).toContain("so it stays where it is");
+	});
+
+	test("the pull is not swallowed and the install is frozen", () => {
+		expect(ps1).not.toMatch(/pull --ff-only origin \$Ref \} catch \{\}/);
+		expect(ps1).not.toMatch(/catch \{\}\s*\n\s*\} else/);
+		expect(ps1).toContain('if ($LASTEXITCODE -ne 0) { throw "git pull failed" }');
+		expect(ps1).toContain("& $bun install --frozen-lockfile");
+	});
+
+	test("there is no updater on Windows (notify-only): nothing here names it", () => {
+		expect(ps1).not.toMatch(/updater\.js|agentpulse update|supervisor-only/i);
+	});
+});
+
+const PWSH = Bun.which("pwsh");
+const pwshTest = PWSH ? test : test.skip.bind(test);
+
+describe("the PowerShell tag resolver (needs pwsh; skipped where it is absent, as the Windows job runs it)", () => {
+	pwshTest(
+		"picks v1.10.0 over v1.9.0, ignoring a pre-release and anything before 0.12.0",
+		() => {
+			const root = mkdtempSync(join(tmpdir(), "ap-ps1-tags-"));
+			try {
+				const git = (cwd: string, ...args: string[]) =>
+					Bun.spawnSync(["git", ...args], {
+						cwd,
+						env: {
+							PATH: process.env.PATH ?? "",
+							HOME: root,
+							GIT_CONFIG_GLOBAL: "/dev/null",
+							GIT_AUTHOR_NAME: "t",
+							GIT_AUTHOR_EMAIL: "t@e.invalid",
+							GIT_COMMITTER_NAME: "t",
+							GIT_COMMITTER_EMAIL: "t@e.invalid",
+						},
+					});
+				const work = join(root, "work");
+				mkdirSync(work);
+				git(work, "init", "-q", "--initial-branch=main");
+				git(work, "commit", "-q", "--allow-empty", "-m", "x");
+				for (const tag of ["v0.9.0", "v1.9.0", "v1.10.0", "v2.0.0-rc.1"])
+					git(work, "tag", "-a", tag, "-m", tag);
+				const out = Bun.spawnSync(
+					[
+						PWSH as string,
+						"-NoProfile",
+						"-Command",
+						`. '${join(import.meta.dir, "install-local.ps1")}' -FunctionsOnly; Get-ApLatestReleaseTag -GitExe git -RepoUrl '${work}'`,
+					],
+					{ env: { ...process.env } },
+				);
+				expect(out.stdout.toString().trim()).toBe("v1.10.0");
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+			// pwsh takes seconds to start on a CI runner; the 5 s default timed out there.
+		},
+		30_000,
+	);
 });

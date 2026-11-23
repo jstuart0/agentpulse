@@ -10,6 +10,9 @@
 #   Add to ~/.claude/settings.json:
 #   "statusLine": { "type": "command", "command": "~/.claude/statusline-agentpulse.sh" }
 
+# Never printed. `agentpulse version` reads it from the installed copy; `bun run release:prepare` rewrites it.
+AGENTPULSE_STATUSLINE_VERSION="0.11.0"
+
 input=$(cat)
 
 SESSION_ID=$(echo "$input" | jq -r '.session_id // ""')

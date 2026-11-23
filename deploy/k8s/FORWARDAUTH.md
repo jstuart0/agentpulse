@@ -256,6 +256,9 @@ lever entirely.
 
 ### Upgrading from a crash-looping supervisor (AGEN-17)
 
+Update the server first, then supervisors and relays. A supervisor newer than its server can hit the
+mixed-version behaviour described above (an older server answers its calls with `401`/`403`).
+
 If your supervisors have been crash-looping since AGEN-9 (every agent-route call
 returning `403 insufficient_scope` or `401 Unauthorized`), upgrading the server to
 include this fix is enough — no client update, config change, or manual restart is

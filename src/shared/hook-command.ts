@@ -1049,6 +1049,17 @@ export function buildBashExcludeScriptForInstaller(): string {
 		.join(INSTALLER_SNIPPET_PLACEHOLDERS.bom);
 }
 
+/** The inverse of `buildBashExcludeScriptForInstaller`: the bytes a person's `exclude-check.sh` holds. */
+export function materializeExcludeScript(installerForm: string): string {
+	return installerForm
+		.split(INSTALLER_SNIPPET_PLACEHOLDERS.tab)
+		.join(TAB)
+		.split(INSTALLER_SNIPPET_PLACEHOLDERS.cr)
+		.join(CARRIAGE_RETURN)
+		.split(INSTALLER_SNIPPET_PLACEHOLDERS.bom)
+		.join(BYTE_ORDER_MARK);
+}
+
 /** The two PowerShell functions the hook command and the installed check both need, kept as one text so the copies can't drift. */
 const PS_REPARSE_FN = `function ApIsReparsePoint($apPath) {
   $apItem = Get-Item -LiteralPath $apPath -Force -ErrorAction SilentlyContinue

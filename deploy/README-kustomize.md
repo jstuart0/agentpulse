@@ -5,7 +5,7 @@ that's environment-specific is a placeholder:
 
 | Placeholder | Where | What it stands for |
 |-------------|-------|--------------------|
-| `ghcr.io/YOUR_ORG/agentpulse:latest` | `04-deployment.yaml` | Your container registry |
+| `ghcr.io/YOUR_ORG/agentpulse:X.Y.Z` | `04-deployment.yaml` | Your container registry |
 | `agentpulse.example.com` | `07-ingressroute.yaml` | Your public hostname |
 | `your-postgres-host` | `01-secret-template.yaml` | Your Postgres host (only if you use Postgres) |
 | `agentpulse-tls` | `07-ingressroute.yaml` | The `kubernetes.io/tls` Secret Traefik should use |
@@ -61,7 +61,7 @@ spec:
     spec:
       containers:
         - name: agentpulse
-          image: registry.mycompany.internal/agentpulse:latest
+          image: registry.mycompany.internal/agentpulse:X.Y.Z
 ```
 
 ### `ingressroute-patch.yaml`
@@ -87,3 +87,9 @@ The overlay is exactly the place private values (image registry,
 cluster DNS, TLS secret name) need to live. Keeping the pattern
 gitignored makes it structurally impossible to commit them by
 accident — including all leakage paths `grep` wouldn't catch.
+
+## Image tags
+
+Pin an exact release (`X.Y.Z`) on both images, `agentpulse` and `agentpulse-backup`, and move them together
+when you update. AgentPulse only notifies you of a new release; see "Updating AgentPulse" in
+`k8s/README.md` for the overlay `images:` snippet, backing up first, and why rollback means restore.

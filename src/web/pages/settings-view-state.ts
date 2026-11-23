@@ -30,6 +30,7 @@ export type SettingsSectionId =
 	| "keys"
 	| "mobile"
 	| "account"
+	| "updates"
 	| "server";
 
 /** Top to bottom. Solo keeps the page as it always was; in team mode the people, keys and account sections come up front. */
@@ -44,6 +45,6 @@ export function settingsSectionOrder(teamOn: boolean): SettingsSectionId[] {
 		"telegram",
 	];
 	return teamOn
-		? ["appearance", "team", "keys", "mobile", "account", ...tail, "server"]
-		: ["appearance", ...tail, "team", "keys", "mobile", "account", "server"];
+		? ["appearance", "team", "keys", "mobile", "account", ...tail, "updates", "server"]
+		: ["appearance", ...tail, "team", "keys", "mobile", "account", "updates", "server"];
 }

@@ -43,6 +43,8 @@ import type {
 	SessionTemplateInput,
 	SupervisorRecord,
 	TemplatePreview,
+	UnknownUpdateStatus,
+	UpdateStatus,
 } from "./types.js";
 
 // Re-exported so existing consumers (client.test.ts, scopes.test.ts) keep
@@ -308,6 +310,8 @@ export interface AgentPulseClient {
 	stopSession(sessionId: string): Promise<ControlActionResult>;
 	/** POST /sessions/:id/interrupt: ends a continued Claude session's running turn and keeps the session open. */
 	interruptSession(sessionId: string): Promise<ControlActionResult>;
+	/** GET /capabilities `.update` (observe-readable). A server that predates the update check answers `{ state: "unknown" }`. */
+	getUpdateStatus(): Promise<UpdateStatus | UnknownUpdateStatus>;
 	retryLaunch(sessionId: string): Promise<RetryLaunchResult>;
 	/** GET /sessions/:id/approvals (manage-only). A server without the route answers 404 with no error code. */
 	listApprovals(sessionId: string): Promise<CodexApprovalList>;
@@ -348,6 +352,139 @@ export interface CreateHttpClientOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 8_000;
+
+const UNKNOWN_UPDATE_STATUS: UnknownUpdateStatus = { state: "unknown" };
+
+// A copy of the release-version grammar in src/shared/version.ts (this package can't import it); the parity test
+// src/shared/update-status-mcp-parity.test.ts holds the two to the same answers.
+const RELEASE_VERSION_RE =
+	/^(\d{1,4})\.(\d{1,4})\.(\d{1,4})(?:-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?$/;
+export function isReleaseVersion(text: unknown): text is string {
+	if (typeof text !== "string" || text.length > 48) return false;
+	const match = RELEASE_VERSION_RE.exec(text);
+	if (!match) return false;
+	const noLeadingZero = (digits: string) => !(digits.length > 1 && digits.startsWith("0"));
+	if (![match[1], match[2], match[3]].every(noLeadingZero)) return false;
+	return (match[4]?.split(".") ?? []).every((id) => !/^\d+$/.test(id) || noLeadingZero(id));
+}
+
+const STATE_NAME_RE = /^[a-z][a-z_]{0,31}$/;
+export const UPDATE_CHECK_RESULT_NAMES: readonly string[] = [
+	"ok",
+	"unreachable",
+	"not_published",
+	"too_large",
+	"bad_envelope",
+	"unknown_key",
+	"revoked_key",
+	"bad_signature",
+	"replayed",
+	"older",
+	"future",
+	"bad_payload",
+];
+export const UPDATE_INSTALL_KIND_NAMES: readonly string[] = [
+	"local",
+	"kubernetes",
+	"container",
+	"source",
+];
+/** The updater's outcome codes (a vendored copy of the shared closed set; the parity test holds them equal). */
+export const UPDATE_OUTCOME_CODE_NAMES: readonly string[] = [
+	"no_consent",
+	"container",
+	"kubernetes",
+	"no_service_manager",
+	"tracking_ref",
+	"fork_install",
+	"no_install_record",
+	"symlinked_install",
+	"unverified",
+	"update_check_off",
+	"stale",
+	"pulled",
+	"downgrade",
+	"refused_before",
+	"server_version_unknown",
+	"up_to_date",
+	"canary_wait",
+	"migration_needs_consent",
+	"postgres_migration",
+	"dirty_tree",
+	"untracked_files",
+	"disk_space",
+	"not_fast_forward",
+	"commit_mismatch",
+	"db_path_mismatch",
+	"outside_window",
+	"locked",
+	"backoff",
+	"install_failed",
+	"build_failed",
+	"smoke_failed",
+	"snapshot_failed",
+	"supervisor_busy",
+	"drain_timeout",
+	"stop_failed",
+	"health_failed",
+	"supervisor_failed",
+	"rolled_back",
+	"rollback_failed",
+	"nothing_to_roll_back",
+	"downgrade_schema",
+	"updated",
+];
+const MAX_TIME_CHARS = 40;
+
+const isTime = (v: unknown): v is string =>
+	typeof v === "string" && v.length <= MAX_TIME_CHARS && Number.isFinite(Date.parse(v));
+
+/**
+ * What `get_update_status` returns: the known fields only, copied one by one, so nothing a server adds (or a
+ * hostile one stuffs in) reaches the agent. `current` and `latest` must be release versions. A caller without
+ * authority to operate the server gets only the six public fields, so every other field is optional. A server
+ * that predates the update check, or an answer with no usable `current` and `state`, is `{ state: "unknown" }`.
+ */
+function sanitizeUpdateStatus(value: unknown): UpdateStatus | UnknownUpdateStatus {
+	if (typeof value !== "object" || value === null || Array.isArray(value))
+		return UNKNOWN_UPDATE_STATUS;
+	const raw = value as Record<string, unknown>;
+	if (typeof raw.state !== "string" || !STATE_NAME_RE.test(raw.state)) return UNKNOWN_UPDATE_STATUS;
+	if (!isReleaseVersion(raw.current)) return UNKNOWN_UPDATE_STATUS;
+	const out: Record<string, unknown> = {
+		current: raw.current,
+		latest: isReleaseVersion(raw.latest) ? raw.latest : null,
+		state: raw.state,
+		stale: raw.stale === true,
+		severity: raw.severity === "normal" || raw.severity === "security" ? raw.severity : null,
+		checkedAt: isTime(raw.checkedAt) ? raw.checkedAt : null,
+	};
+	if ("manifestIssuedAt" in raw)
+		out.manifestIssuedAt = isTime(raw.manifestIssuedAt) ? raw.manifestIssuedAt : null;
+	if (typeof raw.lastResult === "string" && UPDATE_CHECK_RESULT_NAMES.includes(raw.lastResult))
+		out.lastResult = raw.lastResult;
+	if (typeof raw.installKind === "string" && UPDATE_INSTALL_KIND_NAMES.includes(raw.installKind))
+		out.installKind = raw.installKind;
+	if (raw.track === "release" || raw.track === "ref") out.track = raw.track;
+	if (raw.lastResult === null) out.lastResult = null;
+	if (raw.track === null) out.track = null;
+	if (raw.localApply === null) out.localApply = null;
+	const apply = raw.localApply;
+	if (typeof apply === "object" && apply !== null && !Array.isArray(apply)) {
+		const a = apply as Record<string, unknown>;
+		out.localApply = {
+			auto: a.auto === true,
+			...(typeof a.lastOutcome === "string" && UPDATE_OUTCOME_CODE_NAMES.includes(a.lastOutcome)
+				? { lastOutcome: a.lastOutcome }
+				: {}),
+			...(isReleaseVersion(a.lastTarget) ? { lastTarget: a.lastTarget } : {}),
+			...(isTime(a.at) ? { at: a.at } : {}),
+			...(isTime(a.waitingSince) ? { waitingSince: a.waitingSince } : {}),
+			...(isTime(a.backoffUntil) ? { backoffUntil: a.backoffUntil } : {}),
+		};
+	}
+	return out as unknown as UpdateStatus;
+}
 
 // Matches a trailing /api, /api/v1, or /api/v1/ (post app-api→api rewrite)
 // so re-appending "/api/v1" below never doubles up on either form.
@@ -549,6 +686,11 @@ export function createHttpClient(options: CreateHttpClientOptions): AgentPulseCl
 			request<ControlActionResult>(`/sessions/${encodeURIComponent(sessionId)}/stop`, {
 				method: "POST",
 			}),
+		getUpdateStatus: async () => {
+			const { update } = await request<{ update?: unknown }>("/capabilities");
+			// A server that predates the check has no `update`; a malformed one is treated the same.
+			return sanitizeUpdateStatus(update);
+		},
 		interruptSession: (sessionId) =>
 			request<ControlActionResult>(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
 				method: "POST",

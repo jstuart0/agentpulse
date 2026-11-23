@@ -15,34 +15,47 @@
  * Every side effect (argv, Bun.serve, timers, banner, exit) lives under
  * `import.meta.main`, so tests can import this module freely (F9).
  */
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { execFileSync, spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import {
+	chmodSync,
 	closeSync,
 	constants as fsConstants,
 	fstatSync,
 	lstatSync,
+	mkdirSync,
+	mkdtempSync,
 	openSync,
 	readFileSync,
 	realpathSync,
+	rmSync,
 	statSync,
 	unlinkSync,
+	writeFileSync,
 } from "node:fs";
 import {
 	constants,
 	chmod,
+	copyFile,
 	lstat,
 	mkdir,
+	mkdtemp,
 	open,
 	readFile,
 	readdir,
 	realpath,
 	rename,
+	rm,
 	stat,
 	unlink,
+	writeFile,
 } from "node:fs/promises";
-import { homedir as osHomedir, hostname as osHostname, userInfo } from "node:os";
+import { homedir as osHomedir, hostname as osHostname, tmpdir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { createInterface } from "node:readline";
+
+/** The release this file belongs to. `bun run release:prepare` rewrites it; `scripts/release/version-parity.test.ts` holds it equal to package.json. */
+export const RELAY_VERSION = "0.11.0";
 
 const RELAY_FETCH_TIMEOUT_MS = 8_000;
 const SYNC_FETCH_TIMEOUT_MS = 5_000;
@@ -107,7 +120,7 @@ const REQUIRED_SCOPES = ["ingest", "observe"] as const;
 const INSTRUCTION_FILES = ["CLAUDE.md", "AGENTS.md"] as const;
 const DEFAULT_AGENT_TYPE = "claude_code";
 const USAGE =
-	"Usage: relay.ts [<url>] [--config <path>] [--port N] [--key K] [--codex-name-policy agentpulse|codex]";
+	"Usage: relay.ts [<url>] [--config <path>] [--port N] [--key K] [--codex-name-policy agentpulse|codex]\n       relay.ts update auto on|off|status";
 
 // ── Exclude rules (the shared evaluator, embedded) ───────────────────────────
 
@@ -1364,6 +1377,888 @@ function checkWindowsRulesFileSecurity(
 }
 // <<< exclude-rules
 
+// ── Release verification (shared source, embedded) ───────────────────────────
+// The relay refreshes its own files only from a release manifest signed by the project's key. The
+// verifier, the trust root and the helpers that read the installer's parts are the repo's own source,
+// copied in here (this file imports nothing) and held equal to it by `bun run check:relay-update-embed`.
+
+// BEGIN version embed: generated from src/shared/version.ts by `bun run embed:relay-update`; edit the source, never this block
+/**
+ * Version parsing and comparison, in two grammars that must not be mixed up.
+ *
+ * - Release versions (`parseReleaseVersion`, `compareReleaseVersions`): strict semver 2.0 without build
+ *   metadata, for AgentPulse's own releases. Anything that does not match the grammar is not a version.
+ * - Binary versions (`parseVersionPrefix`, `compareVersions`, `versionInRange`): the leading `x.y.z` of
+ *   whatever another program prints, for the protocol gates (Codex's floor, Claude Code's range).
+ *
+ * This file is embedded verbatim into `scripts/relay.ts` (marker block `version`), so it imports nothing.
+ */
+
+export type Version = readonly [major: number, minor: number, patch: number];
+
+export interface ReleaseVersion {
+	readonly core: Version;
+	/** Pre-release identifiers, in order. Empty for a release. */
+	readonly pre: readonly string[];
+}
+
+const RELEASE_PATTERN = /^(\d{1,4})\.(\d{1,4})\.(\d{1,4})(?:-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?$/;
+const MAX_RELEASE_VERSION_CHARS = 48;
+const NUMERIC_IDENTIFIER = /^\d+$/;
+
+function hasLeadingZero(digits: string): boolean {
+	return digits.length > 1 && digits.startsWith("0");
+}
+
+/** The strict grammar for AgentPulse release versions; null for anything else. */
+export function parseReleaseVersion(text: string): ReleaseVersion | null {
+	if (typeof text !== "string" || text.length > MAX_RELEASE_VERSION_CHARS) return null;
+	const match = RELEASE_PATTERN.exec(text);
+	if (!match) return null;
+	const [, major, minor, patch, pre] = match as unknown as [
+		string,
+		string,
+		string,
+		string,
+		string?,
+	];
+	if (hasLeadingZero(major) || hasLeadingZero(minor) || hasLeadingZero(patch)) return null;
+	const identifiers = pre === undefined ? [] : pre.split(".");
+	for (const id of identifiers) {
+		if (NUMERIC_IDENTIFIER.test(id) && hasLeadingZero(id)) return null;
+	}
+	return { core: [Number(major), Number(minor), Number(patch)], pre: identifiers };
+}
+
+function compareIdentifiers(a: string, b: string): number {
+	const aNumeric = NUMERIC_IDENTIFIER.test(a);
+	const bNumeric = NUMERIC_IDENTIFIER.test(b);
+	if (aNumeric && bNumeric) {
+		// No leading zeros, so a longer digit string is a larger number.
+		if (a.length !== b.length) return a.length - b.length;
+		return a < b ? -1 : a > b ? 1 : 0;
+	}
+	if (aNumeric) return -1;
+	if (bNumeric) return 1;
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** Semver 2.0 precedence: negative when `a` is older, zero when equal, positive when newer. */
+export function compareReleaseVersions(a: ReleaseVersion, b: ReleaseVersion): number {
+	for (let i = 0; i < 3; i++) {
+		const diff = (a.core[i] as number) - (b.core[i] as number);
+		if (diff !== 0) return diff;
+	}
+	if (a.pre.length === 0 && b.pre.length === 0) return 0;
+	if (a.pre.length === 0) return 1;
+	if (b.pre.length === 0) return -1;
+	const shared = Math.min(a.pre.length, b.pre.length);
+	for (let i = 0; i < shared; i++) {
+		const diff = compareIdentifiers(a.pre[i] as string, b.pre[i] as string);
+		if (diff !== 0) return diff;
+	}
+	return a.pre.length - b.pre.length;
+}
+
+const VERSION_PREFIX_PATTERN = /^(\d+)\.(\d+)\.(\d+)/;
+
+/** A version is the leading `major.minor.patch` of a string; anything else is not a version. */
+export function parseVersionPrefix(text: string | null | undefined): Version | null {
+	if (typeof text !== "string") return null;
+	const match = VERSION_PREFIX_PATTERN.exec(text);
+	if (!match) return null;
+	return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/** The name the protocol gates have always used for `parseVersionPrefix`. */
+export const parseVersion = parseVersionPrefix;
+
+/** Negative when `a` is older, zero when equal, positive when newer. */
+export function compareVersions(a: Version, b: Version): number {
+	for (let i = 0; i < 3; i++) {
+		const diff = (a[i] as number) - (b[i] as number);
+		if (diff !== 0) return diff;
+	}
+	return 0;
+}
+
+/** `floor <= version < ceiling`. */
+export function versionInRange(version: Version, floor: Version, ceiling: Version): boolean {
+	return compareVersions(version, floor) >= 0 && compareVersions(version, ceiling) < 0;
+}
+// END version embed
+
+// BEGIN release-keys embed: generated from src/shared/release-keys.ts by `bun run embed:relay-update`; edit the source, never this block
+/**
+ * The release trust root: the public keys a client accepts a signed release manifest from.
+ *
+ * The production list is EMPTY in this change. No real signing key exists yet; the maintainer generates
+ * one active and one standby key offline (`bun scripts/release/keygen.ts`) at the first release and
+ * commits the two public halves here, in a reviewed change (CODEOWNERS covers this file). Until then
+ * every client reads "can't verify updates", which fails safe.
+ *
+ * A key's `status` decides what its envelopes may do: only a `standby` key's `revokedKeyIds` are honoured
+ * (see release-manifest.ts). Tests sign with a throwaway key of their own; this file must never import
+ * it (`release-keys.guard.test.ts`).
+ *
+ * Embedded verbatim into `scripts/relay.ts` (marker block `release-keys`), so it imports nothing.
+ */
+
+export type ReleaseKeyStatus = "active" | "standby";
+
+export interface ReleaseKey {
+	/** `k-` plus the first 12 hex characters of sha256 of the raw public key (keygen.ts prints it). */
+	readonly keyId: string;
+	/** The 32-byte Ed25519 public key, canonical base64url. */
+	readonly publicKeyRaw: string;
+	readonly status: ReleaseKeyStatus;
+}
+
+export const RELEASE_KEYS: readonly ReleaseKey[] = [];
+// END release-keys embed
+
+// BEGIN capped-fetch embed: generated from src/shared/capped-fetch.ts by `bun run embed:relay-update`; edit the source, never this block
+/**
+ * The outbound GET for version documents and release bytes: one deadline, one byte cap, no redirects.
+ *
+ * Deliberately a small copy of the discipline in `services/ai/http.ts` (`llmFetch`), not an import of it:
+ * that module is tied to `LlmError` and the LLM call-site guard, and this one is embedded verbatim into
+ * `scripts/relay.ts` (marker block `capped-fetch`), so it imports nothing.
+ *
+ * It sends a bare GET: no cookies, no custom headers, no body. It returns a result with a code and never
+ * throws, so a caller's failure path is a value it can branch on, not an exception it must remember to catch.
+ */
+
+export type CappedFetchResult =
+	| { ok: true; status: number; body: string }
+	| {
+			ok: false;
+			code:
+				| "bad_options"
+				| "bad_url"
+				| "insecure"
+				| "redirect"
+				| "status"
+				| "too_large"
+				| "timeout"
+				| "network";
+			status?: number;
+	  };
+
+export interface CappedFetchOptions {
+	/** One deadline for the whole exchange, headers and body included. */
+	deadlineMs: number;
+	/** Counted on raw bytes before decoding. A body of exactly this many bytes passes. */
+	maxBytes: number;
+	/** Default true: http is allowed only for a loopback host. */
+	httpsOrLoopbackOnly?: boolean;
+	/**
+	 * Extra trust anchors for the TLS handshake. Only a test sets this (through a `...ForTests` factory):
+	 * no production caller passes it, so the system trust store is always what verifies a real server.
+	 */
+	tls?: { ca: string };
+}
+
+/** Bun's `fetch` takes `timeout`, which `bun-types` does not declare. */
+type BunRequestInit = RequestInit & { timeout?: false; tls?: { ca: string } };
+
+const LOOPBACK_V4 = /^127(?:\.\d{1,3}){3}$/;
+
+function isLoopbackHost(hostname: string): boolean {
+	return hostname === "localhost" || hostname === "[::1]" || LOOPBACK_V4.test(hostname);
+}
+
+/** Null when the URL may be fetched, else the refusal code. */
+function refuseUrl(url: URL, httpsOrLoopbackOnly: boolean): "bad_url" | "insecure" | null {
+	if (url.protocol !== "https:" && url.protocol !== "http:") return "bad_url";
+	if (url.username !== "" || url.password !== "") return "bad_url";
+	if (url.protocol === "http:" && httpsOrLoopbackOnly && !isLoopbackHost(url.hostname)) {
+		return "insecure";
+	}
+	return null;
+}
+
+async function readCapped(
+	response: Response,
+	maxBytes: number,
+): Promise<{ text: string } | "too_large"> {
+	const declared = Number(response.headers.get("content-length"));
+	if (Number.isFinite(declared) && declared > maxBytes) return "too_large";
+	if (!response.body) return { text: "" };
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const chunk = await reader.read();
+			if (chunk.done) break;
+			total += chunk.value.byteLength;
+			if (total > maxBytes) return "too_large";
+			chunks.push(chunk.value);
+		}
+	} finally {
+		await reader.cancel().catch(() => {});
+	}
+	const bytes = new Uint8Array(total);
+	let at = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, at);
+		at += chunk.byteLength;
+	}
+	return { text: new TextDecoder().decode(bytes) };
+}
+
+export async function fetchCapped(
+	rawUrl: string,
+	options: CappedFetchOptions,
+): Promise<CappedFetchResult> {
+	const { deadlineMs, maxBytes } = options;
+	if (
+		!Number.isFinite(deadlineMs) ||
+		deadlineMs <= 0 ||
+		!Number.isFinite(maxBytes) ||
+		maxBytes < 0
+	) {
+		return { ok: false, code: "bad_options" };
+	}
+	let url: URL;
+	try {
+		url = new URL(rawUrl);
+	} catch {
+		return { ok: false, code: "bad_url" };
+	}
+	const refused = refuseUrl(url, options.httpsOrLoopbackOnly !== false);
+	if (refused) return { ok: false, code: refused };
+
+	const deadline = AbortSignal.timeout(deadlineMs);
+	try {
+		const response = await fetch(url.href, {
+			method: "GET",
+			// "manual": a redirect arrives as a 3xx we refuse, never as a request to another origin.
+			redirect: "manual",
+			signal: deadline,
+			// Bun's own 300 s idle timer is off, so `deadlineMs` is the only time limit.
+			timeout: false,
+			...(options.tls ? { tls: options.tls } : {}),
+		} as BunRequestInit);
+		if (response.status >= 300 && response.status < 400) {
+			await response.body?.cancel().catch(() => {});
+			return { ok: false, code: "redirect", status: response.status };
+		}
+		if (response.status < 200 || response.status >= 300) {
+			await response.body?.cancel().catch(() => {});
+			return { ok: false, code: "status", status: response.status };
+		}
+		const read = await readCapped(response, maxBytes);
+		if (read === "too_large") return { ok: false, code: "too_large" };
+		return { ok: true, status: response.status, body: read.text };
+	} catch {
+		return { ok: false, code: deadline.aborted ? "timeout" : "network" };
+	}
+}
+// END capped-fetch embed
+
+// BEGIN release-manifest embed: generated from src/shared/release-manifest.ts by `bun run embed:relay-update`; edit the source, never this block
+/**
+ * The signed release manifest: what a client may believe about which AgentPulse versions exist.
+ *
+ * An envelope `{v: 1, keyId, payload, sig}` carries a base64url JSON payload and an Ed25519 signature over
+ * the raw payload bytes. `verifyManifest` is the one place that decides whether an envelope is trusted:
+ * encoding, key lookup, revocation, signature, schema and freshness. `updateState` turns a verified
+ * manifest and the running version into the one state every client shows.
+ *
+ * The payload carries data a client compares (versions, digests, counters, times) and nothing a client
+ * runs or shows verbatim: no URLs, commands, paths or free text (rules 21 and 39). Unknown keys are
+ * ignored and never copied out.
+ *
+ * Revocation is a standby key's power only: an envelope signed by an `active` key can't revoke anyone,
+ * so one compromised active key can't lock the others out. Revocation protects only clients that have
+ * seen a revoking manifest.
+ *
+ * Embedded verbatim into `scripts/relay.ts` (marker block `release-manifest`), together with version.ts,
+ * release-keys.ts and capped-fetch.ts. It uses only WebCrypto and `Buffer`.
+ */
+
+export const MAX_ENVELOPE_BYTES = 32 * 1024;
+const MAX_RELEASES = 30;
+const MAX_REVOKED_KEY_IDS = 16;
+const FUTURE_TOLERANCE_MS = 24 * 3_600_000;
+/** The signer issues 10 days; one extra day of slack, no more. */
+const MAX_VALIDITY_MS = 11 * 86_400_000;
+
+export type VerifyFailureCode =
+	| "too_large"
+	| "bad_envelope"
+	| "unknown_key"
+	| "revoked_key"
+	| "bad_signature"
+	| "replayed"
+	| "older"
+	| "future"
+	| "bad_payload";
+
+export interface ManifestRelease {
+	version: string;
+	commit: string;
+	publishedAt: string;
+	severity: "normal" | "security";
+	pulled: boolean;
+	/** A short machine code, never prose. */
+	pulledReason?: string;
+	/** The last migration file of each dialect at this release. */
+	migrations: { sqlite: string; postgres: string };
+	/** Full sha256 of each client file as this release ships it. */
+	clients: { relay: string; statusline: string; excludeCheck: string };
+}
+
+export interface Manifest {
+	schema: 1;
+	seq: number;
+	sourceCommit: string;
+	issuedAt: string;
+	expiresAt: string;
+	latest: string;
+	minSupported: string;
+	revokedKeyIds: string[];
+	releases: ManifestRelease[];
+}
+
+/** The newest manifest a client has accepted, kept by the client itself. */
+export interface LastSeen {
+	seq: number;
+	issuedAt: string;
+	/** sha256 of the payload bytes. */
+	fingerprint: string;
+}
+
+export interface VerifyContext {
+	keys: readonly ReleaseKey[];
+	/** Every key id this client has ever seen revoked. */
+	revoked: ReadonlySet<string>;
+	now: number;
+	last: LastSeen | null;
+}
+
+/**
+ * `older` and `replayed` are both "valid, but not newer than what this client already holds": callers
+ * keep the stored manifest and treat neither as unverified.
+ */
+export type VerifyResult =
+	| {
+			ok: true;
+			manifest: Manifest;
+			/** sha256 of the payload bytes. */
+			fingerprint: string;
+			/** The manifest's `expiresAt` has passed: it verifies, for display, but should not be acted on. */
+			stale: boolean;
+			/** What the client should store as its new `last`: issuedAt is never ratcheted past `now`. */
+			next: LastSeen;
+			/** The union of the client's revoked set and what this envelope revoked. */
+			revoked: string[];
+	  }
+	| { ok: false; code: VerifyFailureCode };
+
+const BASE64URL = /^[A-Za-z0-9_-]*$/;
+const KEY_ID = /^[A-Za-z0-9_-]{1,32}$/;
+const HEX40 = /^[0-9a-f]{40}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+const REASON_CODE = /^[a-z][a-z0-9_]{0,31}$/;
+const MIGRATION_NAME = /^[0-9A-Za-z_]{1,100}$/;
+const ED25519_SIGNATURE_BYTES = 64;
+const ED25519_PUBLIC_KEY_BYTES = 32;
+
+function fail(code: VerifyFailureCode): VerifyResult {
+	return { ok: false, code };
+}
+
+/** Canonical base64url only: a re-encode that differs means padding, stray bits or another alphabet. */
+function decodeBase64url(text: unknown): Uint8Array<ArrayBuffer> | null {
+	if (typeof text !== "string" || !BASE64URL.test(text)) return null;
+	const bytes = new Uint8Array(Buffer.from(text, "base64url"));
+	return Buffer.from(bytes).toString("base64url") === text ? bytes : null;
+}
+
+export function encodeEnvelope(keyId: string, payload: Uint8Array, sig: Uint8Array): string {
+	return JSON.stringify({
+		v: 1,
+		keyId,
+		payload: Buffer.from(payload).toString("base64url"),
+		sig: Buffer.from(sig).toString("base64url"),
+	});
+}
+
+async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", bytes);
+	return Buffer.from(digest).toString("hex");
+}
+
+async function signatureVerifies(
+	publicKeyRaw: string,
+	payload: Uint8Array<ArrayBuffer>,
+	sig: Uint8Array<ArrayBuffer>,
+): Promise<boolean> {
+	const raw = decodeBase64url(publicKeyRaw);
+	if (!raw || raw.length !== ED25519_PUBLIC_KEY_BYTES) return false;
+	try {
+		const key = await crypto.subtle.importKey("raw", raw, { name: "Ed25519" }, false, ["verify"]);
+		return await crypto.subtle.verify({ name: "Ed25519" }, key, sig, payload);
+	} catch {
+		return false;
+	}
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isTime(value: unknown): value is string {
+	return typeof value === "string" && ISO_TIME.test(value) && Number.isFinite(Date.parse(value));
+}
+
+function readRelease(raw: unknown): ManifestRelease | null {
+	if (!isRecord(raw)) return null;
+	const { version, commit, publishedAt, severity, pulled, pulledReason, migrations, clients } = raw;
+	if (typeof version !== "string" || !parseReleaseVersion(version)) return null;
+	if (typeof commit !== "string" || !HEX40.test(commit)) return null;
+	if (!isTime(publishedAt)) return null;
+	if (severity !== "normal" && severity !== "security") return null;
+	if (typeof pulled !== "boolean") return null;
+	if (
+		pulledReason !== undefined &&
+		!(typeof pulledReason === "string" && REASON_CODE.test(pulledReason))
+	) {
+		return null;
+	}
+	if (!isRecord(migrations) || !isRecord(clients)) return null;
+	const { sqlite, postgres } = migrations;
+	if (typeof sqlite !== "string" || !MIGRATION_NAME.test(sqlite)) return null;
+	if (typeof postgres !== "string" || !MIGRATION_NAME.test(postgres)) return null;
+	const { relay, statusline, excludeCheck } = clients;
+	for (const digest of [relay, statusline, excludeCheck]) {
+		if (typeof digest !== "string" || !HEX64.test(digest)) return null;
+	}
+	const release: ManifestRelease = {
+		version,
+		commit,
+		publishedAt,
+		severity,
+		pulled,
+		migrations: { sqlite, postgres },
+		clients: {
+			relay: relay as string,
+			statusline: statusline as string,
+			excludeCheck: excludeCheck as string,
+		},
+	};
+	if (pulledReason !== undefined) release.pulledReason = pulledReason;
+	return release;
+}
+
+/** A clean manifest built field by field from a parsed payload, or null when any field is wrong. */
+function readManifest(raw: unknown): Manifest | null {
+	if (!isRecord(raw) || raw.schema !== 1) return null;
+	const { seq, sourceCommit, issuedAt, expiresAt, latest, minSupported, revokedKeyIds, releases } =
+		raw;
+	if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) return null;
+	if (typeof sourceCommit !== "string" || !HEX40.test(sourceCommit)) return null;
+	if (!isTime(issuedAt) || !isTime(expiresAt)) return null;
+	const validityMs = Date.parse(expiresAt) - Date.parse(issuedAt);
+	if (validityMs <= 0 || validityMs > MAX_VALIDITY_MS) return null;
+	if (typeof latest !== "string" || typeof minSupported !== "string") return null;
+	const latestVersion = parseReleaseVersion(latest);
+	const minVersion = parseReleaseVersion(minSupported);
+	if (!latestVersion || !minVersion || compareReleaseVersions(minVersion, latestVersion) > 0)
+		return null;
+	if (!Array.isArray(revokedKeyIds) || revokedKeyIds.length > MAX_REVOKED_KEY_IDS) return null;
+	for (const id of revokedKeyIds) if (typeof id !== "string" || !KEY_ID.test(id)) return null;
+	if (!Array.isArray(releases) || releases.length < 1 || releases.length > MAX_RELEASES)
+		return null;
+	const cleaned: ManifestRelease[] = [];
+	const seen = new Set<string>();
+	for (const entry of releases) {
+		const release = readRelease(entry);
+		if (!release || seen.has(release.version)) return null;
+		seen.add(release.version);
+		cleaned.push(release);
+	}
+	const latestEntry = cleaned.find((release) => release.version === latest);
+	// `latest` is what a client is told to move to: never a pulled or pre-release version.
+	if (!latestEntry || latestEntry.pulled || latestVersion.pre.length > 0) return null;
+	return {
+		schema: 1,
+		seq,
+		sourceCommit,
+		issuedAt,
+		expiresAt,
+		latest,
+		minSupported,
+		revokedKeyIds: [...(revokedKeyIds as string[])],
+		releases: cleaned,
+	};
+}
+
+function parsePayload(bytes: Uint8Array): Manifest | null {
+	try {
+		return readManifest(JSON.parse(new TextDecoder().decode(bytes)));
+	} catch {
+		return null;
+	}
+}
+
+/** Null when the envelope is newer than what the client holds, else why it isn't. */
+function replayVerdict(
+	manifest: Manifest,
+	fingerprint: string,
+	last: LastSeen | null,
+): "replayed" | "older" | null {
+	if (!last) return null;
+	if (manifest.seq < last.seq) return "replayed";
+	if (manifest.seq > last.seq) return null;
+	const lastMs = Date.parse(last.issuedAt);
+	const issuedMs = Date.parse(manifest.issuedAt);
+	if (Number.isFinite(lastMs) && issuedMs < lastMs) return "older";
+	if (issuedMs === lastMs && fingerprint !== last.fingerprint) return "replayed";
+	return null;
+}
+
+export async function verifyManifest(
+	envelopeText: string,
+	ctx: VerifyContext,
+): Promise<VerifyResult> {
+	if (typeof envelopeText !== "string" || Buffer.byteLength(envelopeText) > MAX_ENVELOPE_BYTES) {
+		return fail("too_large");
+	}
+	let envelope: unknown;
+	try {
+		envelope = JSON.parse(envelopeText);
+	} catch {
+		return fail("bad_envelope");
+	}
+	if (!isRecord(envelope) || envelope.v !== 1) return fail("bad_envelope");
+	const { keyId } = envelope;
+	if (typeof keyId !== "string" || !KEY_ID.test(keyId)) return fail("bad_envelope");
+	const payloadBytes = decodeBase64url(envelope.payload);
+	const sig = decodeBase64url(envelope.sig);
+	if (!payloadBytes || !sig || sig.length !== ED25519_SIGNATURE_BYTES) return fail("bad_envelope");
+
+	// A Map, so "__proto__" and "constructor" are plain misses.
+	const signer = new Map(ctx.keys.map((key) => [key.keyId, key] as const)).get(keyId);
+	if (!signer) return fail("unknown_key");
+	if (ctx.revoked.has(keyId)) return fail("revoked_key");
+	if (!(await signatureVerifies(signer.publicKeyRaw, payloadBytes, sig)))
+		return fail("bad_signature");
+
+	const manifest = parsePayload(payloadBytes);
+	if (!manifest) return fail("bad_payload");
+	const honoursRevocation = signer.status === "standby";
+	if (honoursRevocation && manifest.revokedKeyIds.includes(keyId)) return fail("bad_payload");
+
+	const issuedMs = Date.parse(manifest.issuedAt);
+	if (issuedMs > ctx.now + FUTURE_TOLERANCE_MS) return fail("future");
+	const fingerprint = await sha256Hex(payloadBytes);
+	const behind = replayVerdict(manifest, fingerprint, ctx.last);
+	if (behind) return fail(behind);
+
+	const revoked = new Set(ctx.revoked);
+	if (honoursRevocation) for (const id of manifest.revokedKeyIds) revoked.add(id);
+	return {
+		ok: true,
+		manifest,
+		fingerprint,
+		stale: ctx.now > Date.parse(manifest.expiresAt),
+		next: {
+			seq: manifest.seq,
+			issuedAt: new Date(Math.min(issuedMs, ctx.now)).toISOString(),
+			fingerprint,
+		},
+		revoked: [...revoked],
+	};
+}
+
+export type UpdateStateName =
+	| "disabled"
+	| "unverified"
+	| "current_pulled"
+	| "below_minimum"
+	| "security"
+	| "available"
+	| "current";
+
+export interface UpdateState {
+	state: UpdateStateName;
+	/** The manifest's validity has passed; carried beside the state, never instead of it. */
+	stale: boolean;
+	/** The manifest's `latest`, present whenever a manifest was read. */
+	latest?: string;
+}
+
+export function releaseFor(manifest: Manifest, version: string): ManifestRelease | null {
+	for (const release of manifest.releases) if (release.version === version) return release;
+	return null;
+}
+
+/**
+ * Precedence: disabled > unverified > current_pulled > below_minimum > security > available > current.
+ * `security` is any newer non-pulled stable release marked security, not only `latest`.
+ */
+export function updateState(
+	current: string,
+	manifest: Manifest | null,
+	ctx: { disabled?: boolean; now: number },
+): UpdateState {
+	if (ctx.disabled) return { state: "disabled", stale: false };
+	if (!manifest) return { state: "unverified", stale: false };
+	const stale = ctx.now > Date.parse(manifest.expiresAt);
+	const result = (state: UpdateStateName): UpdateState => ({
+		state,
+		stale,
+		latest: manifest.latest,
+	});
+	const running = parseReleaseVersion(current);
+	if (!running) return result("unverified");
+
+	if (releaseFor(manifest, current)?.pulled) return result("current_pulled");
+	const minimum = parseReleaseVersion(manifest.minSupported) as NonNullable<
+		ReturnType<typeof parseReleaseVersion>
+	>;
+	if (compareReleaseVersions(running, minimum) < 0) return result("below_minimum");
+
+	const newer = (version: string) => {
+		const parsed = parseReleaseVersion(version);
+		return parsed !== null && compareReleaseVersions(parsed, running) > 0 ? parsed : null;
+	};
+	const offeredSecurity = manifest.releases.some((release) => {
+		const parsed = newer(release.version);
+		return (
+			parsed !== null &&
+			parsed.pre.length === 0 &&
+			!release.pulled &&
+			release.severity === "security"
+		);
+	});
+	if (offeredSecurity) return result("security");
+	return result(newer(manifest.latest) ? "available" : "current");
+}
+// END release-manifest embed
+
+// BEGIN relay-installer-parts embed: generated from src/shared/relay-installer-parts.ts by `bun run embed:relay-update`; edit the source, never this block
+/**
+ * Pulls the three client files out of the text of a `/setup-relay.sh`: the relay, the statusline and the
+ * `exclude-check.sh` heredoc. The release builder runs it on a tag's installer and a relay runs it on the
+ * installer its own server serves, so both read the same bytes the installer would write to disk.
+ *
+ * The delimiters are the ones `buildRelayInstaller` (src/server/installers.ts) writes and the installer's
+ * own `ap_load_exclude_script` reads. A part is returned exactly as the installer writes it: the lines
+ * between opener and terminator, each followed by a newline.
+ */
+
+export interface RelayInstallerParts {
+	/** `relay.ts` as the installer writes it. */
+	relay: string;
+	/** `statusline.sh` as the installer writes it. */
+	statusline: string;
+	/** The exclude check in installer form (ASCII, with placeholders): pass it to `materializeExcludeScript`. */
+	excludeHeredoc: string;
+}
+
+export type ExtractResult =
+	| { ok: true; parts: RelayInstallerParts }
+	| { ok: false; reason: string };
+
+interface Heredoc {
+	label: string;
+	/** Matches the whole opener line. */
+	opener: (line: string) => boolean;
+	terminator: string;
+}
+
+const HEREDOCS = {
+	relay: {
+		label: "relay.ts",
+		opener: (line) => line === `cat > "$SRC_DIR/relay.ts" << 'AGENTPULSE_RELAY_TS_EOF'`,
+		terminator: "AGENTPULSE_RELAY_TS_EOF",
+	},
+	statusline: {
+		label: "statusline.sh",
+		opener: (line) => line === `cat > "$SRC_DIR/statusline.sh" << 'AGENTPULSE_STATUSLINE_SH_EOF'`,
+		terminator: "AGENTPULSE_STATUSLINE_SH_EOF",
+	},
+	excludeHeredoc: {
+		label: "the exclude check",
+		opener: (line) =>
+			line === "\tIFS= read -r -d '' ap_exclude_script_text <<'AP_EXCLUDE_SCRIPT_EOF' || true",
+		terminator: "AP_EXCLUDE_SCRIPT_EOF",
+	},
+} as const satisfies Record<keyof RelayInstallerParts, Heredoc>;
+
+type Extracted = { ok: true; text: string } | { ok: false; reason: string };
+
+function extractOne(lines: readonly string[], spec: Heredoc): Extracted {
+	const opens = lines.flatMap((line, i) => (spec.opener(line) ? [i] : []));
+	if (opens.length !== 1) {
+		return {
+			ok: false,
+			reason: `setup-relay.sh has ${opens.length} openers for ${spec.label}, expected exactly one`,
+		};
+	}
+	const start = (opens[0] as number) + 1;
+	const end = lines.indexOf(spec.terminator, start);
+	if (end === -1) {
+		return {
+			ok: false,
+			reason: `setup-relay.sh has no ${spec.terminator} line after ${spec.label}`,
+		};
+	}
+	return { ok: true, text: `${lines.slice(start, end).join("\n")}\n` };
+}
+
+export function extractRelayInstallerParts(script: string): ExtractResult {
+	const lines = script.split("\n");
+	const out: Partial<RelayInstallerParts> = {};
+	for (const key of Object.keys(HEREDOCS) as (keyof RelayInstallerParts)[]) {
+		const found = extractOne(lines, HEREDOCS[key]);
+		if (!found.ok) return found;
+		out[key] = found.text;
+	}
+	return { ok: true, parts: out as RelayInstallerParts };
+}
+
+/** Just the exclude heredoc: a tag's checked-in `setup-relay.sh` holds it verbatim, the other two parts only as markers. */
+export function extractExcludeHeredoc(script: string): Extracted {
+	return extractOne(script.split("\n"), HEREDOCS.excludeHeredoc);
+}
+
+export interface ClientDigests {
+	relay: string;
+	statusline: string;
+	excludeCheck: string;
+}
+
+async function sha256HexOfText(text: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+	return Buffer.from(digest).toString("hex");
+}
+
+/**
+ * The full sha256 of each client file, the form the release manifest carries. The relay and statusline
+ * hash with trailing whitespace trimmed, as `/health`'s `clients` always has (a trailing-newline-only
+ * difference is not drift); the exclude check hashes the exact bytes of the installed file, so pass it
+ * through `materializeExcludeScript` first.
+ */
+export async function clientDigests(files: {
+	relay: string;
+	statusline: string;
+	excludeCheck: string;
+}): Promise<ClientDigests> {
+	return {
+		relay: await sha256HexOfText(files.relay.trimEnd()),
+		statusline: await sha256HexOfText(files.statusline.trimEnd()),
+		excludeCheck: await sha256HexOfText(files.excludeCheck),
+	};
+}
+
+/** The terminator lines of the heredocs a client file travels in. A file holding one on a line of its own can't be carried. */
+export const HEREDOC_TERMINATORS: readonly string[] = [
+	HEREDOCS.relay.terminator,
+	HEREDOCS.statusline.terminator,
+	HEREDOCS.excludeHeredoc.terminator,
+];
+
+/** Why a client file can't be carried inside the installer, or null when it can. */
+export function heredocHazard(text: string): string | null {
+	const lines = text.split("\n");
+	for (const terminator of HEREDOC_TERMINATORS) {
+		if (lines.includes(terminator)) return `a line equal to the heredoc terminator ${terminator}`;
+	}
+	// Built in two pieces: this file is embedded into scripts/relay.ts, which must not itself hold the marker.
+	if (text.includes(`${"@@"}AGENTPULSE_`)) return "an installer marker (the @@ AGENTPULSE_ kind)";
+	return null;
+}
+// END relay-installer-parts embed
+
+// BEGIN exclude-materialize embed: generated from src/shared/hook-command.ts by `bun run embed:relay-update`; edit the source, never this block
+const TAB = String.fromCharCode(0x09);
+const CARRIAGE_RETURN = String.fromCharCode(0x0d);
+const BYTE_ORDER_MARK = String.fromCharCode(0xfeff);
+
+export const INSTALLER_SNIPPET_PLACEHOLDERS = {
+	tab: "@@AP_TAB@@",
+	cr: "@@AP_CR@@",
+	bom: "@@AP_BOM@@",
+} as const;
+
+export function materializeExcludeScript(installerForm: string): string {
+	return installerForm
+		.split(INSTALLER_SNIPPET_PLACEHOLDERS.tab)
+		.join(TAB)
+		.split(INSTALLER_SNIPPET_PLACEHOLDERS.cr)
+		.join(CARRIAGE_RETURN)
+		.split(INSTALLER_SNIPPET_PLACEHOLDERS.bom)
+		.join(BYTE_ORDER_MARK);
+}
+// END exclude-materialize embed
+
+// BEGIN agent-session-markers embed: generated from src/shared/launch-env-policy.ts by `bun run embed:relay-update`; edit the source, never this block
+export const FORK_ENV_STRIP_EXACT: readonly string[] = [
+	"CLAUDECODE",
+	"CLAUDE_CODE_CHILD_SESSION",
+	"CLAUDE_CODE_ENTRYPOINT",
+	"CLAUDE_CODE_EXECPATH",
+	"CLAUDE_CODE_MESSAGING_SOCKET",
+	"CLAUDE_CODE_MESSAGING_TOKEN",
+	"CLAUDE_CODE_SESSION_ATTENDED",
+	"CLAUDE_CODE_SESSION_ID",
+	"CLAUDE_PID",
+	"CLAUDE_EFFORT",
+	"AI_AGENT",
+];
+
+/** Matched case-insensitively. A fork reports nothing through AgentPulse's own variables. */
+export const FORK_ENV_STRIP_PREFIXES: readonly string[] = ["AGENTPULSE_"];
+
+/**
+ * Variables that say "this process runs inside an agent session", for the commands that must not be run by an
+ * agent on a person's behalf (turning on automatic updates). Exact names plus prefixes; the Claude Code names are
+ * the fork strip list above. A name another agent adds later is the residual: this is a tripwire, not a boundary,
+ * because anything running as the same user can scrub its own environment. `AGENTPULSE_UPDATER_REAL_SERVICES` is
+ * the one AgentPulse variable the installed shim sets on purpose, so it doesn't count.
+ */
+export const AGENT_SESSION_MARKER_EXACT: readonly string[] = [
+	...FORK_ENV_STRIP_EXACT,
+	"CODEX_THREAD_ID",
+	"CODEX_SANDBOX",
+	"CODEX_CI",
+	"OPENCODE",
+	"GITHUB_COPILOT_CLI",
+	"COPILOT_CLI",
+	"GEMINI_CLI",
+];
+export const AGENT_SESSION_MARKER_PREFIXES: readonly string[] = [
+	"CODEX_SANDBOX_",
+	"OPENCODE_",
+	"COPILOT_AGENT_",
+	"AGENTPULSE_",
+];
+const AGENT_SESSION_MARKER_ALLOWED: readonly string[] = ["AGENTPULSE_UPDATER_REAL_SERVICES"];
+
+/** The name of the first agent-session marker set (non-empty) in `env`, or null. Names only: a value is never returned. */
+export function agentSessionMarker(env: Record<string, string | undefined>): string | null {
+	for (const [name, value] of Object.entries(env)) {
+		if (value === undefined || value === "") continue;
+		const upper = name.toUpperCase();
+		if (AGENT_SESSION_MARKER_ALLOWED.includes(upper)) continue;
+		if (
+			AGENT_SESSION_MARKER_EXACT.includes(upper) ||
+			AGENT_SESSION_MARKER_PREFIXES.some((prefix) => upper.startsWith(prefix))
+		) {
+			return upper;
+		}
+	}
+	return null;
+}
+// END agent-session-markers embed
+
 // ── Config ───────────────────────────────────────────────────────────────────
 
 export type CodexNamePolicy = "agentpulse" | "codex";
@@ -1644,6 +2539,16 @@ export function createRelayState() {
 			checkedAt: null as string | null,
 		},
 		relayHash: "",
+		/** Self-refresh (AGEN-155): how the last pass ended, and the release/manifest pair that had nothing to apply. */
+		selfUpdate: {
+			lastCode: null as string | null,
+			settledFor: null as string | null,
+			/** Consecutive passes the served files disagreed with the manifest for one version. */
+			mismatch: { version: null as string | null, count: 0 },
+			notLauncherLogged: false,
+			/** The version a "server is behind the manifest's latest" line was last written for. */
+			behindLogged: null as string | null,
+		},
 		codexPull: new Map<string, PullEntryState>(),
 		pullStateLoaded: false,
 		listFieldsUnsupported: false,
@@ -1728,6 +2633,8 @@ export type RelayContext = {
 	accountHome: () => string | undefined;
 	/** This machine's name, reported on forwarded hooks; read at each forward so a rename shows up. */
 	hostName: () => string;
+	/** Self-refresh dependencies; production uses the defaults (the embedded trust root, the real environment). Only a test passes any. */
+	selfUpdate?: Partial<SelfUpdateDeps>;
 	/** Test seam: called while a queue file is being written, once the temp file is open and once it is complete, just before the rename. */
 	queueWriteHook?: (stage: "opened" | "written", tmpPath: string, finalPath: string) => void;
 	/** Test seam: called while the status file is being written, once the file being written is open and once its content is complete. */
@@ -1773,6 +2680,8 @@ type ContextOptions = {
 	accountHome?: () => string | undefined;
 	/** This machine's name; defaults to the operating system's host name. */
 	hostName?: () => string;
+	/** Self-refresh dependencies (a test's trust root, exit and checker); never set outside tests. */
+	selfUpdate?: Partial<SelfUpdateDeps>;
 };
 
 /** HOME, else the operating system's answer for this account; "" only when neither exists. */
@@ -1846,6 +2755,7 @@ export function createRelayContext(config: RelayConfig, opts: ContextOptions = {
 		excludeFs: opts.excludeFs ?? { statSync, lstatSync },
 		accountHome: opts.accountHome ?? defaultAccountHome,
 		hostName: opts.hostName ?? osHostname,
+		...(opts.selfUpdate ? { selfUpdate: opts.selfUpdate } : {}),
 	};
 }
 
@@ -2310,6 +3220,1101 @@ export async function checkDriftTick(ctx: RelayContext) {
 		ctx.log(`[relay] drift: relay ${state.drift.relay}, statusline ${state.drift.statusline}`);
 	}
 	await writeStatusFile(ctx);
+	await runSelfUpdateTick(ctx);
+}
+
+// ── Self-refresh from a signed release (AGEN-155) ────────────────────────────
+//
+// When the machine's own operator opted in (`bun relay.ts update auto on`, which writes the `clients` part of
+// ~/.agentpulse/update-consent.json) and the relay was started by its launcher (relay-launch.sh, which can put the
+// previous relay back), the hourly drift tick may replace the files this installer owns: relay.ts, the installed
+// statusline and exclude-check.sh. Nothing is written until every precondition holds: the manifest verifies
+// against the trust root embedded above and isn't stale or replayed, the server's own version is a newer, non-pulled,
+// non-pre-release signed release, and every part the server serves hashes to that release's digest. Bytes come from
+// the relay's own server over https (or a loopback literal) and are trusted only because their digests are in the
+// signed manifest; no credential is sent on either request.
+
+const SELF_UPDATE_HEALTH_DEADLINE_MS = 10_000;
+const SELF_UPDATE_HEALTH_MAX_BYTES = 64 * 1024;
+const SELF_UPDATE_INSTALLER_DEADLINE_MS = 30_000;
+const SELF_UPDATE_INSTALLER_MAX_BYTES = 8 * 1024 * 1024;
+const SELF_UPDATE_SMALL_FILE_MAX_BYTES = 32 * 1024;
+const INSTALLED_FILE_MAX_BYTES = 1024 * 1024;
+const UPDATE_CONSENT_FILE = "update-consent.json";
+const RELAY_UPDATE_STATE_FILE = "relay-update-state.json";
+const RELAY_PENDING_FILE = "relay-pending.json";
+const RELAY_REFUSED_FILE = "relay-update-refused.json";
+const RELAY_LAUNCHER_ENV = "AGENTPULSE_RELAY_LAUNCHER";
+export const RELAY_PENDING_CLEAR_WITHIN_MS = 30_000;
+const RELAY_PENDING_POLL_MS = 500;
+const SELF_CHECK_RELAY_MS = 5_000;
+const SELF_CHECK_SHELL_MS = 2_000;
+/** A version whose served files disagree with the signed digests this many passes in a row is refused for good. */
+const DIGEST_MISMATCH_REFUSE_AFTER = 3;
+const SELF_CHECK_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin";
+/** What exclude-check.sh exits with to say "send"; held equal to `EXCLUDE_SCRIPT_SEND_STATUS` in src/shared/hook-headers.ts by a test. */
+export const EXCLUDE_CHECK_SEND_STATUS = 42;
+const KEY_ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
+const HEX64_RE = /^[0-9a-f]{64}$/;
+const ISO_TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+
+export type ClientComponent = "relay" | "statusline" | "excludeCheck";
+const CLIENT_COMPONENTS: readonly ClientComponent[] = ["relay", "statusline", "excludeCheck"];
+
+/** Codes only: what a tick ended with. A person reads them in the relay log, one line per change. */
+export type SelfUpdateCode =
+	| "not_launcher"
+	| "no_consent"
+	| "insecure"
+	| "health_failed"
+	| "unverified"
+	| "stale"
+	| "unknown_version"
+	| "pulled"
+	| "prerelease"
+	| "up_to_date"
+	| "below_minimum"
+	| "refused_before"
+	| "installer_failed"
+	| "digest_mismatch"
+	| "nothing_to_apply"
+	| "unsafe_path"
+	| "self_check_failed"
+	| "write_failed"
+	| "behind_security"
+	| "applied";
+
+export type SelfUpdateDeps = {
+	/** The trust root. Only a test passes another. */
+	keys: readonly ReleaseKey[];
+	/** Where the launcher's flag is read from. */
+	env: Record<string, string | undefined>;
+	/** Called once the new relay is in place; the launcher starts it. */
+	exit: (code: number) => void;
+	selfCheck: (kind: ClientComponent, path: string) => Promise<boolean>;
+	fetchText: typeof fetchCapped;
+	/** The account's uid, for owner checks; undefined where the platform has none. */
+	uid: () => number | undefined;
+	/** Writes `<final>.new` and returns its path (null: not ours to use). A test replaces it to prove the read-back. */
+	writeNew: (finalPath: string, bytes: Buffer, uid: number | undefined) => Promise<string | null>;
+	/** Reads a staged file back for comparison. A test replaces it to alter what comes back. */
+	readBack: (path: string, uid: number | undefined) => Promise<string | null>;
+	/** The commit's renames. A test replaces it to fail one. */
+	rename: typeof rename;
+};
+
+function defaultSelfUpdateDeps(): SelfUpdateDeps {
+	return {
+		keys: RELEASE_KEYS,
+		env: process.env,
+		exit: (code) => process.exit(code),
+		selfCheck: (kind, path) => runSelfCheck(kind, path, process.execPath),
+		fetchText: fetchCapped,
+		uid: () => process.getuid?.(),
+		writeNew: writeNewFile,
+		readBack: async (path, uid) => {
+			const back = await readTrustedFile(path, SELF_UPDATE_INSTALLER_MAX_BYTES, uid);
+			return back.kind === "ok" ? back.text : null;
+		},
+		rename,
+	};
+}
+
+type TrustedRead = { kind: "ok"; text: string } | { kind: "absent" } | { kind: "untrusted" };
+
+/**
+ * Reads a small file only if it is a plain regular file this account owns, that nobody else can write,
+ * and opens it without following a link. A missing file is `absent`; anything else wrong is `untrusted`.
+ */
+async function readTrustedFile(
+	path: string,
+	maxBytes: number,
+	uid: number | undefined,
+): Promise<TrustedRead> {
+	let st: Awaited<ReturnType<typeof lstat>>;
+	try {
+		st = await lstat(path);
+	} catch (err) {
+		return (err as { code?: string }).code === "ENOENT"
+			? { kind: "absent" }
+			: { kind: "untrusted" };
+	}
+	if (!st.isFile() || st.nlink > 1 || st.size > maxBytes) return { kind: "untrusted" };
+	if (uid !== undefined && st.uid !== uid) return { kind: "untrusted" };
+	if (process.platform !== "win32" && (st.mode & 0o022) !== 0) return { kind: "untrusted" };
+	let handle: Awaited<ReturnType<typeof open>> | undefined;
+	try {
+		handle = await open(path, constants.O_RDONLY | O_NOFOLLOW);
+		const opened = await handle.stat();
+		if (opened.dev !== st.dev || opened.ino !== st.ino) return { kind: "untrusted" };
+		return { kind: "ok", text: await handle.readFile("utf-8") };
+	} catch {
+		return { kind: "untrusted" };
+	} finally {
+		await handle?.close().catch(() => {});
+	}
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The `clients` section of update-consent.json: which components this machine's operator let the relay refresh. */
+async function readClientConsent(
+	home: string,
+	uid: number | undefined,
+): Promise<ReadonlySet<ClientComponent>> {
+	const none = new Set<ClientComponent>();
+	if (!home) return none;
+	const file = await readTrustedFile(
+		join(home, ".agentpulse", UPDATE_CONSENT_FILE),
+		SELF_UPDATE_SMALL_FILE_MAX_BYTES,
+		uid,
+	);
+	if (file.kind !== "ok") return none;
+	try {
+		const doc: unknown = JSON.parse(file.text);
+		if (!isPlainRecord(doc) || doc.schema !== 1 || !isPlainRecord(doc.clients)) return none;
+		if (doc.clients.on !== true || !Array.isArray(doc.clients.components)) return none;
+		return new Set(
+			CLIENT_COMPONENTS.filter((name) =>
+				(doc.clients as { components: unknown[] }).components.includes(name),
+			),
+		);
+	} catch {
+		return none;
+	}
+}
+
+type RelayUpdateState = {
+	last: LastSeen | null;
+	/** Every key id this relay has seen revoked. */
+	revoked: string[];
+	/** Versions not to try again, with a code that says why. */
+	refused: Record<string, string>;
+};
+
+const EMPTY_UPDATE_STATE: RelayUpdateState = { last: null, revoked: [], refused: {} };
+
+function parseUpdateState(text: string): RelayUpdateState {
+	try {
+		const raw: unknown = JSON.parse(text);
+		if (!isPlainRecord(raw) || raw.schema !== 1) return { ...EMPTY_UPDATE_STATE };
+		let last: LastSeen | null = null;
+		if (isPlainRecord(raw.last)) {
+			const { seq, issuedAt, fingerprint } = raw.last;
+			if (
+				typeof seq === "number" &&
+				Number.isSafeInteger(seq) &&
+				seq >= 0 &&
+				typeof issuedAt === "string" &&
+				ISO_TIME_RE.test(issuedAt) &&
+				typeof fingerprint === "string" &&
+				HEX64_RE.test(fingerprint)
+			) {
+				last = { seq, issuedAt, fingerprint };
+			}
+		}
+		const revoked = Array.isArray(raw.revoked)
+			? raw.revoked.filter((id): id is string => typeof id === "string" && KEY_ID_RE.test(id))
+			: [];
+		const refused: Record<string, string> = {};
+		if (isPlainRecord(raw.refused)) {
+			for (const [version, code] of Object.entries(raw.refused)) {
+				if (
+					parseReleaseVersion(version) &&
+					typeof code === "string" &&
+					/^[a-z_]{1,40}$/.test(code)
+				) {
+					refused[version] = code;
+				}
+			}
+		}
+		return { last, revoked, refused };
+	} catch {
+		return { ...EMPTY_UPDATE_STATE };
+	}
+}
+
+/** The directory the relay file lives in: where its launcher, `.new`, `.prev`, pending and state files are. */
+function relayDirOf(ctx: RelayContext): string {
+	return dirname(ctx.paths.relayScriptFile);
+}
+
+async function loadUpdateState(
+	ctx: RelayContext,
+	uid: number | undefined,
+): Promise<RelayUpdateState> {
+	const file = await readTrustedFile(
+		join(relayDirOf(ctx), RELAY_UPDATE_STATE_FILE),
+		SELF_UPDATE_SMALL_FILE_MAX_BYTES,
+		uid,
+	);
+	// Unreadable is "no state": any verifying, fresh envelope is then accepted, as on a first run.
+	return file.kind === "ok" ? parseUpdateState(file.text) : { ...EMPTY_UPDATE_STATE };
+}
+
+async function saveUpdateState(ctx: RelayContext, state: RelayUpdateState): Promise<void> {
+	await replacePrivateFile(
+		join(relayDirOf(ctx), RELAY_UPDATE_STATE_FILE),
+		`${JSON.stringify({ schema: 1, ...state })}\n`,
+	);
+}
+
+function sameLast(a: LastSeen | null, b: LastSeen | null): boolean {
+	return (
+		a === b ||
+		(a !== null &&
+			b !== null &&
+			a.seq === b.seq &&
+			a.issuedAt === b.issuedAt &&
+			a.fingerprint === b.fingerprint)
+	);
+}
+
+/** The launcher can't edit JSON, so when it puts the previous relay back it leaves the version it gave up on in a small file; this folds it into the state. */
+async function absorbLauncherRefusal(
+	ctx: RelayContext,
+	state: RelayUpdateState,
+	uid: number | undefined,
+): Promise<RelayUpdateState> {
+	const path = join(relayDirOf(ctx), RELAY_REFUSED_FILE);
+	const file = await readTrustedFile(path, 4096, uid);
+	if (file.kind === "absent") return state;
+	let next = state;
+	if (file.kind === "ok") {
+		try {
+			const raw: unknown = JSON.parse(file.text);
+			const version = isPlainRecord(raw) ? raw.version : undefined;
+			if (typeof version === "string" && parseReleaseVersion(version)) {
+				next = { ...state, refused: { ...state.refused, [version]: "rolled_back" } };
+				await saveUpdateState(ctx, next);
+				ctx.log(
+					`[relay] self-update: the launcher rolled back ${version}; it will not be tried again`,
+				);
+			}
+		} catch {
+			// a file that isn't ours or isn't JSON is removed below without being believed
+		}
+	}
+	await unlink(path).catch(() => {});
+	return next;
+}
+
+async function refuseVersion(
+	ctx: RelayContext,
+	state: RelayUpdateState,
+	version: string,
+	code: SelfUpdateCode,
+): Promise<void> {
+	await saveUpdateState(ctx, { ...state, refused: { ...state.refused, [version]: code } }).catch(
+		() => {},
+	);
+}
+
+type Staged = {
+	kind: ClientComponent;
+	target: string;
+	temp: string;
+	mode: number;
+	digest: string;
+	bytes: Buffer;
+};
+
+/** Removes a stale file of ours at `path`; false when something else (a link, a foreign file) is there. */
+export async function clearOwnStale(path: string, uid: number | undefined): Promise<boolean> {
+	let st: Awaited<ReturnType<typeof lstat>>;
+	try {
+		st = await lstat(path);
+	} catch (err) {
+		return (err as { code?: string }).code === "ENOENT";
+	}
+	if (!st.isFile() || st.nlink > 1 || (uid !== undefined && st.uid !== uid)) return false;
+	await unlink(path);
+	return true;
+}
+
+/** Writes `bytes` to `<final>.new` (0600, same directory, never through a link) and returns its path, or null when the path isn't ours to use. */
+async function writeNewFile(
+	finalPath: string,
+	bytes: Buffer,
+	uid: number | undefined,
+): Promise<string | null> {
+	const temp = `${finalPath}.new`;
+	if (!(await clearOwnStale(temp, uid))) return null;
+	const handle = await open(
+		temp,
+		constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | O_NOFOLLOW,
+		PRIVATE_FILE_MODE,
+	);
+	try {
+		await handle.writeFile(bytes);
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+	return temp;
+}
+
+type ChildResult = { code: number | null };
+
+let selfCheckLimits = { relayMs: SELF_CHECK_RELAY_MS, shellMs: SELF_CHECK_SHELL_MS };
+
+/** Test only: shortens the self-check deadlines so a hanging staged file is judged quickly (null restores 5 s and 2 s). */
+export function setSelfCheckLimitsForTests(
+	next: { relayMs: number; shellMs: number } | null,
+): void {
+	selfCheckLimits = next ?? { relayMs: SELF_CHECK_RELAY_MS, shellMs: SELF_CHECK_SHELL_MS };
+}
+
+/** Runs a child with a scrubbed environment and a deadline; only this child is ever signalled. */
+function runChild(
+	command: string,
+	args: string[],
+	options: { cwd?: string; env: Record<string, string>; input?: string; timeoutMs: number },
+): Promise<ChildResult> {
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (code: number | null) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve({ code });
+		};
+		const child = spawn(command, args, {
+			cwd: options.cwd,
+			env: options.env,
+			stdio: [options.input === undefined ? "ignore" : "pipe", "ignore", "ignore"],
+		});
+		const timer = setTimeout(() => {
+			child.kill("SIGKILL");
+			finish(null);
+		}, options.timeoutMs);
+		child.once("error", () => finish(null));
+		child.once("close", (code) => finish(code));
+		if (options.input !== undefined) {
+			child.stdin?.on("error", () => {});
+			child.stdin?.end(options.input);
+		}
+	});
+}
+
+/**
+ * Judges a staged file in a throwaway home with a scrubbed environment (rule 19: a replaced relay or exclude
+ * check must still exclude what the old one did). The relay checks itself by running its own embedded evaluator
+ * on a small fixture set; the two shell files are parsed and run against the same cases the shell parity suite uses.
+ */
+export async function runSelfCheck(
+	kind: ClientComponent,
+	path: string,
+	execPath: string,
+): Promise<boolean> {
+	let sandbox: string | null = null;
+	try {
+		sandbox = await realpath(await mkdtemp(join(tmpdir(), "ap-selfcheck-")));
+		const env = { PATH: SELF_CHECK_PATH, HOME: sandbox, TMPDIR: sandbox, LANG: "C" };
+		if (kind === "relay") {
+			return (
+				(
+					await runChild(execPath, [path, "--self-check"], {
+						// The sandbox, never the relay's own directory: a staged file that is not what it claims to be starts nowhere near the real state.
+						cwd: sandbox,
+						env,
+						timeoutMs: selfCheckLimits.relayMs,
+					})
+				).code === 0
+			);
+		}
+		if (kind === "statusline") return await selfCheckStatusline(path, sandbox, env);
+		return await selfCheckExcludeCheck(path, sandbox, env);
+	} catch {
+		return false;
+	} finally {
+		if (sandbox) await rm(sandbox, { recursive: true, force: true }).catch(() => {});
+	}
+}
+
+async function selfCheckStatusline(
+	path: string,
+	sandbox: string,
+	env: Record<string, string>,
+): Promise<boolean> {
+	const cwd = sandbox;
+	const timeoutMs = selfCheckLimits.shellMs;
+	if ((await runChild("bash", ["-n", path], { cwd, env, timeoutMs })).code !== 0) return false;
+	// The fixture run needs jq, as the statusline itself does; a machine without it is checked for syntax only.
+	const hasJq = (await runChild("jq", ["--version"], { cwd, env, timeoutMs })).code === 0;
+	if (!hasJq) return true;
+	const run = await runChild("bash", [path], {
+		cwd: sandbox,
+		// Port 1 on loopback: nothing listens, so the connection is refused at once and no request leaves the machine.
+		env: { ...env, AGENTPULSE_PORT: "1", AGENTPULSE_DIR: join(sandbox, ".agentpulse") },
+		input: '{"session_id":"selfcheck","model":{"display_name":"m"}}',
+		timeoutMs,
+	});
+	return run.code === 0;
+}
+
+async function selfCheckExcludeCheck(
+	path: string,
+	sandbox: string,
+	env: Record<string, string>,
+): Promise<boolean> {
+	if (
+		(await runChild("sh", ["-n", path], { cwd: sandbox, env, timeoutMs: selfCheckLimits.shellMs }))
+			.code !== 0
+	)
+		return false;
+	const dir = join(sandbox, ".agentpulse");
+	const work = join(sandbox, "work");
+	const other = join(sandbox, "other");
+	await mkdir(dir, { mode: PRIVATE_DIR_MODE });
+	await chmod(dir, PRIVATE_DIR_MODE);
+	await mkdir(work);
+	await mkdir(other);
+	const exits = async (cwd: string, extra: Record<string, string> = {}) =>
+		(
+			await runChild("sh", [path], {
+				cwd,
+				env: { ...env, ...extra },
+				timeoutMs: selfCheckLimits.shellMs,
+			})
+		).code;
+	if ((await exits(work)) !== EXCLUDE_CHECK_SEND_STATUS) return false;
+	if ((await exits(work, { AGENTPULSE_SKIP: "1" })) === EXCLUDE_CHECK_SEND_STATUS) return false;
+	const rules = join(dir, "exclude");
+	await writeFile(rules, `${work}\n`, { mode: PRIVATE_FILE_MODE });
+	await chmod(rules, PRIVATE_FILE_MODE);
+	if ((await exits(work)) === EXCLUDE_CHECK_SEND_STATUS) return false;
+	if ((await exits(other)) !== EXCLUDE_CHECK_SEND_STATUS) return false;
+	await writeFile(rules, "*not-a-rule\n", { mode: PRIVATE_FILE_MODE });
+	await chmod(rules, PRIVATE_FILE_MODE);
+	// Rules that can't be read fail closed: nothing is sent.
+	return (await exits(other)) !== EXCLUDE_CHECK_SEND_STATUS;
+}
+
+/**
+ * `relay.ts --self-check`, run by the relay that is about to replace this one: the embedded exclude evaluator
+ * against a few cases in a directory of its own (the real home is never touched). Exit 0 only if every case agrees.
+ */
+export function runRelaySelfCheck(): boolean {
+	let home: string | null = null;
+	try {
+		home = realpathSync(mkdtempSync(join(tmpdir(), "ap-relay-selfcheck-")));
+		const dir = join(home, ".agentpulse");
+		mkdirSync(dir, { mode: PRIVATE_DIR_MODE });
+		chmodSync(dir, PRIVATE_DIR_MODE);
+		const work = join(home, "work");
+		const other = join(home, "other");
+		mkdirSync(work);
+		mkdirSync(other);
+		const rulesFile = join(dir, "exclude");
+		const setRules = (text: string) => {
+			writeFileSync(rulesFile, text, { mode: PRIVATE_FILE_MODE });
+			chmodSync(rulesFile, PRIVATE_FILE_MODE);
+		};
+		const excluded = (cwd: string | undefined, skip?: string) =>
+			evaluateExclusion({ cwd, skip, rules: loadExcludeRules(home as string) }).excluded;
+		if (excluded(work) !== false) return false;
+		if (excluded(work, "1") !== true) return false;
+		setRules(`${work}\n`);
+		if (excluded(work) !== true) return false;
+		// With rules in force, a session whose directory is unknown is not sent either.
+		if (excluded(undefined) !== true) return false;
+		if (excluded(join(work, "child")) !== true) return false;
+		if (excluded(other) !== false) return false;
+		setRules("*not-a-rule\n");
+		return excluded(other) === true;
+	} catch {
+		return false;
+	} finally {
+		if (home) rmSync(home, { recursive: true, force: true });
+	}
+}
+
+async function sha256Of(text: string): Promise<string> {
+	return Buffer.from(
+		await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)),
+	).toString("hex");
+}
+
+/** The digests a manifest holds for each older release's version of one client file. */
+function olderDigests(
+	manifest: Manifest,
+	w: NonNullable<ReturnType<typeof parseReleaseVersion>>,
+	key: keyof ManifestRelease["clients"],
+): Set<string> {
+	const out = new Set<string>();
+	for (const release of manifest.releases) {
+		const version = parseReleaseVersion(release.version);
+		if (version && compareReleaseVersions(version, w) < 0) out.add(release.clients[key]);
+	}
+	return out;
+}
+
+/** The installed file's text, only when it is a plain file of this account (a link, a foreign file or a huge one is left alone). */
+async function readInstalledClient(path: string, uid: number | undefined): Promise<string | null> {
+	const file = await readTrustedFile(path, INSTALLED_FILE_MAX_BYTES, uid);
+	return file.kind === "ok" ? file.text : null;
+}
+
+/**
+ * One self-refresh pass. Returns what it ended with; writes nothing unless every precondition held.
+ * See the section comment above for the rules.
+ */
+export async function relaySelfUpdate(ctx: RelayContext): Promise<SelfUpdateCode> {
+	const deps: SelfUpdateDeps = { ...defaultSelfUpdateDeps(), ...ctx.selfUpdate };
+	const uid = deps.uid();
+	if (deps.env[RELAY_LAUNCHER_ENV] !== "1") {
+		// Consent is on but nothing started this relay through its launcher, so it will never refresh: say so once.
+		if (
+			!ctx.state.selfUpdate.notLauncherLogged &&
+			(await readClientConsent(ctx.paths.home, uid)).size > 0
+		) {
+			ctx.state.selfUpdate.notLauncherLogged = true;
+			ctx.log(
+				"[relay] self-update: automatic refresh is on, but this relay wasn't started by its launcher, so it won't refresh itself; re-run the relay installer to start it through relay-launch.sh",
+			);
+		}
+		return "not_launcher";
+	}
+	let state = await loadUpdateState(ctx, uid);
+	state = await absorbLauncherRefusal(ctx, state, uid);
+	const consented = await readClientConsent(ctx.paths.home, uid);
+	if (consented.size === 0) return "no_consent";
+
+	const base = ctx.config.remoteUrl;
+	const health = await deps.fetchText(`${base}/api/v1/health?manifest=1`, {
+		deadlineMs: SELF_UPDATE_HEALTH_DEADLINE_MS,
+		maxBytes: SELF_UPDATE_HEALTH_MAX_BYTES,
+		httpsOrLoopbackOnly: true,
+	});
+	if (!health.ok)
+		return health.code === "insecure" || health.code === "bad_url" ? "insecure" : "health_failed";
+	let version: unknown;
+	let envelope: unknown;
+	try {
+		const body: unknown = JSON.parse(health.body);
+		version = isPlainRecord(body) ? body.version : undefined;
+		envelope = isPlainRecord(body) ? body.releaseManifest : undefined;
+	} catch {
+		return "health_failed";
+	}
+	const w = typeof version === "string" ? parseReleaseVersion(version) : null;
+	if (!w || typeof version !== "string") return "unknown_version";
+	if (typeof envelope !== "string") return "unverified";
+
+	const verified = await verifyManifest(envelope, {
+		keys: deps.keys,
+		revoked: new Set(state.revoked),
+		now: ctx.now(),
+		last: state.last,
+	});
+	if (!verified.ok) return "unverified";
+	// The replay point moves only now, after the envelope verified, and before anything else is judged.
+	const revoked = [...new Set([...state.revoked, ...verified.revoked])];
+	if (!sameLast(state.last, verified.next) || revoked.length !== state.revoked.length) {
+		state = { ...state, last: verified.next, revoked };
+		try {
+			await saveUpdateState(ctx, state);
+		} catch {
+			return "write_failed";
+		}
+	}
+	if (verified.stale) return "stale";
+
+	const manifest = verified.manifest;
+	const release = releaseFor(manifest, version);
+	if (!release) return "unknown_version";
+	if (release.pulled) return "pulled";
+	if (w.pre.length > 0) return "prerelease";
+	const running = parseReleaseVersion(RELAY_VERSION);
+	if (!running || compareReleaseVersions(w, running) <= 0) return "up_to_date";
+	const minimum = parseReleaseVersion(manifest.minSupported);
+	if (!minimum || compareReleaseVersions(w, minimum) < 0) return "below_minimum";
+	// W is the server's own, unauthenticated word. When the signed manifest holds a newer security release, W is
+	// not where this machine should land; not recorded as a refusal, since the server may catch up.
+	const securityAhead = manifest.releases.some((candidate) => {
+		const parsed = parseReleaseVersion(candidate.version);
+		return (
+			parsed !== null &&
+			parsed.pre.length === 0 &&
+			!candidate.pulled &&
+			candidate.severity === "security" &&
+			compareReleaseVersions(parsed, w) > 0
+		);
+	});
+	if (securityAhead) return "behind_security";
+	if (version !== manifest.latest && ctx.state.selfUpdate.behindLogged !== version) {
+		ctx.state.selfUpdate.behindLogged = version;
+		ctx.log(
+			`[relay] self-update: the server reports ${version}, behind the latest signed release ${manifest.latest}; refreshing to ${version}`,
+		);
+	}
+	if (state.refused[version]) return "refused_before";
+	const settledKey = `${version}:${verified.fingerprint}`;
+	if (ctx.state.selfUpdate.settledFor === settledKey) return "nothing_to_apply";
+
+	const script = await deps.fetchText(`${base}/setup-relay.sh`, {
+		deadlineMs: SELF_UPDATE_INSTALLER_DEADLINE_MS,
+		maxBytes: SELF_UPDATE_INSTALLER_MAX_BYTES,
+		httpsOrLoopbackOnly: true,
+	});
+	if (!script.ok) return "installer_failed";
+	const extracted = extractRelayInstallerParts(script.body);
+	if (!extracted.ok) return "installer_failed";
+	const { parts } = extracted;
+	const excludeCheckText = materializeExcludeScript(parts.excludeHeredoc);
+	const served = await clientDigests({
+		relay: parts.relay,
+		statusline: parts.statusline,
+		excludeCheck: excludeCheckText,
+	});
+	if (
+		served.relay !== release.clients.relay ||
+		served.statusline !== release.clients.statusline ||
+		served.excludeCheck !== release.clients.excludeCheck
+	) {
+		// A server caught mid-upgrade serves one release's files under another's version: retried on later passes,
+		// and refused for good only when it keeps happening.
+		const seen = ctx.state.selfUpdate.mismatch;
+		seen.count = seen.version === version ? seen.count + 1 : 1;
+		seen.version = version;
+		if (seen.count >= DIGEST_MISMATCH_REFUSE_AFTER) {
+			await refuseVersion(ctx, state, version, "digest_mismatch");
+		}
+		return "digest_mismatch";
+	}
+	ctx.state.selfUpdate.mismatch = { version: null, count: 0 };
+
+	const relayPath = ctx.paths.relayScriptFile;
+	const statuslinePath = ctx.paths.installedStatuslineFile;
+	const excludeCheckPath = join(ctx.paths.home, ".agentpulse", "exclude-check.sh");
+	const plan: Staged[] = [];
+	const skipped: string[] = [];
+	// The relay is replaced only when it is a plain file of this account whose content an older release shipped:
+	// a link (a development checkout), someone else's file or a locally edited one is left alone. A relay that
+	// already is the served file has nothing to replace: this is also what ends a loop with a server whose own
+	// version constant lags the relay it serves.
+	if (consented.has("relay")) {
+		const installedRelay = await readInstalledClient(relayPath, uid);
+		if (installedRelay === null) {
+			skipped.push("relay:not_plain_own_file");
+		} else {
+			const digest = await sha256Of(installedRelay.trimEnd());
+			if (digest !== served.relay) {
+				if (olderDigests(manifest, w, "relay").has(digest)) {
+					plan.push({
+						kind: "relay",
+						target: relayPath,
+						temp: "",
+						mode: 0o600,
+						digest: served.relay,
+						bytes: clientBytes(parts.relay),
+					});
+				} else {
+					skipped.push("relay:not_an_older_release");
+				}
+			}
+		}
+	}
+	if (consented.has("statusline")) {
+		const installed = await readInstalledClient(statuslinePath, uid);
+		// Only content an older release shipped is replaced: anything else is a person's own file, or a newer one.
+		if (installed !== null) {
+			const digest = await sha256Of(installed.trimEnd());
+			if (digest !== served.statusline && olderDigests(manifest, w, "statusline").has(digest)) {
+				plan.push({
+					kind: "statusline",
+					target: statuslinePath,
+					temp: "",
+					mode: 0o700,
+					digest: served.statusline,
+					bytes: clientBytes(parts.statusline),
+				});
+			}
+		}
+	}
+	if (consented.has("excludeCheck")) {
+		const installed = await readInstalledClient(excludeCheckPath, uid);
+		if (installed !== null) {
+			const digest = await sha256Of(installed);
+			if (digest !== served.excludeCheck && olderDigests(manifest, w, "excludeCheck").has(digest)) {
+				plan.push({
+					kind: "excludeCheck",
+					target: excludeCheckPath,
+					temp: "",
+					mode: 0o500,
+					digest: served.excludeCheck,
+					// The digest covers the whole text, so the file is exactly that text.
+					bytes: Buffer.from(excludeCheckText, "utf-8"),
+				});
+			}
+		}
+	}
+	if (skipped.length > 0) {
+		ctx.log(`[relay] self-update: left alone (${skipped.join(", ")})`);
+	}
+	if (plan.length === 0) {
+		ctx.state.selfUpdate.settledFor = settledKey;
+		return "nothing_to_apply";
+	}
+	return await commitPlan(ctx, deps, { plan, state, version, uid, relayPath });
+}
+
+/** The bytes a file is written with when its digest is over `trimEnd()`: that text and one line end. */
+function clientBytes(text: string): Buffer {
+	return Buffer.from(`${text.trimEnd()}\n`, "utf-8");
+}
+
+/** The text a digest was taken over: trimmed for the relay and the statusline, whole for the exclude check. */
+async function digestOfStaged(item: Staged, text: string): Promise<string> {
+	return await sha256Of(item.kind === "excludeCheck" ? text : text.trimEnd());
+}
+
+/**
+ * Stages, checks and swaps in the planned files. Order, and why:
+ *  1. every `.new` is written, read back byte for byte and self-checked, before anything is replaced;
+ *  2. with the relay in the plan, `relay-pending.json` is written BEFORE the first rename, so a swapped relay is
+ *     never without the launcher's rollback guard (the launcher tolerates pending beside a working relay.ts);
+ *  3. the small files are renamed first, the relay last: it is the one that ends the process.
+ * Anything failing after step 2 is undone: the old relay and small files are put back and pending is removed.
+ */
+async function commitPlan(
+	ctx: RelayContext,
+	deps: SelfUpdateDeps,
+	run: {
+		plan: Staged[];
+		state: RelayUpdateState;
+		version: string;
+		uid: number | undefined;
+		relayPath: string;
+	},
+): Promise<SelfUpdateCode> {
+	const { plan, state, version, uid, relayPath } = run;
+	const hasRelay = plan.some((item) => item.kind === "relay");
+	const small = plan.filter((item) => item.kind !== "relay");
+	const relayItem = plan.find((item) => item.kind === "relay");
+	const pendingPath = join(relayDirOf(ctx), RELAY_PENDING_FILE);
+	// The `.prev` copies of the small files exist only beside a swapped relay, and always belong to this update.
+	const smallPrevPaths = [
+		`${ctx.paths.installedStatuslineFile}.prev`,
+		`${join(ctx.paths.home, ".agentpulse", "exclude-check.sh")}.prev`,
+	];
+	const copiedPrevs: string[] = [];
+	const renamedSmall: Staged[] = [];
+	let relaySwapped = false;
+
+	const cleanup = async () => {
+		for (const item of plan) if (item.temp) await unlink(item.temp).catch(() => {});
+		for (const prev of copiedPrevs) await unlink(prev).catch(() => {});
+	};
+	const fail = async (code: "write_failed" | "unsafe_path" | "self_check_failed") => {
+		await cleanup();
+		await refuseVersion(ctx, state, version, code);
+		return code;
+	};
+	/** Puts back what the commit replaced; pending goes only once the relay is back (else the launcher's guard stays). */
+	const undo = async () => {
+		let relayBack = !relaySwapped;
+		if (relaySwapped && relayItem) {
+			relayBack = await deps.rename(`${relayItem.target}.prev`, relayItem.target).then(
+				() => true,
+				() => false,
+			);
+		}
+		for (const item of renamedSmall) {
+			const restored = await deps.rename(`${item.target}.prev`, item.target).then(
+				() => true,
+				() => false,
+			);
+			const at = copiedPrevs.indexOf(`${item.target}.prev`);
+			if (restored && at >= 0) copiedPrevs.splice(at, 1);
+		}
+		if (relayBack) await unlink(pendingPath).catch(() => {});
+		await cleanup();
+	};
+
+	try {
+		// Everything is judged before anything is replaced. A path that isn't ours to overwrite stops it here.
+		if (hasRelay) {
+			for (const stale of [`${relayPath}.prev`, ...smallPrevPaths]) {
+				if (!(await clearOwnStale(stale, uid))) return await fail("unsafe_path");
+			}
+		}
+		for (const item of plan) {
+			const temp = await deps.writeNew(item.target, item.bytes, uid);
+			if (temp === null) return await fail("unsafe_path");
+			item.temp = temp;
+			// The bytes on disk are exactly the bytes written, and they hash to the digest.
+			const back = await deps.readBack(temp, uid);
+			if (back === null || back !== item.bytes.toString("utf-8")) return await fail("write_failed");
+			if ((await digestOfStaged(item, back)) !== item.digest) return await fail("write_failed");
+		}
+		for (const item of plan) {
+			if (!(await deps.selfCheck(item.kind, item.temp))) return await fail("self_check_failed");
+		}
+		for (const item of plan) await chmod(item.temp, item.mode);
+	} catch {
+		return await fail("write_failed");
+	}
+
+	try {
+		if (hasRelay) {
+			// What the launcher puts back beside the relay: the small files this update replaces.
+			for (const item of small) {
+				const prev = `${item.target}.prev`;
+				const mode = (await lstat(item.target)).mode & 0o777;
+				await copyFile(item.target, prev, constants.COPYFILE_EXCL);
+				copiedPrevs.push(prev);
+				await chmod(prev, mode);
+			}
+			// Before the first rename: from here on a swapped relay always has its rollback guard.
+			await replacePrivateFile(pendingPath, `${JSON.stringify({ version, attempts: 0 })}\n`);
+		}
+		for (const item of small) {
+			await deps.rename(item.temp, item.target);
+			item.temp = "";
+			renamedSmall.push(item);
+		}
+		if (relayItem) {
+			await deps.rename(relayItem.target, `${relayItem.target}.prev`);
+			relaySwapped = true;
+			await deps.rename(relayItem.temp, relayItem.target);
+			relayItem.temp = "";
+		}
+	} catch {
+		await undo();
+		await refuseVersion(ctx, state, version, "write_failed");
+		return "write_failed";
+	}
+	ctx.log(
+		`[relay] self-update: ${[...small, ...(relayItem ? [relayItem] : [])].map((item) => item.kind).join(", ")} refreshed to ${version}`,
+	);
+	if (hasRelay) deps.exit(0);
+	return "applied";
+}
+
+/** The tick the drift check runs: never throws, and logs one line when the ending changes. */
+async function runSelfUpdateTick(ctx: RelayContext): Promise<void> {
+	try {
+		const code = await relaySelfUpdate(ctx);
+		if (code !== ctx.state.selfUpdate.lastCode) {
+			ctx.state.selfUpdate.lastCode = code;
+			if (code !== "not_launcher" && code !== "no_consent") ctx.log(`[relay] self-update: ${code}`);
+		}
+	} catch (err) {
+		ctx.log(`[relay] self-update failed: ${errorMessage(err)}`);
+	}
+}
+
+/**
+ * Called once the relay is up. A relay that was just swapped in leaves `relay-pending.json`; the file is removed
+ * only after this process has bound 127.0.0.1 (it is serving) and its own loopback /health answers within 30
+ * seconds, whatever the remote server is doing. Until then the launcher counts starts against it and puts the
+ * previous relay back at the second failed one.
+ */
+export async function confirmPendingStart(
+	ctx: RelayContext,
+	options: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<"none" | "cleared" | "unhealthy"> {
+	const path = join(relayDirOf(ctx), RELAY_PENDING_FILE);
+	try {
+		await lstat(path);
+	} catch {
+		return "none";
+	}
+	const deadline = Date.now() + (options.timeoutMs ?? RELAY_PENDING_CLEAR_WITHIN_MS);
+	while (Date.now() < deadline) {
+		// The embedded capped GET: loopback only, no credential, a small body.
+		const res = await fetchCapped(`http://127.0.0.1:${ctx.port}/api/v1/health`, {
+			deadlineMs: 2_000,
+			maxBytes: 16 * 1024,
+			httpsOrLoopbackOnly: true,
+		});
+		if (res.ok) {
+			let body: unknown = null;
+			try {
+				body = JSON.parse(res.body);
+			} catch {
+				// not our health answer
+			}
+			if (isPlainRecord(body) && body.status === "ok" && body.relay === true) {
+				// unlink never follows a link: a link put there is removed, not its target.
+				await unlink(path).catch(() => {});
+				return "cleared";
+			}
+		}
+		await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? RELAY_PENDING_POLL_MS));
+	}
+	return "unhealthy";
+}
+
+/**
+ * confirmPendingStart, and an exit when the answer is "unhealthy": the launcher counts a start that left its
+ * pending file behind, so a relay that is up but not serving must end rather than linger and never be rolled back.
+ */
+export async function confirmPendingOrExit(
+	ctx: RelayContext,
+	exit: (code: number) => void,
+	options: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<"none" | "cleared" | "unhealthy"> {
+	const outcome = await confirmPendingStart(ctx, options);
+	if (outcome === "unhealthy") {
+		ctx.log(
+			"[relay] self-update: this relay did not answer on its own port in time; exiting so the launcher counts the start",
+		);
+		exit(1);
+	}
+	return outcome;
+}
+
+// ── `relay.ts update auto on|off|status`: the machine's own consent (U5) ──────
+
+export type RelayConsentIo = {
+	isTty(): boolean;
+	prompt(question: string): Promise<string>;
+};
+
+const realConsentIo: RelayConsentIo = {
+	isTty: () => process.stdin.isTTY === true && process.stdout.isTTY === true,
+	prompt: (question) =>
+		new Promise((resolve) => {
+			const rl = createInterface({ input: process.stdin, output: process.stdout });
+			rl.question(question, (answer) => {
+				rl.close();
+				resolve(answer);
+			});
+			rl.once("close", () => resolve(""));
+		}),
+};
+
+let consentIo: RelayConsentIo = realConsentIo;
+
+/** Test only: replaces the terminal check and the prompt reader (null restores the real ones). No environment variable can stand in for a terminal. */
+export function setRelayConsentIoForTests(next: RelayConsentIo | null): void {
+	consentIo = next ?? realConsentIo;
+}
+
+export type ConsentCommandResult =
+	| { ok: true }
+	| {
+			ok: false;
+			code:
+				| "bad_usage"
+				| "agent_session"
+				| "not_a_terminal"
+				| "not_confirmed"
+				| "consent_unwritable";
+	  };
+
+/**
+ * Writes the `clients` part of update-consent.json and nothing else: every other part (the app's) is kept as
+ * found. A file that can't be trusted (a link, someone else's, unparseable) is never replaced, because replacing
+ * it could silently drop the app's consent.
+ */
+async function writeClientsConsent(
+	home: string,
+	clients: { on: boolean; components: ClientComponent[] },
+	uid: number | undefined,
+): Promise<boolean> {
+	try {
+		const dir = join(home, ".agentpulse");
+		await mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+		const dirInfo = await lstat(dir);
+		if (!dirInfo.isDirectory() || (uid !== undefined && dirInfo.uid !== uid)) return false;
+		const path = join(dir, UPDATE_CONSENT_FILE);
+		const existing = await readTrustedFile(path, SELF_UPDATE_SMALL_FILE_MAX_BYTES, uid);
+		let current: Record<string, unknown> = {};
+		if (existing.kind === "untrusted") return false;
+		if (existing.kind === "ok") {
+			const parsed: unknown = JSON.parse(existing.text);
+			if (!isPlainRecord(parsed) || parsed.schema !== 1) return false;
+			current = parsed;
+		}
+		await replacePrivateFile(path, `${JSON.stringify({ ...current, schema: 1, clients })}\n`);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export async function relayUpdateCommand(
+	args: string[],
+	options: {
+		home?: string;
+		env?: Record<string, string | undefined>;
+		say?: (line: string) => void;
+		uid?: () => number | undefined;
+	} = {},
+): Promise<ConsentCommandResult> {
+	const say = options.say ?? ((line: string) => console.log(line));
+	const env = options.env ?? process.env;
+	const home = options.home ?? resolveHome(process.env.HOME, osHomedir);
+	const uid = (options.uid ?? (() => process.getuid?.()))();
+	const [verb, action] = args;
+	if (verb !== "auto" || (action !== "on" && action !== "off" && action !== "status")) {
+		say("Usage: relay.ts update auto on|off|status");
+		return { ok: false, code: "bad_usage" };
+	}
+	if (action === "status") {
+		const consented = await readClientConsent(home, uid);
+		say(
+			consented.size === 0
+				? "Automatic refresh of the relay, statusline and exclude check: off."
+				: `Automatic refresh: on for ${[...consented].join(", ")}. It happens only while the relay is started by its launcher.`,
+		);
+		return { ok: true };
+	}
+	if (action === "off") {
+		if (!(await writeClientsConsent(home, { on: false, components: [] }, uid))) {
+			say(
+				"The consent file couldn't be written safely. Check that ~/.agentpulse is yours and not a link.",
+			);
+			return { ok: false, code: "consent_unwritable" };
+		}
+		say("Automatic refresh is off.");
+		return { ok: true };
+	}
+	const marker = agentSessionMarker(env);
+	if (marker) {
+		say(
+			`This looks like it was started from inside an agent session (${marker} is set), so it won't turn on automatic refresh. Run it in your own terminal.`,
+		);
+		return { ok: false, code: "agent_session" };
+	}
+	if (!consentIo.isTty()) {
+		say(
+			"Run this yourself in a terminal. It asks you to type a word, and nothing else can answer for you.",
+		);
+		return { ok: false, code: "not_a_terminal" };
+	}
+	say(
+		"Automatic refresh lets this relay replace its own files (relay.ts, the statusline and the exclude check)",
+	);
+	say(
+		"with a release signed by the AgentPulse project, when your server reports that release as its version.",
+	);
+	say(
+		"It checks every hour, verifies the signature and every file's digest first, and puts the old relay back if",
+	);
+	say(
+		"the new one doesn't start. It happens only while the relay is started by its launcher (re-run the relay installer once).",
+	);
+	const phrase = `enable ${randomBytes(3).toString("hex")}`;
+	const typed = (await consentIo.prompt(`Type "${phrase}" to continue: `)).trim();
+	if (typed !== phrase) {
+		say("Nothing was changed. Automatic refresh stays off.");
+		return { ok: false, code: "not_confirmed" };
+	}
+	if (!(await writeClientsConsent(home, { on: true, components: [...CLIENT_COMPONENTS] }, uid))) {
+		say(
+			"The consent file couldn't be written safely. Check that ~/.agentpulse is yours and not a link.",
+		);
+		return { ok: false, code: "consent_unwritable" };
+	}
+	say("Automatic refresh is on.");
+	return { ok: true };
 }
 
 function observeMissing(ctx: RelayContext) {
@@ -4482,6 +6487,11 @@ function parseSyncMs(raw: string | undefined) {
 let mainApiKey = "";
 
 async function main(argv: string[]) {
+	if (argv[0] === "update") {
+		const result = await relayUpdateCommand(argv.slice(1));
+		process.exit(result.ok ? 0 : 1);
+	}
+	if (argv.includes("--self-check")) process.exit(runRelaySelfCheck() ? 0 : 1);
 	const configPath = findConfigPath(argv);
 	let fileConfig: RelayFileConfig = {};
 	if (configPath) {
@@ -4513,12 +6523,14 @@ async function main(argv: string[]) {
 	mainApiKey = parsed.config.apiKey;
 	const syncMs = parseSyncMs(process.env.AGENTPULSE_RELAY_SYNC_MS);
 	const relay = await startRelay(parsed.config, { syncMs });
+	void confirmPendingOrExit(relay.ctx, (code) => process.exit(code)).catch(() => {});
 	const { config } = relay.ctx;
 	const seconds = `${Math.round(syncMs / 100) / 10}s`;
 
 	console.log("");
 	console.log("  AgentPulse Relay");
 	console.log("  ────────────────");
+	console.log(`  Version:   ${RELAY_VERSION}`);
 	console.log(`  Local:     http://localhost:${relay.port} (hook forwarding)`);
 	console.log(`  Remote:    ${config.remoteUrl} (dashboard)`);
 	console.log(`  State:     ${config.stateDir}`);

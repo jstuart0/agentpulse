@@ -43,6 +43,8 @@ COPY --chown=bun:bun --from=builder /app/package.json ./
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOST=0.0.0.0
+# Read by the server to tell a container from a source checkout (src/shared/install-record.ts).
+ENV AGENTPULSE_INSTALL_KIND=container
 
 # Drop to non-root. oven/bun:1-slim ships a `bun` user at UID 1000.
 USER bun

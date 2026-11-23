@@ -117,7 +117,7 @@ const humanAdminRequired = { status: 403, error: "human_admin_required", reached
 
 describe("the route sets", () => {
 	test("have exactly the pinned sizes", () => {
-		expect(ALWAYS_ADMIN_ROUTES.size).toBe(11);
+		expect(ALWAYS_ADMIN_ROUTES.size).toBe(12);
 		expect(TEAM_ADMIN_ROUTES.size).toBe(20);
 	});
 

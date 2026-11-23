@@ -4,16 +4,18 @@
  * checksums share one implementation. Behavior for existing callers is
  * unchanged — `trimEnd` is a new, default-off option for the relay/
  * statusline hashes, which must ignore trailing-newline-only diffs.
+ * `length: "full"` returns the whole 64-hex digest (the release manifest's form); the default stays the
+ * 16-hex prefix /health has always reported.
  */
 export async function computeChecksum(
 	content: string,
-	options?: { trimEnd?: boolean },
+	options?: { trimEnd?: boolean; length?: "short" | "full" },
 ): Promise<string> {
 	const input = options?.trimEnd ? content.trimEnd() : content;
 	const data = new TextEncoder().encode(input);
 	const hash = await crypto.subtle.digest("SHA-256", data);
-	return Array.from(new Uint8Array(hash))
+	const hex = Array.from(new Uint8Array(hash))
 		.map((b) => b.toString(16).padStart(2, "0"))
-		.join("")
-		.slice(0, 16);
+		.join("");
+	return options?.length === "full" ? hex : hex.slice(0, 16);
 }

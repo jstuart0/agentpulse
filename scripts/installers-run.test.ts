@@ -373,6 +373,56 @@ describe("D10 preflight — refuse before writing anything", () => {
 	);
 });
 
+describe("a re-install and the relay's self-refresh files", () => {
+	test(
+		"a stale pending marker and the files of an update in flight are removed, and the closing text names the consent command",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const relayDir = join(home, ".agentpulse");
+			await mkdir(relayDir, { recursive: true });
+			const stale = [
+				"relay-pending.json",
+				"relay.ts.new",
+				"relay.ts.prev",
+				"relay-update-refused.json",
+				"exclude-check.sh.new",
+				"exclude-check.sh.prev",
+			];
+			for (const name of stale) await writeFile(join(relayDir, name), "stale\n");
+			// the statusline's staging and rollback copies live beside the statusline, not in the relay directory
+			const claudeStale = ["statusline-agentpulse.sh.new", "statusline-agentpulse.sh.prev"];
+			await mkdir(join(home, ".claude"), { recursive: true });
+			for (const name of claudeStale) await writeFile(join(home, ".claude", name), "stale\n");
+			// consent and state are the person's and the relay's: a re-install leaves them alone
+			await writeFile(join(relayDir, "update-consent.json"), '{"schema":1}\n');
+			await writeFile(join(relayDir, "relay-update-state.json"), '{"schema":1}\n');
+
+			const res = await runInstaller(
+				home,
+				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)],
+				{ uname: "Darwin" },
+			);
+			expect(res.code).toBe(0);
+			for (const name of stale) await expect(stat(join(relayDir, name)), name).rejects.toThrow();
+			for (const name of claudeStale) {
+				await expect(stat(join(home, ".claude", name)), name).rejects.toThrow();
+			}
+			expect(await readFile(join(relayDir, "update-consent.json"), "utf-8")).toBe('{"schema":1}\n');
+			expect(await readFile(join(relayDir, "relay-update-state.json"), "utf-8")).toBe(
+				'{"schema":1}\n',
+			);
+			expect(res.out).toContain('relay.ts" update auto on');
+			expect(res.out).toContain("relay-launch.sh");
+			// the launcher knows where the statusline's .prev copy is, so a rollback can put it back
+			expect(await readFile(join(relayDir, "relay-launch.sh"), "utf-8")).toContain(
+				`AP_CLAUDE_DIR='${home}/.claude'`,
+			);
+		},
+		RUN_TIMEOUT,
+	);
+});
+
 describe("an ingest+observe key installs the relay, statusline and service", () => {
 	test(
 		"macOS: exact relay.ts, private config, plist with no key, statusline, codex-hook.sh removed, installed.json",
@@ -406,8 +456,14 @@ describe("an ingest+observe key installs the relay, statusline and service", () 
 				join(home, "Library", "LaunchAgents", "dev.agentpulse.relay.plist"),
 				"utf-8",
 			);
-			expect(plist).toContain("<string>--config</string>");
-			expect(plist).toContain(`<string>${configFile}</string>`);
+			expect(plist).not.toContain("--config");
+			expect(await plistProgramArguments(plistPath(home))).toEqual([
+				"/bin/sh",
+				join(relayDir, "relay-launch.sh"),
+			]);
+			const launched = await launcherCommand(home);
+			expect(launched.config).toBe(configFile);
+			expect(await modeOf(launcherPath(home))).toBe(0o700);
 			expect(plist).not.toContain("ap_");
 			expect(res.stubLog).toContain("launchctl load");
 
@@ -553,7 +609,8 @@ describe("an ingest+observe key installs the relay, statusline and service", () 
 				join(home, ".config", "systemd", "user", "agentpulse-relay.service"),
 				"utf-8",
 			);
-			expect(unit).toContain(`--config "${join(home, ".agentpulse", "config.json")}"`);
+			expect(unit).toContain(`ExecStart=/bin/sh "${launcherPath(home)}"`);
+			expect((await launcherCommand(home)).config).toBe(join(home, ".agentpulse", "config.json"));
 			expect(unit).not.toContain("ap_");
 			expect(res.stubLog).toContain("systemctl --user daemon-reload");
 			expect(res.stubLog).toContain("systemctl --user enable agentpulse-relay");
@@ -871,6 +928,31 @@ const plistPath = (home: string) =>
 	join(home, "Library", "LaunchAgents", "dev.agentpulse.relay.plist");
 const unitPath = (home: string) =>
 	join(home, ".config", "systemd", "user", "agentpulse-relay.service");
+const launcherPath = (home: string) => join(home, ".agentpulse", "relay-launch.sh");
+
+/**
+ * The relay command the launcher execs, with its three literals: the Bun path it carries, the relay directory
+ * and the config file. The units only name the launcher, so this is where "an absolute Bun path" is proved.
+ */
+async function launcherCommand(
+	home: string,
+): Promise<{ bun: string; relay: string; config: string; text: string }> {
+	const text = await readFile(launcherPath(home), "utf-8");
+	const literal = (name: string) => {
+		const m = new RegExp(`^${name}='([^']*)'$`, "m").exec(text);
+		expect(m, `${name} in the launcher`).not.toBeNull();
+		return m?.[1] ?? "";
+	};
+	expect(text).toContain('exec "$AP_BUN" "$AP_DIR/relay.ts" --config "$AP_CONFIG"');
+	// Bun is never looked up on PATH at start: the launcher carries its absolute path.
+	expect(literal("AP_BUN").startsWith("/")).toBe(true);
+	return {
+		bun: literal("AP_BUN"),
+		relay: `${literal("AP_DIR")}/relay.ts`,
+		config: literal("AP_CONFIG"),
+		text,
+	};
+}
 
 /** A home at an exact name under root, for the cases whose HOME has to hold odd characters. */
 async function namedHome(name: string) {
@@ -913,9 +995,9 @@ describe("F190: the relay service runs on a Bun that keeps its files private", (
 			expect(res.out).toContain(
 				MESSAGES.notUsing(shellQuote("bash", oldBun), MESSAGES.reason.older("1.1.30")),
 			);
-			const args = await plistProgramArguments(plistPath(home));
-			expect(args[0]).toBe(goodBun);
+			expect((await launcherCommand(home)).bun).toBe(goodBun);
 			expect(await readFile(plistPath(home), "utf-8")).not.toContain(oldBun);
+			expect(await readFile(launcherPath(home), "utf-8")).not.toContain(oldBun);
 		},
 		RUN_TIMEOUT,
 	);
@@ -1116,10 +1198,11 @@ describe("F190: the relay service runs on a Bun that keeps its files private", (
 				);
 				expect(res.out).toContain(`✓ Bun: ${bun} (1.3.12)`);
 				expect(await modeOf(bun)).toBe(0o755);
+				expect((await launcherCommand(home)).bun).toBe(bun);
 				if (uname === "Darwin") {
-					expect((await plistProgramArguments(plistPath(home)))[0]).toBe(bun);
+					expect((await plistProgramArguments(plistPath(home)))[0]).toBe("/bin/sh");
 				} else {
-					expect(await readFile(unitPath(home), "utf-8")).toContain(`ExecStart="${bun}" `);
+					expect(await readFile(unitPath(home), "utf-8")).toContain("ExecStart=/bin/sh ");
 				}
 				const leftovers = (await listTree(join(root, `tmp-${relative(root, home)}`))).filter(
 					(p) => p.includes("agentpulse-relay-setup") || p.includes(".bun."),
@@ -1162,7 +1245,7 @@ describe("F190: the relay service runs on a Bun that keeps its files private", (
 			});
 			expect(res.code).toBe(0);
 			expect(res.out).not.toContain("Not using");
-			expect((await plistProgramArguments(plistPath(home)))[0]).toBe(bun);
+			expect((await launcherCommand(home)).bun).toBe(bun);
 			await expect(stat(join(home, ".bun"))).rejects.toThrow();
 		},
 		RUN_TIMEOUT,
@@ -1185,8 +1268,8 @@ describe("F190: the relay service runs on a Bun that keeps its files private", (
 			expect(res.out).toContain(
 				MESSAGES.notUsing(shellQuote("bash", bun), MESSAGES.reason.groupWritable),
 			);
-			expect(await readFile(unitPath(home), "utf-8")).toContain(
-				`ExecStart="${join(home, ".agentpulse", "bun", "bin", "bun")}" `,
+			expect((await launcherCommand(home)).bun).toBe(
+				join(home, ".agentpulse", "bun", "bin", "bun"),
 			);
 		},
 		RUN_TIMEOUT,
@@ -1230,18 +1313,18 @@ describe("F190: the relay service runs on a Bun that keeps its files private", (
 					const bun = join(home, ".agentpulse", "bun", "bin", "bun");
 					const relay = join(home, ".agentpulse", "relay.ts");
 					const config = join(home, ".agentpulse", "config.json");
+					// The unit names the launcher; the launcher carries the exact Bun, relay and config paths.
 					if (uname === "Darwin") {
 						expect(await plistProgramArguments(plistPath(home))).toEqual([
-							bun,
-							relay,
-							"--config",
-							config,
+							"/bin/sh",
+							launcherPath(home),
 						]);
 					} else {
 						expect(await readFile(unitPath(home), "utf-8")).toContain(
-							`ExecStart="${bun}" "${relay}" --config "${config}"\n`,
+							`ExecStart=/bin/sh "${launcherPath(home)}"\n`,
 						);
 					}
+					expect(await launcherCommand(home)).toMatchObject({ bun, relay, config });
 					const second = await runInstaller(home, relayArgs(port), opts);
 					expect(second.code).toBe(0);
 					expect(second.stubLog).not.toContain("github.com/oven-sh");
@@ -1338,8 +1421,12 @@ describe("F190: the relay service runs on a Bun that keeps its files private", (
 			expect(res.code).toBe(0);
 			const bun = join(home, ".agentpulse", "bun", "bin", "bun");
 			const unit = await readFile(unitPath(home), "utf-8");
-			expect(unit).toContain(`ExecStart="${bun}" "${home}/.agentpulse/relay.ts" `);
+			expect(unit).toContain(`ExecStart=/bin/sh "${home}/.agentpulse/relay-launch.sh"`);
 			expect(unit).not.toContain("//.agentpulse");
+			const launched = await launcherCommand(home);
+			expect(launched.bun).toBe(bun);
+			expect(launched.relay).toBe(`${home}/.agentpulse/relay.ts`);
+			expect(launched.text).not.toContain("//.agentpulse");
 		},
 		RUN_TIMEOUT,
 	);

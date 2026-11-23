@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
 import { useOwnershipUi } from "../hooks/useOwnershipUi.js";
 import { useSignOut } from "../hooks/useSignOut.js";
+import { useUpdateSync } from "../hooks/useUpdateSync.js";
 import { isAiDisabledError } from "../lib/api-errors.js";
 import { type InboxWorkItem, type LabsFlag, api } from "../lib/api.js";
 import { formatProviderLabel } from "../lib/formatProviderLabel.js";
@@ -17,6 +18,8 @@ import { DbSplitWarningBanner } from "./DbSplitWarningBanner.js";
 import { LabsBadge } from "./LabsBadge.js";
 import { SessionTabs } from "./SessionTabs.js";
 import { TopBar } from "./TopBar.js";
+import { UpdateBadge } from "./UpdateBadge.js";
+import { UpdateNotices } from "./UpdateNotices.js";
 
 const SIDEBAR_STORAGE_KEY = "agentpulse.sidebarCollapsed";
 
@@ -78,6 +81,7 @@ const navItems: NavItem[] = [
 ];
 
 export function Layout() {
+	useUpdateSync();
 	const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
 	const labsFlags = useLabsStore((s) => s.flags);
@@ -172,7 +176,7 @@ export function Layout() {
 			{/* Mobile top bar (z-40: stays above the menu overlay and any
 			    sticky page chrome at z-10/z-20 so the hamburger-close
 			    button is always reachable). */}
-			<div className="md:hidden fixed top-0 left-0 right-0 z-40 surface-glass border-b border-border px-3 py-2.5 flex items-center justify-between">
+			<div className="md:hidden fixed top-0 left-0 right-0 z-40 surface-glass border-b border-border px-3 h-14 flex items-center justify-between">
 				<div className="flex items-center gap-2.5 min-w-0">
 					<div className="w-8 h-8 rounded-lg flex items-center justify-center overflow-hidden glow-primary-sm">
 						<img src={brandIcon} alt="" className="w-8 h-8" />
@@ -188,6 +192,7 @@ export function Layout() {
 				</div>
 				{/* Mobile WS state dot — mirrors the desktop WsStatusChip color semantics */}
 				<MobileWsDot />
+				<UpdateBadge surface="mobile" />
 				<button
 					ref={menuButtonRef}
 					type="button"
@@ -462,6 +467,7 @@ export function Layout() {
 			{/* Main column: top bar (Admin + User) + tabs strip + scrollable content */}
 			<div className="flex flex-col flex-1 min-w-0 mt-14 md:mt-0">
 				<DbSplitWarningBanner />
+				<UpdateNotices />
 				<TopBar />
 				<SessionTabs />
 				<main className="flex-1 overflow-x-hidden overflow-y-auto bg-dots">

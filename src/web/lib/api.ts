@@ -62,6 +62,7 @@ export type AiWatcherPolicy = WatcherPolicy;
 export type { AskMessageRole, DecisionKind, HitlReplyKind } from "../../shared/types.js";
 import type { ForkToolCallDto, ForkToolCallIndexList } from "../../shared/fork-tool-calls.js";
 import type { ForkOptionsRequest } from "../../shared/session-resume.js";
+import type { UpdateStatusWire } from "../../shared/update-status.js";
 import {
 	RELOAD_PROBE_TIMEOUT_MS,
 	decideFetchFailure,
@@ -612,7 +613,11 @@ export const api = {
 		),
 
 	/** What this server can do (the features the dialog's fork options are gated on). Observe-readable. */
-	getCapabilities: () => request<{ features?: Record<string, boolean> }>("/capabilities"),
+	getCapabilities: () =>
+		request<{ features?: Record<string, boolean>; update?: UpdateStatusWire }>("/capabilities"),
+
+	/** Asks the server to read the release feed now (admin; 429 inside a minute). Starts nothing anywhere. */
+	checkForUpdates: () => request<{ update: UpdateStatusWire }>("/update/check", { method: "POST" }),
 
 	/** Resumes a managed Codex session whose process is gone. No body: the host and settings are the launch's own. */
 	resumeSession: (sessionId: string) =>

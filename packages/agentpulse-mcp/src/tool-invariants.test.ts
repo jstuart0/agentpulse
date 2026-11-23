@@ -76,6 +76,8 @@ const OBSERVE_TOOL_NAMES = [
 	"get_ai_status",
 	// AIMR-214 Phase A — the observe-safe project summary DTO.
 	"list_projects_summary",
+	// AGEN-155 — whether a newer AgentPulse exists; read-only, no mutating counterpart.
+	"get_update_status",
 ];
 
 // F23: list_projects lives here, not OBSERVE_TOOL_NAMES — see file docstring.
@@ -134,6 +136,14 @@ const EXCLUSION_DENYLIST = [
 	"accept_approval",
 	"approve_approval",
 	"decide_approval",
+	// AGEN-155 rule 7: no tool starts, enables or triggers an update, or rewrites update consent.
+	"update_server",
+	"apply_update",
+	"start_update",
+	"enable_auto_update",
+	"set_update_consent",
+	"check_for_updates",
+	"trigger_update_check",
 ];
 
 describe("drift guard: every non-RO tool carries rUI (assertion 16)", () => {
@@ -216,18 +226,18 @@ describe("drift guard: no root anyOf/oneOf/allOf on any tool's input schema (ass
 });
 
 describe("drift guard: tool count sanity (assertion 20, corrected counts — see file docstring)", () => {
-	test("manage-scoped server registers exactly 33 tools (11 observe + 6 Phase-3 manage-only reads + 14 Phase-4 additions + 2 approvals, post-AIMR-214-A)", async () => {
+	test("manage-scoped server registers exactly 34 tools (12 observe + 6 Phase-3 manage-only reads + 14 Phase-4 additions + 2 approvals, post-AGEN-155)", async () => {
 		const { mcpClient, registry } = await connectServer(["manage"]);
 		const { tools } = await mcpClient.listTools();
-		expect(tools.length).toBe(33);
-		expect(registry.length).toBe(33);
+		expect(tools.length).toBe(34);
+		expect(registry.length).toBe(34);
 		expect(new Set(tools.map((t) => t.name))).toEqual(new Set(MANAGE_TOTAL));
 	});
 
-	test("observe-scoped server registers exactly 11 tools (AIMR-214-A: list_projects_summary added)", async () => {
+	test("observe-scoped server registers exactly 12 tools (AIMR-214-A: list_projects_summary; AGEN-155: get_update_status)", async () => {
 		const { mcpClient } = await connectServer(["observe"]);
 		const { tools } = await mcpClient.listTools();
-		expect(tools.length).toBe(11);
+		expect(tools.length).toBe(12);
 		expect(new Set(tools.map((t) => t.name))).toEqual(new Set(OBSERVE_TOOL_NAMES));
 	});
 });
@@ -294,6 +304,7 @@ describe("drift guard: converse read-only check with real HTTP-verb instrumentat
 		recommend_launch: { template: { name: "t", agentType: "codex_cli", cwd: "/repo" } },
 		preview_template: {},
 		list_hosts: {},
+		get_update_status: {},
 	};
 
 	function instrumentedClient() {

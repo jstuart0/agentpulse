@@ -66,6 +66,7 @@ export function fakeClient(overrides: Partial<AgentPulseClient> = {}): AgentPuls
 		promptSession: notStubbed("promptSession"),
 		stopSession: notStubbed("stopSession"),
 		interruptSession: notStubbed("interruptSession"),
+		getUpdateStatus: notStubbed("getUpdateStatus"),
 		retryLaunch: notStubbed("retryLaunch"),
 		listApprovals: notStubbed("listApprovals"),
 		declineApproval: notStubbed("declineApproval"),

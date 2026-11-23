@@ -1,0 +1,15 @@
+# Run the published image instead of building from source. Use it as an override:
+#
+#   AGENTPULSE_TAG=0.12 docker compose -f docker-compose.yml -f docker-compose.image.yml up -d
+#
+# AGENTPULSE_TAG is required (an X.Y.Z or X.Y tag; see the README, "Docker image tags"). Back up the
+# agentpulse-data volume before moving to a new tag.
+#
+# `build: !reset null` drops the base file's build so the image is pulled, never built (needs Docker Compose 2.24 or later).
+# The label below is read only by a label-scoped Watchtower (see the README); it does nothing otherwise.
+services:
+  agentpulse:
+    build: !reset null
+    image: ghcr.io/jstuart0/agentpulse:${AGENTPULSE_TAG:?set AGENTPULSE_TAG, for example 0.12}
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
