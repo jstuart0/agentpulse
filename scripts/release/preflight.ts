@@ -96,6 +96,8 @@ export function parseReleaseKeysSource(text: string): ParsedKey[] | null {
 	const json = `[${withoutComments
 		.slice(from, end)
 		.replace(/\b(keyId|publicKeyRaw|status)\s*:/g, '"$1":')
+		// Biome writes each entry over several lines with trailing commas; JSON allows none.
+		.replace(/,(\s*})/g, "$1")
 		.replace(/,\s*$/, "")}]`;
 	let raw: unknown;
 	try {
