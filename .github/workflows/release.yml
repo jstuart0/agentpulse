@@ -41,6 +41,12 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Restore the annotated tag
+        # On a tag push, actions/checkout writes refs/tags/<tag> as a lightweight ref to the commit, which the gate
+        # would refuse as "not annotated". Fetch the tag object itself back over it.
+        env:
+          TAG: ${{ github.ref_name }}
+        run: git fetch --no-tags --force origin "+refs/tags/${TAG}:refs/tags/${TAG}"
       - id: gate
         name: Release gate
         env:

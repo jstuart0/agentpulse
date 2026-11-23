@@ -360,7 +360,8 @@ function ghReleaseLookup(repo: string): BuildOptions["releaseLookup"] {
 if (import.meta.main) {
 	const args = process.argv.slice(2);
 	const flag = (name: string) => args.includes(name);
-	const value = (name: string) => args[args.indexOf(name) + 1];
+	// A flag that is absent is undefined, never args[0] (indexOf -1 + 1): that made --repo-dir "--unsigned".
+	const value = (name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 	if (!flag("--unsigned") || !value("--repo") || !value("--out")) {
 		console.error(
 			"usage: bun scripts/release/build-manifest.ts --unsigned --repo owner/name --out payload.json [--repo-dir dir] [--github-output] [--allow-none]",
