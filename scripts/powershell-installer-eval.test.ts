@@ -158,40 +158,45 @@ const PWSH = Bun.which("pwsh");
 const pwshTest = PWSH ? test : test.skip.bind(test);
 
 describe("the PowerShell tag resolver (needs pwsh; skipped where it is absent, as the Windows job runs it)", () => {
-	pwshTest("picks v1.10.0 over v1.9.0, ignoring a pre-release and anything before 0.12.0", () => {
-		const root = mkdtempSync(join(tmpdir(), "ap-ps1-tags-"));
-		try {
-			const git = (cwd: string, ...args: string[]) =>
-				Bun.spawnSync(["git", ...args], {
-					cwd,
-					env: {
-						PATH: process.env.PATH ?? "",
-						HOME: root,
-						GIT_CONFIG_GLOBAL: "/dev/null",
-						GIT_AUTHOR_NAME: "t",
-						GIT_AUTHOR_EMAIL: "t@e.invalid",
-						GIT_COMMITTER_NAME: "t",
-						GIT_COMMITTER_EMAIL: "t@e.invalid",
-					},
-				});
-			const work = join(root, "work");
-			mkdirSync(work);
-			git(work, "init", "-q", "--initial-branch=main");
-			git(work, "commit", "-q", "--allow-empty", "-m", "x");
-			for (const tag of ["v0.9.0", "v1.9.0", "v1.10.0", "v2.0.0-rc.1"])
-				git(work, "tag", "-a", tag, "-m", tag);
-			const out = Bun.spawnSync(
-				[
-					PWSH as string,
-					"-NoProfile",
-					"-Command",
-					`. '${join(import.meta.dir, "install-local.ps1")}' -FunctionsOnly; Get-ApLatestReleaseTag -GitExe git -RepoUrl '${work}'`,
-				],
-				{ env: { ...process.env } },
-			);
-			expect(out.stdout.toString().trim()).toBe("v1.10.0");
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
+	pwshTest(
+		"picks v1.10.0 over v1.9.0, ignoring a pre-release and anything before 0.12.0",
+		() => {
+			const root = mkdtempSync(join(tmpdir(), "ap-ps1-tags-"));
+			try {
+				const git = (cwd: string, ...args: string[]) =>
+					Bun.spawnSync(["git", ...args], {
+						cwd,
+						env: {
+							PATH: process.env.PATH ?? "",
+							HOME: root,
+							GIT_CONFIG_GLOBAL: "/dev/null",
+							GIT_AUTHOR_NAME: "t",
+							GIT_AUTHOR_EMAIL: "t@e.invalid",
+							GIT_COMMITTER_NAME: "t",
+							GIT_COMMITTER_EMAIL: "t@e.invalid",
+						},
+					});
+				const work = join(root, "work");
+				mkdirSync(work);
+				git(work, "init", "-q", "--initial-branch=main");
+				git(work, "commit", "-q", "--allow-empty", "-m", "x");
+				for (const tag of ["v0.9.0", "v1.9.0", "v1.10.0", "v2.0.0-rc.1"])
+					git(work, "tag", "-a", tag, "-m", tag);
+				const out = Bun.spawnSync(
+					[
+						PWSH as string,
+						"-NoProfile",
+						"-Command",
+						`. '${join(import.meta.dir, "install-local.ps1")}' -FunctionsOnly; Get-ApLatestReleaseTag -GitExe git -RepoUrl '${work}'`,
+					],
+					{ env: { ...process.env } },
+				);
+				expect(out.stdout.toString().trim()).toBe("v1.10.0");
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+			// pwsh takes seconds to start on a CI runner; the 5 s default timed out there.
+		},
+		30_000,
+	);
 });
