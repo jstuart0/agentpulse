@@ -218,6 +218,13 @@ describe("parseReleaseKeysSource: the exported list is parsed, not pattern-match
 		]);
 	});
 
+	test("reads the repository's own release-keys.ts as Biome formats it (multi-line entries, trailing commas)", () => {
+		const keys = parseReleaseKeysSource(
+			readFileSync(join(import.meta.dir, "../../src/shared/release-keys.ts"), "utf8"),
+		);
+		expect(keys?.some((k) => k.status === "active")).toBe(true);
+	});
+
 	test("an empty list parses to an empty list", () => {
 		expect(parseReleaseKeysSource(src(""))).toEqual([]);
 	});
