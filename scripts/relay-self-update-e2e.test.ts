@@ -55,6 +55,9 @@ import {
 	startRelay,
 } from "./relay.ts?module";
 
+/** The relay these fixtures pretend to be: one release behind the 0.12.0 they serve. */
+const FIXTURE_RUNNING_VERSION = "0.11.0";
+
 const REAL_RELAY = readFileSync(join(import.meta.dir, "relay.ts"), "utf-8");
 const REAL_STATUSLINE = readFileSync(join(import.meta.dir, "statusline.sh"), "utf-8");
 const SECRET_KEY = ["relay", "canary", "never", "sent"].join("-");
@@ -260,6 +263,7 @@ async function world(opts: WorldOptions = {}): Promise<World> {
 		log: (line) => logs.push(line),
 		selfUpdate: {
 			keys: TEST_KEY_LIST,
+			runningVersion: FIXTURE_RUNNING_VERSION,
 			env: opts.launcher === false ? {} : { AGENTPULSE_RELAY_LAUNCHER: "1" },
 			exit: (code) => exits.push(code),
 			...(opts.selfCheck ? { selfCheck: opts.selfCheck } : {}),
@@ -429,6 +433,7 @@ describe("nothing is written until every precondition holds", () => {
 			log: () => {},
 			selfUpdate: {
 				keys: TEST_KEY_LIST,
+				runningVersion: FIXTURE_RUNNING_VERSION,
 				env: { AGENTPULSE_RELAY_LAUNCHER: "1" },
 				exit: () => {},
 				selfCheck: async () => true,
@@ -626,6 +631,7 @@ describe("where bytes may come from", () => {
 				log: () => {},
 				selfUpdate: {
 					keys: TEST_KEY_LIST,
+					runningVersion: FIXTURE_RUNNING_VERSION,
 					env: { AGENTPULSE_RELAY_LAUNCHER: "1" },
 					exit: () => {},
 				},

@@ -15,7 +15,6 @@ import {
 	testPayload,
 	testRelease,
 } from "../../shared/__fixtures__/release-test-signer.js";
-import { RELEASE_KEYS } from "../../shared/release-keys.js";
 import type { LastSeen } from "../../shared/release-manifest.js";
 import {
 	EMPTY_STORED,
@@ -178,10 +177,9 @@ describe("status from a verified manifest", () => {
 	});
 });
 
-describe("the empty production key list", () => {
+describe("an empty key list", () => {
 	test("a manifest nobody can verify leaves every install on unverified, whatever it says", async () => {
-		expect(RELEASE_KEYS).toHaveLength(0);
-		const t = setup({ keys: RELEASE_KEYS });
+		const t = setup({ keys: [] });
 		t.source.push(good());
 		const status = await t.checker.checkNow();
 		expect(status.state).toBe("unverified");

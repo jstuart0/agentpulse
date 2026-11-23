@@ -11,7 +11,7 @@
 #   "statusLine": { "type": "command", "command": "~/.claude/statusline-agentpulse.sh" }
 
 # Never printed. `agentpulse version` reads it from the installed copy; `bun run release:prepare` rewrites it.
-AGENTPULSE_STATUSLINE_VERSION="0.11.0"
+AGENTPULSE_STATUSLINE_VERSION="0.12.0"
 
 input=$(cat)
 
