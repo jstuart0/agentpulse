@@ -55,7 +55,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 
 /** The release this file belongs to. `bun run release:prepare` rewrites it; `scripts/release/version-parity.test.ts` holds it equal to package.json. */
-export const RELAY_VERSION = "0.11.0";
+export const RELAY_VERSION = "0.12.0";
 
 const RELAY_FETCH_TIMEOUT_MS = 8_000;
 const SYNC_FETCH_TIMEOUT_MS = 5_000;
@@ -1492,10 +1492,9 @@ export function versionInRange(version: Version, floor: Version, ceiling: Versio
 /**
  * The release trust root: the public keys a client accepts a signed release manifest from.
  *
- * The production list is EMPTY in this change. No real signing key exists yet; the maintainer generates
- * one active and one standby key offline (`bun scripts/release/keygen.ts`) at the first release and
- * commits the two public halves here, in a reviewed change (CODEOWNERS covers this file). Until then
- * every client reads "can't verify updates", which fails safe.
+ * One active and one standby key, generated with `bun scripts/release/keygen.ts` for the first signed
+ * release (0.12.0). Only the public halves are here; a change to this list is a reviewed change
+ * (CODEOWNERS covers this file).
  *
  * A key's `status` decides what its envelopes may do: only a `standby` key's `revokedKeyIds` are honoured
  * (see release-manifest.ts). Tests sign with a throwaway key of their own; this file must never import
@@ -1514,7 +1513,18 @@ export interface ReleaseKey {
 	readonly status: ReleaseKeyStatus;
 }
 
-export const RELEASE_KEYS: readonly ReleaseKey[] = [];
+export const RELEASE_KEYS: readonly ReleaseKey[] = [
+	{
+		keyId: "k-fc3883894331",
+		publicKeyRaw: "cwjfqf-f0_t-ll0i7XE7awd2EJorGx-a4qyc3iZMyQg",
+		status: "active",
+	},
+	{
+		keyId: "k-71cb6fc03027",
+		publicKeyRaw: "JxoqINaPROBB2tcPP6jmLtU7rZn2kJ55ZHY5nLkEgkA",
+		status: "standby",
+	},
+];
 // END release-keys embed
 
 // BEGIN capped-fetch embed: generated from src/shared/capped-fetch.ts by `bun run embed:relay-update`; edit the source, never this block
@@ -3287,6 +3297,8 @@ export type SelfUpdateCode =
 export type SelfUpdateDeps = {
 	/** The trust root. Only a test passes another. */
 	keys: readonly ReleaseKey[];
+	/** The version this relay runs. Only a test passes another, so its fixtures don't move with each release. */
+	runningVersion: string;
 	/** Where the launcher's flag is read from. */
 	env: Record<string, string | undefined>;
 	/** Called once the new relay is in place; the launcher starts it. */
@@ -3306,6 +3318,7 @@ export type SelfUpdateDeps = {
 function defaultSelfUpdateDeps(): SelfUpdateDeps {
 	return {
 		keys: RELEASE_KEYS,
+		runningVersion: RELAY_VERSION,
 		env: process.env,
 		exit: (code) => process.exit(code),
 		selfCheck: (kind, path) => runSelfCheck(kind, path, process.execPath),
@@ -3828,7 +3841,7 @@ export async function relaySelfUpdate(ctx: RelayContext): Promise<SelfUpdateCode
 	if (!release) return "unknown_version";
 	if (release.pulled) return "pulled";
 	if (w.pre.length > 0) return "prerelease";
-	const running = parseReleaseVersion(RELAY_VERSION);
+	const running = parseReleaseVersion(deps.runningVersion);
 	if (!running || compareReleaseVersions(w, running) <= 0) return "up_to_date";
 	const minimum = parseReleaseVersion(manifest.minSupported);
 	if (!minimum || compareReleaseVersions(w, minimum) < 0) return "below_minimum";
